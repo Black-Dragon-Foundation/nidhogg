@@ -339,6 +339,42 @@ corner)."
     (should (equal (list 'ring at) '(ring (255 128 0))))
     (should (equal (list 'stock below) '(stock (255 128 0))))))
 
+(defun glitnir-decor-gui--ring-in-spacing (fit)
+  "How many pixels of the ring's colour lie in the line spacing (16 px below the text, 3 px clear of it and of the
+row's bottom) across a run \" ab \" with FIT as its :fit, followed by text drawn after it."
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-decor-gui-fit-right")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white"
+                        :box `(:line-width (1 . 1) :color "#ff8000" :corner-radius 4 ,@(and fit `(:fit ,fit))))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "white")
+      (setq-local cursor-type nil line-spacing 16)
+      (let ((fo (glitnir-decor-gui--calibrate)))
+        (insert "\n\n" (propertize " ab " 'face face) "xy\n\n")
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (let* ((s (glitnir-decor-gui--scale))
+               (g (gui-runner-screen-grab))
+               (row (cdr (glitnir-decor-gui--at g 3 fo)))
+               (end (car (cdr (glitnir-decor-gui--at g 7 fo))))
+               (text (save-excursion (goto-char 3) (- (line-pixel-height) 16)))
+               (n 0))
+          (cl-loop for x from (- (car row) 2) to (+ end 2)
+                   do (cl-loop for y from (+ (cdr row) (glitnir-decor-gui--dev s (+ text 3)))
+                               to (+ (cdr row) (glitnir-decor-gui--dev s (+ text 13)))
+                               do (when (equal (glitnir-decor-gui--px g x y) '(255 128 0)) (cl-incf n))))
+          n)))))
+
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-keeps-its-right-end ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; Text after the run: drawing it repaints the run's rounded right end, which stays as tall as the text, not the
+  ;; row (drgnx's palette keycaps had their right sides run down through the line spacing).  Without :fit the sides
+  ;; are the row's (the premise: the band is where a side would be).
+  (should (> (glitnir-decor-gui--ring-in-spacing nil) 0))
+  (should (equal (list 'fit (glitnir-decor-gui--ring-in-spacing 'text)) '(fit 0))))
+
 (ert-deftest glitnir-decor-gui/box-across-a-newline-is-stock ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Buffer text in a boxed face that runs on over its newline (no string, no stretch) is drawn as stock Emacs draws

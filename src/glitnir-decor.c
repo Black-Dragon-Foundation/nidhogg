@@ -505,6 +505,16 @@ repaint_neighbour_end (struct glyph_string *s, struct glyph *nb, int side)
 
   int left_x = side == SIDE_LEFT ? s->x - w : s->x + s->width;
   int top_y = s->y, h = s->height;
+  /* :fit text: the run's box spans its font's ascent and descent, as
+     glitnir_decor_draw_box drew it, not S's row.  */
+  if (k.fit_text && face->font)
+    {
+      int line = max (face->box_horizontal_line_width, 0);
+      int y0 = max (top_y, s->ybase - FONT_BASE (face->font) - line);
+      int y1 = min (top_y + h - 1,
+		    s->ybase + FONT_DESCENT (face->font) + line - 1);
+      top_y = y0, h = y1 + 1 - y0;
+    }
   struct glyph *beside = side == SIDE_LEFT ? s->first_glyph
 					   : s->first_glyph + s->nchars - 1;
   unsigned long beneath;
