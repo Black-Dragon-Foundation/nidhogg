@@ -664,4 +664,8 @@ off the native shell and in batch: the layout then jumps."
 
 (provide 'glitnir-lisp)
 
+;; The first frame born with a child-frame minibuffer when early-init.el asks for one (preloaded with this file: loadup
+;; has one line per group).
+(load "nidhogg-frame")
+
 ;;; glitnir.el ends here
