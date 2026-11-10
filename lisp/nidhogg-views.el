@@ -104,8 +104,10 @@ Instances in the same GROUP (a string) share one selection."
     answer))
 
 (defsubst nidhogg-view-follow (h link)
-  "Follow LINK (\"up\", \"left\", ...) from H's selection; return the selection."
-  (nidhogg-view--call (nidhogg-view--op follow) h link))
+  "Follow LINK (\"up\", \"left\", ...) from H's selection; return the
+selection, or (ID . more) when it stayed at the edge of a window that goes
+on that way (as `nidhogg-view-walk')."
+  (nidhogg-view--step (nidhogg-view--call (nidhogg-view--op follow) h link)))
 
 (defsubst nidhogg-view-walk (h list step)
   "Step STEP entries along LIST from H's selection, wrapping; return the
@@ -129,7 +131,8 @@ visible sibling whose label starts with VALUE; returns the selection)."
   "Read WHAT of instance H.
 WHAT is `selection', `kind' (of ARG, an id, or the selection), `field'
 \(ARG a field name, ARG2 an id or the selection), `flag', `parent',
-`rows', `list' (ARG a list name), `finished' (the id that went from under
+`rows', `list' (ARG a list name), `window' (of list ARG: (FROM LENGTH
+TOTAL) when the model holds a window of it, else nil), `finished' (the id that went from under
 the selection, once), `class' (of ARG), `classes' (a vector [ID CLASS
 ...] of the nodes whose class changed since the last read), `reclass',
 `class-names', `expanded', `open' (of ARG: a tree node is open), `ticked', `version', `stats' or `health' (0 ok,

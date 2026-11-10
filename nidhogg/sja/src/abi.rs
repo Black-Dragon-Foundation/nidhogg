@@ -268,6 +268,11 @@ fn get(h: u32, what: &str, a: &Arg, b: &Arg) -> Result<Ans, Refused> {
                 .map(|i| Ans::Str(i.to_string()))
                 .collect(),
         ),
+        "window" => a
+            .and_then(|l| v.window(l))
+            .map_or(Ans::Nil, |(from, len, total)| {
+                Ans::ints(&[from, len, total])
+            }),
         "finished" => Ans::id(v.take_finished(h)),
         "class" => a
             .and_then(|id| v.class_of(h, id))
@@ -379,7 +384,7 @@ fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
         }
         SJA_FOLLOW => {
             let (h, link) = (arg(args, 0).handle()?, arg(args, 1).str()?.to_string());
-            verb(h, move |v| Ans::id(v.follow(h, &link)))
+            verb(h, move |v| Ans::step(v.follow_step(h, &link)))
         }
         SJA_WALK | SJA_WALK_TO => {
             let (h, list, n) = (

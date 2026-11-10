@@ -72,6 +72,33 @@ RESET marks it a reset.  Return the drain's status, or the push's decision when 
   (should-not (fboundp 'nidhogg-view-apply))
   (should-error (nidhogg-view--call 1 "t-gone" "h1" 1 "{\"ops\": []}") :type 'args-out-of-range))
 
+(ert-deftest sja/follow-off-a-window-answers-more ()
+  "A follow that stays at the edge of a windowed list answers (ID . more) and sets `nidhogg-view-more';
+`window' tells the list's (FROM LENGTH TOTAL), nil for a whole list."
+  (let ((h (nidhogg-view-open "t-window")))
+    (unwind-protect
+        (progn
+          (should (eq (sja-tests--put
+                       "t-window" 1
+                       (concat "{\"ops\": [{\"reset\": {\"descriptor\": {\"scheme\": \"links\", \"lists\": [\"steps\"],"
+                               " \"classes\": [\"selected\"], \"start\": \"steps\"},"
+                               " \"nodes\": [{\"id\": \"s3\", \"kind\": \"step\", \"nav\": {\"down\": \"s4\"}},"
+                               " {\"id\": \"s4\", \"kind\": \"step\", \"nav\": {\"up\": \"s3\"}}], \"edges\": [],"
+                               " \"lists\": [{\"name\": \"steps\", \"ids\": [\"s3\", \"s4\"], \"total\": 9, \"from\": 3}]}}]}")
+                       t)
+                      'applied))
+          (should (equal (nidhogg-view-get h 'window "steps") '(3 2 9)))
+          (nidhogg-view-set h 'select "s3")
+          (setq nidhogg-view-more nil)
+          (should (equal (nidhogg-view-follow h "up") '("s3" . more)))
+          (should (eql nidhogg-view-more -1))
+          (should (equal (nidhogg-view-follow h "down") "s4"))
+          (should (equal (nidhogg-view-follow h "down") '("s4" . more)))
+          (should (eql nidhogg-view-more 1)))
+      (nidhogg-view-close h)))
+  (sja-tests--with "t-window-whole" h
+    (should-not (nidhogg-view-get h 'window "team"))))
+
 (ert-deftest sja/apply-then-follow ()
   (sja-tests--with "t-follow" h
     (should (equal (nidhogg-view-follow h "right") "agent:a"))

@@ -190,6 +190,44 @@ impl View {
     /// link set of the instance's form.  With no selection, the first entry of the primary list.  A link that is null
     /// or leads outside the model leaves the selection.  The answer is the selection.
     pub fn follow(&mut self, h: u32, link: &str) -> Option<Id> {
+        self.follow_step(h, link).id
+    }
+
+    /// [`View::follow`], answering `more` when the selection stayed, the link names a direction (`up`, `down`, either
+    /// with `:KIND`; `left` and `right` too in the links scheme) and the primary list is a window that goes on that
+    /// way: the next row may be in the next window.
+    pub fn follow_step(&mut self, h: u32, link: &str) -> Step {
+        let cur = self.selection(h);
+        let id = self.follow_inner(h, link);
+        let more = match (&cur, &id) {
+            (Some(c), Some(i)) if c == i => self.model.as_ref().and_then(|m| {
+                let dir = link.split_once(':').map_or(link, |(d, _)| d);
+                let d: i8 = match (dir, m.desc.scheme == Scheme::Tree) {
+                    ("up", _) | ("left", false) => -1,
+                    ("down", _) | ("right", false) => 1,
+                    _ => return None,
+                };
+                let l = Self::primary_list(m).and_then(|l| m.lists.get(l))?;
+                let goes_on = if d < 0 {
+                    l.from > 0
+                } else {
+                    l.from + l.ids.len() < l.total.unwrap_or(0)
+                };
+                goes_on.then_some(d)
+            }),
+            _ => None,
+        };
+        Step { id, more }
+    }
+
+    /// LIST's window: (from, length, total) when the model holds a window of it, else none.
+    pub fn window(&self, list: &str) -> Option<(usize, usize, usize)> {
+        let l = self.model.as_ref()?.lists.get(list)?;
+        let total = l.total?;
+        (l.from > 0 || l.from + l.ids.len() < total).then_some((l.from, l.ids.len(), total))
+    }
+
+    fn follow_inner(&mut self, h: u32, link: &str) -> Option<Id> {
         let m = self.model.as_ref()?;
         let inst = self.insts.get(&h)?;
         let form = inst.form.as_deref().and_then(|f| m.names.get(f));
