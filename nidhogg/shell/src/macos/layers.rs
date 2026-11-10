@@ -92,6 +92,8 @@ pub struct Props {
     /// Chrome: the corner and border properties set, and the shadow images rendered.
     pub chrome: AtomicU64,
     pub shadow_renders: AtomicU64,
+    /// Show and hide legs handed to Core Animation.
+    pub legs: AtomicU64,
 }
 
 pub static PROPS: Props = Props {
@@ -106,6 +108,7 @@ pub static PROPS: Props = Props {
     panel_orders: AtomicU64::new(0),
     chrome: AtomicU64::new(0),
     shadow_renders: AtomicU64::new(0),
+    legs: AtomicU64::new(0),
 };
 
 impl Props {
@@ -113,7 +116,8 @@ impl Props {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         format!(
             ":props-contents {} :props-position {} :props-bounds {} :props-hidden {} :props-opacity {} :props-order {} \
-             :props-host {} :overhang-switches {} :panel-orders {} :props-chrome {} :shadow-renders {}",
+             :props-host {} :overhang-switches {} :panel-orders {} :props-chrome {} :shadow-renders {} \
+             :motion-legs {}",
             g(&self.contents),
             g(&self.position),
             g(&self.bounds),
@@ -125,6 +129,7 @@ impl Props {
             g(&self.panel_orders),
             g(&self.chrome),
             g(&self.shadow_renders),
+            g(&self.legs),
         )
     }
 }

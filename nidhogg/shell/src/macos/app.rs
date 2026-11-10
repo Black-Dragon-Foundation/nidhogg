@@ -42,6 +42,10 @@ mod child;
 #[path = "chrome.rs"]
 mod chrome;
 
+/// A child's show and hide transitions, run by Core Animation.
+#[path = "motion.rs"]
+mod motion;
+
 pub struct MacShell {
     mtm: MainThreadMarker,
     app: Retained<NSApplication>,
@@ -699,6 +703,18 @@ impl ShellBackend for MacShell {
         self.kid_chrome(window, chrome.copied())
     }
 
+    fn set_motion(
+        &mut self,
+        window: WindowId,
+        spec: Option<glitnir::motion::MotionSpec>,
+    ) -> ShellResult {
+        self.kid_motion(window, spec)
+    }
+
+    fn set_backdrop(&mut self, window: WindowId, blur_px: f32) -> ShellResult {
+        self.kid_backdrop(window, blur_px)
+    }
+
     fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId> {
         self.child_create(desc)
     }
@@ -967,6 +983,7 @@ impl ShellBackend for MacShell {
         match kind {
             "stats" => Ok(stats_text(scope_stats())),
             "get-resource" => Ok(defaults::get(arg)),
+            "reduced-motion" => Ok(if motion::reduced() { "t" } else { "nil" }.into()),
             _ => Err(ShellError::Arg),
         }
     }

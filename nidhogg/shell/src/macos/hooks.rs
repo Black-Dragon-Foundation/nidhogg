@@ -65,6 +65,17 @@ impl MacShell {
                 self.raise_in_pump = true;
                 Some(Ok(()))
             }
+            // -1: the system's setting again; 0 or 1 stand for it
+            "test-reduced-motion" => Some(numbers(arg).and_then(|n| match n[..] {
+                [v] => {
+                    super::motion::REDUCED_OVERRIDE.store(
+                        v.clamp(-1.0, 1.0) as i32,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    Ok(())
+                }
+                _ => Err(ShellError::Arg),
+            })),
             "test-helper-next" => {
                 self.force_helper += 1;
                 Some(Ok(()))
