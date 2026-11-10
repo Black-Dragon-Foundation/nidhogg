@@ -290,6 +290,53 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
           (should (equal (list 'b (glitnir-decor-gui--px g (1- (car nl)) y)) '(b (48 48 96))))
           (should (equal (list 'nl (glitnir-decor-gui--px g (car nl) y)) '(nl (48 48 96)))))))))
 
+;; Two boxed faces side by side in one row, from the text and an overlay: the first is `ab' + `ef' around the
+;; overlay's `cd'.  POSITIONS are their buffer positions (a at 3).
+(defun glitnir-decor-gui--two-runs (outer inner)
+  "Grab `abcdef' in face OUTER with `cd' in face INNER over it: (GRAB Y C-X E-X) for the row's middle, device pixels."
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (face-remap-add-relative 'default :background "#202020" :foreground "white")
+    (setq-local cursor-type nil truncate-lines t)
+    (let ((fo (glitnir-decor-gui--calibrate)))
+      (insert "\n\n" (propertize "abcdef" 'face outer) "\n\n")
+      (overlay-put (make-overlay 5 7) 'face inner)
+      (goto-char 1)
+      (gui-runner-wait-settled)
+      (let* ((s (glitnir-decor-gui--scale)) (g (gui-runner-screen-grab))
+             (c (cdr (glitnir-decor-gui--at g 5 fo))) (e (cdr (glitnir-decor-gui--at g 7 fo))))
+        (list g (+ (cdr c) (glitnir-decor-gui--dev s (/ (line-pixel-height) 2))) (car c) (car e))))))
+
+(defun glitnir-decor-gui--box-face (name bg colour)
+  "A face NAME with background BG and a 2 px box, inside the glyphs, of COLOUR."
+  (let ((face (make-symbol name)))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :background bg :foreground "white" :box `(:line-width (-2 . -2) :color ,colour))
+    face))
+
+(ert-deftest glitnir-decor-gui/box-nested-in-another-box-has-sides ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; A boxed face over part of a run of another boxed face whose box differs (a search match in the selection, the
+  ;; current match's ring in it too): the inner run starts and ends with its own sides, so its ring is whole.  Stock
+  ;; Emacs starts a run only where the face before has no box, so it drew the inner box's top and bottom alone.
+  (let* ((glitnir-enable t)
+         (r (glitnir-decor-gui--two-runs (glitnir-decor-gui--box-face "outer" "#303060" "#303060")
+                                         (glitnir-decor-gui--box-face "inner" "#306030" "#ff8000"))))
+    (pcase-let ((`(,g ,y ,cx ,ex) r))
+      (should (equal (list 'left (glitnir-decor-gui--px g cx y)) '(left (255 128 0))))
+      (should (equal (list 'right (glitnir-decor-gui--px g (1- ex) y)) '(right (255 128 0)))))))
+
+(ert-deftest glitnir-decor-gui/adjacent-same-boxes-are-one-run ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; Two faces whose boxes are the same (colour and kind), side by side, are one run as in stock Emacs: no side
+  ;; between them, only their fills.
+  (let* ((glitnir-enable t)
+         (r (glitnir-decor-gui--two-runs (glitnir-decor-gui--box-face "first" "#303060" "#ff8000")
+                                         (glitnir-decor-gui--box-face "second" "#306030" "#ff8000"))))
+    (pcase-let ((`(,g ,y ,cx ,_) r))
+      (should (equal (list 'b (glitnir-decor-gui--px g (1- cx) y)) '(b (48 48 96))))
+      (should (equal (list 'c (glitnir-decor-gui--px g cx y)) '(c (48 96 48)))))))
+
 (ert-deftest glitnir-decor-gui/decor-partial-equals-full ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Redrawing only the neighbour gives the same pixels as a full redraw.
