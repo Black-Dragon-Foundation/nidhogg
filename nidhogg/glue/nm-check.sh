@@ -27,7 +27,14 @@ if [ -d "$B/obj/src" ]; then obj=$B/obj/src; else obj=$B/src; fi
 lib=$obj/glitnir-target/release/libnhglue.a
 [ -f "$lib" ] || { echo "nm-check: no $lib (build with --nidhogg-wayland first)" >&2; exit 2; }
 ls "$obj"/*.o >/dev/null 2>&1 || { echo "nm-check: no objects in $obj" >&2; exit 2; }
-command -v nm >/dev/null 2>&1 || { echo "nm-check: nm not found (binutils)" >&2; exit 2; }
+# the nm of the Rust toolchain that built the archive (rustup's llvm-tools), which reads what its LLVM wrote; the
+# system's (binutils, or Xcode's, whose LLVM may be older than rustc's) otherwise.  NM overrides both.
+if [ -z "${NM:-}" ]; then
+  NM=nm
+  rs=$(rustc --print sysroot 2>/dev/null) && host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p') &&
+    [ -x "$rs/lib/rustlib/$host/bin/llvm-nm" ] && NM=$rs/lib/rustlib/$host/bin/llvm-nm
+fi
+command -v "$NM" >/dev/null 2>&1 || { echo "nm-check: $NM not found (binutils, or rustup component add llvm-tools)" >&2; exit 2; }
 bad=0
 
 # POSIX output: "NAME TYPE [VALUE SIZE]"; the archive's member headers ("lib.a[x.o]:") have no type field
@@ -35,16 +42,16 @@ strip=cat
 [ "$(uname -s)" = Darwin ] && strip="sed s/^_//"
 # nm must read every member: a member it cannot read (an object newer than its LLVM) hides that member's names from
 # both checks, so its complaints fail the check
-nmerr=$(nm -P -g "$lib" 2>&1 >/dev/null | grep -v 'no symbols$')
+nmerr=$("$NM" -P -g "$lib" 2>&1 >/dev/null | grep -v 'no symbols$')
 if [ -n "$nmerr" ]; then
-  echo "nm-check: nm ($(command -v nm)) could not read all of libnhglue.a:"
+  echo "nm-check: $NM could not read all of libnhglue.a (on macOS: rustup component add llvm-tools, for the toolchain that built it):"
   printf '%s\n' "$nmerr" | head -n 5 | sed 's/^/  /'
   bad=1
 fi
-undef=$(nm -P -g "$lib" 2>/dev/null | awk 'NF >= 2 && ($2 == "U" || $2 == "w" || $2 == "v") {print $1}' | $strip | sort -u)
-def=$(nm -P -g --defined-only "$lib" 2>/dev/null | awk 'NF >= 2 {print $1}' | $strip | sort -u)
+undef=$("$NM" -P -g "$lib" 2>/dev/null | awk 'NF >= 2 && ($2 == "U" || $2 == "w" || $2 == "v") {print $1}' | $strip | sort -u)
+def=$("$NM" -P -g --defined-only "$lib" 2>/dev/null | awk 'NF >= 2 {print $1}' | $strip | sort -u)
 external=$(comm -23 <(printf '%s\n' "$undef") <(printf '%s\n' "$def"))
-emacs=$(nm -P -g --defined-only "$obj"/*.o 2>/dev/null | awk 'NF >= 2 && $1 !~ /:$/ {print $1}' | $strip | sort -u)
+emacs=$("$NM" -P -g --defined-only "$obj"/*.o 2>/dev/null | awk 'NF >= 2 && $1 !~ /:$/ {print $1}' | $strip | sort -u)
 [ -n "$emacs" ] || { echo "nm-check: no symbols defined by $obj/*.o" >&2; exit 2; }
 calls=$(comm -12 <(printf '%s\n' "$external") <(printf '%s\n' "$emacs"))
 if [ -n "$calls" ]; then

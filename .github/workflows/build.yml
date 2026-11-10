@@ -852,7 +852,8 @@ jobs:
         run: |
           if command -v rustup >/dev/null; then
             sed 's/#.*//' nidhogg/deps/macos.build | grep -vx 'rust' | xargs brew install
-            rustup toolchain install stable --profile minimal --component clippy,rustfmt --no-self-update
+            # llvm-tools: nm-check reads the archive with the nm of the LLVM that wrote it (Xcode's may be older)
+            rustup toolchain install stable --profile minimal --component clippy,rustfmt,llvm-tools --no-self-update
             rustup default stable
           else
             sed 's/#.*//' nidhogg/deps/macos.build | xargs brew install

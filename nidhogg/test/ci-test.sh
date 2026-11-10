@@ -308,6 +308,9 @@ grep -qF 'path: ${{ runner.temp }}/nhmac-gui' <<<"$rj"              || fail "the
 for s in nhmac-gui.sh nhmac-pair.sh; do
   grep -qE "^          caffeinate -d -i -u bash nidhogg/test/$s " <<<"$rj" || fail "macos-naglfar-rows runs $s with the display free to sleep"
 done
+# nm-check reads the Naglfar archive with the Rust toolchain's llvm-nm: the job installs llvm-tools with it
+job macos-naglfar | grep -qE 'rustup toolchain install stable .*--component [a-z,]*llvm-tools' || fail "macos-naglfar does not install llvm-tools for nm-check"
+grep -qF 'lib/rustlib/$host/bin/llvm-nm' nidhogg/glue/nm-check.sh || fail "nm-check does not take the Rust toolchain's llvm-nm"
 # the paired timing still gets the NS tarball when a row before it is red (as its own step runs then)
 grep -A1 'name: The NS tarball for the paired timing' <<<"$rj" | grep -qF '!cancelled()' || fail "the paired timing's tarball is skipped after a red row"
 # the paired timing runs typing and typing under a blurred child, and is red when either is
