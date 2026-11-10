@@ -26,7 +26,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask, NSScreen};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSString};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::Duration;
 
 /// The test hooks: `nhmac--call` and `nhmac--query` kinds that exist only in a checking build.
@@ -42,6 +42,8 @@ mod child;
 #[path = "chrome.rs"]
 mod chrome;
 
+#[path = "cards.rs"]
+mod cards;
 /// A child's show and hide transitions, run by Core Animation.
 #[path = "motion.rs"]
 mod motion;
@@ -72,6 +74,8 @@ pub struct MacShell {
     retired: Vec<(WindowId, child::Kid)>,
     /// Roots whose children changed since their last commit.
     owed: BTreeSet<WindowId>,
+    /// Each root's window cards (`set_cards`), shown by the root tree's commit.
+    cards: BTreeMap<WindowId, cards::Cards>,
     /// The window under the pointer in each root's tree, and the press that holds it (root, window).
     hover: HashMap<WindowId, WindowId>,
     grab: Option<(WindowId, WindowId)>,
@@ -169,6 +173,7 @@ impl MacShell {
             order_dirty: BTreeSet::new(),
             retired: Vec::new(),
             owed: BTreeSet::new(),
+            cards: BTreeMap::new(),
             hover: HashMap::new(),
             grab: None,
             #[cfg(feature = "test-hooks")]
@@ -540,6 +545,7 @@ impl ShellBackend for MacShell {
             return self.child_destroy(window);
         }
         self.children_gone(window);
+        self.cards.remove(&window);
         self.windows
             .remove(&window)
             .map(drop)
@@ -693,6 +699,19 @@ impl ShellBackend for MacShell {
 
     fn chrome_on_layers(&self) -> bool {
         true
+    }
+
+    fn cards_on_layers(&self) -> bool {
+        true
+    }
+
+    fn set_cards(&mut self, window: WindowId, list: &[crate::api::CardImage]) -> ShellResult {
+        if !self.windows.contains_key(&window) || self.kids.contains_key(&window) {
+            return Err(ShellError::State);
+        }
+        self.cards.entry(window).or_default().set(list)?;
+        self.owe(window);
+        Ok(())
     }
 
     fn set_chrome(

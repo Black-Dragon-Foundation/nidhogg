@@ -45,7 +45,7 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn CGBitmapContextCreateImage(c: *mut c_void) -> CFRef;
     fn CGContextRelease(c: *mut c_void);
-    fn CGImageRelease(img: CFRef);
+    pub(super) fn CGImageRelease(img: CFRef);
 }
 
 /// Premultiplied alpha first, 32-bit little-endian: an ARGB word as the shell's pixels are.
@@ -63,16 +63,21 @@ pub struct Shown {
 
 /// One CGImage of `img`'s pixels (+1, the caller releases it); null on failure.
 fn cg_image(img: &ShadowImage) -> CFRef {
-    let mut px = img.argb.clone();
+    argb_image(&img.argb, img.w, img.h)
+}
+
+/// One CGImage of `w` x `h` premultiplied ARGB pixels `argb`, row by row (+1, the caller releases it); null on failure.
+pub(super) fn argb_image(argb: &[u32], w: u32, h: u32) -> CFRef {
+    let mut px = argb.to_vec();
     // SAFETY: the context draws into `px`, alive for the calls; the image copies it; every +1 is released.
     unsafe {
         let cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         let c = CGBitmapContextCreate(
             px.as_mut_ptr().cast(),
-            img.w as usize,
-            img.h as usize,
+            w as usize,
+            h as usize,
             8,
-            img.w as usize * 4,
+            w as usize * 4,
             cs,
             ARGB_PREMULTIPLIED,
         );

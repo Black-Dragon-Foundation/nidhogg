@@ -270,7 +270,7 @@ pub fn bounds(rect: Rect, chrome: Option<&Chrome>) -> Rect {
 }
 
 /// [`bounds`] of a layer that may have a card: its ring too.
-fn card_bounds(rect: Rect, chrome: Option<&Chrome>, card: Option<&Card>) -> Rect {
+pub fn card_bounds(rect: Rect, chrome: Option<&Chrome>, card: Option<&Card>) -> Rect {
     let b = bounds(rect, chrome);
     match card.map(Card::ring) {
         Some(w) if w > 0 && !rect.is_empty() => {

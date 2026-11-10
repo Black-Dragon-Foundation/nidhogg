@@ -382,6 +382,18 @@ pub trait ShellBackend {
     fn set_backdrop(&mut self, _window: WindowId, _blur_px: f32) -> ShellResult {
         Err(ShellError::Unsupported)
     }
+    /// Whether the shell shows a root's window cards on layers of its own over the root's pixels (`set_cards`), so
+    /// the host composes none into the root's surface.
+    fn cards_on_layers(&self) -> bool {
+        false
+    }
+    /// Root `window`'s window cards, each an image put over the root's pixels at its place, from the tree's next
+    /// commit.  The list replaces the last: a card left out goes; one given without an image keeps the one it has.
+    /// `Unsupported` where `cards_on_layers` is false; `State` for any other window, `Arg` for an image whose length
+    /// is not its size or a card new to the window without one.
+    fn set_cards(&mut self, _window: WindowId, _cards: &[CardImage]) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
     /// Whether the shell draws a child's chrome on the window's own layers (`set_chrome`): its surface is then the
     /// native area alone, with no shadow margin, and the host composes no chrome into it.
     fn chrome_on_layers(&self) -> bool {
@@ -718,4 +730,13 @@ mod tests {
             }
         }
     }
+}
+
+/// One window card for [`ShellBackend::set_cards`]: its id, its place in the root's surface (device pixels: x, y, width,
+/// height) and its image there (premultiplied ARGB, row by row), or `None` to keep the image it has.
+#[derive(Debug, Clone)]
+pub struct CardImage {
+    pub id: u64,
+    pub rect: (i32, i32, u32, u32),
+    pub argb: Option<std::sync::Arc<[u32]>>,
 }

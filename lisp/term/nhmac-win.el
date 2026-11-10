@@ -478,6 +478,13 @@ a plist.  For tests."
 As if kqueue had refused it (`EINVAL').  For tests."
   (nhmac--call 'test-helper-next))
 
+(defun nhmac--test-cards (&optional frame)
+  "Root FRAME's window cards on their own layers, a plist.
+:images, how many card images its layers took since it opened; :cards,
+each card's (ID X Y W H): its place in the frame, device pixels.  For
+tests."
+  (nhmac--query 'test-cards (or frame (selected-frame))))
+
 (defun nhmac--test-signal-helper (n)
   "Interrupt the main wait's helper thread N times, 20 ms apart, with a signal.
 A handler that does nothing catches it.  An error before the helper has
@@ -511,7 +518,8 @@ some 1400 pixels at most: read a row at a time).  For tests."
 left), `:w', `:h', `:host' (`parent', `panel' or nil), `:hidden',
 `:opacity', `:index' (among its layer's sublayers),
 `:contents-is-newest', `:panel' (the overhang panel's screen frame, or
-nil), `:input' (the input region, points, or nil for all), `:place'
+nil), `:blur' (t while its panel holds a blur), `:input' (the input
+region, points, or nil for all), `:place'
 (the surface's place in its parent's, points), its chrome (`:radius',
 `:masks', `:border-width', `:shadow', `:shadow-index'), `:animations'
 (the keys of the container's running animations) and `:leg' (the last

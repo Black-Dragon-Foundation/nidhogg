@@ -149,6 +149,18 @@ impl MacShell {
             "test-kq-probe" => Ok(kq_probe(arg)),
             "test-kq-layers" => kq_layers(arg),
             "test-child" => first_number(arg).and_then(|w| self.child_info(w)),
+            "test-cards" => first_number(arg).map(|w| {
+                let c = self.cards.get(&w);
+                format!(
+                    "(:images {} :cards ({}))",
+                    c.map_or(0, |c| c.images),
+                    c.map_or_else(Vec::new, |c| c.shown())
+                        .iter()
+                        .map(|(id, (x, y, w, h))| format!("({id} {x} {y} {w} {h})"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            }),
             "test-windows" => Ok(self.window_numbers()),
             "test-captures" => Ok(format!(
                 "({})",
