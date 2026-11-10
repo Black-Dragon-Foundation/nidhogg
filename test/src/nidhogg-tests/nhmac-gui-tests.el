@@ -2176,21 +2176,24 @@ fonts, and the move-frame event) have run when this returns; `accept-process-out
 (ert-deftest nhmac-new-frame-opens-its-font-once ()
   "A new frame opens its default font once for the screen it shows on: it starts at the selected frame's scale, so
 its font is re-opened only when AppKit puts it on a screen of another scale (once), never when it shows at the scale
-it started at.  Either way the font's pixel size is its height in points times the frame's scale, and the frame keeps
-the size it was made with in characters.  (Each re-open runs `nidhogg-frame-scale-change-functions'.)"
+it started at.  Either way the font's pixel size is its height in points times the frame's scale, and the window keeps
+the size on the screen (points) it was made with: the text follows.  (Each re-open runs
+`nidhogg-frame-scale-change-functions'.)"
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let* ((root (selected-frame)) (f nil) (reopens 0) (monitors 0) (moves 0)
+  (let* ((root (selected-frame)) (f nil) (made nil) (reopens 0) (monitors 0) (moves 0)
          (on-scale (lambda (frame) (when (eq frame f) (cl-incf reopens))))
          (on-monitors (lambda (_) (cl-incf monitors)))
          (on-move (lambda (frame) (when (eq frame f) (cl-incf moves)))))
     (add-hook 'nidhogg-frame-scale-change-functions on-scale)
     (add-hook 'display-monitors-changed-functions on-monitors)
     (add-hook 'move-frame-functions on-move)
-    (unless (consp frame-size-history) (setq frame-size-history (list 200)))
     (unwind-protect
         (progn
           (setq f (make-frame '((width . 40) (height . 10))))
+          ;; its size in points as made, at the selected frame's scale
+          (setq made (list (/ (frame-pixel-width f) (frame-scale-factor root))
+                           (/ (frame-pixel-height f) (frame-scale-factor root))))
           (dotimes (_ 3) (nhmac-gui--settle))
           (let ((s (frame-scale-factor f)) (pt (/ (face-attribute 'default :height f t) 10.0)))
             (nhmac-gui--say
@@ -2199,12 +2202,12 @@ the size it was made with in characters.  (Each re-open runs `nidhogg-frame-scal
              s (frame-scale-factor root) pt (nhmac-gui--font-px f) (nhmac-gui--font-px root) reopens monitors moves)
             (should (= reopens (if (= s (frame-scale-factor root)) 0 1)))
             (should (= (nhmac-gui--font-px f) (floor (+ (* pt s) 0.5))))
-            ;; it keeps the size it was made with, in characters, at whichever scale it shows
-            (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: %dx%d characters, %S px; its size changes, oldest first: %S"
-                            (frame-width f) (frame-height f) (list (frame-pixel-width f) (frame-pixel-height f))
-                            (reverse (seq-filter (lambda (e) (eq (car-safe (car-safe e)) f))
-                                                 (cdr-safe frame-size-history))))
-            (should (equal (list (frame-width f) (frame-height f)) '(40 10)))))
+            ;; it keeps its size on the screen (points) at whichever scale it shows: the text follows
+            (let ((now (list (/ (frame-pixel-width f) s) (/ (frame-pixel-height f) s))))
+              (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: made %S points, now %S points (%dx%d characters)"
+                              made now (frame-width f) (frame-height f))
+              (should (<= (abs (- (nth 0 now) (nth 0 made))) 1))
+              (should (<= (abs (- (nth 1 now) (nth 1 made))) 1)))))
       (remove-hook 'nidhogg-frame-scale-change-functions on-scale)
       (remove-hook 'display-monitors-changed-functions on-monitors)
       (remove-hook 'move-frame-functions on-move)
@@ -2230,6 +2233,22 @@ shown asks it nothing."
                           (nhmac-gui--delta before :glyph-asks))
           (should (= (nhmac-gui--delta before :glyph-asks) 0))))
     (kill-buffer)))
+
+(ert-deftest nhmac-new-frame-keeps-its-columns ()
+  "A new frame AppKit puts on a screen of another scale shows the columns and lines it was made with: the window keeps
+its points, and everything in it (font, fringes, borders) scales with it."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((f nil))
+    (unwind-protect
+        (progn
+          (setq f (make-frame '((width . 40) (height . 10))))
+          (dotimes (_ 3) (nhmac-gui--settle))
+          (nhmac-gui--say "nhmac-new-frame-keeps-its-columns: scale %s: %dx%d characters, fringes %S"
+                          (frame-scale-factor f) (frame-width f) (frame-height f) (window-fringes (frame-root-window f)))
+          (should (equal (list (frame-width f) (frame-height f)) '(40 10))))
+      (when (frame-live-p f) (delete-frame f t))
+      (nhmac-gui--settle))))
 
 (ert-deftest nhmac-monitor-change-runs-move-frame-functions ()
   "A root frame moved to another monitor runs `move-frame-functions' with it."
