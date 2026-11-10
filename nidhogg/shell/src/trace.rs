@@ -16,6 +16,8 @@ const NOTES: usize = 64;
 const IMAGES: usize = 32;
 /// The pump decisions and paints kept: the newest.
 const PUMPS: usize = 128;
+/// The room of a test query's answer (`nhmac--query`'s buffer in nhmacterm.c).
+const ANSWER: usize = 16 * 1024;
 
 /// One image draw: the container (`w` x `h`, `bpp`, with a mask or not) and its first word, the drawn rectangle, and
 /// its first clip (`None`: unclipped), the first word of the picture when it was made by this draw (`None`: a cached
@@ -62,11 +64,28 @@ pub fn pump(what: impl FnOnce() -> String) {
     });
 }
 
-/// The pump decisions since the last read, oldest first, as a Lisp list of strings; the list is cleared.
+/// The pump decisions since the last read, oldest first, as a Lisp list of strings; the list is cleared.  The newest
+/// that fit a query's answer are given, after a first string saying how many older ones were left out.
 pub fn pumps_text() -> String {
     with(|t| {
         let items: Vec<String> = t.pumps.drain(..).map(|p| format!("{p:?}")).collect();
-        format!("({})", items.join(" "))
+        // room for the parentheses and the "left out" string
+        let mut room = ANSWER - 64;
+        let keep = items
+            .iter()
+            .rev()
+            .take_while(|s| {
+                let fits = s.len() < room;
+                room = room.saturating_sub(s.len() + 1);
+                fits
+            })
+            .count();
+        let out = items.len() - keep;
+        let mut kept: Vec<String> = items.into_iter().skip(out).collect();
+        if out > 0 {
+            kept.insert(0, format!("\"{out} older entries left out\""));
+        }
+        format!("({})", kept.join(" "))
     })
     .unwrap_or_else(|| "nil".into())
 }
@@ -202,5 +221,20 @@ mod tests {
             s.ends_with(":made 1 :rect (0 0 8 8) :clip nil :src (0 0) :matrix (0 0 0 0 0 0)))"),
             "{s}"
         );
+        // a full pump trace of long paints still fits a query's answer: the newest entries, and how many were left out
+        for i in 0..PUMPS {
+            pump(|| format!("p{i} {}", "x".repeat(200)));
+        }
+        let s = pumps_text();
+        assert!(s.len() < ANSWER, "{} bytes", s.len());
+        assert!(
+            s.starts_with("(\"") && s.contains(" older entries left out\""),
+            "{s}"
+        );
+        assert!(
+            s.ends_with(&format!("\"p{} {}\")", PUMPS - 1, "x".repeat(200))),
+            "{s}"
+        );
+        assert_eq!(pumps_text(), "()");
     }
 }
