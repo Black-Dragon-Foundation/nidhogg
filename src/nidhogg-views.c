@@ -119,6 +119,22 @@ usage: (nidhogg-view--call OP &rest ARGS)  */)
   return sja_value (out, nout, &at);
 }
 
+/* Push LEN bytes at S, a hub's whole `view-model' line, to Sjá (the op
+   `nidhogg-view-push' calls), for the framed reader (:raw-to-sja): the
+   line never becomes a Lisp string.  Sjá parses it during the call and
+   keeps nothing that points into S.  Return its answer as
+   `nidhogg-view--call' would; on a refused call nil, with Sjá's code in
+   *RC (else 0).  */
+Lisp_Object
+nidhogg_view_push_bytes (const unsigned char *s, size_t len, int *rc)
+{
+  sja_arg a = { .tag = SJA_STR, .ptr = s, .len = len };
+  const sja_tok *out = NULL;
+  size_t nout = 0, at = 0;
+  *rc = sja_call (SJA_PUSH, &a, 1, &out, &nout);
+  return *rc == SJA_OK ? sja_value (out, nout, &at) : Qnil;
+}
+
 void
 syms_of_nidhogg_views (void)
 {
