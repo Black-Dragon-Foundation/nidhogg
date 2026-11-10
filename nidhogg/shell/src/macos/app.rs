@@ -290,6 +290,13 @@ impl MacShell {
         let (size, scale) = (w.content_size(), w.scale_now());
         let rescaled = scale != w.scale120;
         let resized = size != w.size;
+        let (was, was_scale, fr) = (w.size, w.scale120, w.window.frame());
+        crate::trace::note(|| {
+            format!(
+                "compare: window {id} {size:?} scale {scale} (was {was:?} {was_scale}) frame {} {} {} {}",
+                fr.origin.x, fr.origin.y, fr.size.width, fr.size.height
+            )
+        });
         w.scale120 = scale;
         w.size = size;
         if rescaled {
