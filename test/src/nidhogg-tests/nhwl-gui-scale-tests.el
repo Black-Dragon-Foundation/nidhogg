@@ -192,5 +192,38 @@ font is the size a fresh open at that scale gives, not one carried over from the
         (select-frame a)
         (nhwl-gui--pump)))))
 
+;;;; The text zoom
+
+(ert-deftest nhwl-gui/text-zoom-sizes-the-fonts ()
+  "A text zoom of 1.1 at 1.25 opens the fonts at 96 × 1.25 × 1.1 = 132 dpi; zoom 1 gives the scale's size back, and
+a scale change keeps the zoom."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui-scale--keeping
+    (nhwl-gui-scale--set 150)
+    (set-face-attribute 'default nil :height 101)
+    ;; the fonts are re-opened inside the call
+    (nidhogg-set-frame-text-zoom nil 1.1)
+    (glitnir-gui--say "scale-probe: zoom 1.1: %s" (nhwl-gui-scale--state 101 150))
+    (should (= (nidhogg-frame-text-zoom) 1.1))
+    (should (= (nhwl-gui-scale--font-px) (nhwl-gui-scale--px 101 150 1.1)))
+    (nhwl-gui-scale--set 240)
+    (should (= (nhwl-gui-scale--font-px) (nhwl-gui-scale--px 101 240 1.1)))
+    (nhwl-gui-scale--set 150)
+    (should (= (nhwl-gui-scale--font-px) (nhwl-gui-scale--px 101 150 1.1)))
+    (nidhogg-set-frame-text-zoom nil 1.0)
+    (should (= (nhwl-gui-scale--font-px) (nhwl-gui-scale--px 101 150)))))
+
+(ert-deftest nhwl-gui/child-frame-takes-the-parent-zoom ()
+  "A child frame is made at its parent's text zoom."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((child nil))
+    (nhwl-gui-scale--keeping
+      (unwind-protect
+          (progn
+            (nidhogg-set-frame-text-zoom nil 1.2)
+            (setq child (make-frame `((parent-frame . ,(selected-frame)) (width . 20) (height . 4) (visibility . nil))))
+            (should (= (nidhogg-frame-text-zoom child) 1.2)))
+        (when (frame-live-p child) (delete-frame child))))))
+
 (provide 'nhwl-gui-scale-tests)
 ;;; nhwl-gui-scale-tests.el ends here

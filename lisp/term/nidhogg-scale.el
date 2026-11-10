@@ -20,7 +20,8 @@
 ;;; Commentary:
 
 ;; Each frame of the shell opens its fonts at its own resolution: 96 dpi
-;; times its scale (`frame-scale-factor').  When the compositor gives a frame a
+;; times its scale (`frame-scale-factor') times its root frame's text
+;; zoom (`nidhogg-frame-text-zoom').  When the compositor gives a frame a
 ;; new scale, C sends a `config-changed-event' whose type is
 ;; (nidhogg-scale . DPI), DPI the resolution the frame's fonts were opened
 ;; at until then.  This file re-opens the frame's default font from its
@@ -28,16 +29,30 @@
 ;; shows is always the one a fresh open at its scale gives, never one
 ;; carried over by a ratio.  Then `nidhogg-frame-scale-change-functions'
 ;; run.
+;;
+;; `nidhogg-set-frame-text-zoom' sets the zoom of a frame and its child
+;; frames (they share their root's) and re-opens their fonts the same way.
 
 ;;; Code:
 
 (defvar nidhogg-frame-scale-change-functions nil
-  "Functions run with a frame after its scale changed.
+  "Functions run with a frame after its scale or text zoom changed.
 They run after its fonts were re-opened at the new resolution.")
 
+(defun nidhogg--tree-root (frame)
+  "The root frame of FRAME's tree of child frames."
+  (let ((f (or frame (selected-frame))))
+    (while (frame-parent f) (setq f (frame-parent f)))
+    f))
+
+(defun nidhogg-frame-text-zoom (&optional frame)
+  "Return the text zoom of FRAME, its root frame's; 1.0 when none is set."
+  (let ((z (frame-parameter (nidhogg--tree-root frame) 'nidhogg-text-zoom)))
+    (if (numberp z) (float z) 1.0)))
+
 (defun nidhogg-scale--dpi (frame)
-  "The resolution FRAME's fonts open at: 96 dpi times its scale."
-  (* 96.0 (frame-scale-factor frame)))
+  "The resolution FRAME's fonts open at: 96 dpi times its scale and text zoom."
+  (* 96.0 (frame-scale-factor frame) (nidhogg-frame-text-zoom frame)))
 
 (defun nidhogg-scale--height (frame was)
   "The height in tenths of a point FRAME's default font is set to.
@@ -68,6 +83,19 @@ gives it."
       (set-frame-parameter frame 'nidhogg--font-height
                            (cons height (face-attribute 'default :font frame)))))
   (run-hook-with-args 'nidhogg-frame-scale-change-functions frame))
+
+(defun nidhogg-set-frame-text-zoom (frame zoom)
+  "Set the text zoom of FRAME's root frame to ZOOM (clamped to 0.5–3).
+FRAME nil means the selected frame.  The fonts of the root and its child
+frames are re-opened at once."
+  ;; this file is preloaded: no seq or pcase here
+  (let ((root (nidhogg--tree-root frame)) heights)
+    (dolist (f (frame-list))
+      (when (eq (nidhogg--tree-root f) root)
+        (push (cons f (nidhogg-scale--height f (nidhogg-scale--dpi f))) heights)))
+    (set-frame-parameter root 'nidhogg-text-zoom (min 3.0 (max 0.5 (float zoom))))
+    (dolist (fh heights)
+      (nidhogg-scale--reopen (car fh) (cdr fh)))))
 
 (defun nidhogg-scale-handle-config-changed-event (event)
   "Handle a `config-changed-event' EVENT.
