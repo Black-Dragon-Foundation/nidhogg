@@ -383,6 +383,12 @@ impl Surfaces {
         (self.w, self.h)
     }
 
+    /// Whether the next commit would find a slot the window server does not hold (else the pacer holds it).
+    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+    pub fn free(&self) -> bool {
+        !self.ring.pick(|i| self.in_use(i)).busy
+    }
+
     /// The surfaces the ring has made so far (at most `RING`).
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub fn slots(&self) -> usize {
