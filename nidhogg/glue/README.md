@@ -17,7 +17,7 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
 - **Dependencies:** `nhshell`, `glitnir` and `libc`, built locked, from crates.io or offline
   from the shell's `vendor/` when the release's vendor tarball is unpacked (`.cargo/config.toml`). `Cargo.lock` is the
   shell's plus the `nhglue` package; after the shell relocks, copy its
-lock here and add the package back (`check.sh` fails until they agree). Glitnir carries Sjá (`../sja`, the native
+  lock here and add the package back (`check.sh` fails until they agree). Glitnir carries Sjá (`../sja`, the native
   view model) and its crates, so all three locks list them; a change to Sjá's dependencies relocks Glitnir, the shell
   and the glue. The archive exports Sjá's `sja_call` through `pub use glitnir::*`; `tests/ffi.rs`
   (`sja_entry_points_come_from_sja_export`) checks that Sjá writes it with `sja_export!`.
