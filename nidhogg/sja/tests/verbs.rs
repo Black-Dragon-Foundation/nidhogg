@@ -400,3 +400,113 @@ fn ticked_class_marks_the_ticked_set_when_named() {
     w.toggle(1, "agent:c", true);
     assert_eq!(w.class_of(1, "agent:c"), None);
 }
+
+/// A trail-like window: rows s3..s5 of ten, linked up and down (a conclusion after s5), the list `steps` from 3.
+fn trail_window() -> String {
+    let desc =
+        json!({"scheme": "links", "lists": ["steps"], "classes": ["selected"], "start": "steps"});
+    let order = ["s3", "s4", "s5", "c1"];
+    let nodes = order
+        .iter()
+        .enumerate()
+        .map(|(i, id)| {
+            let mut nav = serde_json::Map::new();
+            if i > 0 {
+                nav.insert("up".into(), json!(order[i - 1]));
+            }
+            if i + 1 < order.len() {
+                nav.insert("down".into(), json!(order[i + 1]));
+            }
+            node(id, "step", json!(nav))
+        })
+        .collect();
+    let steps = json!({"name": "steps", "ids": ["s3", "s4", "s5"], "total": 10, "from": 3});
+    reset(desc, nodes, vec![], vec![steps])
+}
+
+#[test]
+fn follow_off_a_windows_edge_answers_more() {
+    let mut v = view_with(&trail_window());
+    v.select(1, Some("s3"));
+    assert_eq!(
+        v.follow_step(1, "up"),
+        Step {
+            id: Some("s3".into()),
+            more: Some(-1)
+        },
+        "no row above, and the list goes on above: more"
+    );
+    assert_eq!(
+        v.follow_step(1, "down"),
+        Step {
+            id: Some("s4".into()),
+            more: None
+        }
+    );
+    v.select(1, Some("c1"));
+    assert_eq!(
+        v.follow_step(1, "down"),
+        Step {
+            id: Some("c1".into()),
+            more: Some(1)
+        },
+        "the last row (a conclusion, in no list): more below"
+    );
+    assert_eq!(
+        v.follow_step(1, "nowhere"),
+        Step {
+            id: Some("c1".into()),
+            more: None
+        },
+        "a link with no direction never pages"
+    );
+    assert_eq!(
+        s(&v.follow(1, "down")),
+        Some("c1"),
+        "follow alone: the selection"
+    );
+}
+
+#[test]
+fn follow_in_a_whole_list_never_answers_more() {
+    let mut v = view_with(&small_map());
+    v.select(1, Some("ask:1"));
+    assert_eq!(v.follow_step(1, "up").more, None);
+}
+
+#[test]
+fn a_tree_pages_at_its_visible_edge() {
+    let desc = json!({"scheme": "tree", "lists": ["order"], "classes": ["selected"], "flags": ["expanded"], "start": "order"});
+    let nodes = ["a", "b", "c"]
+        .iter()
+        .map(|id| json!({"id": id, "kind": "file", "fields": [["label", id]]}))
+        .collect();
+    let order = json!({"name": "order", "ids": ["a", "b", "c"], "total": 9, "from": 0});
+    let mut v = view_with(&reset(desc, nodes, vec![], vec![order]));
+    v.select(1, Some("c"));
+    assert_eq!(v.follow_step(1, "down").more, Some(1));
+    assert_eq!(
+        v.follow_step(1, "down:file").more,
+        Some(1),
+        "no match below: the next window may hold one"
+    );
+    v.select(1, Some("a"));
+    assert_eq!(
+        v.follow_step(1, "up").more,
+        None,
+        "the window starts the list"
+    );
+    assert_eq!(
+        v.follow_step(1, "left").more,
+        None,
+        "left is the parent, not a page"
+    );
+}
+
+#[test]
+fn window_tells_from_length_and_total() {
+    let v = view_with(&trail_window());
+    assert_eq!(v.window("steps"), Some((3, 3, 10)));
+    assert_eq!(view_with(&small_map()).window("team"), None, "a whole list");
+    assert_eq!(v.window("missing"), None);
+}
