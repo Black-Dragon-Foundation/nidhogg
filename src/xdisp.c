@@ -26946,7 +26946,6 @@ display_line (struct it *it, int cursor_vpos)
       && FACE_FROM_ID (it->f, g->face_id)->box != FACE_NO_BOX)
     g->left_box_line_p |= row->reversed_p, g->right_box_line_p |= !row->reversed_p;
 #endif
-
   /* Compute pixel dimensions of this line.  */
   compute_line_metrics (it);
 
