@@ -36,8 +36,8 @@ pub mod stack;
 pub mod stats;
 pub mod testclock;
 
-/// Sjá, the native view model (nidhogg/sja).  Its entry point is re-exported so that this archive carries it (`src/
-/// nidhogg-views.c` calls it), and the glue's archive through its `pub use glitnir::*`.
+/// Sjá, the native view model (the `sja` crate).  Its entry point is re-exported so that this archive carries it (the
+/// host's views C file calls it), and the glue's archive through its `pub use glitnir::*`.
 pub use sja;
 pub use sja::abi::sja_call;
 
