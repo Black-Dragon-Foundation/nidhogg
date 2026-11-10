@@ -157,18 +157,10 @@ nhwl_set_cr_source_with_gc_background (struct frame *f, Emacs_GC *gc,
 {
 }
 
-/* Paint X, Y, WIDTH, HEIGHT with F's background, as the Cairo twin does: a
-   clear that only recorded damage left the old picture there (the end of
-   each line, a cleared frame).  */
 void
 nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
 {
-  nhwl_begin_cr_clip (f);
   nhwl_damage (f, x, y, width, height);
-  nhmac_rect (f, NHG_DRAW_FILL, NHG_DRAW_COPY,
-	      nhmac_argb (f, FRAME_NHWL_OUTPUT (f)->background_color, true),
-	      x, y, width, height, 0, 0);
-  nhwl_end_cr_clip (f);
 }
 
 /* Stipples are not drawn yet: the face's background, as with no stipple.  */
