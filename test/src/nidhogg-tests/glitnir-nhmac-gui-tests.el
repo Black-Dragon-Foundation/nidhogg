@@ -33,7 +33,7 @@
 
 (defun glitnir-nhmac--with-white (fn)
   "Call FN with the selected frame's background `glitnir-nhmac--bg' and an empty buffer in its window, then as before.
-The probes then read the root's background wherever no child is."
+The probes then read the root's background wherever no child is.  FN runs after `glitnir-nhmac--clean-root'."
   (let* ((f (selected-frame)) (bg (frame-parameter f 'background-color))
          (conf (current-window-configuration f))
          (blank (get-buffer-create " *glitnir-nhmac-blank*")))
@@ -42,7 +42,7 @@ The probes then read the root's background wherever no child is."
     ;; one window: an earlier row's split leaves no mode line or text where a probe reads
     (delete-other-windows (frame-selected-window f))
     (set-window-buffer (frame-selected-window f) blank)
-    (unwind-protect (progn (nhmac-gui--settle) (funcall fn))
+    (unwind-protect (progn (nhmac-gui--settle) (glitnir-nhmac--clean-root) (funcall fn))
       (set-window-configuration conf)
       (set-frame-parameter f 'background-color bg))))
 
@@ -553,9 +553,23 @@ anti-aliased text, which a search for the window's box then took in).")
 
 (defun glitnir-nhmac--hex (rgb) "RGB as \"#rrggbb\"." (format "#%06x" rgb))
 
+(defun glitnir-nhmac--clean-root ()
+  "Assert, as a row starts, that no earlier row left its state on the root: the root has no cards, its surface is
+not held, and the screen shows neither card row background (colours only the card rows use)."
+  (let* ((row (ert-test-name (ert-running-test)))
+         (cards (nhmac--test-cards)) (surface (nhmac--test-surface 0 0))
+         (img (glitnir-nhmac--grab (format "clean-%s" (replace-regexp-in-string "/" "-" (symbol-name row)))))
+         (left (glitnir-nhmac--box img glitnir-nhmac--card-bg))
+         (right (glitnir-nhmac--box img glitnir-nhmac--other-bg)))
+    (nhmac-gui--say "glitnir-nhmac/clean-root: %s: cards %S, surface %S, card colours on the screen %S %S"
+                    row cards surface left right)
+    (should (equal (list row (plist-get cards :cards) (plist-get surface :held) left right)
+                   (list row nil nil nil nil)))))
+
 (defun glitnir-nhmac--with-cards (params fn)
   "Call FN with the left and right windows of the cards' layout, the left with window PARAMS, drawn.
-Everything goes back after: the window layout, the frame's divider width and colour."
+It starts with `glitnir-nhmac--clean-root'.  Everything goes back after: the window layout, the frame's divider
+width and colour."
   (let* ((f (selected-frame))
          (conf (current-window-configuration f))
          (gap (frame-parameter f 'right-divider-width))
@@ -565,6 +579,7 @@ Everything goes back after: the window layout, the frame's divider width and col
          left right)
     (unwind-protect
         (progn
+          (glitnir-nhmac--clean-root)
           (delete-other-windows)
           (set-face-foreground 'window-divider (glitnir-nhmac--hex glitnir-nhmac--gap) f)
           (set-frame-parameter f 'right-divider-width 6)
