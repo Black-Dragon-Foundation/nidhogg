@@ -197,6 +197,7 @@ impl Canvas {
 
     /// Paint `p` now.
     pub fn paint(&mut self, p: &Paint) {
+        let _t = super::surface::Timed::start(&super::surface::STATS.paint_ns);
         let c = self.ctx;
         if DRAWS.fetch_add(1, Ordering::Relaxed) == 0 {
             crate::trace::note(|| "first draw".into());

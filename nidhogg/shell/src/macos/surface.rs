@@ -116,6 +116,27 @@ pub struct Stats {
     /// The pacer timer's fires, and how often it was armed.
     pub pacer_fires: AtomicU64,
     pub pacer_arms: AtomicU64,
+    /// Where a redisplay's time goes on the shell's side, in nanoseconds since start: painting draw records,
+    /// filling the surfaces from the backing (`publish`'s draws), and the layer transactions' commit and flush.
+    pub paint_ns: AtomicU64,
+    pub fill_ns: AtomicU64,
+    pub commit_ns: AtomicU64,
+}
+
+/// Adds the time from its making to its drop to a counter of nanoseconds.
+pub struct Timed(&'static AtomicU64, std::time::Instant);
+
+impl Timed {
+    pub fn start(c: &'static AtomicU64) -> Timed {
+        Timed(c, std::time::Instant::now())
+    }
+}
+
+impl Drop for Timed {
+    fn drop(&mut self) {
+        let ns = u64::try_from(self.1.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.0.fetch_add(ns, Ordering::Relaxed);
+    }
 }
 
 pub static STATS: Stats = Stats {
@@ -134,6 +155,9 @@ pub static STATS: Stats = Stats {
     held_timeouts: AtomicU64::new(0),
     pacer_fires: AtomicU64::new(0),
     pacer_arms: AtomicU64::new(0),
+    paint_ns: AtomicU64::new(0),
+    fill_ns: AtomicU64::new(0),
+    commit_ns: AtomicU64::new(0),
 };
 
 impl Stats {
@@ -143,7 +167,7 @@ impl Stats {
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
              :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} :draws {} \
-             :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {}",
+             :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {} :paint-ns {} :fill-ns {} :commit-ns {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -160,6 +184,9 @@ impl Stats {
             g(&self.held_timeouts),
             g(&self.pacer_fires),
             g(&self.pacer_arms),
+            g(&self.paint_ns),
+            g(&self.fill_ns),
+            g(&self.commit_ns),
         )
     }
 }
