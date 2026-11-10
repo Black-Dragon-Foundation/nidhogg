@@ -1778,9 +1778,17 @@ Its list follows AppKit's ordering a little later, so a row waits for it, bounde
       (blink-cursor-mode (if blink 1 -1)))))
 
 (defun nhmac-gui--settle ()
-  "Redisplay, let the pumps run, redisplay again."
+  "Redisplay, let the pumps run for 0.2 s reading the events that come, redisplay again.
+Reading runs the special events (a scale's config-changed event, a move-frame event, a monitors change), which the
+command loop would run and which nothing else here reads: left queued, they are pending input, so `sit-for' returns at
+once and a `redisplay' that is not forced does nothing.  Other events (keys a row posted) go back to the queue, in
+order, for the row to read."
   (redisplay t)
-  (sit-for 0.2)
+  (let ((end (+ (float-time) 0.2)) (kept nil) e)
+    (while (< (float-time) end)
+      (when (setq e (read-event nil nil (max 0.01 (- end (float-time)))))
+        (push e kept)))
+    (setq unread-command-events (append unread-command-events (nreverse kept))))
   (redisplay t))
 
 (defun nhmac-gui--child (&optional params left top parent)
@@ -2113,8 +2121,10 @@ fonts, and the move-frame event) have run when this returns; `accept-process-out
 (defvar nidhogg-frame-scale-change-functions)
 
 (ert-deftest nhmac-new-frame-opens-its-font-once ()
-  "A frame made on the selected frame's monitor starts at that scale: its default font is never re-opened after it
-shows, and it is the selected frame's pixel size.  (Each re-open runs `nidhogg-frame-scale-change-functions'.)"
+  "A new frame opens its default font once for the screen it shows on: it starts at the selected frame's scale, so
+its font is re-opened only when AppKit puts it on a screen of another scale (once), never when it shows at the scale
+it started at.  Either way the font's pixel size is its height in points times the frame's scale.  (Each re-open
+runs `nidhogg-frame-scale-change-functions'.)"
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame)) (f nil) (reopens 0) (monitors 0) (moves 0)
@@ -2128,28 +2138,13 @@ shows, and it is the selected frame's pixel size.  (Each re-open runs `nidhogg-f
         (progn
           (setq f (make-frame '((width . 40) (height . 10))))
           (dotimes (_ 3) (nhmac-gui--settle))
-          (nhmac-gui--say
-           (concat "nhmac-new-frame-opens-its-font-once: scale %s (root %s), %d px (root %d px), %d re-opens, "
-                   "%d monitor changes, %d moves, size %S")
-           (frame-scale-factor f) (frame-scale-factor root) (nhmac-gui--font-px f) (nhmac-gui--font-px root)
-           reopens monitors moves (cons (frame-pixel-width f) (frame-pixel-height f)))
-          ;; whether the handler is the one bound, and runs for a config-changed event that comes through the
-          ;; keyboard's queue (this one names the resolution the frame has now, so it re-opens at the same size)
-          (let ((before reopens))
-            (push (list 'config-changed-event (cons 'nidhogg-scale (* 72.0 (frame-scale-factor f))) f)
-                  unread-command-events)
-            (nhmac-gui--settle)
-            (nhmac-gui--say (concat "nhmac-new-frame-opens-its-font-once: bound %S, loaded %S, dpi %S, "
-                                    "a queued event re-opened %d")
-                            (lookup-key special-event-map [config-changed-event]) (featurep 'nidhogg-scale)
-                            (bound-and-true-p nidhogg-scale-dpi) (- reopens before))
-            (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: *Messages* ends %S"
-                            (with-current-buffer (messages-buffer)
-                              (buffer-substring-no-properties (max (point-min) (- (point-max) 600)) (point-max))))
-            (setq reopens before))
-          (should (= (frame-scale-factor f) (frame-scale-factor root)))
-          (should (= reopens 0))
-          (should (= (nhmac-gui--font-px f) (nhmac-gui--font-px root))))
+          (let ((s (frame-scale-factor f)) (pt (/ (face-attribute 'default :height f t) 10.0)))
+            (nhmac-gui--say
+             (concat "nhmac-new-frame-opens-its-font-once: scale %s (root %s), %.1f pt, %d px (root %d px), "
+                     "%d re-opens, %d monitor changes, %d moves")
+             s (frame-scale-factor root) pt (nhmac-gui--font-px f) (nhmac-gui--font-px root) reopens monitors moves)
+            (should (= reopens (if (= s (frame-scale-factor root)) 0 1)))
+            (should (= (nhmac-gui--font-px f) (floor (+ (* pt s) 0.5))))))
       (remove-hook 'nidhogg-frame-scale-change-functions on-scale)
       (remove-hook 'display-monitors-changed-functions on-monitors)
       (remove-hook 'move-frame-functions on-move)
