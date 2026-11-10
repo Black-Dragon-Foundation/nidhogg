@@ -236,7 +236,8 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
   (skip-unless (featurep 'nidhogg-wayland))
   ;; A boxed row that ends its line in a stretch to the right edge (a list row: its text, then an overlay string that
   ;; fills to the edge, the newline in the same face so the run goes on into the string) draws the box's right side
-  ;; at the edge: the run ends with its line, it cannot go on to the next.
+  ;; at the edge: the run ends with its line, it cannot go on to the next.  The stretch fills the text area exactly, so
+  ;; the newline overflows into the fringe and the stretch is the row's last glyph.
   (let ((glitnir-enable t)
         (face (make-symbol "glitnir-decor-gui-line-end")))
     (custom-declare-face face nil "Test face.")
@@ -250,7 +251,7 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
         (insert "\n\n" (propertize "ab" 'face face) "\n\n")
         (let ((tail (make-overlay 3 5)) (nl (make-overlay 5 6)))
           (overlay-put tail 'after-string
-                       (propertize " " 'face face 'display '(space :align-to (- right (8)))))
+                       (propertize " " 'face face 'display '(space :align-to right)))
           (overlay-put nl 'face face))
         (goto-char 1)
         (gui-runner-wait-settled)
@@ -259,10 +260,10 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
                (row (cdr (glitnir-decor-gui--at g 3 fo)))
                (e (window-body-pixel-edges))
                (y (+ (cdr row) (glitnir-decor-gui--dev s (/ (line-pixel-height) 2))))
-               ;; the stretch's last pixel and the next past it: the ring, then the window's background
-               (x (+ (car fo) (glitnir-decor-gui--dev s (- (nth 2 e) 8)) -1)))
+               ;; the text area's last pixel: the ring; two in (past the 2 px ring): the fill
+               (x (+ (car fo) (glitnir-decor-gui--dev s (nth 2 e)) -1)))
           (should (equal (list 'ring (glitnir-decor-gui--px g x y)) '(ring (255 128 0))))
-          (should (equal (list 'past (glitnir-decor-gui--px g (+ x 2) y)) '(past (32 32 32)))))))))
+          (should (equal (list 'fill (glitnir-decor-gui--px g (- x (* 2 s)) y)) '(fill (48 48 96)))))))))
 
 (ert-deftest glitnir-decor-gui/box-across-a-newline-is-stock ()
   (skip-unless (featurep 'nidhogg-wayland))
