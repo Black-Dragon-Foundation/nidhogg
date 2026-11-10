@@ -145,6 +145,7 @@ impl MacShell {
             "startup-log" => Ok(crate::trace::startup_text()),
             "image-draws" => Ok(crate::trace::images_text()),
             "pump-trace" => Ok(crate::trace::pumps_text()),
+            "test-entries" => first_number(arg).map(|on| crate::trace::entries_text(on != 0)),
             "shell-view" => Ok(self.shell_view()),
             "test-kq-probe" => Ok(kq_probe(arg)),
             "test-kq-layers" => kq_layers(arg),

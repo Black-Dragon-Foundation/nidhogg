@@ -445,6 +445,13 @@ Each says who asked (a drain's end with its facts, or a call outside a
 drain) and whether AppKit was pumped.  For tests."
   (nhmac--query 'pump-trace))
 
+(defun nhmac--test-entries (on)
+  "Return the glue entry points timed since the last call, and forget them.
+A list of (NAME CALLS NS), the most time first: the calls of each entry
+point and the nanoseconds spent inside them.  Timing is on from now when
+ON is non-nil, off when it is nil.  For tests."
+  (nhmac--query 'test-entries (if on 1 0)))
+
 (defun nhmac--modal-alert (ms)
   "Run a modal alert for MS milliseconds, then end it; return its rounds.
 A query that runs a modal session, for the pumps' tests."

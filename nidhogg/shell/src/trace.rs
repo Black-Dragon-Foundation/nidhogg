@@ -3,11 +3,12 @@
 //! each stamped with its milliseconds since the first: the window made, its configure queued and applied, the waits
 //! for it, the visibility pushes, the first draw.  The image draws are the last few `nhg_draw_image` calls: the
 //! container's first word and the picture made from it, so a wrong pixel names whether the container or the drawing
-//! holds it.
+//! holds it.  The entry table times each glue entry point while a row has it on, to split a redisplay's time.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 /// The startup trace keeps this many events: the first ones, a window's life up to its first draws.
@@ -44,6 +45,9 @@ struct Trace {
     images: VecDeque<ImageDraw>,
     /// The newest pump decisions (a drain's end, a wait's pump), read and cleared by `pumps_text`.
     pumps: VecDeque<String>,
+    /// Per glue entry point, while `ENTRIES` is on: its name, calls and nanoseconds inside, read and cleared by
+    /// `entries_text`.
+    entries: Vec<(&'static str, u64, u64)>,
 }
 
 static TRACE: Mutex<Trace> = Mutex::new(Trace {
@@ -52,7 +56,43 @@ static TRACE: Mutex<Trace> = Mutex::new(Trace {
     waits: BTreeMap::new(),
     images: VecDeque::new(),
     pumps: VecDeque::new(),
+    entries: Vec::new(),
 });
+
+/// Whether the glue's entry points are timed (`entries_text` switches it).
+static ENTRIES: AtomicBool = AtomicBool::new(false);
+
+/// Whether the glue's entry points are timed now: the glue's guard asks before each call.
+pub fn entries_on() -> bool {
+    cfg!(feature = "test-hooks") && ENTRIES.load(Ordering::Relaxed)
+}
+
+/// One call of the glue entry point `name`, `ns` nanoseconds inside it.
+pub fn entry(name: &'static str, ns: u64) {
+    with(|t| match t.entries.iter_mut().find(|e| e.0 == name) {
+        Some(e) => {
+            e.1 += 1;
+            e.2 += ns;
+        }
+        None => t.entries.push((name, 1, ns)),
+    });
+}
+
+/// The glue entry points timed since the last read, as a Lisp list of `(NAME CALLS NS)`, the most time first; the
+/// list is cleared, and the timing is on from now when `on`, off when not.
+pub fn entries_text(on: bool) -> String {
+    with(|t| {
+        ENTRIES.store(on, Ordering::Relaxed);
+        let mut e = std::mem::take(&mut t.entries);
+        e.sort_by_key(|x| std::cmp::Reverse(x.2));
+        let items: Vec<String> = e
+            .iter()
+            .map(|(n, c, ns)| format!("({n} {c} {ns})"))
+            .collect();
+        format!("({})", items.join(" "))
+    })
+    .unwrap_or_else(|| "nil".into())
+}
 
 /// One pump decision: who asked and what was done.
 pub fn pump(what: impl FnOnce() -> String) {
