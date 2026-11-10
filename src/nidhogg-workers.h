@@ -589,7 +589,9 @@ extern void nh_io_settle (fd_set *mask, struct timespec timeout);
 /* Framing [24].  A framed delivery left its batch for
    read_and_dispose_of_process_output: nh_io_batch_begin hands it over
    (FN nil: the process's buffer is dead, the batch is dropped) and
-   enters the `filter' phase; nh_io_batch_end leaves it.  */
+   enters the `filter' phase; nh_io_batch_end leaves it, and is true
+   when it handed over the next batch of the same delivery (inline, the
+   messages from a line for Sjá on: :raw-to-sja).  */
 struct nh_io_call
 {
   Lisp_Object fn, batch;
@@ -597,7 +599,7 @@ struct nh_io_call
   int64_t t0;
 };
 extern bool nh_io_batch_begin (struct Lisp_Process *, struct nh_io_call *);
-extern void nh_io_batch_end (struct nh_io_call *);
+extern bool nh_io_batch_end (struct Lisp_Process *, struct nh_io_call *);
 /* `set-process-filter', `set-process-coding-system' and the reader's
    switch-off turn PROC's framing off: its pending bytes go to the
    filter as raw output.  */

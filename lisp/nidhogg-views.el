@@ -61,9 +61,14 @@ Return (VIEW VERSION DECISION), DECISION `queue' (a diff queued),
 `reset' (a reset queued: a reset asked for has come), `drop', `resync'
 \(a gap or a cap: ask the hub for a reset) or `none' (no instance of
 VIEW is open); nil when LINE is not a `view-model' line."
-  (let ((r (nidhogg-view--call (nidhogg-view--op push) line)))
-    (when r (setcar (nthcdr 2 r) (aref nidhogg-view--decisions (nth 2 r))))
-    r))
+  (nidhogg-view--pushed (nidhogg-view--call (nidhogg-view--op push) line)))
+
+(defsubst nidhogg-view--pushed (r)
+  "R, Sjá's answer to a push, with its decision as a symbol (see
+`nidhogg-view-push').  The framed reader pushes a line itself with
+`:raw-to-sja' (`nidhogg-set-process-framing'); its entry carries R."
+  (when r (setcar (nthcdr 2 r) (aref nidhogg-view--decisions (nth 2 r))))
+  r)
 
 (defsubst nidhogg-view--drained (r)
   "R, a drain's answer, with its status as a symbol."

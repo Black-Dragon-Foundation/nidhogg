@@ -173,6 +173,12 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 # define NH_IO_RS_DRAIN 0
 #endif
 
+#if defined HAVE_GLITNIR && !defined NH_WK_HARNESS
+/* Defined in nidhogg-views.c.  */
+extern Lisp_Object nidhogg_view_push_bytes (const unsigned char *, size_t,
+					    int *);
+#endif
+
 /* A FIFO's cap: at least this, else 4 reads' worth (MC-22).  */
 #define NH_IO_CAP_MIN (256 * 1024)
 /* A pty's cap instead: the reader stays this far ahead of the filter, so
@@ -255,6 +261,7 @@ struct nh_io_fconf
   size_t max;			/* :max-message */
   unsigned char raw[32];	/* :raw-prefix: such lines stay raw */
   size_t nraw;
+  bool sja;			/* :raw-to-sja: such lines go to Sjá */
 };
 
 /* A framer: the bytes after the last message are BUF[START, LEN).
@@ -287,6 +294,7 @@ struct nh_io_msg
   unsigned char *dec;
   ptrdiff_t dlen, nchars;
   bool mb;
+  bool sja;			/* a :raw-prefix line for Sjá (:raw-to-sja) */
 };
 
 enum nh_io_op
@@ -753,9 +761,11 @@ nh_io_emit (struct nh_io_framer *f, size_t wire, size_t raw_off,
     return -2;
   *m = (struct nh_io_msg) { .len = wire, .raw_off = raw_off,
 			    .raw_len = raw_len };
-  if (f->c.kind != NH_IO_FR_RECORDS
-      && !(f->c.nraw && raw_len >= f->c.nraw
-	   && !memcmp (s + raw_off, f->c.raw, f->c.nraw)))
+  bool raw = (f->c.kind != NH_IO_FR_RECORDS && f->c.nraw
+	      && raw_len >= f->c.nraw
+	      && !memcmp (s + raw_off, f->c.raw, f->c.nraw));
+  m->sja = raw && f->c.sja;
+  if (f->c.kind != NH_IO_FR_RECORDS && !raw)
     {
       /* A test stops nh-io here (S16: a detach during a large
 	 message).  */
@@ -2055,7 +2065,8 @@ nh_io_mat_error (Lisp_Object err)
    *MAT (started here and freed once the entry is made) with the json
    OPTIONS for at most LEFT ns (negative: no limit): false when the
    materialization yielded first.  ERROR is what json-parse-* signals
-   for RAW (`json-out-of-memory' after a slice a signal left).  */
+   for RAW (`json-out-of-memory' after a slice a signal left).  A line
+   for Sjá (:raw-to-sja) is pushed to it here: (ANSWER sja ERROR).  */
 static bool
 nh_io_msg_entry (struct nh_io_msg *m, struct nh_mat **mat, Lisp_Object opts,
 		 int64_t left, Lisp_Object *entry)
@@ -2081,6 +2092,21 @@ nh_io_msg_entry (struct nh_io_msg *m, struct nh_mat **mat, Lisp_Object opts,
       nh_json_mat_free (*mat);
       *mat = NULL;
     }
+#ifdef HAVE_GLITNIR
+  if (m->sja)
+    {
+      /* Sjá parses the line into its own model during the call and
+	 keeps no pointer into RAW: the bytes never enter the Lisp heap.  */
+      int rc = 0;
+      value = nidhogg_view_push_bytes (raw, m->raw_len, &rc);
+      if (rc)
+	error = list2 (Qerror,
+		       CALLN (Fformat, build_string ("Sjá refused a model line (%d)"),
+			      make_fixnum (rc)));
+      *entry = list3 (value, Qsja, error);
+      return true;
+    }
+#endif
   Lisp_Object bytes = make_unibyte_string ((const char *) raw, m->raw_len);
   if (!m->tape)
     value = (!m->dec ? bytes
@@ -2146,6 +2172,11 @@ nh_io_fr_take (struct Lisp_Process *p, struct nh_io_h *h, Lisp_Object conf,
 	  m->next = NULL;
 	  h->cur = m;
 	}
+      /* A line for Sjá is pushed as its entry is made: it starts a batch,
+	 so every message before it has been delivered first (inline, the
+	 same delivery goes on with it: nh_io_fr_more).  */
+      if (h->cur->sja && !NILP (batch))
+	break;
       int64_t left = budget - (nh_io_now () - t0);
       Lisp_Object entry;
       if (!nh_io_msg_entry (h->cur, &h->cur_mat, opts,
@@ -2870,17 +2901,38 @@ nh_io_batch_begin (struct Lisp_Process *p, struct nh_io_call *c)
   return true;
 }
 
-/* The batch function returned: its ns count as a filter's (not the
-   delivery's).  */
-void
-nh_io_batch_end (struct nh_io_call *c)
+/* Inline, P's delivery holds back a line for Sjá when a batch is
+   before it (nh_io_fr_take), and inline nothing selects the handle
+   again: its copy is readable only when more bytes come.  So once the
+   batch before it is delivered, the rest is taken here, every complete
+   message as inline takes them; true when that left a batch.  A thread
+   reader needs none of this: its wake fd stays set while H->cur waits.  */
+static bool
+nh_io_fr_more (struct Lisp_Process *p)
 {
-  if (!c->t0)
-    return;
-  NH_WK_PHASE_POP (c->depth);
-  int64_t ns = nh_io_now () - c->t0;
-  nh_io_filter_ns += ns;
-  nh_wk_phase_ns_add (NH_WK_PH_FILTER, 0, ns);
+  struct nh_io_h *h = nh_io_get (p);
+  /* The batch function may have deleted P, turned framing off or
+     handed P back.  */
+  if (!h || !h->inl || h->detached || !h->m_framed || !h->cur)
+    return false;
+  Lisp_Object conf = plist_get (p->plist, nh_io_key);
+  return VECTORP (conf) && nh_io_fr_take (p, h, conf, true) >= 0;
+}
+
+/* The batch function returned: its ns count as a filter's (not the
+   delivery's).  True when P's delivery has a next batch, handed over
+   to C as nh_io_batch_begin does.  */
+bool
+nh_io_batch_end (struct Lisp_Process *p, struct nh_io_call *c)
+{
+  if (c->t0)
+    {
+      NH_WK_PHASE_POP (c->depth);
+      int64_t ns = nh_io_now () - c->t0;
+      nh_io_filter_ns += ns;
+      nh_wk_phase_ns_add (NH_WK_PH_FILTER, 0, ns);
+    }
+  return nh_io_fr_more (p) && nh_io_batch_begin (p, c);
 }
 
 /* Fgnutls_boot's two hooks (§8.2 "A STARTTLS upgrade", MC-32).  With
@@ -3132,6 +3184,16 @@ nh_io_fr_args (Lisp_Object process, Lisp_Object framing, ptrdiff_t nargs,
 	  else
 	    wrong_choice (list2 (Qstring, Qbuffer), v);
 	}
+      else if (conf->kind != NH_IO_FR_RECORDS && EQ (key, QCraw_to_sja))
+	{
+#ifdef HAVE_GLITNIR
+	  conf->sja = !NILP (v);
+#else
+	  if (!NILP (v))
+	    xsignal3 (Qnidhogg_framing_unsupported, process, key,
+		      build_string ("this Nidhogg has no Sjá"));
+#endif
+	}
       else if (conf->kind != NH_IO_FR_RECORDS && EQ (key, QCraw_prefix))
 	{
 	  CHECK_STRING (v);
@@ -3184,6 +3246,13 @@ ARGS are keywords and values:
   256 MB).
 `:raw-prefix' BYTES (1 to 32): a message that starts with them is not
   parsed; MESSAGE is RAW.
+`:raw-to-sja' non-nil: such a message (a hub's `view-model' line) goes
+  to Sjá instead, as `nidhogg-view--call' with Sjá's push op takes it:
+  MESSAGE is Sjá's answer (nil, or VIEW, VERSION and its decision as a
+  number), RAW the symbol `sja' and ERROR the error when Sjá refused
+  the call.  No Lisp string is made for it.  A batch ends before such a
+  message, so it reaches Sjá after the messages before it were
+  delivered.  Without Sjá this signals `nidhogg-framing-unsupported'.
 For `records': `:separator' 0 (the default) or ?\n, and `:coding' a
   coding system without state, such as `utf-8-unix', that decodes each
   record (else MESSAGE is RAW).  MESSAGE is the record (without its
@@ -3459,6 +3528,8 @@ nh_io_syms (void)
   DEFSYM (QCbatch_function, ":batch-function");
   DEFSYM (QCparse, ":parse");
   DEFSYM (QCraw_prefix, ":raw-prefix");
+  DEFSYM (QCraw_to_sja, ":raw-to-sja");
+  DEFSYM (Qsja, "sja");
   DEFSYM (QCmax_message, ":max-message");
   DEFSYM (QCseparator, ":separator");
   nh_io_key = Fmake_symbol (build_string ("nidhogg-framing"));
