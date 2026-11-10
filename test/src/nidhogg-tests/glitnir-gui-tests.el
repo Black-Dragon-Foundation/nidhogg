@@ -583,4 +583,27 @@ PARAMS come first, so they win over the defaults here."
     (should (> (glitnir-gui--differ before (glitnir-snapshot nil 'raw) row) 0))
     (should (gui-runner-wait (lambda () (= (glitnir-gui--differ before (glitnir-snapshot nil 'raw) row) 0))))))
 
+;; Echo-area prompts: a frame whose echo area floats (its minibuffer in a child frame, hidden while idle) sends plain
+;; messages elsewhere through `set-message-function', and must tell a prompt, which has to stay where the user looks,
+;; from a message.  C binds `nidhogg-echo-prompt' while it shows one.
+
+(ert-deftest glitnir-gui/echo-prompt-marks-what-c-shows-as-a-prompt ()
+  "`nidhogg-echo-prompt' is `prompt' while C shows a prompt in the echo area (`read-char', `read-event',
+`read-char-exclusive', `read-key-sequence' and `interactive' \"c\"), and nil for a plain `message'."
+  (let* ((seen nil)
+         (set-message-function (lambda (m) (push (cons (substring-no-properties m) (bound-and-true-p nidhogg-echo-prompt))
+                                                 seen)
+                                 nil)))
+    (message "plain")
+    (let ((unread-command-events (list ?a))) (read-char "Char? "))
+    (let ((unread-command-events (list ?a))) (read-event "Event? "))
+    (let ((unread-command-events (list ?a))) (read-char-exclusive "Excl? "))
+    (let ((unread-command-events (list ?a))) (read-key-sequence "Keys? "))
+    (let ((unread-command-events (list ?a))) (call-interactively (lambda (c) (interactive "cArg: ") c)))
+    (message nil)
+    (should (equal (assoc "plain" seen) '("plain")))
+    (dolist (p '("Char? " "Event? " "Excl? " "Arg: "))
+      (should (equal (assoc p seen) (cons p 'prompt))))
+    (should (eq 'prompt (cdr (seq-find (lambda (e) (string-prefix-p "Keys? " (car e))) seen))))))
+
 ;;; glitnir-gui-tests.el ends here
