@@ -143,6 +143,54 @@ pub struct Card {
     /// Where the shadow and the ring never draw: the other windows' rectangles (root device px), so the card's
     /// chrome never takes pixels from their text.
     pub keep_out: Arc<[Rect]>,
+    /// A card group's dividers (root device px, inside the card's rectangle): painted `fill_argb` over the frame,
+    /// so the windows of the group read as one card ([`card_group`]).  Empty for a card of one window.
+    pub fill: Arc<[Rect]>,
+    pub fill_argb: u32,
+}
+
+/// The widest divider a card group fills, in device px: windows further apart are separate cards.
+pub const CARD_GROUP_GAP: i32 = 32;
+
+/// The card around the windows at OUTERS (root device px), when they tile a rectangle as one column or one row with
+/// dividers of at most [`CARD_GROUP_GAP`] px between them and no window of OTHERS inside it: the rectangle and the
+/// dividers it fills.  `None` for one window, or windows that tile no rectangle (they stay separate cards).
+pub fn card_group(outers: &[Rect], others: &[Rect]) -> Option<(Rect, Vec<Rect>)> {
+    let first = *outers.first()?;
+    if outers.len() < 2 || outers.iter().any(Rect::is_empty) {
+        return None;
+    }
+    // a column: one left edge and width; a row: one top edge and height
+    let column = outers.iter().all(|r| r.x == first.x && r.w == first.w);
+    if !column && !outers.iter().all(|r| r.y == first.y && r.h == first.h) {
+        return None;
+    }
+    let mut v = outers.to_vec();
+    v.sort_by_key(|r| if column { r.y } else { r.x });
+    let mut fill = Vec::new();
+    for p in v.windows(2) {
+        let (a, b) = (p[0], p[1]);
+        let gap = if column {
+            b.y - (a.y + a.h)
+        } else {
+            b.x - (a.x + a.w)
+        };
+        if !(0..=CARD_GROUP_GAP).contains(&gap) {
+            return None;
+        }
+        if gap > 0 {
+            fill.push(if column {
+                Rect::new(a.x, a.y + a.h, a.w, gap)
+            } else {
+                Rect::new(a.x + a.w, a.y, gap, a.h)
+            });
+        }
+    }
+    let rect = v.iter().fold(first, |acc, r| acc.bounds(r));
+    if others.iter().any(|o| !o.intersect(&rect).is_empty()) {
+        return None;
+    }
+    Some((rect, fill))
 }
 
 impl Card {
@@ -247,6 +295,15 @@ fn card_patches(p: &Placed) -> Vec<Rect> {
     let mut out: Vec<Rect> = crate::compose::subtract(p.bounds, p.rect).collect();
     if let Some((_, squares)) = card_corners(p) {
         out.extend(squares);
+    }
+    // a group's dividers
+    if let Some(card) = &p.card {
+        out.extend(
+            card.fill
+                .iter()
+                .map(|f| f.intersect(&p.rect))
+                .filter(|f| !f.is_empty()),
+        );
     }
     out
 }
@@ -1417,5 +1474,72 @@ mod tests {
             .unwrap();
         let d = commit(&mut s, &mut f);
         assert!(covers(&d, Rect::new(100, 100, 50, 50)) && !covered(&d, 0, 0));
+    }
+
+    /// Windows that tile a rectangle as a column or a row, with dividers between them, are one card: its rectangle and
+    /// the dividers it fills.  Anything else is no group (the windows stay separate cards).
+    #[test]
+    fn card_group_tiles_a_column_or_a_row() {
+        let top = Rect::new(0, 0, 100, 40);
+        let mid = Rect::new(0, 46, 100, 30);
+        let low = Rect::new(0, 82, 100, 18);
+        // a column, in any order: the dividers between the windows
+        assert_eq!(
+            card_group(&[low, top, mid], &[]),
+            Some((
+                Rect::new(0, 0, 100, 100),
+                vec![Rect::new(0, 40, 100, 6), Rect::new(0, 76, 100, 6)]
+            ))
+        );
+        // a row; windows that touch need no divider
+        let (a, b) = (Rect::new(10, 5, 30, 50), Rect::new(40, 5, 20, 50));
+        assert_eq!(
+            card_group(&[a, b], &[]),
+            Some((Rect::new(10, 5, 50, 50), vec![]))
+        );
+        // one window is a plain card
+        assert_eq!(card_group(&[top], &[]), None);
+        // not a rectangle: a different width, an overlap, a gap wider than a divider
+        assert_eq!(card_group(&[top, Rect::new(0, 46, 90, 30)], &[]), None);
+        assert_eq!(card_group(&[top, Rect::new(0, 30, 100, 30)], &[]), None);
+        assert_eq!(
+            card_group(&[top, Rect::new(0, 40 + CARD_GROUP_GAP + 1, 100, 30)], &[]),
+            None
+        );
+        // another window inside the rectangle breaks it
+        assert_eq!(card_group(&[top, mid], &[Rect::new(20, 41, 10, 4)]), None);
+        // one beside it does not
+        assert!(card_group(&[top, mid], &[Rect::new(106, 0, 50, 76)]).is_some());
+    }
+
+    /// A group's fill changes damage the dividers it fills.
+    #[test]
+    fn card_fill_change_damages_the_dividers() {
+        let (mut s, mut f) = scene(200, 150, 1.0);
+        let win = (1u64 << 63) | 3;
+        let rect = Rect::new(10, 10, 100, 100);
+        s.upsert(&desc(win, ROOT, 2, rect, 1.0, true)).unwrap();
+        s.set_chrome(
+            win,
+            Some(Chrome {
+                radius_px: 8.0,
+                ..Chrome::default()
+            }),
+        )
+        .unwrap();
+        s.set_card(win, Some(Card::default())).unwrap();
+        commit(&mut s, &mut f);
+        let divider = Rect::new(10, 50, 100, 6);
+        s.set_card(
+            win,
+            Some(Card {
+                fill_argb: 0xff20_2020,
+                fill: vec![divider].into(),
+                ..Card::default()
+            }),
+        )
+        .unwrap();
+        let d = commit(&mut s, &mut f);
+        assert!(covers(&d, divider), "{d:?}");
     }
 }
