@@ -603,7 +603,7 @@ A Naglfar frame's pixels are device pixels already."
 
 (defun glitnir-nhmac--surface-px (x y)
   "The root's newest surface's pixel at X, Y (device pixels) as 0xRRGGBB."
-  (logand (aref (nhmac--test-surface-region nil x y 1 1) 0) #xffffff))
+  (logand (aref (nhmac--test-surface-region x y 1 1) 0) #xffffff))
 
 (defun glitnir-nhmac--cards (&optional settle)
   "The root's cards (`nhmac--test-cards'), after a redisplay and, with SETTLE, the commits it makes."
