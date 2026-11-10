@@ -223,6 +223,35 @@ Batches go to `workers-fr-tests--collect', raw output to the property
             (should (equal (workers-fr-tests--got p) (car whole)))
             (should (equal (workers-fr-tests--raw p) ""))))))))
 
+(ert-deftest workers/raw-prefix ()
+  ;; A line that starts with the :raw-prefix bytes is not tokenized: its
+  ;; entry is (RAW RAW nil).  Other lines parse as before, a line shorter
+  ;; than the prefix included; cut at every point, the same entries.  An
+  ;; empty prefix, or one over 32 bytes, is refused.  Through a process, in
+  ;; both modes, the batches hold the same entries.
+  (let* ((pre "{\"event\":\"view-model\"")
+         (a "{\"event\":\"view-model\",\"data\":{\"model\":{\"ops\":[]}}}")
+         (b "{\"event\":\"view-patch\",\"data\":{\"v\":2}}")
+         (c "{\"e\":1}")
+         (s (concat a "\n" b "\r\n\n" c "\n"))
+         (whole (workers-fr-tests--frame (list s) 'lines :raw-prefix pre)))
+    (should (equal (car whole) (list (list a a nil) (workers-fr-tests--oracle b)
+                                     (workers-fr-tests--oracle c))))
+    (dotimes (i (1+ (length s)))
+      (should (equal (workers-fr-tests--frame (workers-fr-tests--cut s (list i))
+                                              'lines :raw-prefix pre)
+                     whole)))
+    (should-error (workers-fr-tests--frame (list s) 'lines :raw-prefix "")
+                  :type 'args-out-of-range)
+    (should-error (workers-fr-tests--frame (list s) 'lines :raw-prefix (make-string 33 ?x))
+                  :type 'args-out-of-range)
+    (workers-fr-tests--modes
+      (let ((p (workers-fr-tests--cat "raw" 'lines :raw-prefix pre)))
+        (process-send-string p s)
+        (should (workers-fr-tests--until
+                 (lambda () (= (length (process-get p 'got)) 3))))
+        (should (equal (workers-fr-tests--got p) (car whole)))))))
+
 (ert-deftest workers/sentinel-after-last-message ()
   ;; 50 messages, then the process exits, or exits leaving a grandchild
   ;; that holds its stdout open: the sentinel runs after message 50

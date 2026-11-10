@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 
 use crate::guard::{Ran, Refused, Slot, on_view, with_table};
+use crate::queue::Decision;
 use crate::view::{Status, Step, View};
 use crate::wire::Val;
 
@@ -36,6 +37,10 @@ pub const SJA_SET: i32 = 7;
 pub const SJA_GET: i32 = 8;
 pub const SJA_HUB_LOST: i32 = 9;
 pub const SJA_STATS: i32 = 10;
+pub const SJA_PUSH: i32 = 11;
+pub const SJA_DRAIN: i32 = 12;
+pub const SJA_NAMED: i32 = 13;
+pub const SJA_DUE: i32 = 14;
 /// Feature `test-hooks` only: panic inside the named view's guard.
 pub const SJA_TEST_PANIC: i32 = 99;
 
@@ -431,6 +436,65 @@ fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
             Ok(Ans::Nil)
         }
         SJA_STATS => Ok(Ans::ints(&with_table(|t| t.stats())?)),
+        SJA_PUSH => {
+            let line = arg(args, 0).str()?;
+            let Some((e, ops)) = crate::queue::read_line(line) else {
+                return Ok(Ans::Nil);
+            };
+            let answer = |d: Decision| {
+                Ans::List(vec![
+                    Ans::Str(e.view.clone()),
+                    Ans::Int(i64::try_from(e.version).unwrap_or(i64::MAX)),
+                    Ans::Int(d as i64),
+                ])
+            };
+            // a view no buffer shows gets no slot: its models are dropped unparsed by the stream rules
+            let Some(slot) = with_table(|t| t.views.get(&e.view).cloned())? else {
+                return Ok(answer(Decision::None));
+            };
+            let d = match on_view(&slot, |v| v.queue.push(&e, ops, line.len())) {
+                Ran::Done(d) => d,
+                Ran::Resync => Decision::Resync,
+                Ran::Broken => Decision::Drop,
+            };
+            Ok(answer(d))
+        }
+        SJA_DRAIN | SJA_DUE => {
+            let view = arg(args, 0).str()?;
+            let upto = match arg(args, 1) {
+                Arg::Nil => None,
+                a => Some(u64::try_from(a.int()?).map_err(|_| Refused::Arg)?),
+            };
+            let Some((slot, others)) =
+                with_table(|t| Some((t.views.get(view).cloned()?, t.others(view))))?
+            else {
+                return Ok(Ans::Nil);
+            };
+            let budget = crate::guard::TOTAL_BYTES.saturating_sub(others);
+            let r = on_view(&slot, |v| {
+                if op == SJA_DUE && !v.queue.due() {
+                    return Ans::Nil;
+                }
+                let (n, last) = v.drain(if op == SJA_DUE { None } else { upto }, budget);
+                let version = v.queue.hub.map_or(Ans::Nil, |_| {
+                    Ans::Int(i64::try_from(v.queue.version).unwrap_or(i64::MAX))
+                });
+                Ans::List(vec![Ans::Int(n as i64), Ans::Int(last as i64), version])
+            });
+            Ok(ran(
+                r,
+                Ans::List(vec![Ans::Int(0), Ans::Int(Status::Resync as i64), Ans::Nil]),
+                Ans::List(vec![Ans::Int(0), Ans::Int(Status::Broken as i64), Ans::Nil]),
+            ))
+        }
+        SJA_NAMED => {
+            let (view, n) = (arg(args, 0).str()?, arg(args, 1).int()?);
+            let n = u64::try_from(n).map_err(|_| Refused::Arg)?;
+            if let Some(slot) = with_table(|t| t.views.get(view).cloned())? {
+                let _ = on_view(&slot, |v| v.queue.named = v.queue.named.max(n));
+            }
+            Ok(Ans::Nil)
+        }
         #[cfg(feature = "test-hooks")]
         SJA_TEST_PANIC => {
             let view = arg(args, 0).str()?;

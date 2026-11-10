@@ -11,12 +11,16 @@ Sjá names no view, no kind and no field: every word in a model is the hub's.
 
 ## Crate rules
 
-- Standard library, plus two locked dependencies (`Cargo.lock`; builds run `--locked`), vendored at release with
+- Standard library, plus three locked dependencies (`Cargo.lock`; builds run `--locked`), vendored at release with
   Glitnir's crates and licence-checked (`deny.toml`):
-  - `serde_json =1.0.154` (no default features but `std`): the wire is JSON, which the hub writes. It is decoded
-    through `serde_json::Value` by hand (`src/wire.rs`), so there is no `serde_derive` and no proc-macro build. It
-    brings `serde_core`, `itoa`, `memchr` and `zmij`; `serde`, `serde_derive`, `syn`, `proc-macro2`, `quote` and
+  - `serde_json =1.0.154` (no default features but `std`): the wire is JSON, which the hub writes. It brings
+    `serde_core`, `itoa`, `memchr` and `zmij`; `serde`, `serde_derive`, `syn`, `proc-macro2`, `quote` and
     `unicode-ident` are locked (and vendored) as optional dependencies but not built.
+  - `serde_core =1.0.229` (`std`), the one serde_json brings: its traits, for the typed decode's hand-written visitors
+    (`src/typed.rs`), so there is no `serde_derive` and no proc-macro build. A `view-model` line is read straight into
+    ops; what the typed read refuses (a malformed model, a duplicate key, a float where a count goes) is read again
+    through `serde_json::Value` (`src/wire.rs`, the reference), whose answer and error stand. The typed read takes
+    6.2 ms where the `Value` read takes 16.9 ms, on a 10k-node model of 3.9 MB (2.7×; `tests/decode_bench.rs`).
   - `libc 0.2`: the guard's stack headroom check (`pthread_getattr_np`).
 - No threads, no I/O, no clock of its own: it runs only on the Lisp thread that holds Emacs's global lock.
 - Builds on Rust 1.93 (the glue's floor), Linux, macOS and Android (`check.sh --android`).
@@ -72,8 +76,9 @@ fallback), a form, a search, a lit list, expanded and ticked sets, and the class
 
 ## Classes
 
-For an instance, in order: `selected`; while a search is set, `match` or `dim`; else `lit` for the lit list's nodes;
-else, while there is a selection, `chain` or `dim`; else none. A class is its position in the descriptor's `classes`,
+For an instance, in order: `selected`; `ticked` for the nodes of the instance's ticked set, when the descriptor names
+that class (the Explorer's marks; Search's ticks name none); while a search is set, `match` or `dim`; else `lit` for the
+lit list's nodes; else, while there is a selection, `chain` or `dim`; else none. A class is its position in the descriptor's `classes`,
 which is the index into the face vector Lisp keeps. `classes` answers only the nodes whose class changed since the
 last call.
 
@@ -95,9 +100,29 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_GET` | handle, what, arg, arg | `selection`, `kind`, `field`, `flag`, `parent`, `rows`, `list` (a tree's `visible` is the instance's), `finished`, `class`, `classes` (a vector `[ID CLASS …]` of changes), `reclass`, `class-names`, `expanded`, `open`, `ticked`, `version`, `stats`, `health` (0 ok, 1 no model, 2 broken, 3 stale) |
 | `SJA_HUB_LOST` | | nil |
 | `SJA_STATS` | | views, instances, bytes, panics, broken views |
+| `SJA_PUSH` | a whole `view-model` line | `(VIEW VERSION DECISION)`: 0 queue, 1 reset, 2 drop, 3 resync, 4 none (no instance of the view); nil when the line is not a `view-model` |
+| `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status, the stream's newest version or nil |
+| `SJA_NAMED` | view, version | nil: a row patch named that model version |
+| `SJA_DUE` | view | as `SJA_DRAIN` (all), when the oldest queued model is one no row patch named; else nil |
 
 Codes: `SJA_E_ARG` (an unknown op, handle, tag or type, bad UTF-8), `SJA_E_NOMEM` (too little stack), `SJA_E_STATE`
 (the table was held), `SJA_E_PANIC`.
+
+## The queue
+
+The hub's `view-model` line reaches Sjá whole (`SJA_PUSH`), so Lisp never parses a model: `{"event": "view-model",
+"data": {view, hub, base, version, reset?, model: {"ops": [...]}}}`. Sjá reads the envelope and decides by it, per view:
+
+- a reset from another hub, or with base 0 (a new subscription), starts a new stream: the queue goes and the stream
+  gets a new generation, so the model takes its version 1 as new (the model is told the hub as `HUB/GEN`);
+- a reset not newer than the stream is dropped, a newer one replaces the queue;
+- a diff from another hub (or before any reset), or of an older base, is dropped; of a base past the stream's version it
+  is a gap: `resync`, and the editor asks the hub for a reset; of the stream's version it is queued.
+
+A queued model waits for the draw: the editor drains up to the version its drawn rows name (`SJA_DRAIN`), and a timer
+drains models no row patch names (`SJA_NAMED`, `SJA_DUE`). Past 64 models or 16 MiB of lines a view's queue and stream
+are dropped and the push answers `resync`; a model that does not apply at the drain does the same. A line for a view no
+instance shows makes no slot. The hub lost, a panic and the view's last instance closing drop the queue.
 
 ## The guard and the breaker
 
@@ -110,8 +135,9 @@ instance closes. `SJA_STATS` counts panics and broken views; drgnx's doctor fail
 
 Feature `test-hooks` adds `SJA_TEST_PANIC` (a panic inside a view's guard) and the breaker's test clock.
 
-`../sja-fuzz` is a `cargo-fuzz` target (`apply_bytes`: arbitrary bytes as a patch, then the verbs), nightly only:
-`cargo +nightly fuzz run apply_bytes` there. It is not part of `check.sh`.
+`../sja-fuzz` has `cargo-fuzz` targets (`apply_bytes`: arbitrary bytes as a patch, then the verbs; `push_bytes`: arbitrary
+bytes as a `view-model` line's model, pushed and drained; `typed_bytes`: whatever the typed read reads, the `Value`
+read reads the same), nightly only: `cargo +nightly fuzz run apply_bytes` there. It is not part of `check.sh`.
 
 ## Checks
 
