@@ -448,7 +448,9 @@ fn helper_loop(shared: &(Mutex<HState>, Condvar), ctl: i32) {
     }
 }
 
-/// `select` on `regs` with no timeout; the ready ones into `out` (none on an error).
+/// `select` on `regs` with no timeout; the ready ones into `out` (none on an error).  A signal caught on this thread
+/// (Emacs's SIGCHLD can land on any thread that does not block it) is no error: the `select` starts again, so the
+/// sleep it serves still ends on a ready fd.
 fn blocking_select(regs: &[Reg], out: &mut Vec<Reg>) {
     let fits = |fd: i32| (0..libc::FD_SETSIZE as i32).contains(&fd);
     // SAFETY: fd_set is plain data, written only for fds below FD_SETSIZE.
@@ -460,15 +462,22 @@ fn blocking_select(regs: &[Reg], out: &mut Vec<Reg>) {
         unsafe { libc::FD_SET(fd, if filt == FILT_WRITE { &mut w } else { &mut r }) };
         max = max.max(fd);
     }
-    // SAFETY: the sets are ours; no timeout.
-    let n = unsafe {
-        libc::select(
-            max + 1,
-            &mut r,
-            &mut w,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
+    let (r0, w0) = (r, w);
+    let n = loop {
+        // SAFETY: the sets are ours; no timeout.
+        let n = unsafe {
+            libc::select(
+                max + 1,
+                &mut r,
+                &mut w,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if n >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            break n;
+        }
+        (r, w) = (r0, w0);
     };
     if n <= 0 {
         return;
