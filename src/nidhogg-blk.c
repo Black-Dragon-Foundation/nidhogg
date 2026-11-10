@@ -1457,6 +1457,8 @@ Internal, for tests.  */);
 #include <time.h>
 #include <unistd.h>
 
+#include <sha256.h>
+
 #include "buffer.h"
 #include "coding.h"
 #include "frame.h"
@@ -2523,9 +2525,169 @@ The value is a unibyte string.  For a multibyte STRING it equals
   return r;
 }
 
+/* ==== The SHA-256 of a buffer's text, off the main thread ============
+
+   The edit history checks every batch against the hash of the buffer's
+   whole text (core/drgnx-history.el); `secure-hash' of 20 MB takes about
+   80 ms of the main thread.  `nidhogg-buffer-sha256' hashes the text
+   synchronously (small buffers), `nidhogg-buffer-sha256-async' copies
+   it (a memcpy around the gap) and hashes the copy on nh-save.  Both
+   hash what `secure-hash' hashes of the buffer with
+   `coding-system-for-write' `utf-8-unix': the whole text, narrowing
+   ignored, encoded as nh_dec_autosave_encode does (`utf-8-emacs-unix':
+   raw-byte characters as their bytes, a unibyte buffer's bytes as
+   themselves; the same bytes as `utf-8-unix' for every character a
+   buffer can hold).  With the workers off (or the job refused) the
+   async entry runs the same job on the main thread, and calls the
+   callback before it returns.  */
+
+struct nh_hash_job
+{
+  struct nh_wk_job job;
+  unsigned char *text;
+  size_t nbytes;
+  EMACS_INT cb_id;
+  char hex[SHA256_DIGEST_SIZE * 2 + 1];
+};
+
+static void
+nh_hash_compute (struct nh_hash_job *j)
+{
+  size_t n = nh_dec_autosave_encode (j->text, j->nbytes, j->text);
+  unsigned char digest[SHA256_DIGEST_SIZE];
+  sha256_buffer ((const char *) j->text, n, digest);
+  static const char digits[] = "0123456789abcdef";
+  for (int i = 0; i < SHA256_DIGEST_SIZE; i++)
+    {
+      j->hex[2 * i] = digits[digest[i] >> 4];
+      j->hex[2 * i + 1] = digits[digest[i] & 15];
+    }
+  j->hex[2 * SHA256_DIGEST_SIZE] = 0;
+  free (j->text);
+  j->text = NULL;
+}
+
+static void
+nh_hash_run (struct nh_wk_job *wj)
+{
+  struct nh_hash_job *j = (struct nh_hash_job *) wj;
+  nh_hash_compute (j);
+  nh_wk_pause_point (NH_WK_P_BEFORE_DONE);
+}
+
+static void
+nh_hash_free (struct nh_wk_job *wj)
+{
+  struct nh_hash_job *j = (struct nh_hash_job *) wj;
+  free (j->text);
+  free (j);
+}
+
+/* The buffer's text as one malloc'd block, for a job.  */
+static unsigned char *
+nh_hash_snapshot (struct buffer *b, size_t *nbytes)
+{
+  ptrdiff_t n1 = BUF_GPT_BYTE (b) - BEG_BYTE;
+  ptrdiff_t n2 = BUF_Z_BYTE (b) - BUF_GPT_BYTE (b);
+  unsigned char *text = malloc (n1 + n2 ? n1 + n2 : 1);
+  if (!text)
+    memory_full (n1 + n2);
+  memcpy (text, BUF_BEG_ADDR (b), n1);
+  memcpy (text + n1, BUF_GAP_END_ADDR (b), n2);
+  *nbytes = n1 + n2;
+  return text;
+}
+
+static struct buffer *
+nh_hash_buffer (Lisp_Object buffer)
+{
+  CHECK_BUFFER (buffer);
+  struct buffer *b = XBUFFER (buffer);
+  if (!BUFFER_LIVE_P (b))
+    error ("Selecting deleted buffer");
+  return b;
+}
+
+DEFUN ("nidhogg-buffer-sha256", Fnidhogg_buffer_sha256,
+       Snidhogg_buffer_sha256, 1, 1, 0,
+       doc: /* Return the SHA-256 of BUFFER's whole text, in hex.
+The bytes hashed are those `secure-hash' hashes of BUFFER with
+`coding-system-for-write' bound to `utf-8-unix': narrowing is ignored,
+a raw byte is one byte, a unibyte buffer's bytes are themselves.  */)
+  (Lisp_Object buffer)
+{
+  struct buffer *b = nh_hash_buffer (buffer);
+  struct nh_hash_job *j = calloc (1, sizeof *j);
+  if (!j)
+    memory_full (sizeof *j);
+  j->text = nh_hash_snapshot (b, &j->nbytes);
+  nh_hash_compute (j);
+  Lisp_Object hex = build_string (j->hex);
+  nh_hash_free (&j->job);
+  return hex;
+}
+
+static void
+nh_hash_finish (struct nh_wk_job *wj)
+{
+  struct nh_hash_job *j = (struct nh_hash_job *) wj;
+  Lisp_Object cb = Qnil, tail, prev = Qnil;
+  for (tail = Vnh_blk_callbacks; CONSP (tail); prev = tail, tail = XCDR (tail))
+    if (XFIXNUM (XCAR (XCAR (tail))) == j->cb_id)
+      {
+	cb = XCDR (XCAR (tail));
+	if (NILP (prev))
+	  Vnh_blk_callbacks = XCDR (tail);
+	else
+	  XSETCDR (prev, XCDR (tail));
+	break;
+      }
+  if (!NILP (cb))
+    calln (cb, build_string (j->hex));
+}
+
+DEFUN ("nidhogg-buffer-sha256-async", Fnidhogg_buffer_sha256_async,
+       Snidhogg_buffer_sha256_async, 2, 2, 0,
+       doc: /* Hash BUFFER's text on a worker thread; call CALLBACK with the hex SHA-256.
+The text is copied now (the text at the time of this call is the one
+hashed, whatever happens to BUFFER meanwhile) and the value is what
+`nidhogg-buffer-sha256' returns for it.  CALLBACK is called as
+(CALLBACK HASH) from the main loop at a timer check.  With the workers
+off, or the job refused, the hash is computed here and CALLBACK is
+called before this function returns.  Return t.  */)
+  (Lisp_Object buffer, Lisp_Object callback)
+{
+  struct buffer *b = nh_hash_buffer (buffer);
+  struct nh_hash_job *j = calloc (1, sizeof *j);
+  if (!j)
+    memory_full (sizeof *j);
+  j->text = nh_hash_snapshot (b, &j->nbytes);
+  j->cb_id = ++nh_blk_next_id;
+  j->job.w = NH_WK_SAVE;
+  j->job.run = nh_hash_run;
+  j->job.finish = nh_hash_finish;
+  j->job.free = nh_hash_free;
+  atomic_store (&j->job.refs, 1);
+  Vnh_blk_callbacks = Fcons (Fcons (make_int (j->cb_id), callback),
+			     Vnh_blk_callbacks);
+  if (nh_wk_submit (&j->job))
+    {
+      nh_wk_job_unref (&j->job);	/* the submitter's */
+      return Qt;
+    }
+  /* The same job, here.  */
+  specpdl_ref count = SPECPDL_INDEX ();
+  record_unwind_protect_ptr (nh_save_unref_unwind, &j->job);
+  nh_hash_compute (j);
+  nh_hash_finish (&j->job);
+  return unbind_to (count, Qt);
+}
+
 static void
 nh_save_syms (void)
 {
+  defsubr (&Snidhogg_buffer_sha256);
+  defsubr (&Snidhogg_buffer_sha256_async);
   DEFSYM (Qnidhogg_workers_autosave, "nidhogg-workers-autosave");
   nh_save_roots = Qnil;
   staticpro (&nh_save_roots);
