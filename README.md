@@ -148,7 +148,10 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   Glitnir's decorations off and nothing else. `glitnir-reduced-motion-p` is non-nil when Glitnir turns child-frame
   transitions off (`glitnir-reduced-motion` t, or `auto` while the desktop asks for reduced motion). With the flag, an empty echo area whose minibuffer remaps `default`
   (drgnx's look puts the echo area on the gap between cards) draws in that face; stock Emacs blanks it in the frame's
-  background. Emacs draws each frame into its own backing and publishes the damage, the
+  background. With the flag, `nidhogg-echo-prompt` is `prompt` while C shows a prompt in the echo area (`read-char`,
+  `read-event`, `read-char-exclusive`, `read-key-sequence`, and the `interactive` codes that read with them), `keys`
+  while the keys typed so far echo, and nil for `message`: a `set-message-function` that sends messages elsewhere keeps
+  prompts where the user looks. Emacs draws each frame into its own backing and publishes the damage, the
   copied pixels and the scene per tree (a root and its child frames); the presenter, one thread per display
   (`NHWL_PRESENTER=0` runs it inline), composes and commits. Child frames are subsurfaces of their parent, so the Wayland
   compositor puts the tree together.
