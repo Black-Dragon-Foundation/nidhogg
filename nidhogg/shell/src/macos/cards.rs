@@ -8,7 +8,7 @@ use crate::api::{CardImage, ShellError, ShellResult};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
-use objc2_quartz_core::CALayer;
+use objc2_quartz_core::{CAEdgeAntialiasingMask, CALayer, kCAFilterNearest};
 use std::collections::BTreeMap;
 
 /// A card's place in its root's surface: x, y, width, height, device pixels.
@@ -66,6 +66,15 @@ impl Cards {
             let (l, at) = self.shown.entry(c.id).or_insert_with(|| {
                 let l = CALayer::new();
                 l.setAnchorPoint(NSPoint::new(0.0, 0.0));
+                // the image is the card's device pixels at a device-pixel place: shown as they are, never filtered
+                // or blended at the layer's edge with what is beneath (its corners hold the gap's exact colour)
+                l.setAllowsEdgeAntialiasing(false);
+                l.setEdgeAntialiasingMask(CAEdgeAntialiasingMask::empty());
+                // SAFETY: Core Animation's filter name constants.
+                unsafe {
+                    l.setMagnificationFilter(kCAFilterNearest);
+                    l.setMinificationFilter(kCAFilterNearest);
+                }
                 // over the root's contents, under every child's container
                 root.insertSublayer_atIndex(&l, 0);
                 (l, (0, 0, 0, 0))
