@@ -361,7 +361,8 @@ impl MacShell {
     /// `test-surface` (WINDOW X Y): the window's newest surface as a Lisp plist: its size in device pixels, the
     /// content size in points, the layer's `contentsScale` and gravity, whether the layer shows that surface, its
     /// colour space (`srgb`, `generic` or nil), its pixel at X, Y (premultiplied ARGB; nil outside), how many
-    /// surfaces the ring has made and whether the pacer holds a commit.
+    /// surfaces the ring has made, whether the pacer holds a commit, and whether the next commit would find a slot the
+    /// window server does not hold.
     fn surface_info(&self, window: WindowId, x: i32, y: i32) -> ShellResult<String> {
         let w = self.win(window)?;
         let s = &w.surfaces;
@@ -385,12 +386,13 @@ impl MacShell {
             .map_or_else(|| "nil".to_string(), |p| p.to_string());
         Ok(format!(
             "(:w {sw} :h {sh} :points ({cw} {ch}) :scale {} :gravity \"{}\" :contents-is-newest {} :srgb {srgb} \
-             :pixel {pixel} :slots {} :held {})",
+             :pixel {pixel} :slots {} :held {} :free {})",
             w.layer.contentsScale(),
             w.layer.contentsGravity(),
             if shown { "t" } else { "nil" },
             s.slots(),
             if s.owes() { "t" } else { "nil" },
+            if s.free() { "t" } else { "nil" },
         ))
     }
 }
