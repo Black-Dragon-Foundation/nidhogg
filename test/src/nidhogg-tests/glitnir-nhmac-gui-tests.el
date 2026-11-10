@@ -20,19 +20,25 @@
 
 (defun glitnir-nhmac--chromed (&optional params left top)
   "A shown child frame (`nhmac-gui--child', #ff00ff) of 30x8 characters with corners of 12 and
-`glitnir-nhmac--shadow', then PARAMS, at LEFT, TOP (default 80, 80)."
+`glitnir-nhmac--shadow', then PARAMS, at LEFT, TOP (default 80, 200: below the root's tool bar)."
   (nhmac-gui--child (append params `((corner-radius . 12) (shadow . ,glitnir-nhmac--shadow) (width . 30) (height . 8)))
-                    (or left 80) (or top 80)))
+                    (or left 80) (or top 200)))
 
 (defun glitnir-nhmac--scale ()
   "The device pixels per point of the selected frame's window."
   (plist-get (nhmac--test-surface 0 0) :scale))
 
 (defun glitnir-nhmac--with-white (fn)
-  "Call FN with the selected frame's background `glitnir-nhmac--bg', then as before."
-  (let* ((f (selected-frame)) (bg (frame-parameter f 'background-color)))
+  "Call FN with the selected frame's background `glitnir-nhmac--bg' and an empty buffer in its window, then as before.
+The probes then read the root's background wherever no child is."
+  (let* ((f (selected-frame)) (bg (frame-parameter f 'background-color))
+         (win (frame-selected-window f)) (old (window-buffer win))
+         (blank (get-buffer-create " *glitnir-nhmac-blank*")))
+    (with-current-buffer blank (setq-local mode-line-format nil cursor-type nil))
     (set-frame-parameter f 'background-color glitnir-nhmac--bg)
+    (set-window-buffer win blank)
     (unwind-protect (progn (nhmac-gui--settle) (funcall fn))
+      (set-window-buffer win old)
       (set-frame-parameter f 'background-color bg))))
 
 (defun glitnir-nhmac--grab (name)
