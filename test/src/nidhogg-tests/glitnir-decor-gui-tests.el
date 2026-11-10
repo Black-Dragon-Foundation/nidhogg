@@ -326,6 +326,39 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
       (should (equal (list 'left (glitnir-decor-gui--px g cx y)) '(left (255 128 0))))
       (should (equal (list 'right (glitnir-decor-gui--px g (1- ex) y)) '(right (255 128 0)))))))
 
+;; The same in an overlay string (a completion list's current row with a keycap in it): `ab' + `ef' in OUTER around
+;; `cd' in INNER, all in one after-string after the buffer's `x' (at 3).
+(defun glitnir-decor-gui--two-runs-in-a-string (outer inner)
+  "Grab `x' then an after-string `abcdef' in face OUTER with `cd' in face INNER: (GRAB Y C-X E-X), device pixels."
+  (with-temp-buffer
+    (switch-to-buffer (current-buffer))
+    (face-remap-add-relative 'default :background "#202020" :foreground "white")
+    (setq-local cursor-type nil truncate-lines t)
+    (let ((fo (glitnir-decor-gui--calibrate))
+          (str (concat (propertize "ab" 'face outer) (propertize "cd" 'face inner) (propertize "ef" 'face outer))))
+      (insert "\n\nx\n\n")
+      (overlay-put (make-overlay 3 4) 'after-string str)
+      (goto-char 1)
+      (gui-runner-wait-settled)
+      (let* ((s (glitnir-decor-gui--scale)) (g (gui-runner-screen-grab))
+             (x (cdr (glitnir-decor-gui--at g 3 fo)))
+             (w (glitnir-decor-gui--dev s (frame-char-width)))
+             ;; the string starts after `x': its `c' is three columns on, its `e' five
+             (cx (+ (car x) (* 3 w))) (ex (+ (car x) (* 5 w))))
+        (list g (+ (cdr x) (glitnir-decor-gui--dev s (/ (line-pixel-height) 2))) cx ex)))))
+
+(ert-deftest glitnir-decor-gui/box-nested-in-a-string-has-sides ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; In a display or overlay string, a boxed run whose box differs from the next one's ends with its own side, as in
+  ;; buffer text: a keycap's ring on a completion list's current row is whole.
+  (let* ((glitnir-enable t)
+         (r (glitnir-decor-gui--two-runs-in-a-string
+             (glitnir-decor-gui--box-face "outer" "#303060" "#303060")
+             (glitnir-decor-gui--box-face "inner" "#306030" "#ff8000"))))
+    (pcase-let ((`(,g ,y ,cx ,ex) r))
+      (should (equal (list 'left (glitnir-decor-gui--px g cx y)) '(left (255 128 0))))
+      (should (equal (list 'right (glitnir-decor-gui--px g (1- ex) y)) '(right (255 128 0)))))))
+
 (ert-deftest glitnir-decor-gui/adjacent-same-boxes-are-one-run ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Two faces whose boxes are the same (colour and kind), side by side, are one run as in stock Emacs: no side
