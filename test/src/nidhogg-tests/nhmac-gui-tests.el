@@ -2013,6 +2013,13 @@ a child again, and the child moves to another root."
             (nhmac-gui--say "nhmac-parent-frame-changes: under the other root: %d draws; scale %s (other %s, %S px); %S"
                             (nhmac-gui--delta before :draws) (frame-scale-factor c) (frame-scale-factor other)
                             (list (frame-pixel-width other) (frame-pixel-height other)) (nhmac--test-child c))
+            (let ((look (lambda (when)
+                          (nhmac-gui--say "nhmac-parent-frame-changes: %s: child %S px, font %d px, host %S" when
+                                          (list (frame-pixel-width c) (frame-pixel-height c))
+                                          (nhmac-gui--font-px c) (plist-get (nhmac--test-child c) :host)))))
+              (funcall look "at once")
+              (dotimes (_ 3) (nhmac-gui--settle))
+              (funcall look "after 3 more settles"))
             (should (eq (frame-parent c) other))
             (should (eq (plist-get (nhmac--test-child c) :host) 'parent))
             (should (eq (plist-get (nhmac--test-child c) :contents-is-newest) t))
