@@ -406,7 +406,9 @@ The pump catches it and the display is poisoned, as by a panic.  For tests."
 `:wants-layer', `:subviews', `:device-width', `:device-height',
 `:screen-device-width', `:frame' (AppKit's frame in points, y up from
 the main screen's bottom), `:on-screen' (the screen it is on: its frame
-and scale, or nil) and `:occluded'.  For tests."
+and scale, or nil), `:occluded', `:has-shadow' (AppKit draws the
+window's shadow) and `:sublayers' (how many layers the shell's layer
+holds: children's containers and window cards).  For tests."
   (nhmac--query 'window-info (or frame (selected-frame))))
 
 (defun nhmac--startup-log ()
