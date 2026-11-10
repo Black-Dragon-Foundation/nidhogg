@@ -1035,8 +1035,19 @@ pub fn compose_root(
     clips: &[Rect],
     sources: &[SourceView],
 ) -> Result<(), i32> {
+    compose_root_with(root, t, clips, sources, &Extras::NONE)
+}
+
+/// [`compose_root`] with X drawn too.
+pub fn compose_root_with(
+    root: u64,
+    t: &mut TargetView,
+    clips: &[Rect],
+    sources: &[SourceView],
+    x: &Extras,
+) -> Result<(), i32> {
     let c = crate::scene::committed(root).ok_or(GLITNIR_E_STATE)?;
-    compose_committed(&c, &mut process(), t, clips, sources).map(|_| ())
+    compose_committed_with(&c, &mut process(), t, clips, sources, x).map(|_| ())
 }
 
 /// [`Composer::fill_stats`] from the C ABI's composer (`glitnir_stats_record`).

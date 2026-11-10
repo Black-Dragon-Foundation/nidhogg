@@ -27,8 +27,9 @@ pub struct Child {
     /// decides when it maps and unmaps.
     mapped: bool,
     motion: bool,
-    /// It has a backdrop (`set_backdrop`): presenting follows its position.
-    backdrop: bool,
+    /// Its backdrop's σ in logical pixels, 0 for none (`set_backdrop`): presenting follows its position, and a
+    /// snapshot draws it.
+    pub blur_px: f32,
 }
 
 impl MainState {
@@ -133,7 +134,7 @@ impl WaylandShell {
                 y: d.y,
                 mapped: true,
                 motion: false,
-                backdrop: false,
+                blur_px: 0.0,
             },
         );
         m.present_register(id, None, Some(subsurface));
@@ -241,7 +242,7 @@ impl WaylandShell {
         if let Some(c) = self.main.children.get_mut(&id) {
             c.x = x;
             c.y = y;
-            if c.backdrop {
+            if c.blur_px > 0.0 {
                 self.backdrop_placed(id, (x, y));
             }
             self.main
@@ -379,11 +380,10 @@ impl WaylandShell {
             return Err(ShellError::Arg);
         }
         let c = self.main.children.get_mut(&id).ok_or(ShellError::State)?;
-        let on = blur_px > 0.0;
-        if !c.backdrop && !on {
+        if c.blur_px == 0.0 && blur_px == 0.0 {
             return Ok(());
         }
-        c.backdrop = on;
+        c.blur_px = blur_px;
         let (parent, at) = (c.parent, (c.x, c.y));
         let root = self.main.tree_root(id);
         self.motion_post(root, Mail::Backdrop(id, parent, blur_px, at));
