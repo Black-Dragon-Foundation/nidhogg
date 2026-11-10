@@ -33,6 +33,14 @@ bad=0
 # POSIX output: "NAME TYPE [VALUE SIZE]"; the archive's member headers ("lib.a[x.o]:") have no type field
 strip=cat
 [ "$(uname -s)" = Darwin ] && strip="sed s/^_//"
+# nm must read every member: a member it cannot read (an object newer than its LLVM) hides that member's names from
+# both checks, so its complaints fail the check
+nmerr=$(nm -P -g "$lib" 2>&1 >/dev/null | grep -v 'no symbols$')
+if [ -n "$nmerr" ]; then
+  echo "nm-check: nm ($(command -v nm)) could not read all of libnhglue.a:"
+  printf '%s\n' "$nmerr" | head -n 5 | sed 's/^/  /'
+  bad=1
+fi
 undef=$(nm -P -g "$lib" 2>/dev/null | awk 'NF >= 2 && ($2 == "U" || $2 == "w" || $2 == "v") {print $1}' | $strip | sort -u)
 def=$(nm -P -g --defined-only "$lib" 2>/dev/null | awk 'NF >= 2 {print $1}' | $strip | sort -u)
 external=$(comm -23 <(printf '%s\n' "$undef") <(printf '%s\n' "$def"))
@@ -49,8 +57,7 @@ fi
 # of Emacs (the check above covers its members, which are the archive's)
 if ! printf '%s\n' "$def" | grep -qx sja_call; then
   echo "nm-check: libnhglue.a does not define sja_call (Sjá's entry point; glitnir's pub use sja::abi::sja_call)"
-  echo "nm-check: $(printf '%s\n' "$def" | grep -c .) defined names read; nm's lines naming sja_call:"
-  nm -P -g "$lib" 2>&1 | grep -F sja_call | head -n 5 | sed 's/^/  /'
+  echo "nm-check: $(printf '%s\n' "$def" | grep -c .) defined names read from $(ar t "$lib" 2>/dev/null | grep -c .) members"
   bad=1
 fi
 
