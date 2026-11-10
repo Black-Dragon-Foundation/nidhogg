@@ -293,11 +293,13 @@ The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
 clamped; 8-19 from the `transition' option, which the desktop's reduced-motion
 setting turns off; 20 from `backdrop-blur', 0 while the frame's
 `alpha-background' is opaque; `beneath-rgb', `ring-rgb' and `fill-rgb' are -1.  A child
-frame with no chrome has a vector whose first slot is 0.  A root frame's is
+frame with no chrome, or any child frame while `glitnir-enable' is nil, has a vector
+whose first slot is 0 and no blur.  A root frame's is
 `glitnir--toplevel-vector'."
   (if (not (frame-parent frame))
       (glitnir--toplevel-vector frame)
-    (let* ((res (glitnir--resolve frame))
+    (let* ((on (or (not (boundp 'glitnir-enable)) glitnir-enable))
+           (res (and on (glitnir--resolve frame)))
            (tr (glitnir--transition (glitnir--option frame 'transition)))
            (blur (glitnir--option frame 'backdrop-blur))
            (v (make-vector (length glitnir--chrome-slots) 0)))
@@ -308,7 +310,7 @@ frame with no chrome has a vector whose first slot is 0.  A root frame's is
         (setcar (nthcdr 6 tr) 0))
       (dotimes (i 12) (aset v (+ 8 i) (nth i tr)))
       (aset v (alist-get 'backdrop glitnir--chrome-slots)
-            (if (and blur (glitnir--translucent-p frame)) blur 0))
+            (if (and on blur (glitnir--translucent-p frame)) blur 0))
       (aset v (alist-get 'beneath-rgb glitnir--chrome-slots) -1)
       (aset v (alist-get 'ring-rgb glitnir--chrome-slots) -1)
       (aset v (alist-get 'fill-rgb glitnir--chrome-slots) -1)

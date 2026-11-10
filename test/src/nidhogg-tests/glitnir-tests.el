@@ -204,6 +204,18 @@
 
 ;; The chrome vector: Lisp resolves, C copies, the glue validates.
 
+(ert-deftest glitnir-chrome-vector-off ()
+  ;; Glitnir off (design: off equals Glitnir off): a child asking for corners, a shadow and a blur gets the vector of
+  ;; no chrome: slot 0 is 0, no radius, no shadow, no blur.
+  (let ((child-frame-chrome '((corner-radius . 8) (shadow . (:blur 16 :offset (2 . 6) :opacity 0.5))
+                              (backdrop-blur . 12)))
+        (glitnir-enable nil))
+    (glitnir-test--as-child '((alpha-background . 0.5))
+      (let ((v (glitnir--chrome-vector (selected-frame))))
+        (should (= (length v) (length glitnir--chrome-slots)))
+        (should (cl-every #'zerop (cl-subseq v 0 8)))
+        (should (= (aref v (alist-get 'backdrop glitnir--chrome-slots)) 0))))))
+
 (ert-deftest glitnir-chrome-vector-layout ()
   (let ((child-frame-chrome '((corner-radius . 8) (shadow . (:blur 16 :offset (2 . 6) :spread -1 :opacity 0.5)))))
     (should-not (glitnir--chrome-vector (selected-frame)))
