@@ -1499,6 +1499,14 @@ nhwl_tool_bar_fit (struct frame *f, int *height)
   /* Measured at the tool bar window's width, which change_frame_size
      has just set.  */
   new = XFIXNUM (Ftool_bar_height (frame, Qt));
+#ifndef NHWL_WAYLAND
+  if (CONSP (Vnhmac__damage_log))
+    Vnhmac__damage_log
+      = Fcons (listn (6, make_fixnum (4), make_fixnum (old), make_fixnum (new),
+		      make_fixnum (WINDOW_PIXEL_WIDTH (XWINDOW (f->tool_bar_window))),
+		      make_fixnum (f->n_tool_bar_rows),
+		      make_fixnum (f->n_tool_bar_items)), Vnhmac__damage_log);
+#endif
   if (new == 0 || new == old
       || (EQ (Vauto_resize_tool_bars, Qgrow_only) && new < old))
     return false;
@@ -4058,6 +4066,15 @@ nhwl_change_tool_bar_height (struct frame *f, int height)
   int old_height = FRAME_TOOL_BAR_HEIGHT (f);
   int lines = (height + unit - 1) / unit;
   Lisp_Object fullscreen = get_frame_param (f, Qfullscreen);
+#ifndef NHWL_WAYLAND
+  if (CONSP (Vnhmac__damage_log) && WINDOWP (f->tool_bar_window))
+    Vnhmac__damage_log
+      = Fcons (listn (6, make_fixnum (5), make_fixnum (old_height),
+		      make_fixnum (height),
+		      make_fixnum (WINDOW_PIXEL_WIDTH (XWINDOW (f->tool_bar_window))),
+		      make_fixnum (f->n_tool_bar_rows),
+		      make_fixnum (f->n_tool_bar_items)), Vnhmac__damage_log);
+#endif
 
   /* Make sure we redisplay all windows in this frame.  */
   fset_redisplay (f);
