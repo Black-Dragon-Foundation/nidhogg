@@ -107,12 +107,17 @@ glitnir_decor_colour_beneath (struct glyph_string *s, int side)
     nb[SIDE_RIGHT] = s->first_glyph + 1 < end ? s->first_glyph + 1 : NULL;
   if (nb[side] && face_bg (f, nb[side], &c))
     return c;
-  if (nb[!side] && face_bg (f, nb[!side], &c))
-    return c;
-  if (row->used[s->area] > 0)
+  /* At the row's edge on SIDE nothing is beside S: what lies there is what
+     the row shows past its glyphs, never the far side's glyph (S's own
+     fill when a run is split into several glyph strings).  Past the right
+     end that is the last glyph's face when it extends (always on a mode,
+     header or tab line); past the left end, a mode line's own face, else
+     the window's default.  */
+  if (row->used[s->area] > 0
+      && (side == SIDE_RIGHT || row->mode_line_p))
     {
       struct face *lf = FACE_FROM_ID_OR_NULL (f, end[-1].face_id);
-      if (lf && FACE_EXTENSIBLE_P (lf))
+      if (lf && (row->mode_line_p || FACE_EXTENSIBLE_P (lf)))
 	return lf->background;
     }
   int id = lookup_basic_face (s->w, f, DEFAULT_FACE_ID);
