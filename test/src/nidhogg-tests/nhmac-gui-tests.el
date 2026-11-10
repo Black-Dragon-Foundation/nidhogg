@@ -1908,3 +1908,25 @@ a child again, and the child moves to another root."
       (delete-frame b t))))
 
 ;;; nhmac-gui-tests.el ends here
+
+(ert-deftest nhmac-kq-helper-signals ()
+  "A signal that lands on the wait's helper thread while it watches a fd does not stop the watch: a pipe the helper
+serves, interrupted 40 times while its 100 lines come, gets every line with no gap near a second.  (A signal lands on
+any thread that does not block it: Emacs's SIGCHLD can reach the helper.)"
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((gaps (make-hash-table :test #'equal))
+        (start (float-time))
+        p)
+    (nhmac--test-helper-next)
+    (setq p (nhmac-gui--feed "kq-helper-signals" 'pipe gaps))
+    (accept-process-output nil 0.05)
+    (nhmac--test-signal-helper 40)
+    (unwind-protect
+        (while (and (process-live-p p) (< (- (float-time) start) 30))
+          (accept-process-output nil 5))
+      (delete-process p))
+    (let ((v (gethash "kq-helper-signals" gaps)))
+      (nhmac-gui--say "nhmac-kq-helper-signals: %d lines, longest gap %.3f s, stats %S" (car v) (cdr v)
+                      (nhmac-stats))
+      (should (= (car v) 100))
+      (should (< (cdr v) 1.0)))))

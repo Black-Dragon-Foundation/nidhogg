@@ -478,6 +478,12 @@ a plist.  For tests."
 As if kqueue had refused it (`EINVAL').  For tests."
   (nhmac--call 'test-helper-next))
 
+(defun nhmac--test-signal-helper (n)
+  "Interrupt the main wait's helper thread N times, 20 ms apart, with a signal.
+A handler that does nothing catches it.  An error before the helper has
+started.  For tests."
+  (nhmac--call 'test-signal-helper n))
+
 (defun nhmac--test-force-in-use (on &optional frame)
   "Make every surface of FRAME's window read as held by the window server, if ON.
 The commit pacer then holds each commit, until its bound.  For tests."
