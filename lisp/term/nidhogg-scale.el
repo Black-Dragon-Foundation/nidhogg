@@ -105,13 +105,17 @@ frames are re-opened at once."
   "Handle a `config-changed-event' EVENT.
 Type (nidhogg-scale . DPI) re-opens the fonts of the frame EVENT names,
 when its resolution now differs from DPI (the one they were opened at):
-a scale report that changes nothing re-opens nothing.  Other types go to
+a scale report that changes nothing re-opens nothing, and a re-open never
+resizes the frame (its window keeps its size on the screen).  Other types go to
 `dynamic-setting-handle-config-changed-event'."
   (interactive "e")
   (let ((type (nth 1 event)) (frame (nth 2 event)))
     (if (eq (car-safe type) 'nidhogg-scale)
         (when (and (frame-live-p frame) (/= (cdr type) (nidhogg-scale--dpi frame)))
-          (nidhogg-scale--reopen frame (nidhogg-scale--height frame (cdr type))))
+          ;; the window keeps its size on the screen, which the compositor or AppKit
+          ;; already gave it at the new scale: the text follows, never the window
+          (let ((frame-inhibit-implied-resize t))
+            (nidhogg-scale--reopen frame (nidhogg-scale--height frame (cdr type)))))
       (when (fboundp 'dynamic-setting-handle-config-changed-event)
         (dynamic-setting-handle-config-changed-event event)))))
 
