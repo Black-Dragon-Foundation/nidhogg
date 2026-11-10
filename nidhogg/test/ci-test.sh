@@ -308,6 +308,8 @@ grep -qF 'path: ${{ runner.temp }}/nhmac-gui' <<<"$rj"              || fail "the
 for s in nhmac-gui.sh nhmac-pair.sh; do
   grep -qE "^          caffeinate -d -i -u bash nidhogg/test/$s " <<<"$rj" || fail "macos-naglfar-rows runs $s with the display free to sleep"
 done
+# the paired timing still gets the NS tarball when a row before it is red (as its own step runs then)
+grep -A1 'name: The NS tarball for the paired timing' <<<"$rj" | grep -qF '!cancelled()' || fail "the paired timing's tarball is skipped after a red row"
 # the paired timing runs typing and typing under a blurred child, and is red when either is
 grep -qE '^          caffeinate .*nhmac-pair\.sh .*--row nhmac-blur-pair .*\|\| rc=1$' <<<"$rj" || fail "the paired timing does not run the blur pair"
 grep -qE '^          exit \$rc$' <<<"$rj"                          || fail "the paired timing does not fail when one pair is slower"
