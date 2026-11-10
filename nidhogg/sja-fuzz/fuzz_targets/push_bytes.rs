@@ -1,9 +1,11 @@
-//! Arbitrary bytes as a `view-model` line's model, pushed and drained through `sja_call`: never a panic past the guard.
+//! Arbitrary bytes as a `view-model` line's model, pushed and drained through `sja_call`, then a few verbs: never a
+//! panic past the guard (a panic inside one would show as a crash here only if it escaped), never over the caps.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use sja::abi::{
-    Ans, SJA_CLOSE, SJA_DRAIN, SJA_OPEN, SJA_PUSH, SJA_STATS, call_for_test, int, nil, text,
+    Ans, SJA_CLOSE, SJA_DRAIN, SJA_FOLLOW, SJA_GET, SJA_OPEN, SJA_PUSH, SJA_STATS, SJA_WALK, call_for_test, int, nil,
+    text,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -20,6 +22,11 @@ fuzz_target!(|data: &[u8]| {
         let _ = call_for_test(SJA_PUSH, &[text(&line)]);
     }
     let _ = call_for_test(SJA_DRAIN, &[text("fuzz-push"), nil()]);
+    for link in ["up", "down", "left", "right"] {
+        let _ = call_for_test(SJA_FOLLOW, &[int(h), text(link)]);
+    }
+    let _ = call_for_test(SJA_WALK, &[int(h), text("all"), int(1)]);
+    let _ = call_for_test(SJA_GET, &[int(h), text("classes")]);
     if let Ok(Ans::List(xs)) = call_for_test(SJA_STATS, &[]) {
         assert_eq!(xs.get(3), Some(&Ans::Int(0)), "a panic reached the guard");
     }

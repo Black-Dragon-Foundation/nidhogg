@@ -34,7 +34,7 @@
 
 (eval-and-compile
   (defconst nidhogg-view--ops
-    '((apply . 1) (open . 2) (close . 3) (follow . 4) (walk . 5) (walk-to . 6)
+    '((open . 2) (close . 3) (follow . 4) (walk . 5) (walk-to . 6)
       (set . 7) (get . 8) (hub-lost . 9) (stats . 10) (push . 11) (drain . 12)
       (named . 13) (due . 14) (test-panic . 99))
     "Sjá's op numbers (nidhogg/sja/include/sja.h)."))
@@ -43,18 +43,13 @@
   "The direction (-1 or 1) of the last walk that answered `more'.")
 
 (defconst nidhogg-view--statuses [applied dropped resync too-large broken]
-  "What `nidhogg-view-apply' answers, by Sjá's status number.")
+  "A model's status after a drain, by Sjá's status number: `applied',
+`dropped' (not newer than what is drawn), `resync' (ask the hub for a
+reset), `too-large' or `broken'.")
 
 (defmacro nidhogg-view--op (name)
   "The op number of NAME, at compile time."
   (or (alist-get name nidhogg-view--ops) (error "No Sjá op %s" name)))
-
-(defsubst nidhogg-view-apply (view hub version model)
-  "Apply MODEL, one model patch (a JSON string) from HUB at VERSION, to VIEW.
-Return `applied', `dropped' (not newer than what is drawn), `resync' (ask
-the hub for a reset), `too-large' or `broken'."
-  (aref nidhogg-view--statuses
-        (nidhogg-view--call (nidhogg-view--op apply) view hub version model)))
 
 (defconst nidhogg-view--decisions [queue reset drop resync none]
   "What `nidhogg-view-push' decides, by Sjá's number.")
@@ -77,8 +72,8 @@ VIEW is open); nil when LINE is not a `view-model' line."
 
 (defsubst nidhogg-view-drain (view &optional upto)
   "Apply VIEW's queued models of a version up to UPTO (all when nil), oldest first.
-Return (APPLIED LAST VERSION): how many applied, the last status (as
-`nidhogg-view-apply' answers; `resync' or `too-large' dropped the queue
+Return (APPLIED LAST VERSION): how many applied, the last status (see
+`nidhogg-view--statuses'; `resync' or `too-large' dropped the queue
 and its stream) and the newest version the stream queued (nil when it
 has none); nil when no instance of VIEW is open."
   (nidhogg-view--drained (nidhogg-view--call (nidhogg-view--op drain) view upto)))
