@@ -34,7 +34,7 @@
 
 (eval-and-compile
   (defconst nidhogg-view--ops
-    '((apply . 1) (open . 2) (close . 3) (follow . 4) (walk . 5) (walk-to . 6)
+    '((open . 2) (close . 3) (follow . 4) (walk . 5) (walk-to . 6)
       (set . 7) (get . 8) (hub-lost . 9) (stats . 10) (push . 11) (drain . 12)
       (named . 13) (due . 14) (test-panic . 99))
     "Sjá's op numbers (nidhogg/sja/include/sja.h)."))
@@ -43,18 +43,13 @@
   "The direction (-1 or 1) of the last walk that answered `more'.")
 
 (defconst nidhogg-view--statuses [applied dropped resync too-large broken]
-  "What `nidhogg-view-apply' answers, by Sjá's status number.")
+  "A model's status after a drain, by Sjá's status number: `applied',
+`dropped' (not newer than what is drawn), `resync' (ask the hub for a
+reset), `too-large' or `broken'.")
 
 (defmacro nidhogg-view--op (name)
   "The op number of NAME, at compile time."
   (or (alist-get name nidhogg-view--ops) (error "No Sjá op %s" name)))
-
-(defsubst nidhogg-view-apply (view hub version model)
-  "Apply MODEL, one model patch (a JSON string) from HUB at VERSION, to VIEW.
-Return `applied', `dropped' (not newer than what is drawn), `resync' (ask
-the hub for a reset), `too-large' or `broken'."
-  (aref nidhogg-view--statuses
-        (nidhogg-view--call (nidhogg-view--op apply) view hub version model)))
 
 (defconst nidhogg-view--decisions [queue reset drop resync none]
   "What `nidhogg-view-push' decides, by Sjá's number.")
@@ -66,9 +61,14 @@ Return (VIEW VERSION DECISION), DECISION `queue' (a diff queued),
 `reset' (a reset queued: a reset asked for has come), `drop', `resync'
 \(a gap or a cap: ask the hub for a reset) or `none' (no instance of
 VIEW is open); nil when LINE is not a `view-model' line."
-  (let ((r (nidhogg-view--call (nidhogg-view--op push) line)))
-    (when r (setcar (nthcdr 2 r) (aref nidhogg-view--decisions (nth 2 r))))
-    r))
+  (nidhogg-view--pushed (nidhogg-view--call (nidhogg-view--op push) line)))
+
+(defsubst nidhogg-view--pushed (r)
+  "R, Sjá's answer to a push, with its decision as a symbol (see
+`nidhogg-view-push').  The framed reader pushes a line itself with
+`:raw-to-sja' (`nidhogg-set-process-framing'); its entry carries R."
+  (when r (setcar (nthcdr 2 r) (aref nidhogg-view--decisions (nth 2 r))))
+  r)
 
 (defsubst nidhogg-view--drained (r)
   "R, a drain's answer, with its status as a symbol."
@@ -77,8 +77,8 @@ VIEW is open); nil when LINE is not a `view-model' line."
 
 (defsubst nidhogg-view-drain (view &optional upto)
   "Apply VIEW's queued models of a version up to UPTO (all when nil), oldest first.
-Return (APPLIED LAST VERSION): how many applied, the last status (as
-`nidhogg-view-apply' answers; `resync' or `too-large' dropped the queue
+Return (APPLIED LAST VERSION): how many applied, the last status (see
+`nidhogg-view--statuses'; `resync' or `too-large' dropped the queue
 and its stream) and the newest version the stream queued (nil when it
 has none); nil when no instance of VIEW is open."
   (nidhogg-view--drained (nidhogg-view--call (nidhogg-view--op drain) view upto)))
@@ -109,8 +109,10 @@ Instances in the same GROUP (a string) share one selection."
     answer))
 
 (defsubst nidhogg-view-follow (h link)
-  "Follow LINK (\"up\", \"left\", ...) from H's selection; return the selection."
-  (nidhogg-view--call (nidhogg-view--op follow) h link))
+  "Follow LINK (\"up\", \"left\", ...) from H's selection; return the
+selection, or (ID . more) when it stayed at the edge of a window that goes
+on that way (as `nidhogg-view-walk')."
+  (nidhogg-view--step (nidhogg-view--call (nidhogg-view--op follow) h link)))
 
 (defsubst nidhogg-view-walk (h list step)
   "Step STEP entries along LIST from H's selection, wrapping; return the
@@ -134,7 +136,8 @@ visible sibling whose label starts with VALUE; returns the selection)."
   "Read WHAT of instance H.
 WHAT is `selection', `kind' (of ARG, an id, or the selection), `field'
 \(ARG a field name, ARG2 an id or the selection), `flag', `parent',
-`rows', `list' (ARG a list name), `finished' (the id that went from under
+`rows', `list' (ARG a list name), `window' (of list ARG: (FROM LENGTH
+TOTAL) when the model holds a window of it, else nil), `finished' (the id that went from under
 the selection, once), `class' (of ARG), `classes' (a vector [ID CLASS
 ...] of the nodes whose class changed since the last read), `reclass',
 `class-names', `expanded', `open' (of ARG: a tree node is open), `ticked', `version', `stats' or `health' (0 ok,

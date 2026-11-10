@@ -44,7 +44,7 @@ use glitnir::blur::Backdrop;
 use glitnir::committed::Committed;
 use glitnir::compose::{
     Composer, Extras, SourceView, TargetView, compose_committed, compose_committed_with,
-    compose_root,
+    compose_root_with,
 };
 use glitnir::geom::Rect;
 use glitnir::kernels::kernels;
@@ -367,6 +367,46 @@ fn scaled(p: u32, a: u32) -> u32 {
 
 /// Premultiplied `src`, `w` pixels a row, over `dst` (`size`) at `(x, y)` with the compositor's `alpha`: the part
 /// inside `dst`.
+/// A snapshot's backdrop for the child at `at` (logical px) in `parent` whose root layer is `layer_id`: the parent's host
+/// pixels (`hosts`, as the presenter's front holds them) blurred at σ `blur_px` logical px, over the layer's rectangle.
+/// None when the parent was not kept, the scales differ or the child has no scene.
+fn snapshot_backdrop(
+    hosts: &HashMap<WindowId, (Vec<u32>, i32, i32, f64)>,
+    parent: WindowId,
+    at: (i32, i32),
+    blur_px: f32,
+    layer_id: u64,
+    scale: f64,
+) -> Option<Backdrop> {
+    let (px, w, h, parent_scale) = hosts.get(&parent)?;
+    if *parent_scale != scale {
+        return None;
+    }
+    let layer = glitnir::scene::committed(layer_id)?
+        .layers
+        .iter()
+        .find(|p| p.id == layer_id)?
+        .rect;
+    let device = |logical: i32| (f64::from(logical) * scale).round() as i32;
+    let region = Rect::new(
+        device(at.0) + layer.x,
+        device(at.1) + layer.y,
+        layer.w,
+        layer.h,
+    );
+    let mut b = Backdrop::new();
+    b.update(
+        px,
+        *w as usize,
+        (*w, *h),
+        region,
+        blur_px * scale as f32,
+        scale,
+        &[],
+    )?;
+    Some(b)
+}
+
 fn blend(dst: &mut [u32], size: (i32, i32), src: &[u32], w: i32, (x, y): (i32, i32), alpha: u32) {
     let a = (u64::from(alpha) * 255 / u64::from(u32::MAX)) as u32;
     let (x0, x1) = (x.max(0), (x + w).min(size.0));
@@ -2026,7 +2066,9 @@ impl WaylandShell {
 
     /// `ShellBackend::tree_snapshot`: each surface composed whole on this thread, as its next buffer would be, from the
     /// host's pixels and the scene committed with them (`Composer`s take no lock), then the surfaces over each other.
-    /// Nothing of the presenter's is touched.  `composed` false leaves the scenes out: the host's pixels alone, square.
+    /// A child with a backdrop has it under its pixels, blurred afresh from its parent's host pixels as the presenter
+    /// blurs it.  Nothing of the presenter's is touched.  `composed` false leaves the scenes out: the host's pixels
+    /// alone, square.
     pub(super) fn tree_snapshot_impl(
         &self,
         root: WindowId,
@@ -2043,6 +2085,8 @@ impl WaylandShell {
         let scale120 = |id| m.scales.get(&id).map_or(SCALE_ONE, |s| s.scale120()).max(1);
         let root_scale = f64::from(scale120(root)) / 120.0;
         let mut out = vec![0; size.0 as usize * size.1 as usize];
+        // each surface's host pixels, for its children's backdrops
+        let mut hosts: HashMap<WindowId, (Vec<u32>, i32, i32, f64)> = HashMap::new();
         for id in m.painted(root) {
             let Some(f) = frames.iter().find(|f| f.window == id) else {
                 continue;
@@ -2052,10 +2096,30 @@ impl WaylandShell {
             let mut px = Vec::with_capacity(front.data.len());
             copy_rect(f, &all, &mut px);
             front.write(&all, &px);
+            let scale = f64::from(scale120(id)) / 120.0;
+            let backdrop = composed
+                .then(|| m.children.get(&id))
+                .flatten()
+                .filter(|c| c.blur_px > 0.0)
+                .and_then(|c| {
+                    snapshot_backdrop(
+                        &hosts,
+                        c.parent,
+                        (c.x, c.y),
+                        c.blur_px,
+                        f.glitnir_root,
+                        scale,
+                    )
+                });
+            if m.children
+                .values()
+                .any(|c| c.parent == id && c.blur_px > 0.0)
+            {
+                hosts.insert(id, (px.clone(), f.w, f.h, scale));
+            }
             // composed into a clear surface, as the presenter's new buffer is: a rounded corner and a shadow go over
             // what lies beneath the surface, not over the host's square pixels
             px.fill(0);
-            let scale = f64::from(scale120(id)) / 120.0;
             let mut t = TargetView {
                 data: &mut px,
                 stride: f.w as usize,
@@ -2063,7 +2127,10 @@ impl WaylandShell {
                 scale,
             };
             let src = front.view(f.glitnir_root, (f.src_x, f.src_y), scale);
-            if !composed || compose_root(f.glitnir_root, &mut t, &[all], &[src]).is_err() {
+            let x = Extras {
+                backdrop: backdrop.as_ref().map(|b| (b, f.glitnir_root)),
+            };
+            if !composed || compose_root_with(f.glitnir_root, &mut t, &[all], &[src], &x).is_err() {
                 front.copy_to(&mut t, &[all]);
             }
             if f.flags & NHSHELL_SF_ALPHA_HOST != 0 {

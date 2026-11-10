@@ -469,21 +469,28 @@ typed!(Reset, ResetIn, deserialize_map, {
 
 typed!(Splice, Op, deserialize_map, {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Splice, A::Error> {
-        let (mut name, mut at, mut remove, mut ids) = (None, None, None, Vec::new());
-        entries(&mut map, &["name", "at", "remove", "ids"], |i, m| {
-            match i {
-                0 => name = Some(m.next_value::<Str>()?.0),
-                1 => at = m.next_value::<Count>()?.0,
-                2 => remove = m.next_value::<Count>()?.0,
-                _ => ids = m.next_value::<Strs>()?.0,
-            }
-            Ok(())
-        })?;
+        let (mut name, mut at, mut remove, mut ids, mut from) =
+            (None, None, None, Vec::new(), None);
+        entries(
+            &mut map,
+            &["name", "at", "remove", "ids", "from"],
+            |i, m| {
+                match i {
+                    0 => name = Some(m.next_value::<Str>()?.0),
+                    1 => at = m.next_value::<Count>()?.0,
+                    2 => remove = m.next_value::<Count>()?.0,
+                    3 => ids = m.next_value::<Strs>()?.0,
+                    _ => from = m.next_value::<Count>()?.0,
+                }
+                Ok(())
+            },
+        )?;
         Ok(Splice(Op::Splice {
             name: req(name)?,
             at: at.unwrap_or(0),
             remove: remove.unwrap_or(0),
             ids,
+            from,
         }))
     }
 });

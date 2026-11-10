@@ -4,7 +4,7 @@
 //! ```text
 //! op = {"reset": {"descriptor": D, "nodes": [N], "edges": [E], "lists": [L]}}
 //!    | {"nodes": [N]} | {"remove": [id]} | {"edges": {"add": [E], "remove": [E]}}
-//!    | {"list": L} | {"splice": {"name", "at", "remove", "ids"}}
+//!    | {"list": L} | {"splice": {"name", "at", "remove", "ids", "from"?: n}}
 //! D  = {"scheme": "links"|"list"|"tree", "chain_kinds": [k], "match_fields": [f], "lists": [name],
 //!       "classes": [name], "flags": [name], "forms": [{"name", "list"?}], "start": name?}
 //! N  = {"id", "kind", "parent"?, "flags"?: u32, "nav"?: {link: id|null}, "navs"?: {form: {link: id|null}},
@@ -97,11 +97,15 @@ pub enum Op {
         remove: Vec<EdgeIn>,
     },
     List(ListIn),
+    /// List NAME's ids `at..at + remove` become IDS. With FROM the splice moves a window over the same list: its
+    /// first position becomes FROM and its total stays; without, the total moves by what it added less what it
+    /// removed.
     Splice {
         name: String,
         at: usize,
         remove: usize,
         ids: Vec<String>,
+        from: Option<usize>,
     },
 }
 
@@ -335,6 +339,7 @@ fn op(v: &Value) -> R<Op> {
                 at: count(s.get("at"), "splice at")?.unwrap_or(0),
                 remove: count(s.get("remove"), "splice remove")?.unwrap_or(0),
                 ids: strings(s.get("ids"), "splice ids")?,
+                from: count(s.get("from"), "splice from")?,
             }
         }
         other => return bad(format!("op: unknown {other:?}")),

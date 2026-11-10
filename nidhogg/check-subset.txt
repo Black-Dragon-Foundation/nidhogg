@@ -26,6 +26,7 @@ src/nidhogg-tests/workers-json-tests
 src/nidhogg-tests/workers-framing-tests
 src/nidhogg-tests/workers-image-tests
 src/nidhogg-tests/workers-blk-tests
+src/nidhogg-tests/workers-hash-tests
 src/nidhogg-tests/workers-autosave-tests
 src/nidhogg-tests/quit-tty-tests
 src/nidhogg-tests/varwatch-tests

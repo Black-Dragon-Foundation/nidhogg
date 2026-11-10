@@ -39,7 +39,10 @@ List       = {name, ids, total?, from?}          ; windowed when total is set
 ```
 
 A patch is `{"ops": [...]}` with ops `reset`, `nodes` (insert or replace), `remove`, `edges {add, remove}`, `list` and
-`splice`. Removing a node leaves its edges: the hub removes them (an edge to a missing node is never followed).
+`splice {name, at, remove, ids, from?}`. A splice grows or shrinks a window's total by what it adds less what it
+removes; one that names `from` moves the window over the same list instead (its first position becomes `from`, its
+total stays), so a hub moves a long window by the ids that change, not the window whole. Removing a node leaves its
+edges: the hub removes them (an edge to a missing node is never followed).
 
 **Apply** checks a whole patch before changing anything: it decodes every op, projects the caps over the batch and
 refuses a splice outside its list. A refused patch leaves the model, the selections and the classes as they were.
@@ -58,11 +61,15 @@ fallback), a form, a search, a lit list, expanded and ticked sets, and the class
 
 - `follow LINK`: the link of the instance's form (the default set when the node has none for it). In a list form
   (`{name, list}`) `up` and `down` step along the form's list. A null link, or one to a node the model doesn't hold,
-  leaves the selection. With no selection, the first entry of the primary list (`start`, else the first list).
+  leaves the selection. With no selection, the first entry of the primary list (`start`, else the first list). A
+  follow that leaves the selection answers `more` when its link names a direction (`up`, `down`, also as
+  `up:KIND`/`down:KIND`; `left` and `right` too outside the tree scheme) and the primary list is a window that goes on
+  that way: the row it wants may be in the next window.
 - `walk LIST STEP` (wrapping) and `walk-to LIST N`; a windowed list stops at its window's edge and answers `more`
   with a direction.
 - `select`, `search`, `form`, `lit`, `fold`, `tick`; reads of the selection, a node's kind, fields, flags, parent and
-  rows, a list, the descriptor's class names.
+  rows, a list, a list's `window` (`(FROM LENGTH TOTAL)` when the model holds a window of it: where the editor asks
+  the hub for the next one), the descriptor's class names.
 - **The tree scheme:** the primary list holds the whole tree, parents before their children; a node is open when the
   model's flag `expanded` is set, flipped by the instance's expanded set (`fold` toggles it; `open` reads it). The
   list `visible` is the instance's own: the primary list's entries whose ancestors are all open. `follow` `up`/`down`
@@ -91,7 +98,6 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 
 | Op | Arguments | Answer |
 |---|---|---|
-| `SJA_APPLY` | view, hub, version, patch | status: 0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken |
 | `SJA_OPEN` | view, group or nil | a handle |
 | `SJA_CLOSE` | handle | nil |
 | `SJA_FOLLOW` | handle, link | the selection or nil |
@@ -101,7 +107,7 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_HUB_LOST` | | nil |
 | `SJA_STATS` | | views, instances, bytes, panics, broken views |
 | `SJA_PUSH` | a whole `view-model` line | `(VIEW VERSION DECISION)`: 0 queue, 1 reset, 2 drop, 3 resync, 4 none (no instance of the view); nil when the line is not a `view-model` |
-| `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status, the stream's newest version or nil |
+| `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status (0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken), the stream's newest version or nil |
 | `SJA_NAMED` | view, version | nil: a row patch named that model version |
 | `SJA_DUE` | view | as `SJA_DRAIN` (all), when the oldest queued model is one no row patch named; else nil |
 
@@ -135,9 +141,9 @@ instance closes. `SJA_STATS` counts panics and broken views; drgnx's doctor fail
 
 Feature `test-hooks` adds `SJA_TEST_PANIC` (a panic inside a view's guard) and the breaker's test clock.
 
-`../sja-fuzz` has `cargo-fuzz` targets (`apply_bytes`: arbitrary bytes as a patch, then the verbs; `push_bytes`: arbitrary
-bytes as a `view-model` line's model, pushed and drained; `typed_bytes`: whatever the typed read reads, the `Value`
-read reads the same), nightly only: `cargo +nightly fuzz run apply_bytes` there. It is not part of `check.sh`.
+`../sja-fuzz` has `cargo-fuzz` targets (`push_bytes`: arbitrary bytes as a `view-model` line's model, pushed and drained,
+then the verbs; `typed_bytes`: whatever the typed read reads, the `Value` read reads the same), nightly only:
+`cargo +nightly fuzz run push_bytes` there. It is not part of `check.sh`.
 
 ## Checks
 

@@ -629,6 +629,7 @@ user displays takes this path, and a build without the image libraries would not
                        (list rows)))))))
 
 (defvar nhwl-scroll-layers)
+(declare-function nhwl--scroll-layers "nhwlterm.c")
 
 ;; The frame's own scroll path: window layers off (with them, the window's scroll moves its layer's view instead).
 (ert-deftest nhwl-gui/scroll-run-damages-exposed-rows ()
@@ -2295,6 +2296,11 @@ geometry's origin, past the resize margins it keeps where the compositor offers 
      (switch-to-buffer "*scratch*")
      (message nil)
      (redisplay t)
+     ;; An earlier row's full-window scroll leaves the window its own layer, and the layer goes back to the frame two
+     ;; seconds after that scroll (nidhogg/glue/src/layers.rs `IDLE'), at the next publish: a commit the row would
+     ;; otherwise count as drawn while idle.  Let it land first.
+     (when (fboundp 'nhwl--scroll-layers)
+       (should (nhwl-gui--wait (lambda () (redisplay t) (zerop (nhwl--scroll-layers))) 5)))
      (gui-runner-wait-settled)
      (let ((mark (nhwl-gui--mark)) (end (+ (float-time) 2)))
        (while (< (float-time) end)
@@ -2703,7 +2709,10 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
           (nhwl-gui--pump)
           (add-hook 'minibuffer-setup-hook setup)
           (add-hook 'post-command-hook post)
-          (setq result (with-timeout (5 'timeout) (with-selected-frame mf (read-string "nhwl: "))))
+          ;; `this-command' bound: a command an earlier row called outside the command loop (`yank' sets it) would
+          ;; count the hook's entry run as a command, with the parent's last event
+          (setq result (let ((this-command nil))
+                         (with-timeout (5 'timeout) (with-selected-frame mf (read-string "nhwl: ")))))
           (should (equal result "abc"))
           (should frames)
           (should (seq-every-p (lambda (f) (eq f mf)) frames)))
