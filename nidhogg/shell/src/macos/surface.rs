@@ -121,7 +121,7 @@ pub struct Stats {
     pub paint_ns: AtomicU64,
     pub fill_ns: AtomicU64,
     pub commit_ns: AtomicU64,
-    /// Glyphs whose advance and bounds were asked of Core Text (each open font asks once per glyph).
+    /// Core Text asked for a character's glyph or a glyph's advance and bounds (an open font asks once for each).
     pub glyph_asks: AtomicU64,
 }
 

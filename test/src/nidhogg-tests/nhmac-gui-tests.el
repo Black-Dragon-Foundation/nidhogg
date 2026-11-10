@@ -2152,7 +2152,8 @@ runs `nidhogg-frame-scale-change-functions'.)"
       (nhmac-gui--settle))))
 
 (ert-deftest nhmac-glyphs-measured-once ()
-  "A font asks Core Text for a glyph's advance and bounds once: redrawing text already shown asks it nothing."
+  "A font asks Core Text for a character's glyph, and a glyph's advance and bounds, once: redrawing text already
+shown asks it nothing."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (switch-to-buffer (generate-new-buffer " *nhmac-glyphs*"))
