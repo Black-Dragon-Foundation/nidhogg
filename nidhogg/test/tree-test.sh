@@ -81,6 +81,18 @@ flag_rule() {
   done < <(git log --format=%H "$lowest..HEAD")
 }
 
+# Subject rule: every commit on HEAD above BASE starts 'nidhogg: '.  Merge commits (more than one parent) are skipped:
+# a merge on an integration line never enters the final series, which the release rebuilds as linear commits.
+subject_rule() {
+  local subject
+  while IFS= read -r subject; do
+    case $subject in
+      "nidhogg: "*) ;;
+      *) fail "commit subject does not start with 'nidhogg: ': $subject" ;;
+    esac
+  done < <(git log --no-merges --format=%s "$1..HEAD")
+}
+
 # TREE_TEST_SELF=1: the rule on temp repo fixtures.
 if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   command -v unifdef >/dev/null || { echo "tree self-test: unifdef is not installed"; exit 1; }
@@ -94,7 +106,7 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   }
   put() { printf '%b' "$2" > "$self/r/src/a.c" && git -C "$self/r" commit -qam "$1"; }
   expect() {   # expect NAME PATTERN ("" = no output)
-    out=$(flag_rule 2>&1)
+    out=$(${RULE:-flag_rule} 2>&1)
     if { [ -z "$2" ] && [ -n "$out" ]; } || { [ -n "$2" ] && ! printf '%s\n' "$out" | grep -q -- "$2"; }; then
       echo "tree self-test: case '$1' failed; output: ${out:-<none>}"; exit 1
     fi
@@ -169,7 +181,14 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
   putf "nidhogg: pgtk: p" src/nhwl.c 'int s;\nint t;\n'
   expect "another commit editing a C file a group created" "belongs to no flag group; it goes below the groups"
-  echo "tree self-test: 25 cases ok"
+  subj() { subject_rule "$(git -C "$self/r" rev-list --max-parents=0 HEAD)"; }
+  fixture; git checkout -q -b side; putf "nidhogg: glitnir: g" src/b.c 'int b;\n'; git checkout -q -
+  put "nidhogg: pgtk: p" "int a;\n/* p */\n"; git merge -q --no-ff -m "Merge side: not a series subject" side
+  RULE=subj expect "a merge commit with a non-nidhogg subject" ""
+  fixture; put "pgtk change without the prefix" "int a;\n/* p */\n"
+  RULE=subj expect "a non-merge commit with a non-nidhogg subject" "commit subject does not start with 'nidhogg: '"
+  unset RULE
+  echo "tree self-test: 27 cases ok"
   exit 0
 fi
 
@@ -190,12 +209,7 @@ elif ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
   fail "base $base does not exist"
 else
   git merge-base --is-ancestor "$base" HEAD || fail "$base is not an ancestor of HEAD"
-  while IFS= read -r subject; do
-    case $subject in
-      "nidhogg: "*) ;;
-      *) fail "commit subject does not start with 'nidhogg: ': $subject" ;;
-    esac
-  done < <(git log --format=%s "$base..HEAD")
+  subject_rule "$base"
 fi
 
 # agent rules: upstream tracks AGENTS.md and CLAUDE.md; Nidhogg replaces them with its own (never send anything to GNU)
