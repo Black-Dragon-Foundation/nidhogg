@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::model::Model;
 use crate::names::Id;
+use crate::queue::Queue;
 use crate::wire::Scheme;
 
 /// The name of a tree's visible list, which each instance computes (`View::visible`).
@@ -73,6 +74,8 @@ pub struct View {
     pub stale: bool,
     pub sels: HashMap<SelKey, Sel>,
     pub insts: BTreeMap<u32, Inst>,
+    /// The models the hub sent that the draw has not applied yet (`queue`).
+    pub queue: Queue,
 }
 
 impl View {
@@ -175,9 +178,10 @@ impl View {
         }
     }
 
-    /// Mark the view stale (the hub went).
+    /// Mark the view stale (the hub went): its queue and stream go too.
     pub fn hub_lost(&mut self) {
         self.stale = true;
+        self.queue.lose();
     }
 
     // ---- verbs ----

@@ -150,6 +150,7 @@ impl Slot {
         self.panics.fetch_add(1, Ordering::Relaxed);
         let mut v = self.view.lock().unwrap_or_else(|e| e.into_inner());
         v.model = None;
+        v.queue.lose();
         drop(v);
         self.view.clear_poison();
         self.bytes.store(0, Ordering::Relaxed);
