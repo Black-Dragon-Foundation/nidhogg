@@ -877,7 +877,7 @@ impl ShellBackend for MacShell {
         &mut self,
         root: WindowId,
         frames: &[SurfaceFrame],
-        _t_key_ns: u64,
+        t_key_ns: u64,
     ) -> ShellResult<bool> {
         self.win(root)?;
         let mut ids: Vec<WindowId> = Vec::new();
@@ -892,8 +892,27 @@ impl ShellBackend for MacShell {
             if damage.is_empty() && !s.owes() && s.newest().is_some() && s.size() == (lw, lh) {
                 continue;
             }
-            match s.draw(f, &damage, now_ns()) {
-                Some(surface::Drew::Drawn) => ids.push(f.window),
+            let start = now_ns();
+            match s.draw(f, &damage, start) {
+                Some(surface::Drew::Drawn) => {
+                    // `glitnir-stats`: one entry per drawing a layer shows (Core Animation composes; no compose time)
+                    let px = damage.iter().map(|r| r.w.max(0) as u64 * r.h.max(0) as u64).sum();
+                    glitnir::stats::record(
+                        f.glitnir_root,
+                        glitnir::stats::StatsEntry {
+                            t_update_ns: t_key_ns,
+                            t_commit_ns: start,
+                            t_draw_start_ns: start,
+                            t_draw_end_ns: now_ns(),
+                            presented_us: -1,
+                            damage_px: px,
+                            painted_px: px,
+                            backfill: 2,
+                            ..Default::default()
+                        },
+                    );
+                    ids.push(f.window)
+                }
                 Some(surface::Drew::Held) => {
                     crate::trace::pump(|| format!("publish: window {} held", f.window));
                     held = true;
