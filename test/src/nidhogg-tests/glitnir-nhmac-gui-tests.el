@@ -753,3 +753,23 @@ gap colour."
             (should (> (plist-get (plist-get s :draw-ms) :max) 0))))
       (blink-cursor-mode (if blink 1 -1))
       (kill-buffer (current-buffer)))))
+
+(ert-deftest glitnir-nhmac/toplevel-chrome-is-the-systems ()
+  "A decorated root keeps AppKit's shadow and corners: Glitnir puts no layer on it, also when it asks for
+`toplevel-chrome' (which Glitnir draws only for an undecorated frame on Wayland)."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((f (make-frame '((width . 40) (height . 10)
+                         (toplevel-chrome . ((corner-radius . 12) (shadow . t))))))
+        (panics (length (nhwl-glue-panics))))
+    (unwind-protect
+        (progn
+          (select-frame f)
+          (nhmac-gui--settle)
+          (let ((info (nhmac--window-info f)))
+            (nhmac-gui--say "glitnir-nhmac/toplevel-chrome-is-the-systems: %S" info)
+            (should (eq (plist-get info :has-shadow) t))
+            (should (eql (plist-get info :sublayers) 0)))
+          (should-not (glitnir--chrome-vector f))
+          (should (= (length (nhwl-glue-panics)) panics)))
+      (delete-frame f t))))
