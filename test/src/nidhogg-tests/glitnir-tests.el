@@ -204,6 +204,17 @@
 
 ;; The chrome vector: Lisp resolves, C copies, the glue validates.
 
+(ert-deftest glitnir-reduced-motion-auto-on-the-macos-shell ()
+  ;; `auto' on the macOS shell asks it (`nhmac-reduced-motion-p', the system's Reduce motion), not the Linux settings
+  (let ((glitnir-reduced-motion 'auto) (asked nil))
+    (cl-letf (((symbol-function 'nhmac-reduced-motion-p) (lambda () (setq asked t) t))
+              ((symbol-function 'nhwl-settings-get) (lambda (_k) 0)))
+      (should (glitnir--reduced-motion-p))
+      (should asked))
+    (cl-letf (((symbol-function 'nhmac-reduced-motion-p) (lambda () nil))
+              ((symbol-function 'nhwl-settings-get) (lambda (_k) 1)))
+      (should-not (glitnir--reduced-motion-p)))))
+
 (ert-deftest glitnir-chrome-vector-off ()
   ;; Glitnir off (design: off equals Glitnir off): a child asking for corners, a shadow and a blur gets the vector of
   ;; no chrome: slot 0 is 0, no radius, no shadow, no blur.
