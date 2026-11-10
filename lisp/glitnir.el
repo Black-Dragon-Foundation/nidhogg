@@ -254,11 +254,17 @@ them off, nil never does."
   :version "31.1"
   :group 'glitnir)
 
+(declare-function nhmac-reduced-motion-p "term/nhmac-win" ())
+
 (defun glitnir--reduced-motion-p ()
-  "Non-nil when transitions are off, by `glitnir-reduced-motion'."
+  "Non-nil when transitions are off, by `glitnir-reduced-motion'.
+`auto' asks the macOS shell (the system's Reduce motion) there, and the
+desktop's settings on Linux."
   (if (eq glitnir-reduced-motion 'auto)
-      (and (fboundp 'nhwl-settings-get)
-           (eql (nhwl-settings-get 'reduced-motion) 1))
+      (if (fboundp 'nhmac-reduced-motion-p)
+          (nhmac-reduced-motion-p)
+        (and (fboundp 'nhwl-settings-get)
+             (eql (nhwl-settings-get 'reduced-motion) 1)))
     glitnir-reduced-motion))
 
 (defun glitnir-reduced-motion-p ()
