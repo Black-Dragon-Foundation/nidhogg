@@ -1023,11 +1023,14 @@ nhwl_frame_scale (struct frame *f)
   return (s120 ? s120 : nhwl_start_scale (f)) / 120.0;
 }
 
-/* FRAME_RES of F: 96 dpi times its scale.  */
+/* FRAME_RES of F: 96 dpi times its scale times its root frame's
+   `nidhogg-text-zoom' parameter (nidhogg-scale.el sets it).  */
 double
 nhwl_frame_res (struct frame *f)
 {
-  return 96.0 * nhwl_frame_scale (f);
+  Lisp_Object zoom = get_frame_param (nhwl_tree_root (f), Qnidhogg_text_zoom);
+
+  return 96.0 * nhwl_frame_scale (f) * (NUMBERP (zoom) ? XFLOATINT (zoom) : 1);
 }
 
 double
@@ -4398,6 +4401,7 @@ syms_of_nhwlterm (void)
   defsubr (&Snhwl__scroll_layers);
   defsubr (&Snhwl__frame_states);
   DEFSYM (Qnidhogg_scale, "nidhogg-scale");
+  DEFSYM (Qnidhogg_text_zoom, "nidhogg-text-zoom");
 #ifdef ENABLE_CHECKING
   defsubr (&Snhwl__test_glue_panic);
 #endif
