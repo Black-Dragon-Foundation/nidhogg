@@ -2027,6 +2027,38 @@ any thread that does not block it: Emacs's SIGCHLD can reach the helper.)"
     (should (= px1 (floor (+ (* pt s1) 0.5))))
     (should (= px2 px0))))
 
+(defvar nidhogg-frame-scale-change-functions)
+
+(ert-deftest nhmac-new-frame-opens-its-font-once ()
+  "A frame made on the selected frame's monitor starts at that scale: its default font is never re-opened after it
+shows, and it is the selected frame's pixel size.  (Each re-open runs `nidhogg-frame-scale-change-functions'.)"
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((root (selected-frame)) (f nil) (reopens 0) (monitors 0) (moves 0)
+         (on-scale (lambda (frame) (when (eq frame f) (cl-incf reopens))))
+         (on-monitors (lambda (_) (cl-incf monitors)))
+         (on-move (lambda (frame) (when (eq frame f) (cl-incf moves)))))
+    (add-hook 'nidhogg-frame-scale-change-functions on-scale)
+    (add-hook 'display-monitors-changed-functions on-monitors)
+    (add-hook 'move-frame-functions on-move)
+    (unwind-protect
+        (progn
+          (setq f (make-frame '((width . 40) (height . 10))))
+          (dotimes (_ 3) (nhmac-gui--settle))
+          (nhmac-gui--say
+           (concat "nhmac-new-frame-opens-its-font-once: scale %s (root %s), %d px (root %d px), %d re-opens, "
+                   "%d monitor changes, %d moves, size %S")
+           (frame-scale-factor f) (frame-scale-factor root) (nhmac-gui--font-px f) (nhmac-gui--font-px root)
+           reopens monitors moves (cons (frame-pixel-width f) (frame-pixel-height f)))
+          (should (= (frame-scale-factor f) (frame-scale-factor root)))
+          (should (= reopens 0))
+          (should (= (nhmac-gui--font-px f) (nhmac-gui--font-px root))))
+      (remove-hook 'nidhogg-frame-scale-change-functions on-scale)
+      (remove-hook 'display-monitors-changed-functions on-monitors)
+      (remove-hook 'move-frame-functions on-move)
+      (when (frame-live-p f) (delete-frame f t))
+      (nhmac-gui--settle))))
+
 (ert-deftest nhmac-monitor-change-runs-move-frame-functions ()
   "A root frame moved to another monitor runs `move-frame-functions' with it."
   :tags '(draws)
