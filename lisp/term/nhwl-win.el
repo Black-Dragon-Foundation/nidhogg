@@ -35,6 +35,8 @@
 ;;; Code:
 
 (require 'mouse)
+;; per-frame scale and text zoom; preloaded with this file
+(require 'term/nidhogg-scale)
 
 (declare-function nhwl-frame-begin-move "nhwlfns.c")
 (declare-function nhwl-frame-begin-resize "nhwlfns.c")
