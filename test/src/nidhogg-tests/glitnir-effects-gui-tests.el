@@ -471,6 +471,104 @@ Inline: the leg's time passes unseen, and at most two commits jump to the end."
      '(alpha-background . 1.0))
     (should (eql 0 (cdr (gui-runner-pixel-diff with without))))))
 
+(defun glitnir-fx--blur-shows (params &optional snapshot)
+  "Over text, grab a child frame with PARAMS and a 12 px backdrop, then the same child without the backdrop; return
+\(PIXELS-DIFFERING . PIXELS) over the child's area.  SNAPSHOT non-nil: the pictures are `glitnir-snapshot's of the
+tree, compared whole, instead of the screen's."
+  (let ((at (and (not snapshot) (glitnir-fx--spot))) with without rect
+        (grab (if snapshot (lambda () (glitnir-snapshot (selected-frame) 'raw)) #'gui-runner-screen-grab)))
+    (glitnir-fx--with-text
+     (lambda ()
+       (apply #'glitnir-fx--with-child
+              nil
+              (lambda (c _id _base)
+                (should (glitnir-fx--wait (lambda () (> (glitnir-fx--backdrop-px c) 0))))
+                (glitnir-fx--rest c)
+                (setq with (funcall grab)
+                      rect (if snapshot
+                               (list 0 0 (car with) (cadr with))
+                             (glitnir-fx--rect c at)))
+                (when snapshot
+                  (setq rect (append rect (list (* (frame-pixel-width c) (frame-pixel-height c)))))))
+              '(backdrop-blur . 12) params)
+       (gui-runner-wait-settled)
+       (apply #'glitnir-fx--with-child
+              nil
+              (lambda (_c _id _base)
+                (gui-runner-wait-settled)
+                (setq without (funcall grab)))
+              params)))
+    (cons (cdr (gui-runner-pixel-diff with without (seq-take rect 4)))
+          (or (nth 4 rect) (* (nth 2 rect) (nth 3 rect))))))
+
+(ert-deftest glitnir-blur-reaches-the-picture ()
+  "Over text, a child at 0.9 with a backdrop shows the text beneath blurred: its grab differs from the same child
+without the blur over many pixels (a blur that never reaches the picture leaves the two the same)."
+  (skip-unless (glitnir-fx--live-p))
+  (let ((r (glitnir-fx--blur-shows '((alpha-background . 0.9)))))
+    (ert-info ((format "%S" r))
+      (should (> (car r) (/ (cdr r) 20))))))
+
+(ert-deftest glitnir-blur-reaches-the-picture-rounded-and-shadowed ()
+  "The same with a palette's chrome: rounded corners and a deep shadow."
+  (skip-unless (glitnir-fx--live-p))
+  (let ((r (glitnir-fx--blur-shows
+            '((alpha-background . 0.9) (corner-radius . 12)
+              (shadow . (:blur 48 :offset (0 . 16) :spread 0 :opacity 0.5))))))
+    (ert-info ((format "%S" r))
+      (should (> (car r) (/ (cdr r) 20))))))
+
+(ert-deftest glitnir-blur-in-the-snapshot ()
+  "`glitnir-snapshot' holds the tree as the compositor was given it: a child's backdrop too, so a snapshot with the
+blur differs from one without it."
+  (skip-unless (and (glitnir-fx--live-p) (fboundp 'glitnir-snapshot)))
+  (let ((r (glitnir-fx--blur-shows
+            '((alpha-background . 0.9) (corner-radius . 12)
+              (shadow . (:blur 48 :offset (0 . 16) :spread 0 :opacity 0.5)))
+            t)))
+    (ert-info ((format "%S" r))
+      (should (> (car r) (/ (cdr r) 20))))))
+
+(defun glitnir-fx--crop (grab rect)
+  "The part RECT (X Y W H) of GRAB (W H BYTES), as a grab of its own."
+  (pcase-let ((`(,gw ,_ ,bytes) grab) (`(,x ,y ,w ,h) rect))
+    (list w h (apply #'concat (mapcar (lambda (row)
+                                        (let ((o (* 4 (+ x (* gw (+ y row))))))
+                                          (substring bytes o (+ o (* 4 w)))))
+                                      (number-sequence 0 (1- h)))))))
+
+(ert-deftest glitnir-blur-snapshot-matches-the-screen ()
+  "The snapshot's blurred backdrop is the one the presenter puts on the screen: over text, a rounded, shadowed child
+at 0.9 with a backdrop is the same in `glitnir-snapshot' as in the compositor's output, but for a few pixels."
+  (skip-unless (and (glitnir-fx--live-p) (fboundp 'glitnir-snapshot)))
+  (let* ((snap (lambda () (glitnir-snapshot (selected-frame) 'raw)))
+         (on-screen (glitnir-fx--spot))
+         in-snap screen picture rect)
+    ;; the child's corner in the snapshot, found as `glitnir-fx--spot' finds it on the screen
+    (glitnir-fx--with-child
+     nil (lambda (_c _id _base)
+           (setq in-snap (glitnir-fx--wait
+                          (lambda () (gui-runner-grab-find-block (funcall snap) glitnir-fx--bgr 20 20))))))
+    (gui-runner-wait-settled)
+    (should in-snap)
+    (glitnir-fx--with-text
+     (lambda ()
+       (glitnir-fx--with-child
+        nil
+        (lambda (c _id _base)
+          (should (glitnir-fx--wait (lambda () (> (glitnir-fx--backdrop-px c) 0))))
+          (glitnir-fx--rest c)
+          (setq screen (gui-runner-screen-grab)
+                picture (funcall snap)
+                rect (glitnir-fx--rect c on-screen)))
+        '(alpha-background . 0.9) '(backdrop-blur . 12) '(corner-radius . 12))))
+    (let* ((size (list (nth 2 rect) (nth 3 rect)))
+           (a (glitnir-fx--crop screen (append (list (car on-screen) (cdr on-screen)) size)))
+           (b (glitnir-fx--crop picture (append (list (car in-snap) (cdr in-snap)) size)))
+           (d (gui-runner-pixel-diff a b)))
+      (ert-info ((format "%S over %S px" d (* (car size) (cadr size))))
+        (should (<= (cdr d) (/ (* (car size) (cadr size)) 100)))))))
+
 (ert-deftest glitnir-blur-corners ()
   "Rounded corners: the pixel at a corner is what lies beneath, the blur stops there."
   (skip-unless (glitnir-fx--live-p))
