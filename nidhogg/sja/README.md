@@ -58,11 +58,15 @@ fallback), a form, a search, a lit list, expanded and ticked sets, and the class
 
 - `follow LINK`: the link of the instance's form (the default set when the node has none for it). In a list form
   (`{name, list}`) `up` and `down` step along the form's list. A null link, or one to a node the model doesn't hold,
-  leaves the selection. With no selection, the first entry of the primary list (`start`, else the first list).
+  leaves the selection. With no selection, the first entry of the primary list (`start`, else the first list). A
+  follow that leaves the selection answers `more` when its link names a direction (`up`, `down`, also as
+  `up:KIND`/`down:KIND`; `left` and `right` too outside the tree scheme) and the primary list is a window that goes on
+  that way: the row it wants may be in the next window.
 - `walk LIST STEP` (wrapping) and `walk-to LIST N`; a windowed list stops at its window's edge and answers `more`
   with a direction.
 - `select`, `search`, `form`, `lit`, `fold`, `tick`; reads of the selection, a node's kind, fields, flags, parent and
-  rows, a list, the descriptor's class names.
+  rows, a list, a list's `window` (`(FROM LENGTH TOTAL)` when the model holds a window of it: where the editor asks
+  the hub for the next one), the descriptor's class names.
 - **The tree scheme:** the primary list holds the whole tree, parents before their children; a node is open when the
   model's flag `expanded` is set, flipped by the instance's expanded set (`fold` toggles it; `open` reads it). The
   list `visible` is the instance's own: the primary list's entries whose ancestors are all open. `follow` `up`/`down`
