@@ -382,6 +382,21 @@ pub trait ShellBackend {
     fn set_backdrop(&mut self, _window: WindowId, _blur_px: f32) -> ShellResult {
         Err(ShellError::Unsupported)
     }
+    /// Whether the shell draws a child's chrome on the window's own layers (`set_chrome`): its surface is then the
+    /// native area alone, with no shadow margin, and the host composes no chrome into it.
+    fn chrome_on_layers(&self) -> bool {
+        false
+    }
+    /// Child `window`'s chrome (corners, border, shadow; device pixels at the window's scale), drawn by the shell on
+    /// the window's layers from the tree's next commit (`None`: none).  `Unsupported` where `chrome_on_layers` is
+    /// false; `State` for any other window.
+    fn set_chrome(
+        &mut self,
+        _window: WindowId,
+        _chrome: Option<&glitnir::scene::Chrome>,
+    ) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
     /// Capture `serial` of the window the host calls `key` in root `root`: its rectangle `rect` (root device px) of
     /// the picture as the presenter has it before the packets published after this call, the old layout a layout leg
     /// moves from (`layout_leg`).  Without a picture yet (none published, or dropped idle), it is taken after the
