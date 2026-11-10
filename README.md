@@ -151,7 +151,12 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   background. With the flag, `nidhogg-echo-prompt` is `prompt` while C shows a prompt in the echo area (`read-char`,
   `read-event`, `read-char-exclusive`, `read-key-sequence`, and the `interactive` codes that read with them), `keys`
   while the keys typed so far echo, and nil for `message`: a `set-message-function` that sends messages elsewhere keeps
-  prompts where the user looks. Emacs draws each frame into its own backing and publishes the damage, the
+  prompts where the user looks. With the flag, `lisp/nidhogg-frame.el` makes the first frame with its minibuffer in a
+  child frame when early-init.el asks for one (`(minibuffer . child-frame)` under the window system's entry of
+  `window-system-default-frame-alist`): stock Emacs makes it with a minibuffer of its own and, after init, deletes it
+  and makes it again once it is visible. The minibuffer frame C makes for the first frame to borrow from while it is
+  made is invisible and goes once the box is there; the box starts hidden. Asked for nothing, the first frame is as in
+  stock Emacs. Emacs draws each frame into its own backing and publishes the damage, the
   copied pixels and the scene per tree (a root and its child frames); the presenter, one thread per display
   (`NHWL_PRESENTER=0` runs it inline), composes and commits. Child frames are subsurfaces of their parent, so the Wayland
   compositor puts the tree together.
