@@ -126,6 +126,7 @@ impl MacShell {
             "pump-trace" => Ok(crate::trace::pumps_text()),
             "shell-view" => Ok(self.shell_view()),
             "test-kq-probe" => Ok(kq_probe(arg)),
+            "test-kq-layers" => kq_layers(arg),
             "test-child" => first_number(arg).and_then(|w| self.child_info(w)),
             "test-windows" => Ok(self.window_numbers()),
             "test-captures" => Ok(format!(
@@ -422,6 +423,127 @@ fn kq_probe(arg: &str) -> String {
         libc::close(kq);
         libc::close(fd);
         format!("(:open 0 :kq {e})")
+    }
+}
+
+/// `test-kq-layers` (N): which layer of the wait's kqueue loses a readiness, below the run loop.  For a pipe and a
+/// pty, a writer thread writes N bytes at random 0-3 ms intervals while this thread waits as the main wait does: a
+/// poll of the kqueue first, then a block, either on that kqueue (`direct`) or on a second kqueue watching the first's
+/// descriptor (`nested`, the shape the run loop's source has).  A block that times out (300 ms) while `select` calls
+/// the descriptor readable is a miss: `(:pipe-direct M :pipe-nested M :pty-direct M :pty-nested M)`.
+fn kq_layers(arg: &str) -> ShellResult<String> {
+    let n = first_number(arg)?;
+    let mut out = String::from("(");
+    for pty in [false, true] {
+        for nested in [false, true] {
+            let m = kq_layer_misses(pty, nested, n).ok_or(ShellError::Arg)?;
+            out.push_str(&format!(
+                ":{}-{} {m} ",
+                if pty { "pty" } else { "pipe" },
+                if nested { "nested" } else { "direct" }
+            ));
+        }
+    }
+    out.pop();
+    out.push(')');
+    Ok(out)
+}
+
+/// One `test-kq-layers` run: the misses, `None` when a descriptor could not be made.
+fn kq_layer_misses(pty: bool, nested: bool, n: u64) -> Option<u64> {
+    let ms = |m: i64| libc::timespec {
+        tv_sec: 0,
+        tv_nsec: m * 1_000_000,
+    };
+    let readable = |fd: i32| {
+        // SAFETY: a one-entry pollfd array on the stack.
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        unsafe { libc::poll(&mut p, 1, 0) > 0 && p.revents & libc::POLLIN != 0 }
+    };
+    let drain = |fd: i32| {
+        let mut got = 0u64;
+        let mut buf = [0u8; 256];
+        // SAFETY: our non-blocking read end; `buf` is writable.
+        loop {
+            let r = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+            if r <= 0 {
+                return got;
+            }
+            got += r as u64;
+        }
+    };
+    // SAFETY: plain syscalls on descriptors made, used and closed here; kevents are plain data.
+    unsafe {
+        let mut fds = [-1i32; 2];
+        if pty {
+            // [read, write] = [master, slave]; raw, so a byte reaches the master as written
+            let (mut m, mut s) = (-1, -1);
+            if libc::openpty(
+                &mut m,
+                &mut s,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ) < 0
+            {
+                return None;
+            }
+            let mut t: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(s, &mut t);
+            libc::cfmakeraw(&mut t);
+            libc::tcsetattr(s, libc::TCSANOW, &t);
+            fds = [m, s];
+        } else if libc::pipe(fds.as_mut_ptr()) < 0 {
+            return None;
+        }
+        let (rd, wr) = (fds[0], fds[1]);
+        libc::fcntl(rd, libc::F_SETFL, libc::O_NONBLOCK);
+        let reg = |kq: i32, fd: i32| {
+            let mut ev: libc::kevent = std::mem::zeroed();
+            ev.ident = fd as usize;
+            ev.filter = libc::EVFILT_READ;
+            ev.flags = libc::EV_ADD;
+            libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null())
+        };
+        let inner = libc::kqueue();
+        let outer = libc::kqueue();
+        reg(inner, rd);
+        reg(outer, inner);
+        let writer = std::thread::spawn(move || {
+            let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+            for _ in 0..n {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                std::thread::sleep(Duration::from_micros(x % 3000));
+                libc::write(wr, b"x".as_ptr().cast(), 1);
+            }
+        });
+        let (mut got, mut misses) = (0u64, 0u64);
+        let end = Instant::now() + Duration::from_secs(30);
+        let mut evs = [std::mem::zeroed::<libc::kevent>(); 8];
+        while got < n && Instant::now() < end {
+            if libc::kevent(inner, std::ptr::null(), 0, evs.as_mut_ptr(), 8, &ms(0)) > 0 {
+                got += drain(rd);
+                continue;
+            }
+            let on = if nested { outer } else { inner };
+            if libc::kevent(on, std::ptr::null(), 0, evs.as_mut_ptr(), 8, &ms(300)) == 0
+                && readable(rd)
+            {
+                misses += 1;
+            }
+            got += drain(rd);
+        }
+        let _ = writer.join();
+        for fd in [inner, outer, rd, wr] {
+            libc::close(fd);
+        }
+        Some(misses)
     }
 }
 

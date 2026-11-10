@@ -270,6 +270,30 @@ serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: w
     (should (> (nhmac-gui--delta before :kq-wakes) 0))
     (should (= (nhmac-gui--delta before :empty-wakes) 0))))
 
+(ert-deftest nhmac-kq-layers ()
+  "No layer under the wait loses a readiness: the kernel's kqueue, directly and through a second kqueue (the run
+loop's source's shape), on a pipe and on a pty (0 misses in 2000 bytes each); and the whole wait, with one pipe or
+one pty alone, never sleeps through output (no gap near its 2 s timeout, three rounds each)."
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((layers (nhmac--test-kq-layers 2000))
+        (gaps (make-hash-table :test #'equal)))
+    (nhmac-gui--say "nhmac-kq-layers: kernel %S" layers)
+    (dotimes (i 3)
+      (dolist (type '(pipe pty))
+        (let ((p (nhmac-gui--feed (format "kq-%s-%d" type i) type gaps))
+              (start (float-time)))
+          (unwind-protect
+              (while (and (process-live-p p) (< (- (float-time) start) 20))
+                (accept-process-output nil 2))
+            (delete-process p)))))
+    (maphash (lambda (k v) (nhmac-gui--say "nhmac-kq-layers: %s %d lines, longest gap %.3f s" k (car v) (cdr v)))
+             gaps)
+    (should (equal layers '(:pipe-direct 0 :pipe-nested 0 :pty-direct 0 :pty-nested 0)))
+    (maphash (lambda (_k v)
+               (should (= (car v) 100))
+               (should (< (cdr v) 1.0)))
+             gaps)))
+
 (ert-deftest nhmac-keys-before-output ()
   "Under a `yes' flood, 50 keys posted one at a time each reach Lisp at once and in order: the pump that begins
 every wait stores a key before the wait reads the flood, so keys never wait behind output, and none takes the
