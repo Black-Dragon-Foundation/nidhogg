@@ -2284,11 +2284,25 @@ and `top' it opens there, at the scale of the screen there (the main screen, the
       (let ((f nil) first)
         (unwind-protect
             (progn
+              (setq nhmac--damage-log (list 'start))
+              (setq frame-size-history '(300))
               (setq f (make-frame (append '((width . 40) (height . 10)) params)))
               (nhmac-gui--settle)
               (setq first (list (frame-scale-factor f) (frame-width f) (frame-height f)
                                 (frame-pixel-width f) (frame-pixel-height f)))
               (dotimes (_ 3) (nhmac-gui--settle))
+              (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: size log %S" case
+                              (cl-remove-if-not (lambda (e) (and (consp e) (or (/= (length e) 4) (memq (car e) '(2 3)))))
+                                                (reverse nhmac--damage-log)))
+              (setq nhmac--damage-log nil)
+              (dolist (e (reverse (cdr frame-size-history)))
+                (when (eq (car-safe (car-safe e)) f)
+                  (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: history %S %S" case (cdr (car e)) (cdr e))))
+              (setq frame-size-history nil)
+              (when (fboundp 'nhmac--startup-log)
+                (dolist (e (funcall 'nhmac--startup-log))
+                  (when (and (stringp e) (string-match-p "compare:\\|configure queued\\|window made" e))
+                    (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: shell %s" case e))))
               (let ((now (list (frame-scale-factor f) (frame-width f) (frame-height f)
                                (frame-pixel-width f) (frame-pixel-height f))))
                 (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: root scale %s, want %s; first draw %S, after %S"
