@@ -949,12 +949,11 @@ impl MacShell {
             }),
         );
         // the transitions: the container's running animations, and the last leg as it was handed over
-        let animations = l.container.animationKeys().map_or(String::new(), |a| {
-            a.iter()
-                .map(|k| format!("\"{k}\""))
-                .collect::<Vec<_>>()
-                .join(" ")
-        });
+        let animations = motion::running(&l.container)
+            .iter()
+            .map(|k| format!("\"{k}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
         let leg = k.motion.last.map_or_else(
             || "nil".to_string(),
             |r| {
