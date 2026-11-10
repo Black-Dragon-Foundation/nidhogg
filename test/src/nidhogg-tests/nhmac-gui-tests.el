@@ -1063,6 +1063,17 @@ It measures; it asserts only that it ran."
                                         entries ", "))))
           (nhmac-gui--say "nhmac-pair-stages: %s" line)
           (write-region (concat line "\n") nil file t 'silent))))
+    ;; both builds: macOS's `sample' profiles this process (1 ms interval) while it types for 3 s, so the C side's
+    ;; time can be compared function by function; the call tree goes to GLITNIR_GUI_OUT/sample-BUILD.txt
+    (when (executable-find "sample")
+      (let* ((out (expand-file-name (format "sample-%s.txt" build) (file-name-directory file)))
+             (p (start-process "nhmac-sample" nil "sample" (number-to-string (emacs-pid)) "4" "1"
+                               "-mayDie" "-file" out))
+             (end (+ (float-time) 4)))
+        (sleep-for 0.5)
+        (while (< (float-time) end) (execute-kbd-macro "x") (redisplay))
+        (while (and (process-live-p p) (< (float-time) (+ end 10))) (accept-process-output p 0.2))
+        (nhmac-gui--say "nhmac-pair-stages: %s: sample %s %s" build out (file-exists-p out))))
     (kill-buffer)
     (should (file-exists-p file))))
 
@@ -2080,6 +2091,20 @@ shows, and it is the selected frame's pixel size.  (Each re-open runs `nidhogg-f
                    "%d monitor changes, %d moves, size %S")
            (frame-scale-factor f) (frame-scale-factor root) (nhmac-gui--font-px f) (nhmac-gui--font-px root)
            reopens monitors moves (cons (frame-pixel-width f) (frame-pixel-height f)))
+          ;; whether the handler is the one bound, and runs for a config-changed event that comes through the
+          ;; keyboard's queue (this one names the resolution the frame has now, so it re-opens at the same size)
+          (let ((before reopens))
+            (push (list 'config-changed-event (cons 'nidhogg-scale (* 72.0 (frame-scale-factor f))) f)
+                  unread-command-events)
+            (nhmac-gui--settle)
+            (nhmac-gui--say (concat "nhmac-new-frame-opens-its-font-once: bound %S, loaded %S, dpi %S, "
+                                    "a queued event re-opened %d")
+                            (lookup-key special-event-map [config-changed-event]) (featurep 'nidhogg-scale)
+                            (bound-and-true-p nidhogg-scale-dpi) (- reopens before))
+            (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: *Messages* ends %S"
+                            (with-current-buffer (messages-buffer)
+                              (buffer-substring-no-properties (max (point-min) (- (point-max) 600)) (point-max))))
+            (setq reopens before))
           (should (= (frame-scale-factor f) (frame-scale-factor root)))
           (should (= reopens 0))
           (should (= (nhmac-gui--font-px f) (nhmac-gui--font-px root))))
