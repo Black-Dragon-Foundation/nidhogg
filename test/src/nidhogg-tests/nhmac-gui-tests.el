@@ -1043,6 +1043,26 @@ It measures; it asserts only that it ran."
                           (nhmac-gui--median redisp)))))
       (nhmac-gui--say "nhmac-pair-stages: %s" line)
       (write-region (concat line "\n") nil file t 'silent))
+    ;; Naglfar: 50 more keys with the glue's entry points timed (no stats read between them), per key: the redisplay,
+    ;; the time inside the glue (the shell's stages are inside it) and each entry point's calls and time
+    (when naglfar
+      (let ((redisp nil) entries)
+        (nhmac--test-entries t)
+        (dotimes (_ 50)
+          (execute-kbd-macro "x")
+          (let ((t1 (float-time)))
+            (redisplay)
+            (push (* 1e6 (- (float-time) t1)) redisp)))
+        (setq entries (nhmac--test-entries nil))
+        (let* ((per (lambda (ns) (/ ns 50000.0)))
+               (glue (apply #'+ (mapcar (lambda (e) (nth 2 e)) entries)))
+               (line (format "%s: redisplay %.0f us (mean %.0f), in the glue %.0f us per key: %s"
+                             build (nhmac-gui--median redisp) (/ (apply #'+ redisp) 50) (funcall per glue)
+                             (mapconcat (lambda (e) (format "%s %.1f calls %.0f us" (nth 0 e) (/ (nth 1 e) 50.0)
+                                                            (funcall per (nth 2 e))))
+                                        entries ", "))))
+          (nhmac-gui--say "nhmac-pair-stages: %s" line)
+          (write-region (concat line "\n") nil file t 'silent))))
     (kill-buffer)
     (should (file-exists-p file))))
 

@@ -23,6 +23,7 @@ use std::backtrace::Backtrace;
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Once, TryLockError};
+use std::time::Instant;
 
 /// No glue call starts with less stack than this left.
 pub const HEADROOM: usize = 256 * 1024;
@@ -229,12 +230,12 @@ pub(crate) fn catching<R>(body: impl FnOnce() -> R) -> Result<R, PanicReport> {
 
 /// The guard of an entry point on a display: headroom, `try_lock`, `catch_unwind` (see the module comment).
 ///
-/// `name` is the entry point's, for the report.
+/// `name` is the entry point's, for the report and the shell's entry table (`nhshell::trace::entries_text`).
 ///
 /// # Safety
 /// `d` is null or a live display from `nhg_open`.
 pub unsafe fn guard<R: Ret>(
-    name: &str,
+    name: &'static str,
     d: *mut NhgDisplay,
     body: impl FnOnce(&mut Display) -> Result<R, GlueError>,
 ) -> R {
@@ -264,6 +265,7 @@ pub unsafe fn guard<R: Ret>(
             return R::err(NHG_E_PANIC);
         }
     };
+    let timed = nhshell::trace::entries_on().then(Instant::now);
     let ran = catching(|| {
         debug_assert!(
             !glitnir::is_compose_thread() && !nhshell::is_reader_thread(),
@@ -272,6 +274,9 @@ pub unsafe fn guard<R: Ret>(
         body(&mut state)
     });
     drop(state);
+    if let Some(t0) = timed {
+        nhshell::trace::entry(name, t0.elapsed().as_nanos() as u64);
+    }
     match ran {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => R::err(e.code()),
