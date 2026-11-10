@@ -587,6 +587,11 @@ not held, and the screen shows neither card row background (colours only the car
                         (nhwl--scroll-layers) nhwl-scroll-layers (frame-parameter nil 'glitnir--cards))
         (nhmac-gui--say "glitnir-nhmac/clean-root: %s: %s sampled surface pixels are the card background"
                         row (funcall count))
+        ;; may the root show a buffer (visible, no size change pending)?  The newest size changes, newest first.
+        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: visible %S, size %S, size history %S"
+                        row (frame-visible-p (selected-frame))
+                        (list (frame-pixel-width) (frame-pixel-height) (frame-native-width) (frame-native-height))
+                        (seq-take (cdr-safe frame-size-history) 12))
         (redraw-frame)
         (nhmac-gui--settle)
         (nhmac-gui--say "glitnir-nhmac/clean-root: %s: after redraw-frame (%d draws, %d commits): %s" row
@@ -615,6 +620,8 @@ width and colour."
     (unwind-protect
         (progn
           (glitnir-nhmac--clean-root)
+          ;; the frames' size changes from here on, for a later row's dirty root
+          (unless (consp frame-size-history) (setq frame-size-history (list 200)))
           (delete-other-windows)
           (set-face-foreground 'window-divider (glitnir-nhmac--hex glitnir-nhmac--gap) f)
           (set-frame-parameter f 'right-divider-width 6)
