@@ -209,6 +209,9 @@ impl MacShell {
     /// on a display the guard then poisons anyway.
     fn modal_alert(&mut self, length: Duration, resize: bool) -> String {
         let (mtm, app) = (self.mtm, self.app.clone());
+        // what callbacks outside a lend queued before this (a reparent's resize and backing changes) is applied
+        // first, so the counts are the session's own
+        self.lent(|_| ());
         let before = scope_stats();
         let test =
             resize.then(|| Win::open(mtm, TEST_WINDOW, 200, 100, false, "Nidhogg test window"));

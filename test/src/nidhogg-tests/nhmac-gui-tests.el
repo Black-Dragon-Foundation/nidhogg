@@ -104,6 +104,9 @@ with the borrow put back.  No two borrows are ever live."
 is left queued, and the display is not poisoned."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
+  ;; a frame deleted with no pump after it (at scale 2, its window's callbacks queue outside a lend): what waits from
+  ;; before the session is not the session's
+  (delete-frame (make-frame '((width . 20) (height . 5))) t)
   (let* ((panics (length (nhwl-glue-panics)))
          (r (nhmac--modal-resize 300)))
     (nhmac-gui--say "nhmac-modal-resize: %S" r)
