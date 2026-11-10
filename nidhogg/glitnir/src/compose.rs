@@ -265,8 +265,9 @@ pub(crate) fn whole(v: f32) -> u32 {
     }
 }
 
-/// A premultiplied colour times an opacity (pixman's x·a/255, rounded).
-fn with_opacity(argb: u32, opacity: f32) -> u32 {
+/// A premultiplied colour times an opacity (pixman's x·a/255, rounded).  The macOS shell colours its shadow image
+/// with it too.
+pub fn with_opacity(argb: u32, opacity: f32) -> u32 {
     let a = (opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
     let mul = |x: u32| {
         let t = x * a + 0x80;
