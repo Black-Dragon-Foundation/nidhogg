@@ -142,7 +142,7 @@ and `child-frame-chrome'.  Root frames and decorated (not
   '((on . 0) (radius . 1) (blur . 2) (ox . 3) (oy . 4) (spread . 5) (opacity . 6) (rgb . 7)
     (show-kind . 8) (show-ms . 9) (show-x1 . 10) (show-y1 . 11) (show-x2 . 12) (show-y2 . 13)
     (hide-kind . 14) (hide-ms . 15) (hide-x1 . 16) (hide-y1 . 17) (hide-x2 . 18) (hide-y2 . 19)
-    (backdrop . 20) (beneath-rgb . 21) (ring-rgb . 22) (ring-opacity . 23))
+    (backdrop . 20) (beneath-rgb . 21) (ring-rgb . 22) (ring-opacity . 23) (group . 24) (fill-rgb . 25))
   "Slot names of `glitnir--chrome-vector' and their indices.
 The same numbers are `NHG_CHROME_*' in nhglue.h and `SLOT_*' in the glue's chrome.rs.")
 
@@ -292,7 +292,7 @@ a child frame's; no motion, no backdrop, `beneath-rgb' and `ring-rgb' -1."
 The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
 clamped; 8-19 from the `transition' option, which the desktop's reduced-motion
 setting turns off; 20 from `backdrop-blur', 0 while the frame's
-`alpha-background' is opaque; `beneath-rgb' and `ring-rgb' are -1.  A child
+`alpha-background' is opaque; `beneath-rgb', `ring-rgb' and `fill-rgb' are -1.  A child
 frame with no chrome has a vector whose first slot is 0.  A root frame's is
 `glitnir--toplevel-vector'."
   (if (not (frame-parent frame))
@@ -311,13 +311,35 @@ frame with no chrome has a vector whose first slot is 0.  A root frame's is
             (if (and blur (glitnir--translucent-p frame)) blur 0))
       (aset v (alist-get 'beneath-rgb glitnir--chrome-slots) -1)
       (aset v (alist-get 'ring-rgb glitnir--chrome-slots) -1)
+      (aset v (alist-get 'fill-rgb glitnir--chrome-slots) -1)
       (when res
         (glitnir--fill-shadow v (plist-get res :radius) (plist-get res :shadow)))
       v)))
 
 ;; Window cards: a window with the parameters `corner-radius', `shadow'
 ;; or `ring' is drawn as a card.  Its corners show the colour beneath the
-;; window, its shadow and ring lie outside it, in the gap.
+;; window, its shadow and ring lie outside it, in the gap.  Windows with
+;; the same `card-group' that tile a rectangle (one column or one row) are
+;; one card: its corners, shadow and ring go around them all, and the
+;; dividers between them take the group's fill.
+
+(defvar glitnir--card-groups (make-hash-table :test 'equal)
+  "Card group names (the car of a window's `card-group') and their numbers.
+A session uses a few names; they are kept for its life.")
+
+(defun glitnir--card-group (spec frame)
+  "Return card group SPEC, (NAME . FILL), as (NUMBER . RGB) for FRAME.
+NAME is any object; windows with `equal' names are one group.  FILL is a
+face, whose background is used, or a colour name: what the dividers
+between the windows show.  One that names no colour is the frame's
+background.  Signal `wrong-type-argument' for another shape."
+  (unless (and (consp spec) (or (facep (cdr spec)) (stringp (cdr spec))))
+    (signal 'wrong-type-argument (list 'glitnir-card-group spec)))
+  (cons (or (gethash (car spec) glitnir--card-groups)
+            (puthash (car spec) (1+ (hash-table-count glitnir--card-groups)) glitnir--card-groups))
+        (or (glitnir--color-rgb (if (facep (cdr spec)) (face-background (cdr spec) frame t) (cdr spec)) frame)
+            (glitnir--color-rgb (frame-parameter frame 'background-color) frame)
+            0)))
 
 (defun glitnir--ring (spec frame)
   "Return ring SPEC, (COLOR . OPACITY), as (RGB . OPACITY) for FRAME, or nil.
@@ -339,7 +361,8 @@ The slots are `glitnir--chrome-slots'.  The window parameters
 `corner-radius' (pixels), `shadow' (a plist as in `child-frame-chrome',
 coloured by the `child-frame-shadow' face) and `ring' ((COLOR . OPACITY),
 COLOR a face or a colour name: a line just outside the card) give slots
-0-7 and 22-23.  `beneath-rgb', what the corners show, is the foreground of
+0-7 and 22-23; `card-group' ((NAME . FILL), `glitnir--card-group') gives
+`group' and `fill-rgb' (0 and -1 without one).  `beneath-rgb', what the corners show, is the foreground of
 the `window-divider' face on WINDOW's frame (the colour dividers are drawn
 in), else the frame's background.  The motion and backdrop slots are 0."
   (let* ((frame (window-frame window))
@@ -347,7 +370,9 @@ in), else the frame's background.  The motion and backdrop slots are 0."
          (spec (window-parameter window 'shadow))
          (sh (and spec (glitnir--shadow spec frame)))
          (ring-spec (window-parameter window 'ring))
-         (ring (and ring-spec (glitnir--ring ring-spec frame))))
+         (ring (and ring-spec (glitnir--ring ring-spec frame)))
+         (group-spec (window-parameter window 'card-group))
+         (group (and group-spec (glitnir--card-group group-spec frame))))
     (when radius
       (unless (and (numberp radius) (>= radius 0))
         (signal 'wrong-type-argument (list 'natnump radius))))
@@ -360,19 +385,22 @@ in), else the frame's background.  The motion and backdrop slots are 0."
                   0))
         (aset v (alist-get 'ring-rgb glitnir--chrome-slots) (if ring (car ring) -1))
         (aset v (alist-get 'ring-opacity glitnir--chrome-slots) (if ring (cdr ring) 0))
+        (aset v (alist-get 'group glitnir--chrome-slots) (if group (car group) 0))
+        (aset v (alist-get 'fill-rgb glitnir--chrome-slots) (if group (cdr group) -1))
         v))))
 
 (defvar glitnir--card-generation 0
   "Bumped when every window's card is resolved again (a theme changed).")
 
-(defun glitnir--card-key-same-p (old radius shadow ring)
-  "Non-nil when the key OLD still stands for the parameters RADIUS, SHADOW and RING.
-The key is (RADIUS SHADOW RING GENERATION) from the pass that resolved the card, or nil for a window that asked
-for none.  Nothing is allocated, and no face is looked up: colours are resolved with the card, and again when
+(defun glitnir--card-key-same-p (old radius shadow ring group)
+  "Non-nil when the key OLD still stands for the parameters RADIUS, SHADOW, RING and GROUP.
+The key is (RADIUS SHADOW RING GENERATION GROUP) from the pass that resolved the card, or nil for a window that
+asked for none.  Nothing is allocated, and no face is looked up: colours are resolved with the card, and again when
 `glitnir--card-generation' changes."
   (if old
       (and (eq (nth 3 old) glitnir--card-generation)
-           (equal (nth 0 old) radius) (equal (nth 1 old) shadow) (equal (nth 2 old) ring))
+           (equal (nth 0 old) radius) (equal (nth 1 old) shadow) (equal (nth 2 old) ring)
+           (equal (nth 4 old) group))
     (not (or radius shadow ring))))
 
 (defun glitnir--cards-flag (frame)
@@ -390,12 +418,13 @@ The vector goes into the window parameter `glitnir--card', which C lists
 with the window when the frame publishes."
   (let ((radius (window-parameter window 'corner-radius))
         (shadow (window-parameter window 'shadow))
-        (ring (window-parameter window 'ring)))
-    (unless (glitnir--card-key-same-p (window-parameter window 'glitnir--card-key) radius shadow ring)
+        (ring (window-parameter window 'ring))
+        (group (window-parameter window 'card-group)))
+    (unless (glitnir--card-key-same-p (window-parameter window 'glitnir--card-key) radius shadow ring group)
       ;; the key first: a parameter that signals does so once
       (set-window-parameter window 'glitnir--card-key
                             (and (or radius shadow ring)
-                                 (list radius shadow ring glitnir--card-generation)))
+                                 (list radius shadow ring glitnir--card-generation group)))
       (let ((v (and (or radius shadow ring) (glitnir--card-vector window))))
         (unless (equal v (window-parameter window 'glitnir--card))
           (set-window-parameter window 'glitnir--card v)

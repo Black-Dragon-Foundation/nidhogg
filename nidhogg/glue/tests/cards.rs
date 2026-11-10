@@ -122,6 +122,91 @@ mod cards {
         sync_at(b, key, ws).unwrap()
     }
 
+    /// Two windows in one card group that tile a column are one card around both: one layer at their bounding box,
+    /// the divider between them its fill.  When they stop tiling a rectangle the next sync makes them two cards.
+    #[test]
+    fn a_card_group_is_one_card() {
+        let mut b = Backings::default();
+        let (key, _) = frame(&mut b, 120);
+        let t0 = Instant::now();
+        let top = (
+            NhgRect {
+                x: 0,
+                y: 0,
+                w: 94,
+                h: 40,
+            },
+            NhgRect {
+                x: 0,
+                y: 0,
+                w: 94,
+                h: 44,
+            },
+        );
+        let low = (
+            NhgRect {
+                x: 0,
+                y: 50,
+                w: 94,
+                h: 36,
+            },
+            NhgRect {
+                x: 0,
+                y: 50,
+                w: 94,
+                h: 40,
+            },
+        );
+        let grouped = || {
+            let mut v = card();
+            v[SLOT_GROUP] = 1.0;
+            v[SLOT_FILL_RGB] = 0x18_191e as f32;
+            v
+        };
+        let ws = [
+            window(70, top, Some(grouped())),
+            window(71, low, Some(grouped())),
+            window(72, right(), Some(card())),
+        ];
+        assert_eq!(sync(&mut b, key, &ws, t0), 2);
+        let (_, c) = commit(key);
+        let g = placed(&c, card_id(70)).expect("the group's card");
+        assert_eq!(
+            g.rect,
+            at(NhgRect {
+                x: 0,
+                y: 0,
+                w: 94,
+                h: 90
+            })
+        );
+        let k = g.card.expect("a card");
+        assert_eq!(
+            &k.fill[..],
+            &[at(NhgRect {
+                x: 0,
+                y: 44,
+                w: 94,
+                h: 6
+            })]
+        );
+        assert_eq!(k.fill_argb, 0xff18_191e);
+        assert!(placed(&c, card_id(71)).is_none(), "no card of its own");
+        // the lower window narrower: no rectangle, two cards, in the same sync
+        let narrow = (NhgRect { w: 80, ..low.0 }, NhgRect { w: 80, ..low.1 });
+        let ws = [
+            window(70, top, Some(grouped())),
+            window(71, narrow, Some(grouped())),
+            window(72, right(), Some(card())),
+        ];
+        assert_eq!(sync(&mut b, key, &ws, t0), 3);
+        let (_, c) = commit(key);
+        let a = placed(&c, card_id(70)).expect("its own card");
+        assert_eq!(a.rect, at(top.1));
+        assert!(a.card.expect("a card").fill.is_empty());
+        assert_eq!(placed(&c, card_id(71)).map(|p| p.rect), Some(at(narrow.1)));
+    }
+
     /// A full-window scroll in a card window promotes it; its card layer stays, at the outer rectangle with its card,
     /// above the output.
     #[test]

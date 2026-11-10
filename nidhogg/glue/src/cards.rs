@@ -6,6 +6,10 @@
 //!   converted to device px at the frame's scale and its [`Card`]: the colour beneath (what the corners show), the edge
 //!   ring, and what the shadow and the ring keep out of: the other windows' outer rectangles, and everything outside
 //!   the window area (the bounding box of the listed windows' outer rectangles), where the tab, tool and menu bars are.
+//! - **Card groups:** windows whose cards name one group (`card-group`) and tile a rectangle as one column or row
+//!   ([`glitnir::scene::card_group`]) get one card layer, the first window's (its id, chrome and card), at the
+//!   rectangle, with the dividers between them as its fill.  Windows that stop tiling one fall back to their own cards
+//!   in the same sync, so a group re-forms in one commit.
 //! - **Scroll layers:** a card window may be promoted (`layers.rs`). Its output stays `seq | WINDOW_TAG` at the window
 //!   box; the card is its own layer, so promotion and demotion never touch it, and a card's change never demotes.
 //!   Glitnir composes the card's corners into the output's buffer and damages them when the output scrolls. The card
@@ -30,6 +34,9 @@ const LAYER_WINDOW: u32 = 2;
 #[derive(Debug, Clone, PartialEq)]
 struct Applied {
     outer: NhgRect,
+    /// The card's rectangle (a group's) and the dividers it fills, root px.
+    rect: Rect,
+    fill: Vec<Rect>,
     s120: u32,
     origin: (i32, i32),
     card: [f32; SLOTS],
@@ -84,6 +91,7 @@ fn card_of(w: &NhgLayerWindow, s: f64, keep_out: &[Rect]) -> Option<(Chrome, Car
         // one logical px, whole device px
         ring_px: d.ring.map_or(0, |_| s.round().max(1.0) as u32),
         keep_out: keep_out.into(),
+        ..Card::default()
     };
     Some((chrome, card))
 }
@@ -135,26 +143,74 @@ pub fn sync_at(b: &mut Backings, key: u64, windows: &[NhgLayerWindow]) -> Result
         .filter(|(_, r)| !r.is_empty())
         .collect();
     let around = outside(outers.iter().map(|(_, r)| *r));
+    // each card: its window, its rectangle, the windows it covers and the dividers it fills (a group's members are
+    // in window order, so the first stands for them)
+    let group_of = |w: &NhgLayerWindow| {
+        w.card()
+            .ok()
+            .flatten()
+            .filter(|d| d.chrome.is_some())
+            .map_or(0, |d| d.group)
+    };
+    let mut units: Vec<(&NhgLayerWindow, Rect, Vec<u64>, Vec<Rect>)> = Vec::new();
+    let mut grouped: Vec<u64> = Vec::new();
+    for w in windows {
+        let g = group_of(w);
+        if g == 0 || grouped.contains(&w.seq) || at(w.outer).is_empty() {
+            continue;
+        }
+        let members: Vec<&NhgLayerWindow> = windows
+            .iter()
+            .filter(|m| group_of(m) == g && !at(m.outer).is_empty())
+            .collect();
+        let seqs: Vec<u64> = members.iter().map(|m| m.seq).collect();
+        let rects: Vec<Rect> = members.iter().map(|m| at(m.outer)).collect();
+        let others: Vec<Rect> = outers
+            .iter()
+            .filter(|(q, _)| !seqs.contains(q))
+            .map(|(_, r)| *r)
+            .collect();
+        if let Some((rect, fill)) = glitnir::scene::card_group(&rects, &others) {
+            grouped.extend(&seqs);
+            units.push((w, rect, seqs, fill));
+        }
+    }
+    for w in windows {
+        if !grouped.contains(&w.seq) {
+            units.push((w, at(w.outer), vec![w.seq], Vec::new()));
+        }
+    }
     let cards = &mut f.cards;
     let mut seen: Vec<u64> = Vec::new();
     glitnir::scene::with(key, |sc| {
-        for w in windows {
-            let rect = at(w.outer);
+        for (w, rect, members, fill) in units {
             if rect.is_empty() {
                 continue;
             }
             let keep_out: Vec<Rect> = outers
                 .iter()
-                .filter(|(q, _)| *q != w.seq)
+                .filter(|(q, _)| !members.contains(q))
                 .map(|(_, r)| *r)
                 .chain(around.iter().copied())
                 .collect();
-            let Some((chrome, card)) = card_of(w, s, &keep_out) else {
+            let Some((chrome, mut card)) = card_of(w, s, &keep_out) else {
                 continue;
             };
+            if !fill.is_empty() {
+                let rgb = w
+                    .card()
+                    .ok()
+                    .flatten()
+                    .and_then(|d| d.fill_rgb)
+                    .unwrap_or(0);
+                card.fill = fill.clone().into();
+                card.fill_argb = 0xff00_0000 | rgb;
+            }
             seen.push(w.seq);
             let now = Applied {
                 outer: w.outer,
+                rect,
+                fill,
                 s120,
                 origin,
                 card: w.card,

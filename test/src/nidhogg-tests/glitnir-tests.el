@@ -361,7 +361,7 @@ Colours are \"#RRGGBB\" specs: the batch terminal may define no colour names."
              (dolist (p ,params) (set-window-parameter w (car p) (cdr p)))
              ,@body)
          (set-face-attribute 'window-divider (selected-frame) :foreground divider)
-         (dolist (k '(corner-radius shadow ring glitnir--card glitnir--card-key))
+         (dolist (k '(corner-radius shadow ring card-group glitnir--card glitnir--card-key))
            (set-window-parameter w k nil))
          (set-frame-parameter nil 'glitnir--cards nil)))))
 
@@ -406,6 +406,30 @@ Colours are \"#RRGGBB\" specs: the batch terminal may define no colour names."
                    ((shadow . (:blur)))))
       (glitnir-test--with-window-params bad
         (should-error (glitnir--card-vector w) :type 'wrong-type-argument)))))
+
+(ert-deftest glitnir-card-vector-card-group ()
+  "`card-group' (NAME . FILL) gives the `group' slot a number per name and `fill-rgb' the fill's colour; without
+one they are 0 and -1, and a group of another shape signals."
+  (let ((w (selected-window)) (group (alist-get 'group glitnir--chrome-slots))
+        (fill (alist-get 'fill-rgb glitnir--chrome-slots)))
+    (glitnir-test--with-window-params '((corner-radius . 6))
+      (let ((v (glitnir--card-vector w)))
+        (should (= (aref v group) 0))
+        (should (= (aref v fill) -1))))
+    (glitnir-test--with-window-params '((corner-radius . 6) (card-group . (glitnir-test-a . "#102030")))
+      (let ((v (glitnir--card-vector w)) (n nil))
+        (should (> (setq n (aref v group)) 0))
+        (should (= (aref v fill) #x102030))
+        ;; the same name is the same number; another is another
+        (should (= (aref (glitnir--card-vector w) group) n))
+        (set-window-parameter w 'card-group '(glitnir-test-b . "#102030"))
+        (should-not (= (aref (glitnir--card-vector w) group) n))))
+    (glitnir-test--with-window-params '((corner-radius . 6) (card-group . (glitnir-test-a . window-divider)))
+      (set-face-background 'window-divider "#405060" (selected-frame))
+      (unwind-protect (should (= (aref (glitnir--card-vector w) fill) #x405060))
+        (set-face-attribute 'window-divider (selected-frame) :background 'unspecified)))
+    (glitnir-test--with-window-params '((corner-radius . 6) (card-group . 3))
+      (should-error (glitnir--card-vector w) :type 'wrong-type-argument))))
 
 (ert-deftest glitnir-card-vector-follows-theme ()
   (let ((w (selected-window)))
@@ -486,7 +510,7 @@ The windows are deleted and the card parameters and flag cleared after."
              ,@body))
        (dolist (w ws)
          (when (window-live-p w)
-           (dolist (k '(corner-radius shadow ring glitnir--card glitnir--card-key))
+           (dolist (k '(corner-radius shadow ring card-group glitnir--card glitnir--card-key))
              (set-window-parameter w k nil))))
        (delete-other-windows)
        (clrhash glitnir--cards-seen)
