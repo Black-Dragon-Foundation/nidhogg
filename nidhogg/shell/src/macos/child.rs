@@ -1,6 +1,6 @@
 //! Child windows as layers (design §5.6): a child is a container layer in its parent's layer (the root's, or another
-//! child's container), holding a shadow sublayer (empty until Glitnir's chrome moves to Core Animation), and a content
-//! layer that shows the child's own ring of surfaces.
+//! child's container), holding a shadow sublayer (Glitnir's shadow, `chrome`), and a content layer that shows the
+//! child's own ring of surfaces, with the chrome's corners and border.
 //!
 //! Every change the host asks for (position, input region, stacking, mapping, alpha, a new or a gone child) is recorded
 //! and makes the child's root owe a commit; the layers take it in the root tree's next commit, one flushed transaction
@@ -19,6 +19,7 @@ use super::super::overhang::Panel;
 use super::super::surface::Surfaces;
 use super::super::window::Win;
 use super::MacShell;
+use super::chrome;
 use crate::api::{
     ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_UNDECORATED, ShellError,
     ShellResult, WindowId,
@@ -26,6 +27,7 @@ use crate::api::{
 use crate::event::{PointerEv, ScaleEv, ShellEvent};
 use crate::mac_child::{self, Node};
 use glitnir::geom::Rect;
+use glitnir::scene::Chrome;
 use objc2::rc::Retained;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::CALayer;
@@ -55,7 +57,7 @@ struct Shown {
 /// A child's layers, made by its root's first commit after it (on the main thread).
 struct Layers {
     container: Retained<CALayer>,
-    _shadow: Retained<CALayer>,
+    shadow: Retained<CALayer>,
     content: Retained<CALayer>,
 }
 
@@ -71,7 +73,7 @@ impl Layers {
         container.setHidden(true);
         Layers {
             container,
-            _shadow: shadow,
+            shadow,
             content,
         }
     }
@@ -94,6 +96,9 @@ pub(super) struct Kid {
     panel: Option<Panel>,
     /// It overhangs (its container is, or goes, in the panel).
     out: bool,
+    /// Its chrome as the host gave it (device pixels), and what its layers show of it.
+    chrome: Option<Chrome>,
+    chrome_shown: chrome::Shown,
 }
 
 /// An anchor-point-at-the-origin layer, so a container's position is its bottom-left corner.
@@ -125,6 +130,8 @@ impl Kid {
             },
             panel: None,
             out: false,
+            chrome: None,
+            chrome_shown: chrome::Shown::default(),
         }
     }
 
@@ -445,6 +452,15 @@ impl MacShell {
         Ok(())
     }
 
+    pub(super) fn kid_chrome(&mut self, id: WindowId, c: Option<Chrome>) -> ShellResult {
+        let k = self.kids.get_mut(&id).ok_or(ShellError::State)?;
+        if k.chrome != c {
+            k.chrome = c;
+            self.owe_for(id);
+        }
+        Ok(())
+    }
+
     /// Root `root`'s children as the hit-test sees them, each parent's bottom to top.
     fn nodes(&self, root: WindowId) -> Vec<Node> {
         let mut out = Vec::new();
@@ -658,6 +674,14 @@ impl MacShell {
                     k.shown.opacity = Some(k.alpha);
                     count(&PROPS.opacity);
                 }
+                chrome::apply(
+                    &mut k.chrome_shown,
+                    k.chrome.as_ref(),
+                    &l.content,
+                    &l.shadow,
+                    (k.w, k.h),
+                    scale,
+                );
             }
             // a parent whose children changed places takes them again, bottom to top
             for p in &order_dirty {
@@ -815,9 +839,42 @@ impl MacShell {
             || "nil".to_string(),
             |r| format!("({} {} {} {})", r.x, r.y, r.w, r.h),
         );
+        // the chrome as the layers hold it: the content's corners and border, the shadow layer's frame (points from
+        // the container's bottom left) and whether it has an image
+        let shadow = if l.shadow.isHidden() {
+            "nil".to_string()
+        } else {
+            let f = l.shadow.frame();
+            // SAFETY: `contents` is an object or nil; only its presence is read.
+            let image = unsafe { l.shadow.contents() }.is_some();
+            format!(
+                "(:frame ({} {} {} {}) :image {})",
+                f.origin.x,
+                f.origin.y,
+                f.size.width,
+                f.size.height,
+                if image { "t" } else { "nil" }
+            )
+        };
+        let chrome = format!(
+            ":radius {} :masks {} :border-width {} :shadow {shadow} :shadow-index {}",
+            l.content.cornerRadius(),
+            if l.content.masksToBounds() {
+                "t"
+            } else {
+                "nil"
+            },
+            l.content.borderWidth(),
+            // SAFETY: the sublayers array is read, not changed.
+            unsafe { l.container.sublayers() }.map_or(-1, |a| {
+                a.iter()
+                    .position(|s| std::ptr::eq(&*s, &*l.shadow))
+                    .map_or(-1, |i| i as i64)
+            }),
+        );
         Ok(format!(
             "(:x {} :y {} :w {} :h {} :host {host} :hidden {} :opacity {} :index {index} :contents-is-newest {} \
-             :panel {panel} :input {input} :place ({} {}))",
+             :panel {panel} :input {input} :place ({} {}) {chrome})",
             p.x,
             p.y,
             b.size.width,
