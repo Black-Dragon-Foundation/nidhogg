@@ -10,6 +10,8 @@
 
 (require 'ert)
 (require 'cl-lib)
+
+(defvar nhwl-scroll-layers)
 (unless (fboundp 'nhmac-gui--child)
   (load (expand-file-name "nhmac-gui-tests" (file-name-directory (or load-file-name buffer-file-name))) nil t))
 
@@ -568,13 +570,16 @@ not held, and the screen shows neither card row background (colours only the car
       ;; or only on the screen (then the layer shows something else)?  Every 16th row of the surface, counted; then
       ;; again after a full redraw (if that clears it, Emacs's matrices thought the surface already showed them).
       (let ((count (lambda ()
-                     (let ((w (plist-get surface :w)) (h (plist-get surface :h)) (n 0) (seen 0))
+                     (let* ((surface (nhmac--test-surface 0 0))
+                            (w (plist-get surface :w)) (h (plist-get surface :h)) (n 0) (o 0) (seen 0))
                        (cl-loop for y from 0 below h by 16
                                 do (cl-loop for p across (nhmac--test-surface-region 0 y (min w 1400) 1)
                                             do (cl-incf seen)
                                             (unless (nhmac-gui--far (logand p #xffffff) glitnir-nhmac--card-bg 8)
-                                              (cl-incf n))))
-                       (format "%d of %d" n seen))))
+                                              (cl-incf n))
+                                            (unless (nhmac-gui--far (logand p #xffffff) glitnir-nhmac--other-bg 8)
+                                              (cl-incf o))))
+                       (format "%d (and %d of the other window's colour) of %d" n o seen))))
             (before (nhmac-stats)))
         (nhmac-gui--say "glitnir-nhmac/clean-root: %s: windows %S; own layers %S (nhwl-scroll-layers %S), glitnir--cards %S"
                         row (mapcar (lambda (w) (list (buffer-name (window-buffer w)) (window-pixel-edges w)))
@@ -585,7 +590,14 @@ not held, and the screen shows neither card row background (colours only the car
         (redraw-frame)
         (nhmac-gui--settle)
         (nhmac-gui--say "glitnir-nhmac/clean-root: %s: after redraw-frame (%d draws, %d commits): %s" row
-                        (nhmac-gui--delta before :draws) (nhmac-gui--delta before :commits) (funcall count))))
+                        (nhmac-gui--delta before :draws) (nhmac-gui--delta before :commits) (funcall count))
+        ;; a new backing: one pixel wider, and back
+        (let ((pw (frame-text-width)) (ph (frame-text-height)))
+          (set-frame-size nil (1+ pw) ph t)
+          (nhmac-gui--settle)
+          (set-frame-size nil pw ph t)
+          (nhmac-gui--settle))
+        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: after a resize there and back: %s" row (funcall count))))
     (should (equal (list row (plist-get cards :cards) (plist-get surface :held) left right)
                    (list row nil nil nil nil)))))
 
