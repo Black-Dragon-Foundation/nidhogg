@@ -35,8 +35,9 @@
 ;;; Code:
 
 (require 'mouse)
-;; per-frame scale and text zoom; preloaded with this file
-(require 'term/nidhogg-scale)
+;; per-frame scale and text zoom, preloaded with this file (`load': the
+;; dump refuses a `require' of a file not loaded yet)
+(unless (featurep 'nidhogg-scale) (load "term/nidhogg-scale" nil t))
 
 (declare-function nhwl-frame-begin-move "nhwlfns.c")
 (declare-function nhwl-frame-begin-resize "nhwlfns.c")
