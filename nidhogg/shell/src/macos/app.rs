@@ -18,9 +18,7 @@ use crate::api::{
     ShellBackend, ShellError, ShellResult, SurfaceFrame, WindowDesc, WindowId,
 };
 use crate::caps::NhShellCaps;
-use crate::event::{
-    ConfigureEv, FocusEv, NHSHELL_STATE_ACTIVATED, OutputEv, Record, ScaleEv, ShellEvent,
-};
+use crate::event::{ConfigureEv, FocusEv, NHSHELL_STATE_ACTIVATED, Record, ScaleEv, ShellEvent};
 use crate::scope::{Scope, ScopeStats};
 use crate::wait::{self, Change, Reg, WaitOps, Woke};
 use glitnir::geom::Rect;
@@ -215,7 +213,6 @@ impl MacShell {
     pub(super) fn apply(&mut self, ev: MacEv) {
         match ev {
             MacEv::Resized(id) => self.compare(id),
-            MacEv::Screen(id) => self.screen_changed(id),
             MacEv::Key(id, on) => {
                 if self.windows.contains_key(&id) {
                     self.push(ShellEvent::Focus(FocusEv { r#in: u8::from(on) }), id);
@@ -288,29 +285,6 @@ impl MacShell {
         if resized {
             self.configure(id, size.0, size.1);
         }
-    }
-
-    /// Tell the host when window `id` is on another screen than it was told: a leave of the old output and an enter
-    /// of the new one (the glue then has Lisp run `move-frame-functions`, as for a Wayland output change).
-    fn screen_changed(&mut self, id: WindowId) {
-        let Some(w) = self.windows.get_mut(&id) else {
-            return;
-        };
-        let Some(o) = screens::output_of(self.mtm, &w.window) else {
-            return;
-        };
-        let old = std::mem::replace(&mut w.output, o.id);
-        if old == o.id {
-            return;
-        }
-        if old != 0 {
-            let gone = OutputEv {
-                id: old,
-                ..OutputEv::default()
-            };
-            self.push(ShellEvent::LeaveOutput(gone), id);
-        }
-        self.push(ShellEvent::EnterOutput(o), id);
     }
 
     fn configure(&mut self, id: WindowId, w: i32, h: i32) {
@@ -563,7 +537,6 @@ impl ShellBackend for MacShell {
         self.windows.insert(id, win);
         self.push(ShellEvent::Scale(ScaleEv { scale120: scale }), id);
         self.configure(id, w, h);
-        self.screen_changed(id);
         Ok(id)
     }
 
@@ -926,10 +899,7 @@ impl ShellBackend for MacShell {
             match drew {
                 Some(surface::Drew::Drawn) => {
                     // `glitnir-stats`: one entry per drawing a layer shows (Core Animation composes; no compose time)
-                    let px = damage
-                        .iter()
-                        .map(|r| r.w.max(0) as u64 * r.h.max(0) as u64)
-                        .sum();
+                    let px = damage.iter().map(|r| r.w.max(0) as u64 * r.h.max(0) as u64).sum();
                     glitnir::stats::record(
                         f.glitnir_root,
                         glitnir::stats::StatsEntry {
