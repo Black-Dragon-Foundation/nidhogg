@@ -1151,8 +1151,9 @@ selection follows a link or walks a list the hub sent, with no round trip and no
 - Files: `src/nidhogg-views.c`, one DEFUN, `nidhogg-view--call (OP &rest ARGS)`: up to 16 arguments, each nil, a fixnum
   or a string; the answer is built from Sjá's tokens (ints, multibyte strings, lists, vectors). A bad argument signals
   `args-out-of-range`; a panic inside Sjá answers `resync` for that view (its model is dropped), and two within a minute
-  mark it broken until it is reopened. `lisp/nidhogg-views.el` holds the thin functions: `nidhogg-view-apply`, `-open`,
-  `-close`, `-follow`, `-walk`, `-walk-to`, `-set`, `-get`, `-hub-lost`, `-stats`. The feature is `nidhogg-views`.
+  mark it broken until it is reopened. `lisp/nidhogg-views.el` holds the thin functions: `nidhogg-view-push` (a hub's
+  whole `view-model` line), `-drain`, `-named`, `-due`, `-open`, `-close`, `-follow`, `-walk`, `-walk-to`, `-set`, `-get`,
+  `-hub-lost`, `-stats`; a model comes only as the hub's line. The feature is `nidhogg-views`.
 - Caps: 200,000 nodes, 400,000 edges, 64 lists, 4 KiB per value, 32 MiB in all; a patch past them answers `too-large`.
 - Tests: `test/src/nidhogg-tests/sja-tests.el` (pure; in `check-subset.txt`); the panic row needs a build with Sjá's
   test hooks and skips without them. The model's own tests are Sjá's (`nidhogg/sja/check.sh`).
