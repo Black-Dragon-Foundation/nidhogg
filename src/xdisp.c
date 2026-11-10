@@ -4919,6 +4919,24 @@ face_at_pos (const struct it *it, enum lface_attribute_index attr_filter)
 }
 
 
+#ifdef HAVE_GLITNIR
+/* Whether FACE's box needs its own sides against OTHER's, next to it.
+   Stock Emacs joins any two boxed faces into one run, so a box nested
+   in another (a search match inside the region) drew only its top and
+   bottom.  Glitnir rings each box, so a box that differs in kind or
+   colour from its neighbour's starts and ends a run of its own; boxes
+   that are the same still make one run.  */
+static bool
+glitnir_box_differs (struct face *face, struct face *other)
+{
+  if (face->box == FACE_NO_BOX)
+    return false;
+  bool kind_differs = face->box != other->box;
+  bool colour_differs = face->box_color != other->box_color;
+  return kind_differs || colour_differs;
+}
+#endif
+
 /* Set up iterator IT from face properties at its current position.
    Called from handle_stop.  */
 static enum prop_handled
@@ -4968,6 +4986,11 @@ handle_face_prop (struct it *it)
       if (!(it->start_of_box_run_p && old_face && old_face->box))
 	it->start_of_box_run_p = (new_face->box != FACE_NO_BOX
 				  && (old_face == NULL || !old_face->box));
+#ifdef HAVE_GLITNIR
+      /* A box that differs from the one before it starts a run.  */
+      if (old_face && glitnir_box_differs (new_face, old_face))
+	it->start_of_box_run_p = true;
+#endif
       it->face_box_p = new_face->box != FACE_NO_BOX;
     }
 
@@ -8878,6 +8901,16 @@ get_next_display_element (struct it *it)
 	  if (face_id != it->face_id
 	      && FACE_FROM_ID (it->f, face_id)->box == FACE_NO_BOX)
 	    it->end_of_box_run_p = true;
+#ifdef HAVE_GLITNIR
+	  /* A box that differs from the one after it ends its run.  */
+	  if (face_id != it->face_id)
+	    {
+	      struct face *this_face = FACE_FROM_ID (it->f, it->face_id);
+	      struct face *next_face = FACE_FROM_ID (it->f, face_id);
+	      if (glitnir_box_differs (this_face, next_face))
+		it->end_of_box_run_p = true;
+	    }
+#endif
 	}
     }
   /* If we reached the end of the object we've been iterating (e.g., a
