@@ -17,7 +17,8 @@
 //!   its four corner squares, outside the rounded rectangle of the chrome's radius, what lies beneath the window (the
 //!   card's colour with the shadow and the ring over it) through what the disc leaves of each pixel.  The rest of the
 //!   window is the plain copy.  On an own output the corners are composed into its buffer with the rest; the scene
-//!   damages them when the output scrolls.
+//!   damages them when the output scrolls.  A card group's card (one card around several windows,
+//!   [`crate::scene::card_group`]) also paints its dividers, the frame's pixels between the windows, in its fill.
 //!
 //! A layer without a source is not drawn, so the target keeps its pixels there, as it does where no layer lies. The
 //! shadow beneath a layer's copied part is skipped. A pixel's value depends only on the scene and the sources, never
@@ -608,7 +609,10 @@ fn touches_card(p: &Placed, pieces: &[Rect]) -> bool {
         let q = c.intersect(&p.bounds);
         !q.is_empty()
             && (q.intersect(&p.rect) != q
-                || corners.is_some_and(|(_, sq)| sq.iter().any(|s| !s.intersect(&q).is_empty())))
+                || corners.is_some_and(|(_, sq)| sq.iter().any(|s| !s.intersect(&q).is_empty()))
+                || p.card
+                    .as_ref()
+                    .is_some_and(|k| k.fill.iter().any(|f| !f.intersect(&q).is_empty())))
     })
 }
 
@@ -696,6 +700,9 @@ struct CardPlan {
     /// The chrome's shadow, in the gap and in the corners outside the rounded rectangle.
     shadow: Option<Shadow>,
     ring: Option<CardRing>,
+    /// A group's dividers (inside the rectangle) and their colour.
+    fill: Vec<Rect>,
+    fill_argb: u32,
 }
 
 impl CardPlan {
@@ -757,6 +764,13 @@ impl CardPlan {
             corners,
             shadow,
             ring,
+            fill: card
+                .fill
+                .iter()
+                .map(|f| f.intersect(&rect))
+                .filter(|f| !f.is_empty())
+                .collect(),
+            fill_argb: card.fill_argb,
         }
     }
 
@@ -824,6 +838,26 @@ impl CardPlan {
                 }
                 card_drew(q);
             }
+        }
+        // a group's dividers: its fill over the frame, before the corners (a short window's corner may reach one)
+        for f in &self.fill {
+            let q = f.intersect(&clip);
+            if q.is_empty() {
+                continue;
+            }
+            let full = vec![255u8; q.w as usize];
+            let mask = Mask {
+                data: &full,
+                stride: 0,
+            };
+            k.solid_over(
+                &mut t.at(q),
+                self.fill_argb,
+                &mask,
+                q.w as usize,
+                q.h as usize,
+            );
+            card_drew(q);
         }
         // the corners: what lies beneath the window (the gap with its shadow and ring), through what the disc leaves
         // of each pixel, so a pixel is gap·(1 − c) + window·c
@@ -2288,6 +2322,7 @@ mod tests {
                 ring_argb: RING,
                 ring_px,
                 keep_out: keep_out.into(),
+                ..Card::default()
             }
         }
 
@@ -2345,6 +2380,59 @@ mod tests {
                 }
             }
             out
+        }
+
+        /// A card group (two windows in a column, one card around both): the divider between them is the group's
+        /// fill, the outer corners are rounded, the windows' inner corners are not, and the rest is the frame's.
+        #[test]
+        fn group_fills_its_dividers_and_rounds_only_the_outside() {
+            const FILL: u32 = 0xff20_3040;
+            for scale in [1.0, 2.0] {
+                let mut g = XorShift::new(31);
+                // the windows (10,10,40,20) and (10,36,40,24); the divider (10,30,40,6) between them
+                let rect = Rect::new(10, 10, 40, 50);
+                let divider = Rect::new(10, 30, 40, 6);
+                let front = Buf::random(&mut g, 64, 72);
+                let card = Card {
+                    fill_argb: FILL,
+                    fill: vec![divider].into(),
+                    ..rich(1, &[])
+                };
+                let (s, _) = with_card(64, 72, scale, rect, radius(8.0), card);
+                let out = compose_all(&s, &front, scale);
+                for y in divider.y..divider.y + divider.h {
+                    for x in divider.x..divider.x + divider.w {
+                        assert_eq!(out.at(x, y), FILL, "divider pixel {x},{y} at {scale}");
+                    }
+                }
+                // the windows' inner corners, beside the divider, are their own pixels
+                for (x, y) in [(10, 29), (49, 29), (10, 36), (49, 36)] {
+                    assert_eq!(
+                        out.at(x, y),
+                        front.at(x, y),
+                        "inner corner {x},{y} at {scale}"
+                    );
+                }
+                // the group's outer corners show the colour beneath
+                for (x, y) in [(10, 10), (49, 10), (10, 59), (49, 59)] {
+                    assert_ne!(
+                        out.at(x, y),
+                        front.at(x, y),
+                        "outer corner {x},{y} at {scale}"
+                    );
+                }
+                // damage at the divider alone composes the fill
+                let mut part = front.clone();
+                compose_at(
+                    &s,
+                    &front,
+                    scale,
+                    &mut part,
+                    (0, 0),
+                    &[Rect::new(20, 31, 4, 2)],
+                );
+                assert_eq!(part.at(21, 32), FILL);
+            }
         }
 
         /// The shadow and the ring go in the gap but never inside a window the card keeps out, and the frame's own
@@ -2570,6 +2658,7 @@ mod tests {
                 ring_argb: if g.below(3) == 0 { 0 } else { pixel(g) },
                 ring_px: 1 + g.below(3),
                 keep_out: keep_out.into(),
+                ..Card::default()
             };
             let rand_chrome = |g: &mut XorShift| Chrome {
                 border_px: 0.0,
@@ -2694,6 +2783,7 @@ mod tests {
                     ring_argb: if g.below(2) == 0 { 0 } else { RING },
                     ring_px: 1 + g.below(3),
                     keep_out: Arc::from([Rect::new(0, 0, W, 10)]),
+                    ..Card::default()
                 };
                 let chrome = |g: &mut XorShift, r: u32| Chrome {
                     shadow_opacity: if g.below(2) == 0 { 0.0 } else { 0.45 },

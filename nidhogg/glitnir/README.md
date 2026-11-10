@@ -76,8 +76,12 @@ window (inside the frame, never inside a rectangle it keeps out, the other windo
 band just outside the rounded rectangle; in its four corner squares, outside the rounded rectangle, the gap as it is
 beside them: the beneath colour, then the chrome of the frame's other cards below it in paint order, its own shadow
 and ring, and the other cards' above it. The shadow's radius is the corners', clamped to half the shorter side. The
-rest of the window stays a plain copy, so typing inside it composes nothing of the card. A card's change damages where
-it draws (its corners and its bounds outside the window), and so does its raise or lower; a change of the rectangles
+rest of the window stays a plain copy, so typing inside it composes nothing of the card. A card group's card (one
+card around several windows: `scene::card_group` takes their rectangles when they tile one rectangle as a column or
+a row with gaps of at most `CARD_GROUP_GAP` px, and gives the rectangle and the gaps) also paints its `fill` rectangles,
+the dividers between the windows, in `fill_argb`, before its corners; the outer edges alone are rounded and ringed.
+The model is the `Card`, so another compositor (Naglfar on macOS) draws the same from the same vector. A card's
+change damages where it draws (its corners, its fill and its bounds outside the window), and so does its raise or lower; a change of the rectangles
 it keeps out damages only those that came or went. Pixels no
 layer covers are left alone. A pixel's value never depends on how the rectangles cut it, so composing the damage
 equals composing everything. A source whose device scale is not the target's is refused (`GLITNIR_E_STATE`) and the

@@ -927,6 +927,69 @@ the card as without."
        (should-not (frame-parameter nil 'glitnir--cards))
        (should (eql 0 (cdr (gui-runner-pixel-diff base (gui-runner-screen-grab)))))))))
 
+;; Card groups: two windows of one group, one above the other, are one card.
+
+(defconst glitnir-fx--fill "#7040a0" "A card group's fill: what its dividers show.")
+(defconst glitnir-fx--fill-bgr '(160 64 112) "`glitnir-fx--fill' as a grab holds it.")
+
+(ert-deftest glitnir-card-group-is-one-card ()
+  "Two card windows of one `card-group' stacked in a column are one card: the divider between them is the group's
+fill, and the upper window's lower corner is square (the window's own colour).  Without the group they are two
+cards again: the same corner shows the gap."
+  (skip-unless (glitnir-fx--live-p))
+  (nhwl-gui--with-blink
+   nil
+   (lambda ()
+     (let* ((f (selected-frame))
+            (rgap (frame-parameter f 'right-divider-width))
+            (bgap (frame-parameter f 'bottom-divider-width))
+            (divider (face-attribute 'window-divider :foreground f))
+            (a (get-buffer-create " *glitnir-card-a*"))
+            (b (get-buffer-create " *glitnir-card-b*"))
+            top low right)
+       (unwind-protect
+           (progn
+             (delete-other-windows)
+             (set-face-foreground 'window-divider glitnir-fx--gap f)
+             (set-frame-parameter f 'right-divider-width (round (* 6 (frame-scale-factor))))
+             (set-frame-parameter f 'bottom-divider-width (round (* 6 (frame-scale-factor))))
+             (dolist (x (list (cons a glitnir-fx--card-bg) (cons b glitnir-fx--other-bg)))
+               (with-current-buffer (car x)
+                 (setq mode-line-format nil cursor-type nil)
+                 (face-remap-add-relative 'default :background (cdr x))))
+             (setq top (selected-window) right (split-window-right) low (split-window-below))
+             (set-window-buffer top a)
+             (set-window-buffer low a)
+             (set-window-buffer right b)
+             (dolist (w (list top low right)) (set-window-fringes w 0 0))
+             (dolist (w (list top low))
+               (dolist (p glitnir-fx--card-look) (set-window-parameter w (car p) (cdr p)))
+               (set-window-parameter w 'card-group (cons 'glitnir-fx glitnir-fx--fill)))
+             (message nil)
+             (glitnir-fx--redraw top low right)
+             (let* ((box (glitnir-fx--card-box top))
+                    (grab (gui-runner-screen-grab))
+                    (below (+ (nth 1 box) (nth 3 box)))
+                    (corner (list (nth 0 box) (1- below))))
+               (should (glitnir-fx--near (glitnir-fx--pixel grab (+ (nth 0 box) (/ (nth 2 box) 2)) (1+ below))
+                                         glitnir-fx--fill-bgr))
+               (should (glitnir-fx--near (apply #'glitnir-fx--pixel grab corner) glitnir-fx--card-bgr))
+               (dolist (w (list top low)) (set-window-parameter w 'card-group nil))
+               (glitnir-fx--redraw top low)
+               (should (glitnir-fx--near (apply #'glitnir-fx--pixel (gui-runner-screen-grab) corner)
+                                         glitnir-fx--gap-bgr))))
+         (dolist (w (list top low))
+           (when (window-live-p w)
+             (dolist (k '(corner-radius shadow ring card-group)) (set-window-parameter w k nil))))
+         (delete-other-windows)
+         (switch-to-buffer "*scratch*")
+         (set-frame-parameter f 'right-divider-width rgap)
+         (set-frame-parameter f 'bottom-divider-width bgap)
+         (set-face-attribute 'window-divider f :foreground divider)
+         (kill-buffer a)
+         (kill-buffer b)
+         (glitnir-fx--redraw (selected-window)))))))
+
 ;; The echo area on the gap: drgnx's look remaps `default' in the echo area's buffers and the minibuffer, so the
 ;; echo area draws on the surface between the cards.  With no message the mini window shows the empty minibuffer.
 ;; Each step draws every window again (as any later redisplay may) and waits until it reached the compositor.

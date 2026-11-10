@@ -231,14 +231,17 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
 - **The window list:** at a publish, `nhg_layers_sync` gets the root's windows (only while it has layers,
   `nhg_layers_count`, or a window with a card, the frame parameter `glitnir--cards`). Each `NhgLayerWindow` holds the
   box, the window's edges without its dividers (`outer`) and its card: the window parameter `glitnir--card`, which
-  `glitnir--card-vector` resolves from the window parameters `corner-radius`, `shadow` and `ring`, as the same slot
+  `glitnir--card-vector` resolves from the window parameters `corner-radius`, `shadow`, `ring` and `card-group`, as the same slot
   vector a child frame's chrome is (`NHG_CHROME_*`; C copies it, `chrome::decode` checks it).
 - **Cards** (`src/cards.rs`): the same sync gives each window with a card a WINDOW layer of its own, id
   `sequence_number | CARD_TAG`, at its outer rectangle, with the chrome in device px at the frame's scale and a Glitnir
   `Card` (the beneath colour, the ring premultiplied and one logical px wide, and what to keep out of: the other
   windows' outer rectangles, and the bands around the window area, the bounding box of the listed windows' outer
   rectangles, so the shadow and the ring never reach the tab, tool or menu bar); it removes the layers of windows that lost their card or are gone, and keeps the cards above the
-  frame's outputs. A card window may be promoted: its output stays `seq | WINDOW_TAG` at the box, so promotion and
+  frame's outputs. Windows whose cards name one group (`NHG_CHROME_GROUP`, non-zero) and tile a rectangle
+  (`glitnir::scene::card_group`) get one card layer instead, the first window's id and chrome, at that rectangle, its
+  `fill` the dividers between them in `NHG_CHROME_FILL_RGB`, keeping out of every other window; when they stop
+  tiling one, the same sync gives each its own card again. A card window may be promoted: its output stays `seq | WINDOW_TAG` at the box, so promotion and
   demotion never touch the card. A scale change and the first sync after a reconnect give the cards again.
   `nhg_layers_count` counts outputs and cards, so the publish after the last card went still lists the windows.
 - **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose

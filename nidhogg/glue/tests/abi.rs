@@ -777,6 +777,8 @@ PROTO (nhg_set_cursor_theme, int32_t (NhgDisplay *, const char *, uint32_t));";
             ("beneath-rgb", SLOT_BENEATH_RGB),
             ("ring-rgb", SLOT_RING_RGB),
             ("ring-opacity", SLOT_RING_OPACITY),
+            ("group", SLOT_GROUP),
+            ("fill-rgb", SLOT_FILL_RGB),
         ];
         assert_eq!(rust.len(), SLOTS);
         // the container check mounts nidhogg/ alone, so the Lisp file is absent there; CI and the host have it
