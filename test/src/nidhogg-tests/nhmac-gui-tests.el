@@ -2190,11 +2190,20 @@ the size on the screen (points) it was made with: the text follows.  (Each re-op
     (add-hook 'move-frame-functions on-move)
     (unwind-protect
         (progn
+          (setq frame-size-history '(300))
           (setq f (make-frame '((width . 40) (height . 10))))
           ;; its size in points as made, at the selected frame's scale
           (setq made (list (/ (frame-pixel-width f) (frame-scale-factor root))
                            (/ (frame-pixel-height f) (frame-scale-factor root))))
           (dotimes (_ 3) (nhmac-gui--settle))
+          (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: bars: tool %S menu %S tab %S border %S fiir %S"
+                          (frame-parameter f 'tool-bar-lines) (frame-parameter f 'menu-bar-lines)
+                          (frame-parameter f 'tab-bar-lines) (frame-parameter f 'internal-border-width)
+                          frame-inhibit-implied-resize)
+          (dolist (e (reverse (cdr frame-size-history)))
+            (when (eq (car-safe (car-safe e)) f)
+              (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: history %S %S" (cdr (car e)) (cdr e))))
+          (setq frame-size-history nil)
           (let ((s (frame-scale-factor f)) (pt (/ (face-attribute 'default :height f t) 10.0)))
             (nhmac-gui--say
              (concat "nhmac-new-frame-opens-its-font-once: scale %s (root %s), %.1f pt, %d px (root %d px), "
