@@ -2,13 +2,13 @@
   "list": "order",
   "ids": [
     "f:a.txt",
-    "m:a.txt:1:2",
-    "m:a.txt:5:0",
+    "m:1:0",
+    "m:1:1",
     "f:b.txt",
-    "m:b.txt:2:0",
+    "m:1:2",
     "f:c.txt",
-    "m:c.txt:9:2",
-    "m:c.txt:10:0"
+    "m:1:3",
+    "m:1:4"
   ],
   "steps": [
     {
@@ -56,7 +56,7 @@
                   ]
                 },
                 {
-                  "id": "m:a.txt:1:2",
+                  "id": "m:1:0",
                   "kind": "match",
                   "flags": 0,
                   "parent": "f:a.txt",
@@ -84,7 +84,7 @@
                   ]
                 },
                 {
-                  "id": "m:a.txt:5:0",
+                  "id": "m:1:1",
                   "kind": "match",
                   "flags": 0,
                   "parent": "f:a.txt",
@@ -118,8 +118,8 @@
                   "name": "order",
                   "ids": [
                     "f:a.txt",
-                    "m:a.txt:1:2",
-                    "m:a.txt:5:0"
+                    "m:1:0",
+                    "m:1:1"
                   ]
                 }
               ]
@@ -152,7 +152,7 @@
                 ]
               },
               {
-                "id": "m:b.txt:2:0",
+                "id": "m:1:2",
                 "kind": "match",
                 "flags": 0,
                 "parent": "f:b.txt",
@@ -188,7 +188,7 @@
               "remove": 0,
               "ids": [
                 "f:b.txt",
-                "m:b.txt:2:0"
+                "m:1:2"
               ]
             }
           }
@@ -219,35 +219,7 @@
                 ]
               },
               {
-                "id": "m:c.txt:10:0",
-                "kind": "match",
-                "flags": 0,
-                "parent": "f:c.txt",
-                "fields": [
-                  [
-                    "label",
-                    "needleq"
-                  ],
-                  [
-                    "line",
-                    10
-                  ],
-                  [
-                    "col",
-                    0
-                  ],
-                  [
-                    "end",
-                    6
-                  ],
-                  [
-                    "text",
-                    "needle"
-                  ]
-                ]
-              },
-              {
-                "id": "m:c.txt:9:2",
+                "id": "m:1:3",
                 "kind": "match",
                 "flags": 0,
                 "parent": "f:c.txt",
@@ -273,6 +245,34 @@
                     "needle"
                   ]
                 ]
+              },
+              {
+                "id": "m:1:4",
+                "kind": "match",
+                "flags": 0,
+                "parent": "f:c.txt",
+                "fields": [
+                  [
+                    "label",
+                    "needleq"
+                  ],
+                  [
+                    "line",
+                    10
+                  ],
+                  [
+                    "col",
+                    0
+                  ],
+                  [
+                    "end",
+                    6
+                  ],
+                  [
+                    "text",
+                    "needle"
+                  ]
+                ]
               }
             ]
           },
@@ -283,8 +283,8 @@
               "remove": 0,
               "ids": [
                 "f:c.txt",
-                "m:c.txt:9:2",
-                "m:c.txt:10:0"
+                "m:1:3",
+                "m:1:4"
               ]
             }
           }
