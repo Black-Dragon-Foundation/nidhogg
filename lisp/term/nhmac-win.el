@@ -51,6 +51,12 @@
 ;;; Code:
 
 (eval-when-compile (require 'cl-lib))
+;; per-frame scale and text zoom, preloaded with this file (`load': the
+;; dump refuses a `require' of a file not loaded yet); fonts open at 72
+;; dpi times the scale here, as C opens them (`NHWL_DPI')
+(unless (featurep 'nidhogg-scale) (load "term/nidhogg-scale" nil t))
+(defvar nidhogg-scale-dpi)
+(setq nidhogg-scale-dpi 72.0)
 
 (defconst nhmac-menu-width 7
   "Slots per entry in a flattened menu.")

@@ -21,6 +21,8 @@ use objc2_foundation::{NSNotification, NSObjectProtocol};
 pub enum MacEv {
     /// The window's frame or backing scale may have changed (`windowDidResize:`, `windowDidChangeBackingProperties:`).
     Resized(WindowId),
+    /// The window may be on another screen (`windowDidChangeScreen:`).
+    Screen(WindowId),
     /// The window became (`true`) or stopped being key.
     Key(WindowId, bool),
     /// A key, modifier or mouse record from the window's view, for the host as it is.
@@ -58,6 +60,11 @@ define_class!(
         #[unsafe(method(windowDidChangeBackingProperties:))]
         fn did_change_backing(&self, _n: &NSNotification) {
             deliver(MacEv::Resized(*self.ivars()));
+        }
+
+        #[unsafe(method(windowDidChangeScreen:))]
+        fn did_change_screen(&self, _n: &NSNotification) {
+            deliver(MacEv::Screen(*self.ivars()));
         }
 
         #[unsafe(method(windowDidBecomeKey:))]
