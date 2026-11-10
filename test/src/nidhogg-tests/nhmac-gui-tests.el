@@ -2263,29 +2263,41 @@ its points, and everything in it (font, fringes, borders) scales with it."
       (when (frame-live-p f) (delete-frame f t))
       (nhmac-gui--settle))))
 
+(defun nhmac-gui--scale-at (x y)
+  "The scale factor of the monitor whose geometry holds X, Y, as `display-monitor-attributes-list' gives it; nil."
+  (cl-loop for m in (display-monitor-attributes-list)
+           for g = (alist-get 'geometry m)
+           when (and (<= (nth 0 g) x) (< x (+ (nth 0 g) (nth 2 g))) (<= (nth 1 g) y) (< y (+ (nth 1 g) (nth 3 g))))
+           return (alist-get 'scale-factor m)))
+
 (ert-deftest nhmac-new-frame-laid-out-once ()
-  "A new frame opens on the selected frame's screen, at its scale, and has the lines and columns it was asked for
-from its first draw on, with no size change after it: nothing is measured at a size or scale it never shows at.  The
-lane's root sits on its scale's screen (the 1x one at scale 1, the 2x one at scale 2)."
+  "A new frame opens on its screen at that screen's scale, and has the lines and columns it was asked for from its
+first draw on, with no size change after it: nothing is measured at a size or scale it never shows at.  Without a
+position it opens beside the selected frame, at its scale (the lane's root sits on its scale's screen); with `left'
+and `top' it opens there, at the scale of the screen there (the main screen, the lane's other scale)."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let ((root (selected-frame)) (f nil) first)
-    (unwind-protect
-        (progn
-          (setq f (make-frame '((width . 40) (height . 10))))
-          (nhmac-gui--settle)
-          (setq first (list (frame-scale-factor f) (frame-width f) (frame-height f)
-                            (frame-pixel-width f) (frame-pixel-height f)))
-          (dotimes (_ 3) (nhmac-gui--settle))
-          (let ((now (list (frame-scale-factor f) (frame-width f) (frame-height f)
-                           (frame-pixel-width f) (frame-pixel-height f))))
-            (nhmac-gui--say "nhmac-new-frame-laid-out-once: root scale %s; first draw %S, after %S"
-                            (frame-scale-factor root) first now)
-            (should (= (nth 0 first) (frame-scale-factor root)))
-            (should (equal (list (nth 1 first) (nth 2 first)) '(40 10)))
-            (should (equal now first))))
-      (when (frame-live-p f) (delete-frame f t))
-      (nhmac-gui--settle))))
+  (let ((root (selected-frame)))
+    (pcase-dolist (`(,case ,params ,want)
+                   `((beside nil ,(frame-scale-factor root))
+                     (placed ((left . 100) (top . 100)) ,(nhmac-gui--scale-at 100 100))))
+      (let ((f nil) first)
+        (unwind-protect
+            (progn
+              (setq f (make-frame (append '((width . 40) (height . 10)) params)))
+              (nhmac-gui--settle)
+              (setq first (list (frame-scale-factor f) (frame-width f) (frame-height f)
+                                (frame-pixel-width f) (frame-pixel-height f)))
+              (dotimes (_ 3) (nhmac-gui--settle))
+              (let ((now (list (frame-scale-factor f) (frame-width f) (frame-height f)
+                               (frame-pixel-width f) (frame-pixel-height f))))
+                (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: root scale %s, want %s; first draw %S, after %S"
+                                case (frame-scale-factor root) want first now)
+                (should (equal (list case (nth 0 first)) (list case want)))
+                (should (equal (list case (nth 1 first) (nth 2 first)) (list case 40 10)))
+                (should (equal (list case now) (list case first)))))
+          (when (frame-live-p f) (delete-frame f t))
+          (nhmac-gui--settle))))))
 
 (ert-deftest nhmac-monitor-change-runs-move-frame-functions ()
   "A root frame moved to another monitor runs `move-frame-functions' with it."
