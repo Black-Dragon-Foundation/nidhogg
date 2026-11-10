@@ -35,7 +35,8 @@
 (eval-and-compile
   (defconst nidhogg-view--ops
     '((apply . 1) (open . 2) (close . 3) (follow . 4) (walk . 5) (walk-to . 6)
-      (set . 7) (get . 8) (hub-lost . 9) (stats . 10) (test-panic . 99))
+      (set . 7) (get . 8) (hub-lost . 9) (stats . 10) (push . 11) (drain . 12)
+      (named . 13) (due . 14) (test-panic . 99))
     "Sjá's op numbers (nidhogg/sja/include/sja.h)."))
 
 (defvar nidhogg-view-more nil
@@ -54,6 +55,42 @@ Return `applied', `dropped' (not newer than what is drawn), `resync' (ask
 the hub for a reset), `too-large' or `broken'."
   (aref nidhogg-view--statuses
         (nidhogg-view--call (nidhogg-view--op apply) view hub version model)))
+
+(defconst nidhogg-view--decisions [queue reset drop resync none]
+  "What `nidhogg-view-push' decides, by Sjá's number.")
+
+(defsubst nidhogg-view-push (line)
+  "Hand LINE, a hub's whole `view-model' line, to Sjá, unparsed.
+Sjá reads its envelope, decides and queues its model for the draw.
+Return (VIEW VERSION DECISION), DECISION `queue' (a diff queued),
+`reset' (a reset queued: a reset asked for has come), `drop', `resync'
+\(a gap or a cap: ask the hub for a reset) or `none' (no instance of
+VIEW is open); nil when LINE is not a `view-model' line."
+  (let ((r (nidhogg-view--call (nidhogg-view--op push) line)))
+    (when r (setcar (nthcdr 2 r) (aref nidhogg-view--decisions (nth 2 r))))
+    r))
+
+(defsubst nidhogg-view--drained (r)
+  "R, a drain's answer, with its status as a symbol."
+  (when r (setcar (cdr r) (aref nidhogg-view--statuses (nth 1 r))))
+  r)
+
+(defsubst nidhogg-view-drain (view &optional upto)
+  "Apply VIEW's queued models of a version up to UPTO (all when nil), oldest first.
+Return (APPLIED LAST VERSION): how many applied, the last status (as
+`nidhogg-view-apply' answers; `resync' or `too-large' dropped the queue
+and its stream) and the newest version the stream queued (nil when it
+has none); nil when no instance of VIEW is open."
+  (nidhogg-view--drained (nidhogg-view--call (nidhogg-view--op drain) view upto)))
+
+(defsubst nidhogg-view-named (view n)
+  "A row patch of VIEW named model version N: it waits for that draw."
+  (nidhogg-view--call (nidhogg-view--op named) view n))
+
+(defsubst nidhogg-view-due (view)
+  "Apply VIEW's queued models when the oldest is one no row patch named.
+Return as `nidhogg-view-drain', or nil when none was due."
+  (nidhogg-view--drained (nidhogg-view--call (nidhogg-view--op due) view)))
 
 (defsubst nidhogg-view-open (view &optional group)
   "Open an instance of VIEW and return its handle.

@@ -344,7 +344,12 @@ fn op(v: &Value) -> R<Op> {
 /// Decode one model patch.
 pub fn decode(text: &str) -> R<Vec<Op>> {
     let v: Value = serde_json::from_str(text).map_err(|e| Bad(format!("json: {e}")))?;
-    let o = obj(&v, "patch")?;
+    decode_value(&v)
+}
+
+/// Decode one model patch already parsed (a `view-model` line's model object).
+pub fn decode_value(v: &Value) -> R<Vec<Op>> {
+    let o = obj(v, "patch")?;
     let ops = o.get("ops").ok_or_else(|| Bad("patch: no ops".into()))?;
     arr(ops, "ops")?.iter().map(op).collect()
 }

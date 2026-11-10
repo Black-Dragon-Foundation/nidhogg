@@ -15,7 +15,11 @@ fn a_list_the_hub_grew_by_appending_loads_as_splices() {
     for step in fixture["steps"].as_array().unwrap() {
         let version = step["version"].as_u64().unwrap();
         let model = step["model"].as_str().unwrap();
-        assert_eq!(v.apply("h1", version, model, BIG), Status::Applied, "version {version}");
+        assert_eq!(
+            v.apply("h1", version, model, BIG),
+            Status::Applied,
+            "version {version}"
+        );
     }
     let want: Vec<&str> = fixture["ids"]
         .as_array()

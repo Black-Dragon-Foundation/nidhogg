@@ -234,6 +234,33 @@ impl View {
         let Ok(ops) = wire::decode(text) else {
             return Status::Resync;
         };
+        self.apply_ops(hub, version, &ops, budget)
+    }
+
+    /// Apply the queued models up to version `upto` (all with `None`), oldest first, until one does not apply: a
+    /// `resync` or `too-large` drops the queue and its stream.  The answer: how many applied, and the last status.
+    pub fn drain(&mut self, upto: Option<u64>, budget: usize) -> (usize, Status) {
+        let (mut n, mut last) = (0, Status::Applied);
+        let hub = self.queue.hub_name();
+        while let Some(q) = self.queue.next_upto(upto) {
+            last = match &q.ops {
+                Ok(ops) => self.apply_ops(&hub, q.version, ops, budget),
+                Err(_) => Status::Resync,
+            };
+            match last {
+                Status::Applied => n += 1,
+                Status::Dropped => {}
+                _ => {
+                    self.queue.lose();
+                    break;
+                }
+            }
+        }
+        (n, last)
+    }
+
+    /// Apply decoded `ops` (see `apply`).
+    pub fn apply_ops(&mut self, hub: &str, version: u64, ops: &[Op], budget: usize) -> Status {
         let reset = matches!(ops.first(), Some(Op::Reset(_)));
         let same_hub = self.hub.as_deref() == Some(hub);
         if same_hub && version <= self.version {
@@ -243,7 +270,7 @@ impl View {
             return Status::Resync;
         }
         let result = if reset {
-            build(&ops, budget).map(|mut m| {
+            build(ops, budget).map(|mut m| {
                 let old = self.model.take();
                 m.generation = old.as_ref().map_or(0, |o| o.generation) + 1;
                 self.model = Some(m);
@@ -252,9 +279,9 @@ impl View {
             })
         } else {
             let m = self.model.as_mut().expect("checked above");
-            match project(m, &ops, budget) {
+            match project(m, ops, budget) {
                 Ok(()) => {
-                    let gone = mutate(m, &ops);
+                    let gone = mutate(m, ops);
                     m.generation += 1;
                     let then_of = |id: &str| gone.get(id).cloned().flatten();
                     self.settle(&then_of);

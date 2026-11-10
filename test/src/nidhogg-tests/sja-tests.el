@@ -165,6 +165,37 @@
           (should (equal (nidhogg-view-follow h "up") "b")))
       (nidhogg-view-close h))))
 
+(defun sja-tests--line (view base version reset model)
+  "A hub's `view-model' line for VIEW: MODEL (a JSON object's text) from BASE to VERSION."
+  (format "{\"event\":\"view-model\",\"data\":{\"base\":%d,\"hub\":7,\"model\":%s,%s\"version\":%d,\"view\":%S}}"
+          base model (if reset "\"reset\":true," "") version view))
+
+(ert-deftest sja/push-a-line-then-drain ()
+  "A whole `view-model' line goes to Sjá unparsed (a unibyte string, as nh-io delivers it); it waits for the draw."
+  (let ((h (nidhogg-view-open "t-push")))
+    (unwind-protect
+        (progn
+          (should (equal (nidhogg-view-push (encode-coding-string
+                                             (sja-tests--line "t-push" 0 1 t sja-tests--map) 'utf-8))
+                         '("t-push" 1 reset)))
+          (should (equal (nidhogg-view-push (sja-tests--line "t-push" 1 2 nil
+                                                             (concat "{\"ops\": [{\"list\": {\"name\": \"team\","
+                                                                     " \"ids\": [\"agent:a\"]}}]}")))
+                         '("t-push" 2 queue)))
+          (should (equal (nidhogg-view-push (sja-tests--line "t-push" 5 6 nil "{\"ops\": []}"))
+                         '("t-push" 6 resync)))
+          (should (eql (nidhogg-view-get h 'version) 0))
+          (nidhogg-view-named "t-push" 1)
+          (should-not (nidhogg-view-due "t-push"))
+          (should (equal (nidhogg-view-drain "t-push" 1) '(1 applied 2)))
+          (should (equal (nidhogg-view-get h 'list "team") '("agent:a" "agent:b")))
+          (should (equal (nidhogg-view-drain "t-push") '(1 applied 2)))
+          (should (equal (nidhogg-view-get h 'list "team") '("agent:a")))
+          (should (equal (nidhogg-view-push (sja-tests--line "t-nobody" 0 1 t sja-tests--map))
+                         '("t-nobody" 1 none)))
+          (should-not (nidhogg-view-push "{\"event\":\"view-patch\",\"data\":{}}")))
+      (nidhogg-view-close h))))
+
 (provide 'sja-tests)
 
 ;;; sja-tests.el ends here
