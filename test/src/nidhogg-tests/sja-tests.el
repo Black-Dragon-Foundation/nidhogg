@@ -42,19 +42,35 @@
    " \"lists\": [{\"name\": \"team\", \"ids\": [\"agent:a\", \"agent:b\"]}]}}]}")
   "A small links model: a plan and two agents, one came from the plan.")
 
+(defun sja-tests--line (view base version reset model)
+  "A hub's `view-model' line for VIEW: MODEL (a JSON object's text) from BASE to VERSION."
+  (format "{\"event\":\"view-model\",\"data\":{\"base\":%d,\"hub\":7,\"model\":%s,%s\"version\":%d,\"view\":%S}}"
+          base model (if reset "\"reset\":true," "") version view))
+
+(defun sja-tests--put (view version model &optional reset)
+  "MODEL (a JSON object's text) for VIEW from VERSION - 1 to VERSION, pushed as the hub's line and drained.
+RESET marks it a reset.  Return the drain's status, or the push's decision when nothing was queued."
+  (let ((d (nth 2 (nidhogg-view-push (sja-tests--line view (1- version) version reset model)))))
+    (if (memq d '(queue reset)) (nth 1 (nidhogg-view-drain view)) d)))
+
 (defmacro sja-tests--with (view h &rest body)
   "Run BODY with H an instance of VIEW holding the small map; close H after."
   (declare (indent 2))
   `(let ((,h (nidhogg-view-open ,view)))
      (unwind-protect
          (progn
-           (should (eq (nidhogg-view-apply ,view "h1" 1 sja-tests--map) 'applied))
+           (should (eq (sja-tests--put ,view 1 sja-tests--map t) 'applied))
            ,@body)
        (nidhogg-view-close ,h))))
 
 (ert-deftest sja/door-is-there ()
   (should (fboundp 'nidhogg-view--call))
   (should (subrp (symbol-function 'nidhogg-view--call))))
+
+(ert-deftest sja/the-string-apply-is-gone ()
+  "A model comes only as the hub's line (`nidhogg-view-push'): op 1, the string apply, is refused."
+  (should-not (fboundp 'nidhogg-view-apply))
+  (should-error (nidhogg-view--call 1 "t-gone" "h1" 1 "{\"ops\": []}") :type 'args-out-of-range))
 
 (ert-deftest sja/apply-then-follow ()
   (sja-tests--with "t-follow" h
@@ -66,8 +82,8 @@
     (should (equal (nidhogg-view-get h 'kind) "agent"))
     (should (eql (nidhogg-view-get h 'field "minutes") 7))
     (should (equal (nidhogg-view-set h 'select nil) nil))
-    (should (eq (nidhogg-view-apply "t-follow" "h1" 1 sja-tests--map) 'dropped))
-    (should (eq (nidhogg-view-apply "t-follow" "h1" 2 "{\"ops\": [{\"remove\": 3}]}") 'resync))))
+    (should (eq (sja-tests--put "t-follow" 1 "{\"ops\": []}") 'drop))           ; a diff not newer
+    (should (eq (sja-tests--put "t-follow" 2 "{\"ops\": [{\"remove\": 3}]}") 'resync))))
 
 (ert-deftest sja/classes-are-face-indices ()
   (sja-tests--with "t-classes" h
@@ -103,14 +119,14 @@
   (let ((h (nidhogg-view-open "t-panic")))
     (unwind-protect
         (progn
-          (should (eq (nidhogg-view-apply "t-panic" "h1" 1 sja-tests--map) 'applied))
+          (should (eq (sja-tests--put "t-panic" 1 sja-tests--map t) 'applied))
           (nidhogg-view-set h 'select "agent:b")
           (should (eql (nidhogg-view--call 99 "t-panic") 2))
           (should (eql (nidhogg-view-get h 'health) 1))
-          (should (eq (nidhogg-view-apply "t-panic" "h1" 2 sja-tests--map) 'applied))
+          (should (eq (sja-tests--put "t-panic" 2 sja-tests--map t) 'applied))
           (should (equal (nidhogg-view-get h 'selection) "agent:b"))
           (should (eql (nidhogg-view--call 99 "t-panic") 4))
-          (should (eq (nidhogg-view-apply "t-panic" "h1" 3 sja-tests--map) 'broken))
+          (should (eq (sja-tests--put "t-panic" 3 sja-tests--map t) 'drop))       ; a broken view drops its lines
           (should (eql (nidhogg-view-get h 'health) 2))
           (should-not (nidhogg-view-follow h "up")))
       (nidhogg-view-close h))
@@ -154,7 +170,7 @@
   (let ((h (nidhogg-view-open "t-tree")))
     (unwind-protect
         (progn
-          (should (eq (nidhogg-view-apply "t-tree" "h1" 1 sja-tests--tree) 'applied))
+          (should (eq (sja-tests--put "t-tree" 1 sja-tests--tree t) 'applied))
           (should (equal (nidhogg-view-get h 'list "visible") '("a" "a/x" "b")))
           (should (eql (nidhogg-view-get h 'open "a") 1))
           (nidhogg-view-set h 'fold "b")
@@ -164,11 +180,6 @@
           (should (equal (nidhogg-view-follow h "right") "b/z"))
           (should (equal (nidhogg-view-follow h "up") "b")))
       (nidhogg-view-close h))))
-
-(defun sja-tests--line (view base version reset model)
-  "A hub's `view-model' line for VIEW: MODEL (a JSON object's text) from BASE to VERSION."
-  (format "{\"event\":\"view-model\",\"data\":{\"base\":%d,\"hub\":7,\"model\":%s,%s\"version\":%d,\"view\":%S}}"
-          base model (if reset "\"reset\":true," "") version view))
 
 (ert-deftest sja/push-a-line-then-drain ()
   "A whole `view-model' line goes to Sjá unparsed (a unibyte string, as nh-io delivers it); it waits for the draw."

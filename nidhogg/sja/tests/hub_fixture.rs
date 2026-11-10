@@ -14,9 +14,9 @@ fn a_list_the_hub_grew_by_appending_loads_as_splices() {
     v.open(1, None);
     for step in fixture["steps"].as_array().unwrap() {
         let version = step["version"].as_u64().unwrap();
-        let model = step["model"].as_str().unwrap();
+        let model = step["model"].to_string(); // an object, as the hub's line carries it
         assert_eq!(
-            v.apply("h1", version, model, BIG),
+            v.apply("h1", version, &model, BIG),
             Status::Applied,
             "version {version}"
         );

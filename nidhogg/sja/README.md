@@ -91,7 +91,6 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 
 | Op | Arguments | Answer |
 |---|---|---|
-| `SJA_APPLY` | view, hub, version, patch | status: 0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken |
 | `SJA_OPEN` | view, group or nil | a handle |
 | `SJA_CLOSE` | handle | nil |
 | `SJA_FOLLOW` | handle, link | the selection or nil |
@@ -101,7 +100,7 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_HUB_LOST` | | nil |
 | `SJA_STATS` | | views, instances, bytes, panics, broken views |
 | `SJA_PUSH` | a whole `view-model` line | `(VIEW VERSION DECISION)`: 0 queue, 1 reset, 2 drop, 3 resync, 4 none (no instance of the view); nil when the line is not a `view-model` |
-| `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status, the stream's newest version or nil |
+| `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status (0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken), the stream's newest version or nil |
 | `SJA_NAMED` | view, version | nil: a row patch named that model version |
 | `SJA_DUE` | view | as `SJA_DRAIN` (all), when the oldest queued model is one no row patch named; else nil |
 
@@ -135,9 +134,9 @@ instance closes. `SJA_STATS` counts panics and broken views; drgnx's doctor fail
 
 Feature `test-hooks` adds `SJA_TEST_PANIC` (a panic inside a view's guard) and the breaker's test clock.
 
-`../sja-fuzz` has `cargo-fuzz` targets (`apply_bytes`: arbitrary bytes as a patch, then the verbs; `push_bytes`: arbitrary
-bytes as a `view-model` line's model, pushed and drained; `typed_bytes`: whatever the typed read reads, the `Value`
-read reads the same), nightly only: `cargo +nightly fuzz run apply_bytes` there. It is not part of `check.sh`.
+`../sja-fuzz` has `cargo-fuzz` targets (`push_bytes`: arbitrary bytes as a `view-model` line's model, pushed and drained,
+then the verbs; `typed_bytes`: whatever the typed read reads, the `Value` read reads the same), nightly only:
+`cargo +nightly fuzz run push_bytes` there. It is not part of `check.sh`.
 
 ## Checks
 

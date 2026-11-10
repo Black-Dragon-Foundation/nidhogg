@@ -26,8 +26,7 @@ pub const SJA_LIST: i32 = 3;
 pub const SJA_DOTTED: i32 = 4;
 pub const SJA_VECTOR: i32 = 5;
 
-/// The ops.
-pub const SJA_APPLY: i32 = 1;
+/// The ops.  1 was the string apply: a model comes only as the hub's line now (`SJA_PUSH`), and 1 is refused.
 pub const SJA_OPEN: i32 = 2;
 pub const SJA_CLOSE: i32 = 3;
 pub const SJA_FOLLOW: i32 = 4;
@@ -354,25 +353,6 @@ fn set(h: u32, what: &str, value: &Arg) -> Result<Ans, Refused> {
 /// One call, decoded (see `sja_call`).
 fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
     match op {
-        SJA_APPLY => {
-            let (view, hub, version, text) = (
-                arg(args, 0).str()?,
-                arg(args, 1).str()?,
-                arg(args, 2).int()?,
-                arg(args, 3).str()?,
-            );
-            let version = u64::try_from(version).map_err(|_| Refused::Arg)?;
-            let (slot, others) = with_table(|t| (t.slot(view), t.others(view)))?;
-            let budget = crate::guard::TOTAL_BYTES.saturating_sub(others);
-            let r = on_view(&slot, |v| {
-                Ans::Int(v.apply(hub, version, text, budget) as i64)
-            });
-            Ok(ran(
-                r,
-                Ans::Int(Status::Resync as i64),
-                Ans::Int(Status::Broken as i64),
-            ))
-        }
         SJA_OPEN => {
             let (view, group) = (arg(args, 0).str()?, arg(args, 1).opt_str()?);
             let (h, slot) = with_table(|t| t.open(view))?;
@@ -560,7 +540,7 @@ macro_rules! sja_export {
 }
 
 sja_export! {
-    /// One call into Sjá: `op` (`SJA_APPLY` …) on `n` arguments; on `SJA_OK` the answer's `*nout` tokens are at `*out`,
+    /// One call into Sjá: `op` (`SJA_PUSH` …) on `n` arguments; on `SJA_OK` the answer's `*nout` tokens are at `*out`,
     /// valid until the next call on this thread.  A negative `SJA_E_*` code otherwise, with no answer.
     ///
     /// # Safety
