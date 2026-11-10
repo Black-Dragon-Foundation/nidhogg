@@ -3,16 +3,7 @@
 
 use crate::event::OutputEv;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSScreen, NSWindow};
-
-/// The record of the screen `window` is on (AppKit's `screen`: the one holding most of it), as [`outputs`] gives it.
-pub fn output_of(mtm: MainThreadMarker, window: &NSWindow) -> Option<OutputEv> {
-    let screen = window.screen()?;
-    let i = NSScreen::screens(mtm)
-        .iter()
-        .position(|s| std::ptr::eq(&*s, &*screen))?;
-    outputs(mtm).get(i).copied()
-}
+use objc2_app_kit::NSScreen;
 
 /// One record per screen, the main screen first (id 1 up, in `NSScreen.screens` order).
 pub fn outputs(mtm: MainThreadMarker) -> Vec<OutputEv> {
