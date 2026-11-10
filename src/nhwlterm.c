@@ -1145,10 +1145,15 @@ nhwl_window_visible (struct frame *f, bool on)
    parameter or get a generated one) and opens the session at the
    display's first frame, before its window exists, so the window can join
    it before its first commit.  The name is kept in F's parameters, where
-   frameset saves it.  */
+   frameset saves it.  Naglfar has no compositor session (nhwl-session.el
+   is the Wayland shell's, and is not loaded there): no name, and no call
+   into Lisp that would only signal void-function.  */
 static Lisp_Object
 nhwl_session_name (struct frame *f)
 {
+#ifdef HAVE_NHMAC
+  return Qnil;
+#else
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   bool first = !dpyinfo->session_first_done;
   Lisp_Object frame, name;
@@ -1162,6 +1167,7 @@ nhwl_session_name (struct frame *f)
     return Qnil;
   store_in_alist (&f->param_alist, Qsession_name, name);
   return name;
+#endif
 }
 
 /* Create frame F's shell window at its current pixel size.  Adapted from
