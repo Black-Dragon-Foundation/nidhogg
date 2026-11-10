@@ -39,7 +39,10 @@ List       = {name, ids, total?, from?}          ; windowed when total is set
 ```
 
 A patch is `{"ops": [...]}` with ops `reset`, `nodes` (insert or replace), `remove`, `edges {add, remove}`, `list` and
-`splice`. Removing a node leaves its edges: the hub removes them (an edge to a missing node is never followed).
+`splice {name, at, remove, ids, from?}`. A splice grows or shrinks a window's total by what it adds less what it
+removes; one that names `from` moves the window over the same list instead (its first position becomes `from`, its
+total stays), so a hub moves a long window by the ids that change, not the window whole. Removing a node leaves its
+edges: the hub removes them (an edge to a missing node is never followed).
 
 **Apply** checks a whole patch before changing anything: it decodes every op, projects the caps over the batch and
 refuses a splice outside its list. A refused patch leaves the model, the selections and the classes as they were.
