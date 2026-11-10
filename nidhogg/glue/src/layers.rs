@@ -330,7 +330,7 @@ pub fn sync(
     };
     let eligible = root(state, window).is_ok_and(|r| opaque_root(&r, flags, s120));
     let left = sync_at(&mut state.backings, key, windows, eligible, Instant::now())?;
-    crate::cards::sync(state, key, windows)?;
+    crate::cards::sync(state, window, key, windows)?;
     Ok(left)
 }
 

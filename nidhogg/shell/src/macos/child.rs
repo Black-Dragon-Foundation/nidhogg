@@ -229,7 +229,7 @@ impl MacShell {
     }
 
     /// Root `root`'s tree owes a commit: the next publish or pump makes it.
-    fn owe(&mut self, root: WindowId) {
+    pub(super) fn owe(&mut self, root: WindowId) {
         if self.owed.insert(root) {
             crate::wait::wake();
         }
@@ -644,14 +644,19 @@ impl MacShell {
             kids,
             order,
             retired,
+            cards,
             ..
         } = self;
         let w = &windows[&root];
+        let cards = cards.get_mut(&root);
         layers::transaction(|| {
             if drawn.contains(&root)
                 && let Some(s) = w.surfaces.newest()
             {
                 layers::show(&w.layer, s, w.surfaces.was_same(), scale);
+            }
+            if let Some(c) = cards {
+                c.apply(&w.layer, f64::from(rh), scale);
             }
             for (r, k) in retired.iter() {
                 if *r == root
