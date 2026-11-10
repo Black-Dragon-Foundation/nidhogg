@@ -652,8 +652,8 @@ nidhogg_echo_as (Lisp_Object what)
   specbind (Qnidhogg_echo_prompt, what);
   return count;
 }
-#endif
 
+#endif
 /* Display the current echo string, and begin echoing if not already
    doing so.  */
 
@@ -13562,8 +13562,8 @@ so far echo; nil otherwise, as for `message'.  A `set-message-function'
 reads it to keep a prompt where the user looks while sending messages
 elsewhere.  Bind it, never set it.  */);
   Vnidhogg_echo_prompt = Qnil;
-#endif
 
+#endif
   Vlispy_mouse_stem = build_string ("mouse");
   staticpro (&Vlispy_mouse_stem);
 
