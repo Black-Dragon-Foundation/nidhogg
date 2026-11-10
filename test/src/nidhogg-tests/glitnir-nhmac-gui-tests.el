@@ -206,3 +206,287 @@ while its shadow layer's frame follows each size."
           (should (equal frames (sort (copy-sequence frames) #'>)))
           (should (= (length (delete-dups (copy-sequence frames))) 5)))
       (delete-frame c t))))
+
+;;; Motion: the container's model values are the end state at once, and Core Animation runs the leg (its animations'
+;;; keys and the leg handed over read back through `nhmac--test-child').  The legs run 0.6 s, long enough to read them
+;;; while they run on the runner; the system's reduced-motion setting is stood in for, so the runner's own (it asks
+;;; for reduced motion) does not turn them off.
+
+(defconst glitnir-nhmac--pop '(:show pop :duration 0.6 :curve ease-out) "A pop in over 0.6 s; no hide leg.")
+(defconst glitnir-nhmac--fade-out '(:hide fade :hide-duration 0.6 :hide-curve linear)
+  "A fade out over 0.6 s; no show leg.")
+
+(defmacro glitnir-nhmac--motion (reduced &rest body)
+  "Run BODY with the shell reading reduced motion as REDUCED (1 or 0), then the system's again."
+  (declare (indent 1))
+  `(progn (nhmac--test-reduced-motion ,reduced)
+          (unwind-protect (progn ,@body) (nhmac--test-reduced-motion -1))))
+
+(defun glitnir-nhmac--hidden (params)
+  "A chromed child with PARAMS, made invisible and settled."
+  (let ((c (glitnir-nhmac--chromed params)))
+    (make-frame-invisible c t)
+    (nhmac-gui--settle)
+    c))
+
+(ert-deftest nhmac-show-from-hidden-starts-at-leg ()
+  "A pop shown from hidden: the container is shown at once (the model) and its leg starts at its own start, opacity
+0 and the pop's small scale, for the whole duration, as Core Animation's opacity and transform animations."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--motion 0
+    (let ((c (glitnir-nhmac--hidden `((transition . ,glitnir-nhmac--pop)))))
+      (unwind-protect
+          (let ((before (nhmac-stats)))
+            (should (plist-get (nhmac--test-child c) :hidden))
+            (make-frame-visible c)
+            (nhmac-gui--settle)
+            (let* ((i (nhmac--test-child c)) (leg (plist-get i :leg)))
+              (nhmac-gui--say "nhmac-show-from-hidden-starts-at-leg: %S" i)
+              (should-not (plist-get i :hidden))
+              (should (= (nhmac-gui--delta before :motion-legs) 1))
+              (should (eq (plist-get leg :show) t))
+              (should (equal (mapcar (lambda (v) (/ (round (* v 100)) 100.0)) (plist-get leg :from)) '(0.0 0.96)))
+              (should (equal (plist-get leg :to) '(1 1)))
+              (should (< (abs (- (plist-get leg :seconds) 0.6)) 0.001))
+              (should (member "opacity" (plist-get i :animations)))
+              (should (member "transform" (plist-get i :animations)))))
+        (delete-frame c t)))))
+
+(ert-deftest nhmac-hide-leg-then-hidden ()
+  "A fade out: the container is hidden in the model at once (the hit-test ignores it), an animation holds it shown
+while its opacity runs to 0, and once the leg is over no animation is left."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--motion 0
+    (let ((c (glitnir-nhmac--chromed `((transition . ,glitnir-nhmac--fade-out)))))
+      (unwind-protect
+          (progn
+            (make-frame-invisible c t)
+            (nhmac-gui--settle)
+            (let* ((i (nhmac--test-child c)) (leg (plist-get i :leg)))
+              (nhmac-gui--say "nhmac-hide-leg-then-hidden: %S" i)
+              (should (plist-get i :hidden))
+              (should-not (plist-get leg :show))
+              (should (equal (plist-get leg :to) '(0 1)))
+              (should (member "hidden" (plist-get i :animations)))
+              (should (member "opacity" (plist-get i :animations))))
+            (should (nhmac-gui--idle-until (lambda () (null (plist-get (nhmac--test-child c) :animations))) 3)))
+        (delete-frame c t)))))
+
+(ert-deftest nhmac-motion-no-redisplay ()
+  "A leg running costs Emacs nothing: while a 0.6 s pop runs, idling makes no commit and no draw (Core Animation runs
+it), and no animation outlives it."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--motion 0
+    (let ((c (glitnir-nhmac--hidden `((transition . ,glitnir-nhmac--pop)))))
+      (unwind-protect
+          (progn
+            (make-frame-visible c)
+            (redisplay t)
+            (let ((before (nhmac-stats)))
+              ;; idle through the leg, the wait turning the run loop as Emacs's does
+              (nhmac-gui--idle-until #'ignore 0.5)
+              (nhmac-gui--say "nhmac-motion-no-redisplay: commits %d draws %d animations %S"
+                              (nhmac-gui--delta before :commits) (nhmac-gui--delta before :draws)
+                              (plist-get (nhmac--test-child c) :animations))
+              (should (= (nhmac-gui--delta before :commits) 0))
+              (should (= (nhmac-gui--delta before :draws) 0)))
+            (should (nhmac-gui--idle-until (lambda () (null (plist-get (nhmac--test-child c) :animations))) 3)))
+        (delete-frame c t)))))
+
+(ert-deftest nhmac-reduced-motion ()
+  "When the system asks for reduced motion, `nhmac-reduced-motion-p' says so and a show or a hide runs no leg: the
+container takes its state with no animation."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--motion 1
+    (should (nhmac-reduced-motion-p))
+    (let ((c (glitnir-nhmac--hidden `((transition . (:show pop :duration 0.6 :hide fade :hide-duration 0.6))))))
+      (unwind-protect
+          (let ((before (nhmac-stats)))
+            (make-frame-visible c)
+            (nhmac-gui--settle)
+            (should-not (plist-get (nhmac--test-child c) :hidden))
+            (should-not (plist-get (nhmac--test-child c) :animations))
+            (make-frame-invisible c t)
+            (nhmac-gui--settle)
+            (should (plist-get (nhmac--test-child c) :hidden))
+            (should-not (plist-get (nhmac--test-child c) :animations))
+            (should (= (nhmac-gui--delta before :motion-legs) 0)))
+        (delete-frame c t))))
+  (glitnir-nhmac--motion 0
+    (should-not (nhmac-reduced-motion-p))))
+
+(ert-deftest glitnir-nhmac/panel-holds-the-shadow ()
+  "A chromed child that overhangs its root lives in a panel grown by its shadow's reach, so the shadow is not cut:
+the panel is larger than the child on every side, the container sits inside it by the reach (more below than to the
+left, as the shadow's offset is down), and the shadow layer's frame fits in the panel."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((rw (frame-pixel-width (selected-frame)))
+         (c (glitnir-nhmac--chromed nil 40 80)))
+    (unwind-protect
+        (progn
+          (set-frame-position c (- rw (/ (frame-pixel-width c) 2)) 80)
+          (nhmac-gui--settle)
+          (let* ((i (nhmac--test-child c)) (p (plist-get i :panel))
+                 (fr (plist-get (plist-get i :shadow) :frame)))
+            (nhmac-gui--say "glitnir-nhmac/panel-holds-the-shadow: %S" i)
+            (should (eq (plist-get i :host) 'panel))
+            (should p)
+            (should (> (plist-get i :x) 0))
+            (should (> (plist-get i :y) (plist-get i :x)))
+            (should (> (nth 2 p) (+ (plist-get i :w) (* 2 (plist-get i :x)) -1)))
+            (should (> (nth 3 p) (+ (plist-get i :h) (plist-get i :y))))
+            ;; the shadow's frame (from the container's bottom left) inside the panel
+            (should (>= (+ (plist-get i :x) (nth 0 fr)) 0))
+            (should (>= (+ (plist-get i :y) (nth 1 fr)) 0))
+            (should (<= (+ (plist-get i :x) (nth 0 fr) (nth 2 fr)) (+ (nth 2 p) 0.5)))
+            (should (<= (+ (plist-get i :y) (nth 1 fr) (nth 3 fr)) (+ (nth 3 p) 0.5)))))
+      (delete-frame c t))))
+
+;;; Blur: a translucent child with a backdrop blur lives in its panel, over an NSVisualEffectView, while the blur is on.
+
+(ert-deftest glitnir-nhmac/blur-in-a-panel ()
+  "A translucent child with `backdrop-blur' lives in a panel over a blur though it fits in its root, and goes back
+into the root's layer once the blur is off."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((c (glitnir-nhmac--chromed '((alpha-background . 0.6) (backdrop-blur . 12)))))
+    (unwind-protect
+        (let ((i (nhmac--test-child c)))
+          (nhmac-gui--say "glitnir-nhmac/blur-in-a-panel: on %S" i)
+          (should (eq (plist-get i :host) 'panel))
+          (should (plist-get i :panel))
+          (should (eq (plist-get i :blur) t))
+          (set-frame-parameter c 'backdrop-blur nil)
+          (glitnir-refresh c)
+          (nhmac-gui--settle)
+          (setq i (nhmac--test-child c))
+          (nhmac-gui--say "glitnir-nhmac/blur-in-a-panel: off %S" i)
+          (should (eq (plist-get i :host) 'parent))
+          (should-not (plist-get i :panel))
+          (should-not (plist-get i :blur)))
+      (delete-frame c t))))
+
+(ert-deftest nhmac-blur-pair ()
+  "Typing under a blurred child, timed in the process: 50 typed keys, each a command and a redisplay, written to
+GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line), and the same with the blur off, logged.  Both builds run
+it in turn (--pair, ABAB); nidhogg/test/nhmac-pair.sh --row nhmac-blur-pair compares the pairs: not slower than NS's
+blurred child."
+  :tags '(draws)
+  (let* ((build (if (nhmac-gui--ns-build-p) "ns" "naglfar"))
+         (file (expand-file-name (format "pair-%s.txt" build)
+                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+         (c (nhmac-gui--child '((alpha-background . 0.6) (backdrop-blur . 12) (corner-radius . 12)
+                                (width . 30) (height . 8))
+                              80 120))
+         (time-keys (lambda ()
+                      (let (times)
+                        (dotimes (_ 50)
+                          (let ((t0 (float-time)))
+                            (execute-kbd-macro "x")
+                            (redisplay)
+                            (push (round (* 1e6 (- (float-time) t0))) times)))
+                        (nreverse times))))
+         (median (lambda (l) (nth (/ (length l) 2) (sort (copy-sequence l) #'<))))
+         on off)
+    (unwind-protect
+        (progn
+          (switch-to-buffer (generate-new-buffer " *nhmac-blur-pair*"))
+          (insert "typing under a blurred child")
+          (redisplay t)
+          (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
+          (setq on (funcall time-keys))
+          (set-frame-parameter c 'backdrop-blur nil)
+          (glitnir-refresh c)
+          (redisplay t)
+          (setq off (funcall time-keys))
+          (nhmac-gui--say "nhmac-blur-pair: %s median %d us blurred, %d us without" build
+                          (funcall median on) (funcall median off))
+          (with-temp-buffer
+            (dolist (us on) (insert (format "%d\n" us)))
+            (write-region (point-min) (point-max) file t 'silent))
+          (should (file-exists-p file)))
+      (kill-buffer)
+      (delete-frame c t))))
+
+(defun glitnir-nhmac--region (img box pad)
+  "IMG's pixels in BOX (X0 Y0 X1 Y1) grown by PAD on every side and clipped to IMG, row by row, as a list."
+  (pcase-let ((`(,w ,h ,_) img) (`(,x0 ,y0 ,x1 ,y1) box) (out nil))
+    (cl-loop for y from (max 0 (- y0 pad)) to (min (1- h) (+ y1 pad))
+             do (cl-loop for x from (max 0 (- x0 pad)) to (min (1- w) (+ x1 pad))
+                         do (push (glitnir-nhmac--px img x y) out)))
+    (nreverse out)))
+
+(ert-deftest nhmac-glitnir-off ()
+  "With `glitnir-enable' nil a child asking for corners, a shadow and a blur gets none: no corner radius, no shadow
+layer, no panel and no blur; and the screen around it is the plain child's, pixel for pixel (tolerance 0).  Both
+children are opaque, so only the chrome could tell them apart."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let (plain off box)
+       (let ((c (nhmac-gui--child '((width . 30) (height . 8)) 80 200)))
+         (unwind-protect
+             (setq plain (glitnir-nhmac--grab "off-plain")
+                   box (glitnir-nhmac--box plain #xff00ff))
+           (delete-frame c t)))
+       (let* ((glitnir-enable nil)
+              (c (glitnir-nhmac--chromed '((backdrop-blur . 12)))))
+         (unwind-protect
+             (let ((i (nhmac--test-child c)))
+               (nhmac-gui--say "nhmac-glitnir-off: %S" i)
+               (should (= (plist-get i :radius) 0))
+               (should-not (plist-get i :shadow))
+               (should (eq (plist-get i :host) 'parent))
+               (should-not (plist-get i :panel))
+               (should-not (plist-get i :blur))
+               (setq off (glitnir-nhmac--grab "off-chromed")))
+           (delete-frame c t)))
+       (should box)
+       (let ((a (glitnir-nhmac--region plain box 40)) (b (glitnir-nhmac--region off box 40)))
+         (nhmac-gui--say "nhmac-glitnir-off: box %S, %d of %d pixels differ" box
+                         (cl-count nil (cl-mapcar #'eql a b)) (length a))
+         (should (equal a b)))))))
+
+(ert-deftest glitnir-nhmac/text-identical-to-off ()
+  "Text in a rounded, shadowed child is the text Glitnir off draws: inside the child, away from its corners, the
+screen is the same pixel for pixel (the corner mask and the shadow touch nothing else)."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let ((text (lambda (c)
+                   (with-current-buffer (window-buffer (frame-root-window c))
+                     (erase-buffer)
+                     (insert "The quick brown fox\njumps over the lazy dog\n0123456789 ()[]{}"))
+                   (nhmac-gui--settle)))
+           on off box)
+       ;; the children share their buffer: it is left empty for the rows after
+       (unwind-protect
+           (progn
+             (let ((c (glitnir-nhmac--chromed)))
+               (unwind-protect
+                   (progn (funcall text c)
+                          (setq on (glitnir-nhmac--grab "text-on")
+                                box (glitnir-nhmac--box on #xff00ff)))
+                 (delete-frame c t)))
+             (let* ((glitnir-enable nil) (c (glitnir-nhmac--chromed)))
+               (unwind-protect
+                   (progn (funcall text c)
+                          (setq off (glitnir-nhmac--grab "text-off")))
+                 (delete-frame c t))))
+         (with-current-buffer (get-buffer-create " *nhmac-child*") (erase-buffer)))
+       (should box)
+       ;; the box less the corners' reach (the radius, in device pixels, and one more)
+       (let* ((r (1+ (ceiling (* 12 (glitnir-nhmac--scale)))))
+              (inner (list (+ (nth 0 box) r) (+ (nth 1 box) r) (- (nth 2 box) r) (- (nth 3 box) r)))
+              (a (glitnir-nhmac--region on inner 0)) (b (glitnir-nhmac--region off inner 0)))
+         (nhmac-gui--say "glitnir-nhmac/text-identical-to-off: inner %S, %d of %d pixels differ" inner
+                         (cl-count nil (cl-mapcar #'eql a b)) (length a))
+         (should (> (length a) 0))
+         (should (equal a b)))))))

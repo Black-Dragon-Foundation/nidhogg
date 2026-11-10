@@ -20,6 +20,7 @@ use super::super::surface::Surfaces;
 use super::super::window::Win;
 use super::MacShell;
 use super::chrome;
+use super::motion;
 use crate::api::{
     ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_UNDECORATED, ShellError,
     ShellResult, WindowId,
@@ -99,6 +100,12 @@ pub(super) struct Kid {
     /// Its chrome as the host gave it (device pixels), and what its layers show of it.
     chrome: Option<Chrome>,
     chrome_shown: chrome::Shown,
+    /// Its show and hide transitions.
+    motion: motion::State,
+    /// How far its shadow reaches past its surface (left, top, right, bottom, points): its panel grows by it.
+    reach: (i32, i32, i32, i32),
+    /// Its backdrop blur's σ (logical pixels; 0: none): while it is on the child lives in its panel, over a blur.
+    backdrop: f32,
 }
 
 /// An anchor-point-at-the-origin layer, so a container's position is its bottom-left corner.
@@ -132,6 +139,9 @@ impl Kid {
             out: false,
             chrome: None,
             chrome_shown: chrome::Shown::default(),
+            motion: motion::State::default(),
+            reach: (0, 0, 0, 0),
+            backdrop: 0.0,
         }
     }
 
@@ -146,6 +156,28 @@ impl Kid {
             input: self.input,
             shown: self.visible(),
         }
+    }
+
+    /// How far its shadow reaches past its surface at `scale`, points (left, top, right, bottom).
+    fn shadow_reach(&self, scale: f64) -> (i32, i32, i32, i32) {
+        let Some(c) = self.chrome.as_ref() else {
+            return (0, 0, 0, 0);
+        };
+        let dev = |v: i32| (f64::from(v) * scale).round().max(1.0) as u32;
+        let (l, t, r, b) = crate::mac_chrome::reach(c, dev(self.w), dev(self.h));
+        let pt = |v: u32| (f64::from(v) / scale).ceil() as i32;
+        (pt(l), pt(t), pt(r), pt(b))
+    }
+
+    /// Its panel's frame on `w`'s screen: its surface grown by its shadow's reach; and the surface's place in it.
+    fn panel_frame(&self, w: &Win) -> (NSRect, NSRect) {
+        let (l, t, r, b) = self.reach;
+        let frame = on_screen(w, self.x - l, self.y - t, self.w + l + r, self.h + t + b);
+        let inner = NSRect::new(
+            NSPoint::new(f64::from(l), f64::from(b)),
+            NSSize::new(f64::from(self.w), f64::from(self.h)),
+        );
+        (frame, inner)
     }
 
     /// It shows: mapped, with a picture.
@@ -461,6 +493,28 @@ impl MacShell {
         Ok(())
     }
 
+    pub(super) fn kid_motion(
+        &mut self,
+        id: WindowId,
+        spec: Option<glitnir::motion::MotionSpec>,
+    ) -> ShellResult {
+        let k = self.kids.get_mut(&id).ok_or(ShellError::State)?;
+        k.motion.set_spec(spec, k.shown.hidden != Some(false));
+        Ok(())
+    }
+
+    pub(super) fn kid_backdrop(&mut self, id: WindowId, blur_px: f32) -> ShellResult {
+        if !blur_px.is_finite() || blur_px < 0.0 {
+            return Err(ShellError::Arg);
+        }
+        let k = self.kids.get_mut(&id).ok_or(ShellError::State)?;
+        if k.backdrop != blur_px {
+            k.backdrop = blur_px;
+            self.owe_for(id);
+        }
+        Ok(())
+    }
+
     /// Root `root`'s children as the hit-test sees them, each parent's bottom to top.
     fn nodes(&self, root: WindowId) -> Vec<Node> {
         let mut out = Vec::new();
@@ -524,15 +578,23 @@ impl MacShell {
                 continue;
             };
             let c = k.node(id).content();
+            // a blurred child lives in its panel, whose window the window server blurs behind
             let now = k.visible()
-                && mac_child::overhangs(Rect::new(k.x + c.x, k.y + c.y, c.w, c.h), rw, rh, k.out);
+                && (k.backdrop > 0.0
+                    || mac_child::overhangs(
+                        Rect::new(k.x + c.x, k.y + c.y, c.w, c.h),
+                        rw,
+                        rh,
+                        k.out,
+                    ));
             match (k.out, now) {
                 (false, true) => going_out.push(id),
                 (true, false) => going_back.push(id),
                 _ => {}
             }
         }
-        // going out: the panel shows the child's surface, and is ordered in, before its container leaves the root
+        // going out: the panel shows the child's surface, and is ordered in, before its container leaves the root; a
+        // child that is not showing yet (a show, whose leg starts in the transaction below) leaves it empty
         if !going_out.is_empty() {
             let MacShell {
                 mtm, windows, kids, ..
@@ -541,11 +603,14 @@ impl MacShell {
             layers::transaction(|| {
                 for id in &going_out {
                     let Some(k) = kids.get_mut(id) else { continue };
-                    let frame = on_screen(w, k.x, k.y, k.w, k.h);
+                    k.reach = k.shadow_reach(scale);
+                    let (frame, inner) = k.panel_frame(w);
                     let p = k.panel.get_or_insert_with(|| Panel::new(mtm, *id, frame));
-                    p.place(frame);
-                    if let Some(s) = k.surfaces.newest() {
-                        layers::show(&p.layer, s, false, scale);
+                    p.place(frame, inner);
+                    if k.shown.hidden == Some(false)
+                        && let Some(s) = k.surfaces.newest()
+                    {
+                        layers::show(&p.standin, s, false, scale);
                     }
                 }
             });
@@ -631,12 +696,12 @@ impl MacShell {
                         (Host::Panel, Some(p)) => {
                             p.layer.addSublayer(&container);
                             // SAFETY: nil contents: the container shows the child now.
-                            unsafe { p.layer.setContents(None) };
+                            unsafe { p.standin.setContents(None) };
                         }
                         _ => {
                             if let (Some(p), Some(s)) = (k.panel.as_ref(), k.surfaces.newest()) {
                                 // the panel keeps showing the child until it is ordered out
-                                layers::show(&p.layer, s, false, scale);
+                                layers::show(&p.standin, s, false, scale);
                             }
                             parent_layer.addSublayer(&container);
                         }
@@ -645,7 +710,7 @@ impl MacShell {
                     count(&PROPS.host);
                 }
                 let position = match host {
-                    Host::Panel => (0.0, 0.0),
+                    Host::Panel => (f64::from(k.reach.0), f64::from(k.reach.3)),
                     _ => (f64::from(k.x), f64::from(parent_h - k.y - k.h)),
                 };
                 if k.shown.position != Some(position) {
@@ -663,16 +728,18 @@ impl MacShell {
                     k.shown.size = Some((k.w, k.h));
                     count(&PROPS.bounds);
                 }
-                let hidden = !k.visible();
-                if k.shown.hidden != Some(hidden) {
-                    container.setHidden(hidden);
-                    k.shown.hidden = Some(hidden);
-                    count(&PROPS.hidden);
-                }
                 if k.shown.opacity != Some(k.alpha) {
                     container.setOpacity(k.alpha);
                     k.shown.opacity = Some(k.alpha);
                     count(&PROPS.opacity);
+                }
+                // the opacity first: a leg runs to (or from) the model's
+                let hidden = !k.visible();
+                if k.shown.hidden != Some(hidden) {
+                    k.motion
+                        .transition(&container, hidden, f64::from(k.w), f64::from(k.h));
+                    k.shown.hidden = Some(hidden);
+                    count(&PROPS.hidden);
                 }
                 chrome::apply(
                     &mut k.chrome_shown,
@@ -709,15 +776,22 @@ impl MacShell {
         }
         // the panels follow their children; going back, the panel is ordered out after the container is home
         let w = &self.windows[&root];
+        let mtm = self.mtm;
         for &id in self.order.get(&root).into_iter().flatten() {
             let Some(k) = self.kids.get_mut(&id) else {
                 continue;
             };
-            let frame = on_screen(w, k.x, k.y, k.w, k.h);
+            if k.out {
+                k.reach = k.shadow_reach(scale);
+            }
+            let (frame, inner) = k.panel_frame(w);
             if let Some(p) = k.panel.as_mut() {
                 if k.out {
-                    p.place(frame);
+                    p.place(frame, inner);
+                    let radius = k.chrome.map_or(0.0, |c| f64::from(c.radius_px) / scale);
+                    p.set_blur(mtm, (k.backdrop > 0.0).then_some((inner, radius)));
                 } else if p.shown {
+                    p.set_blur(mtm, None);
                     p.order_out(&w.window);
                     count(&PROPS.panel_orders);
                 }
@@ -744,12 +818,13 @@ impl MacShell {
             return;
         };
         let nodes = self.nodes(root);
-        // a panel's view: its point in the root
+        // a panel's view: its point in the root (the panel reaches past the child by its shadow)
         let (ox, oy) = if id == root {
             (0.0, 0.0)
         } else {
             let (x, y) = mac_child::origin(&nodes, id);
-            (f64::from(x) * scale, f64::from(y) * scale)
+            let (l, t, _, _) = self.kids.get(&id).map_or((0, 0, 0, 0), |k| k.reach);
+            (f64::from(x - l) * scale, f64::from(y - t) * scale)
         };
         let p = match ev {
             ShellEvent::PointerMotion(p) | ShellEvent::Button(p) => p,
@@ -798,7 +873,8 @@ impl MacShell {
 impl MacShell {
     /// `test-child` (WINDOW): child WINDOW's layers as a Lisp plist: its container's position (points, from the
     /// parent's bottom left) and size, where it is (`parent`, `panel` or nil), hidden, opacity, its index among its
-    /// layer's sublayers, whether its content shows its newest surface, and its panel's screen frame.
+    /// layer's sublayers, whether its content shows its newest surface, its panel's screen frame, its chrome, the
+    /// container's running animations' keys and the last show or hide leg it handed to Core Animation.
     pub(super) fn child_info(&self, id: WindowId) -> ShellResult<String> {
         let k = self.kids.get(&id).ok_or(ShellError::State)?;
         let l = k.layers.as_ref().ok_or(ShellError::State)?;
@@ -872,9 +948,30 @@ impl MacShell {
                     .map_or(-1, |i| i as i64)
             }),
         );
+        // the transitions: the container's running animations, and the last leg as it was handed over
+        let animations = l.container.animationKeys().map_or(String::new(), |a| {
+            a.iter()
+                .map(|k| format!("\"{k}\""))
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+        let leg = k.motion.last.map_or_else(
+            || "nil".to_string(),
+            |r| {
+                format!(
+                    "(:show {} :from ({} {}) :to ({} {}) :seconds {})",
+                    if r.show { "t" } else { "nil" },
+                    r.from.opacity,
+                    r.from.scale,
+                    r.to.opacity,
+                    r.to.scale,
+                    r.seconds
+                )
+            },
+        );
         Ok(format!(
             "(:x {} :y {} :w {} :h {} :host {host} :hidden {} :opacity {} :index {index} :contents-is-newest {} \
-             :panel {panel} :input {input} :place ({} {}) {chrome})",
+             :panel {panel} :blur {} :input {input} :place ({} {}) {chrome} :animations ({animations}) :leg {leg})",
             p.x,
             p.y,
             b.size.width,
@@ -882,6 +979,11 @@ impl MacShell {
             if l.container.isHidden() { "t" } else { "nil" },
             l.container.opacity(),
             if newest { "t" } else { "nil" },
+            if k.panel.as_ref().is_some_and(|p| p.shown && p.blurs()) {
+                "t"
+            } else {
+                "nil"
+            },
             k.x,
             k.y,
         ))

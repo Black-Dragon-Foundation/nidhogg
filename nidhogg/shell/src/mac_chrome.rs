@@ -101,6 +101,22 @@ pub fn frame(c: &Chrome, w: u32, h: u32) -> (f64, f64, f64, f64) {
     )
 }
 
+/// How far a `w`×`h` layer's shadow reaches past it on each side (left, top, right, bottom), device pixels, 0 where
+/// it does not: what a window holding the layer must add around it to show the whole shadow.
+pub fn reach(c: &Chrome, w: u32, h: u32) -> (u32, u32, u32, u32) {
+    if !c.has_shadow() {
+        return (0, 0, 0, 0);
+    }
+    let (x, y, fw, fh) = frame(c, w, h);
+    let past = |v: f64| v.max(0.0).ceil() as u32;
+    (
+        past(-x),
+        past(-y),
+        past(x + fw - f64::from(w)),
+        past(y + fh - f64::from(h)),
+    )
+}
+
 /// `img` drawn at `w`×`h` (the image's size for that layer) as Core Animation draws it with `contentsCenter` at
 /// the scale the image was made at: the corners as they are, the middle column and row repeated.  For the tests.
 pub fn stretched(img: &ShadowImage, w: u32, h: u32) -> Vec<u32> {
@@ -142,6 +158,25 @@ mod tests {
             border_px: 0.0,
             border_argb: 0,
         }
+    }
+
+    /// The reach is the frame's overhang on each side: the offset down makes the bottom reach further than the top, and
+    /// a chrome with no shadow reaches nowhere.
+    #[test]
+    fn the_reach_is_the_shadow_frames_overhang() {
+        let c = chrome(12.0, 16.0, 2.0);
+        let (x, y, fw, fh) = frame(&c, 200, 100);
+        let (l, t, r, b) = reach(&c, 200, 100);
+        assert_eq!((l, t), ((-x) as u32, (-y) as u32));
+        assert_eq!((r, b), ((x + fw) as u32 - 200, (y + fh) as u32 - 100));
+        assert_eq!(l, r);
+        assert!(b > t);
+        assert_eq!(b - t, 24);
+        let flat = Chrome {
+            shadow_opacity: 0.0,
+            ..c
+        };
+        assert_eq!(reach(&flat, 200, 100), (0, 0, 0, 0));
     }
 
     /// The image rendered once and stretched equals the image rendered at the layer's own size, pixel for pixel, for

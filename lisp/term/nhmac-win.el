@@ -505,9 +505,23 @@ some 1400 pixels at most: read a row at a time).  For tests."
 left), `:w', `:h', `:host' (`parent', `panel' or nil), `:hidden',
 `:opacity', `:index' (among its layer's sublayers),
 `:contents-is-newest', `:panel' (the overhang panel's screen frame, or
-nil), `:input' (the input region, points, or nil for all) and `:place'
-(the surface's place in its parent's, points).  For tests."
+nil), `:input' (the input region, points, or nil for all), `:place'
+(the surface's place in its parent's, points), its chrome (`:radius',
+`:masks', `:border-width', `:shadow', `:shadow-index'), `:animations'
+(the keys of the container's running animations) and `:leg' (the last
+show or hide leg handed to Core Animation: `:show', `:from' and `:to'
+as (OPACITY SCALE), `:seconds'; or nil).  For tests."
   (nhmac--query 'test-child frame))
+
+(defun nhmac--test-reduced-motion (v)
+  "Make the shell read reduced motion as V: 1 on, 0 off, -1 the system's.
+For tests."
+  (nhmac--call 'test-reduced-motion v))
+
+(defun nhmac-reduced-motion-p ()
+  "Non-nil when the system asks for reduced motion.
+Child frames' show and hide transitions then run no leg."
+  (nhmac--query 'reduced-motion))
 
 (defun nhmac--test-windows ()
   "Return the window server's numbers for this application's visible windows.
