@@ -1933,3 +1933,71 @@ any thread that does not block it: Emacs's SIGCHLD can reach the helper.)"
                       (nhmac-stats))
       (should (= (car v) 100))
       (should (< (cdr v) 1.0)))))
+
+;; Scale and monitors (the fractional-scaling plan's Naglfar hookup): the runner's lane display and the main screen
+;; are two monitors, at different scales in the scale-2 lane.
+
+(defun nhmac-gui--other-monitor (pred)
+  "The attributes of a monitor other than the selected frame's for which PRED (given its attributes) holds, or nil."
+  (let ((mine (frame-monitor-attributes)))
+    (seq-find (lambda (m) (and (not (equal (alist-get 'geometry m) (alist-get 'geometry mine))) (funcall pred m)))
+              (display-monitor-attributes-list))))
+
+(defun nhmac-gui--move-to (frame monitor)
+  "Move FRAME into MONITOR's work area; wait (bounded) until AppKit puts its window on that screen."
+  (let ((g (alist-get 'workarea monitor)) (end (+ (float-time) 5)))
+    (set-frame-position frame (+ (nth 0 g) 40) (+ (nth 1 g) 40))
+    (while (and (not (equal (alist-get 'geometry (frame-monitor-attributes frame)) (alist-get 'geometry monitor)))
+                (< (float-time) end))
+      (accept-process-output nil 0.05)
+      (redisplay t))))
+
+(defun nhmac-gui--font-px (&optional frame)
+  "The pixel size of FRAME's default font."
+  (font-get (face-attribute 'default :font (or frame (selected-frame))) :size))
+
+(ert-deftest nhmac-scale-round-trip-keeps-the-font ()
+  "The root frame moved to a monitor of another scale and back: its font is re-opened at each scale's device size
+\(a point is 1/72 inch, so the pixel size is the height in points times the scale), and comes back to the size it had."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((f (selected-frame)) (s0 (frame-scale-factor f))
+         (other (nhmac-gui--other-monitor (lambda (m) (/= (alist-get 'scale-factor m 1.0) s0))))
+         (home (frame-monitor-attributes f)) (pos (frame-position f))
+         (pt (/ (face-attribute 'default :height f t) 10.0))
+         (px0 (nhmac-gui--font-px f)) s1 px1 px2)
+    (skip-unless other)
+    (unwind-protect
+        (progn
+          (nhmac-gui--move-to f other)
+          (setq s1 (frame-scale-factor f) px1 (nhmac-gui--font-px f))
+          (nhmac-gui--move-to f home)
+          (setq px2 (nhmac-gui--font-px f)))
+      (set-frame-position f (car pos) (cdr pos))
+      (nhmac-gui--settle))
+    (nhmac-gui--say "nhmac-scale-round-trip-keeps-the-font: %.1f pt: scale %s %d px, scale %s %d px, back %d px"
+                    pt s0 px0 s1 px1 px2)
+    (should (/= s1 s0))
+    (should (= px0 (floor (+ (* pt s0) 0.5))))
+    (should (= px1 (floor (+ (* pt s1) 0.5))))
+    (should (= px2 px0))))
+
+(ert-deftest nhmac-monitor-change-runs-move-frame-functions ()
+  "A root frame moved to another monitor runs `move-frame-functions' with it."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((f (selected-frame)) (other (nhmac-gui--other-monitor #'always))
+         (home (frame-monitor-attributes f)) (pos (frame-position f)) (ran nil)
+         (hook (lambda (frame) (when (eq frame f) (push (frame-monitor-attributes frame) ran)))))
+    (skip-unless other)
+    (add-hook 'move-frame-functions hook)
+    (unwind-protect
+        (progn
+          (nhmac-gui--move-to f other)
+          (nhmac-gui--settle)
+          (nhmac-gui--say "nhmac-monitor-change-runs-move-frame-functions: %d runs" (length ran))
+          (should (cl-some (lambda (m) (equal (alist-get 'geometry m) (alist-get 'geometry other))) ran)))
+      (remove-hook 'move-frame-functions hook)
+      (nhmac-gui--move-to f home)
+      (set-frame-position f (car pos) (cdr pos))
+      (nhmac-gui--settle))))
