@@ -603,7 +603,10 @@ impl ShellBackend for MacShell {
         layers::changed_outside();
         self.windows.insert(id, win);
         self.push(ShellEvent::Scale(ScaleEv { scale120: scale }), id);
-        self.configure(id, w, h);
+        // 0 x 0, ours to pick, as a compositor's first configure: the window has the size the host made it with, and
+        // the host may have resized its frame since (a tool bar that wraps at the new width) before this is read;
+        // the window takes that size from the host's next surface
+        self.configure(id, 0, 0);
         self.screen_changed(id);
         Ok(id)
     }
