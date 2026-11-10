@@ -119,6 +119,9 @@ int32_t nhg_caps (NhgDisplay *d, NhgCaps *out);
 #define NHG_WIN_GRAB        (1u << 3)
 /* With a session name: ask the session to restore the window (before its first commit) instead of just adding it.  */
 #define NHG_WIN_RESTORE     (1u << 4)
+/* A top-level opens at the descriptor's x, y where the shell places windows (macOS); without it, beside its
+   parent window when it names one.  */
+#define NHG_WIN_PLACED      (1u << 5)
 
 #define NHG_EDGE_TOP    1u
 #define NHG_EDGE_BOTTOM 2u
@@ -580,10 +583,12 @@ typedef struct
   const char *session_name; size_t session_name_len;   /* top-levels; empty: none */
   uint32_t flags;               /* NHG_WIN_* */
   uint32_t kind;                /* NHG_KIND_* */
-  uint64_t parent;              /* children and popups */
+  uint64_t parent;              /* children and popups; a top-level: the window it opens beside (0: anywhere) */
   int32_t x, y;                 /* children: where the surface starts in the parent's native area (device pixels:
                                    the frame's left and top less its own margin); the glue adds the parent's
-                                   border and rounds to logical pixels at SCALE120 */
+                                   border and rounds to logical pixels at SCALE120.  A top-level with
+                                   NHG_WIN_PLACED: its top-left, device pixels at SCALE120 from the main
+                                   screen's top-left */
   NhgAnchor anchor;             /* popups */
   uint32_t role;                /* NHG_FRAME_* */
   uint32_t facts;               /* NHG_FACT_VISIBLE, NHG_FACT_ICONIFIED, NHG_FACT_CSD: Emacs's, now */

@@ -667,6 +667,7 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             ("NHG_WIN_MAXIMIZED", NHSHELL_WIN_MAXIMIZED.into()),
             ("NHG_WIN_GRAB", NHSHELL_WIN_GRAB.into()),
             ("NHG_WIN_RESTORE", NHSHELL_WIN_RESTORE.into()),
+            ("NHG_WIN_PLACED", NHSHELL_WIN_PLACED.into()),
             ("NHG_EDGE_TOP", NHSHELL_EDGE_TOP.into()),
             ("NHG_EDGE_BOTTOM", NHSHELL_EDGE_BOTTOM.into()),
             ("NHG_EDGE_LEFT", NHSHELL_EDGE_LEFT.into()),

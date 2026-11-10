@@ -14,7 +14,7 @@ use super::screens;
 use super::surface;
 use super::window::Win;
 use crate::api::{
-    Abandon, ChildDesc, NHSHELL_WIN_UNDECORATED, NhShellPresenterStats, PresenterTiming,
+    Abandon, ChildDesc, NHSHELL_WIN_UNDECORATED, NhShellPresenterStats, Place, PresenterTiming,
     ShellBackend, ShellError, ShellResult, SurfaceFrame, WindowDesc, WindowId,
 };
 use crate::caps::NhShellCaps;
@@ -202,6 +202,16 @@ impl MacShell {
 
     fn win(&self, window: WindowId) -> ShellResult<&Win> {
         self.windows.get(&window).ok_or(ShellError::State)
+    }
+
+    /// AppKit's point for a frame's top-left at (`x`, `y`) points from the main screen's top-left (NS's
+    /// compute_offset: y up from the main screen's bottom).
+    fn screen_point(&self, x: i32, y: i32) -> objc2_foundation::NSPoint {
+        let top = NSScreen::screens(self.mtm)
+            .iter()
+            .next()
+            .map_or(0.0, |s| s.frame().origin.y + s.frame().size.height);
+        objc2_foundation::NSPoint::new(f64::from(x), top - f64::from(y))
     }
 
     /// Lend the backend to the scope while `f` makes AppKit calls that may call back; the events queued meanwhile
@@ -543,11 +553,20 @@ impl ShellBackend for MacShell {
     fn window_new_named(
         &mut self,
         desc: &WindowDesc,
+        session_name: Option<&str>,
+    ) -> ShellResult<WindowId> {
+        self.window_new_placed(desc, session_name, Place::Shell)
+    }
+
+    fn window_new_placed(
+        &mut self,
+        desc: &WindowDesc,
         _session_name: Option<&str>,
+        place: Place,
     ) -> ShellResult<WindowId> {
         let id = self.next_id;
         self.next_id += 1;
-        let win = Win::open(
+        let mut win = Win::make(
             self.mtm,
             id,
             desc.w,
@@ -555,9 +574,24 @@ impl ShellBackend for MacShell {
             desc.flags & NHSHELL_WIN_UNDECORATED != 0,
             &desc.title,
         );
+        // placed before it shows, so its first screen (and scale) is the one its frame was made for
+        match place {
+            Place::At(x, y) => {
+                win.window.setFrameTopLeftPoint(self.screen_point(x, y));
+            }
+            Place::Near(near) => {
+                if let Some(n) = self.windows.get(&near) {
+                    let f = n.window.frame();
+                    let from = objc2_foundation::NSPoint::new(f.origin.x, f.origin.y + f.size.height);
+                    let _ = win.window.cascadeTopLeftFromPoint(from);
+                }
+            }
+            Place::Shell => {}
+        }
+        win.window.makeKeyAndOrderFront(None);
+        win.scale120 = win.scale_now();
         let (w, h, scale) = (win.size.0, win.size.1, win.scale120);
         crate::trace::note(|| format!("window made: window {id} {w}x{h} points, scale120 {scale}"));
-        let mut win = win;
         win.surfaces.reset(self.srgb);
         layers::changed_outside();
         self.windows.insert(id, win);
@@ -602,12 +636,7 @@ impl ShellBackend for MacShell {
     }
 
     fn move_to(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult {
-        // NS's compute_offset: the frame's top-left, y up from the main screen's bottom
-        let top = NSScreen::screens(self.mtm)
-            .iter()
-            .next()
-            .map_or(0.0, |s| s.frame().origin.y + s.frame().size.height);
-        let point = objc2_foundation::NSPoint::new(f64::from(x), top - f64::from(y));
+        let point = self.screen_point(x, y);
         self.win(window)?.window.setFrameTopLeftPoint(point);
         layers::changed_outside();
         Ok(())
