@@ -308,6 +308,9 @@ grep -qF 'path: ${{ runner.temp }}/nhmac-gui' <<<"$rj"              || fail "the
 for s in nhmac-gui.sh nhmac-pair.sh; do
   grep -qE "^          caffeinate -d -i -u bash nidhogg/test/$s " <<<"$rj" || fail "macos-naglfar-rows runs $s with the display free to sleep"
 done
+# the paired timing runs typing and typing under a blurred child, and is red when either is
+grep -qE '^          caffeinate .*nhmac-pair\.sh .*--row nhmac-blur-pair .*\|\| rc=1$' <<<"$rj" || fail "the paired timing does not run the blur pair"
+grep -qE '^          exit \$rc$' <<<"$rj"                          || fail "the paired timing does not fail when one pair is slower"
 job macos-naglfar | grep -qF -- "--exclude=glitnir-target"           || fail "the Naglfar build tree artifact carries the Rust target"
 job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "macos-naglfar does not follow the macOS path filter"
 job gate | grep -qF 'macos-naglfar macos-naglfar-rows " ;; esac'     || fail "the gate lets a filtered macOS run skip macos but not the Naglfar jobs"
