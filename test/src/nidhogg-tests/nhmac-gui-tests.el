@@ -1653,10 +1653,13 @@ Its list follows AppKit's ordering a little later, so a row waits for it, bounde
 
 (ert-deftest nhmac-child-move ()
   "A child frame is a container layer in its parent's root; a move changes the container's position and nothing
-else (no contents, so no shadow render either), in one commit, with no picture drawn."
+else (no contents, so no shadow render either), in one commit, with no picture drawn.
+The root's cursor is off meanwhile: every redisplay draws the selected window's cursor again (xdisp.c's
+`display_and_set_cursor' does not check `phys_cursor_on_p'), with or without a move, which would count as draws."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let ((c (nhmac-gui--child)))
+  (let ((c (nhmac-gui--child))
+        (root-buf (window-buffer (frame-selected-window (selected-frame)))))
     (unwind-protect
         (let ((info (nhmac--test-child c))
               (s (/ (frame-pixel-width c) (float (plist-get (nhmac--test-child c) :w)))))
@@ -1666,35 +1669,39 @@ else (no contents, so no shadow render either), in one commit, with no picture d
           (should (equal (plist-get info :place) (list (round (/ 40 s)) (round (/ 40 s)))))
           (nhmac-gui--without-blink
            (lambda ()
-             (nhmac-gui--settle)
-             (let ((before (progn (nhmac--pump-trace) (nhmac-stats)))
-                   (keys '(:props-position :props-contents :props-bounds :props-hidden :props-opacity :props-order
-                           :props-host :overhang-switches :draws :commits)))
-               (set-frame-position c 80 60)
-               (nhmac-gui--settle)
-               (let ((after (nhmac--test-child c)))
-                 ;; the trace names each publish: which window drew, and where
-                 (nhmac-gui--say "nhmac-child-move: %S -> %S, %S, child window %S, trace %S" info after
-                                 (mapcan (lambda (k) (list k (nhmac-gui--delta before k))) keys)
-                                 (frame-parameter c 'window-id) (nhmac--pump-trace))
-                 (should (equal (plist-get after :place) (list (round (/ 80 s)) (round (/ 60 s)))))
-                 (should (= (plist-get after :x) (round (/ 80 s)))))
-               (should (= (nhmac-gui--delta before :props-position) 1))
-               (dolist (k '(:props-contents :props-bounds :props-hidden :props-opacity :props-order :props-host
-                            :overhang-switches :draws))
-                 (should (= (nhmac-gui--delta before k) 0)))
-               (should (= (nhmac-gui--delta before :commits) 1))))))
+             (with-current-buffer root-buf
+               (let ((cursor-type nil))
+                 (nhmac-gui--settle)
+                 (let ((before (progn (nhmac--pump-trace) (nhmac-stats)))
+                       (keys '(:props-position :props-contents :props-bounds :props-hidden :props-opacity :props-order
+                               :props-host :overhang-switches :draws :commits)))
+                   (set-frame-position c 80 60)
+                   (nhmac-gui--settle)
+                   (let ((after (nhmac--test-child c)))
+                     ;; the trace names each publish: which window drew, and where
+                     (nhmac-gui--say "nhmac-child-move: %S -> %S, %S, child window %S, trace %S" info after
+                                     (mapcan (lambda (k) (list k (nhmac-gui--delta before k))) keys)
+                                     (frame-parameter c 'window-id) (nhmac--pump-trace))
+                     (should (equal (plist-get after :place) (list (round (/ 80 s)) (round (/ 60 s)))))
+                     (should (= (plist-get after :x) (round (/ 80 s)))))
+                   (should (= (nhmac-gui--delta before :props-position) 1))
+                   (dolist (k '(:props-contents :props-bounds :props-hidden :props-opacity :props-order :props-host
+                                :overhang-switches :draws))
+                     (should (= (nhmac-gui--delta before k) 0)))
+                   (should (= (nhmac-gui--delta before :commits) 1))))))))
       (delete-frame c t))))
 
 (ert-deftest nhmac-child-click-through-shadow ()
-  "A child with a shadow takes clicks on its native area only: a click on its shadow margin reaches the frame
-beneath, its parent."
+  "A child with a shadow takes clicks on its native area only: a click on its shadow reaches the frame beneath, its
+parent.  On Core Animation the shadow is a layer beside the content, not a margin of the surface (as on Wayland):
+the surface is the native area, all of it takes input."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (c (nhmac-gui--child '((shadow . (:blur 16 :offset (0 . 6) :opacity 0.35))) 100 100)))
     (unwind-protect
         (let* ((info (nhmac--test-child c))
+               (s (plist-get (nhmac--test-surface 0 0) :scale))
                (h (frame-pixel-height c))
                (frame-of (lambda (ev) (window-frame (posn-window (event-start ev)))))
                (click (lambda (x y)
@@ -1704,9 +1711,10 @@ beneath, its parent."
                         (seq-find (lambda (ev) (and (consp ev) (memq 'click (event-modifiers ev))))
                                   (nhmac-gui--events 4)))))
           (nhmac-gui--say "nhmac-child-click-through-shadow: %S" info)
-          ;; the margin is laid out: the input region starts inside the surface
-          (should (plist-get info :input))
-          (should (> (nth 0 (plist-get info :input)) 0))
+          ;; no margin: the container is the frame's native size at its place, and no input region narrows it
+          (should (equal (plist-get info :place) (list (round (/ 100 s)) (round (/ 100 s)))))
+          (should (= (round (* s (plist-get info :h))) h))
+          (should-not (plist-get info :input))
           (let ((on-child (funcall click (+ 100 10) (+ 100 (/ h 2))))
                 (on-shadow (funcall click (- 100 6) (+ 100 (/ h 2)))))
             (should on-child)
