@@ -84,7 +84,7 @@ pub struct NhgNextIn {
 /// - `WHEEL`: `code` 4 up, 5 down, 6 left or 7 right (as pgtk's buttons), `w` the whole steps, `dx`, `dy` the
 ///   record's pixel delta in device pixels, `mods` the keyboard's, `flags` `NHG_WHEEL_*`;
 /// - `MONITORS`: the output list changed (no window); `code` the added or changed output's scale times 120 (0 for a
-///   removal);
+///   removal).  With a `window`: that window's first output changed (it moved to another monitor), `code` 0;
 /// - `PREEDIT`, `COMMIT`: `text`, `len` (null when it could not be taken; empty clears a preedit), `window` as the
 ///   event came, forgotten or none; `IM_DELETE`: `x` bytes before point, `y` after.
 #[repr(C)]

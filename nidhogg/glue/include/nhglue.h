@@ -335,7 +335,8 @@ typedef struct { uint32_t flags; } NhgNextIn;
 #define NHG_ACT_VISIBLE         12
 #define NHG_ACT_ICONIFIED       13
 #define NHG_ACT_READY           14   /* the window may present: C runs the present step, drawn or not */
-#define NHG_ACT_MONITORS        15   /* CODE the added or changed output's scale times 120 (0: one went) */
+#define NHG_ACT_MONITORS        15   /* CODE the added or changed output's scale times 120 (0: one went);
+                                        with WINDOW: that window's first output changed */
 #define NHG_ACT_LOST            16   /* the connection is gone */
 #define NHG_ACT_PREEDIT         17
 #define NHG_ACT_COMMIT          18
