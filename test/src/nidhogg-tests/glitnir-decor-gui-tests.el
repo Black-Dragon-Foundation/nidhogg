@@ -232,6 +232,44 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
           (should (equal (list 'left (glitnir-decor-gui--px g (car left) (cdr left))) '(left (32 32 32))))
           (should (equal (list 'right (glitnir-decor-gui--px g (1- (car right)) (cdr left))) '(right (32 32 32)))))))))
 
+(defun glitnir-decor-gui--end-text (radius)
+  "The white pixels of the last glyph of a ringed run \"WW\" (no background, no pad: a pill whose text reaches its
+end) with corner RADIUS, followed by plain text, so the glyph string beside the run is drawn after it."
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-decor-gui-end-text")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white"
+                        :box `(:line-width (1 . 1) :color "#ff8000" ,@(and (> radius 0) `(:corner-radius ,radius))))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "#202020")
+      (setq-local cursor-type nil)
+      (let ((fo (glitnir-decor-gui--calibrate)))
+        (insert "\n\n  " (propertize "WW" 'face face) "xy\n\n")
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (let* ((g (gui-runner-screen-grab))
+               (last (cdr (glitnir-decor-gui--at g 6 fo)))
+               (end (cdr (glitnir-decor-gui--at g 7 fo)))
+               (h (glitnir-decor-gui--dev (glitnir-decor-gui--scale) (save-excursion (goto-char 6) (line-pixel-height))))
+               (n 0))
+          (cl-loop for x from (car last) below (car end)
+                   do (dotimes (j h)
+                        (when (cl-every (lambda (c) (>= c 200)) (glitnir-decor-gui--px g x (+ (cdr last) j)))
+                          (cl-incf n))))
+          n)))))
+
+(ert-deftest glitnir-decor-gui/a-rounded-run-keeps-the-text-at-its-ends ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; A rounded ring whose text runs into its corner squares (a pill: one space of pad or none, radius up to half the
+  ;; row) keeps that text when the glyph string beside it is drawn: the corner repaint touches only what lies outside
+  ;; the arc and the ring, never the run's inside.
+  (let ((square (glitnir-decor-gui--end-text 0)))
+    (should (> square 10))
+    (dolist (radius '(6 9 99))
+      (should (equal (list radius (>= (glitnir-decor-gui--end-text radius) (* 0.9 square)))
+                     (list radius t))))))
+
 (ert-deftest glitnir-decor-gui/box-closes-at-the-line-end ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; A boxed row that ends its line in a stretch to the right edge (a list row: its text, then an overlay string that
