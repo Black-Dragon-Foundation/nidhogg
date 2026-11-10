@@ -877,6 +877,8 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
   (nhmac-gui--typing-buffer (mapconcat #'number-to-string (number-sequence 1 300) "\n"))
   (goto-char (point-min))
   (redisplay t)
+  ;; every slot made before the count (an earlier row may leave the ring with fewer): a slot made lazily is a full copy
+  (nhmac-gui--fill-ring)
   (dotimes (_ nhmac-gui--ring) (scroll-up 1) (nhmac-gui--redisplay))
   (let* ((before (nhmac-stats))
          (_ (progn (scroll-up 1) (nhmac-gui--redisplay)))
@@ -1627,14 +1629,15 @@ Its list follows AppKit's ordering a little later, so a row waits for it, bounde
 
 (defun nhmac-gui--child (&optional params left top parent)
   "A shown child frame of PARENT (default the selected frame) at LEFT, TOP (device pixels, default 40, 40).
-16x3 characters, all #ff00ff: an empty buffer with no mode line or cursor.  PARAMS come first, so they win."
+16x3 characters, all #ff00ff: an empty buffer with no mode line, cursor, tool bar or tab bar.  PARAMS come first,
+so they win."
   (let* ((root (selected-frame))
          (buf (get-buffer-create " *nhmac-child*"))
          (f (make-frame `(,@params (parent-frame . ,(or parent root)) (minibuffer . nil)
                           (left . ,(or left 40)) (top . ,(or top 40)) (width . 16) (height . 3)
                           (background-color . "#ff00ff") (left-fringe . 0) (right-fringe . 0)
                           (visibility . nil) (no-accept-focus . t) (no-other-frame . t)
-                          (undecorated . t) (internal-border-width . 0)))))
+                          (undecorated . t) (internal-border-width . 0) (tool-bar-lines . 0) (tab-bar-lines . 0)))))
     (with-current-buffer buf
       (setq-local mode-line-format nil cursor-type nil cursor-in-non-selected-windows nil))
     (select-frame root)
@@ -1713,10 +1716,12 @@ the surface is the native area, all of it takes input."
           (nhmac-gui--say "nhmac-child-click-through-shadow: %S" info)
           ;; no margin: the container is the frame's native size at its place, and no input region narrows it
           (should (equal (plist-get info :place) (list (round (/ 100 s)) (round (/ 100 s)))))
-          (should (= (round (* s (plist-get info :h))) h))
+          ;; the container is whole points: within a device pixel of the frame's height
+          (should (< (abs (- (* s (plist-get info :h)) h)) s))
           (should-not (plist-get info :input))
           (let ((on-child (funcall click (+ 100 10) (+ 100 (/ h 2))))
                 (on-shadow (funcall click (- 100 6) (+ 100 (/ h 2)))))
+            (nhmac-gui--say "nhmac-child-click-through-shadow: on the child %S, on the shadow %S" on-child on-shadow)
             (should on-child)
             (should (eq (funcall frame-of on-child) c))
             (should on-shadow)
