@@ -232,6 +232,63 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
           (should (equal (list 'left (glitnir-decor-gui--px g (car left) (cdr left))) '(left (32 32 32))))
           (should (equal (list 'right (glitnir-decor-gui--px g (1- (car right)) (cdr left))) '(right (32 32 32)))))))))
 
+(ert-deftest glitnir-decor-gui/box-closes-at-the-line-end ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; A boxed row that ends its line in a stretch to the right edge (a list row: its text, then an overlay string that
+  ;; fills to the edge, the newline in the same face so the run goes on into the string) draws the box's right side
+  ;; at the edge: the run ends with its line, it cannot go on to the next.
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-decor-gui-line-end")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :background "#303060" :foreground "white"
+                        :box '(:line-width (-2 . -2) :color "#ff8000"))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "white")
+      (setq-local cursor-type nil truncate-lines t)
+      (let ((fo (glitnir-decor-gui--calibrate)))
+        (insert "\n\n" (propertize "ab" 'face face) "\n\n")
+        (let ((tail (make-overlay 3 5)) (nl (make-overlay 5 6)))
+          (overlay-put tail 'after-string
+                       (propertize " " 'face face 'display '(space :align-to (- right (8)))))
+          (overlay-put nl 'face face))
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (let* ((s (glitnir-decor-gui--scale))
+               (g (gui-runner-screen-grab))
+               (row (cdr (glitnir-decor-gui--at g 3 fo)))
+               (e (window-body-pixel-edges))
+               (y (+ (cdr row) (glitnir-decor-gui--dev s (/ (line-pixel-height) 2))))
+               ;; the stretch's last pixel and the next past it: the ring, then the window's background
+               (x (+ (car fo) (glitnir-decor-gui--dev s (- (nth 2 e) 8)) -1)))
+          (should (equal (list 'ring (glitnir-decor-gui--px g x y)) '(ring (255 128 0))))
+          (should (equal (list 'past (glitnir-decor-gui--px g (+ x 2) y)) '(past (32 32 32)))))))))
+
+(ert-deftest glitnir-decor-gui/box-across-a-newline-is-stock ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; Buffer text in a boxed face that runs on over its newline (no string, no stretch) is drawn as stock Emacs draws
+  ;; it: the run goes on past the last character onto the newline, so no side is drawn between them.
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-decor-gui-across")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :background "#303060" :foreground "white" :extend t
+                        :box '(:line-width (-2 . -2) :color "#ff8000"))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "white")
+      (setq-local cursor-type nil truncate-lines t)
+      (let ((fo (glitnir-decor-gui--calibrate)))
+        (insert "\n\n" (propertize "ab\n" 'face face) "\n")
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (let* ((s (glitnir-decor-gui--scale))
+               (g (gui-runner-screen-grab))
+               (nl (cdr (glitnir-decor-gui--at g 5 fo)))
+               (y (+ (cdr nl) (glitnir-decor-gui--dev s (/ (line-pixel-height) 2)))))
+          ;; the last pixel of `b' and the first of the newline: the face's fill, no ring between them
+          (should (equal (list 'b (glitnir-decor-gui--px g (1- (car nl)) y)) '(b (48 48 96))))
+          (should (equal (list 'nl (glitnir-decor-gui--px g (car nl) y)) '(nl (48 48 96)))))))))
+
 (ert-deftest glitnir-decor-gui/decor-partial-equals-full ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Redrawing only the neighbour gives the same pixels as a full redraw.
