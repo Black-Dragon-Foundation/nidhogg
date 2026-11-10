@@ -685,6 +685,10 @@ at the fastest key repeat, on a ring that has made all its slots."
         (nhmac-gui--say "nhmac-typing-bytes: %s: %d keys: copied %d (%d per key), damage %d, full %d, row %d"
                  case keys bytes (/ bytes keys) damage (plist-get d :full-copies) row)
         (nhmac-gui--say "nhmac-typing-bytes: %s: damage log %S" case (reverse nhmac--damage-log))
+        (when (fboundp 'nhmac--startup-log)
+          (dolist (e (funcall 'nhmac--startup-log))
+            (when (and (stringp e) (string-match-p "full copy" e))
+              (nhmac-gui--say "nhmac-typing-bytes: %s: shell %s" case e))))
         (setq nhmac--damage-log nil)
         (should (= (plist-get d :full-copies) 0))
         (should (= (plist-get d :held-timeouts) 0))
