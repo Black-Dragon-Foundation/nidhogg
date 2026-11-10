@@ -541,7 +541,9 @@ showed 5 such pixels darker, on descenders' lower edge)."
 ;;; Window cards: each card is an image the glue drew alone, on a layer of its own over the root's content.  Two
 ;;; windows side by side, a 6-pixel divider between them (the gap, whose colour is what a card's corners show).
 
-(defconst glitnir-nhmac--card-bg #xf0f0f0 "The card window's background.")
+(defconst glitnir-nhmac--card-bg #xf0d8a0
+  "The card window's background: a colour of its own (a light grey is in the title bar's and the echo area's
+anti-aliased text, which a search for the window's box then took in).")
 (defconst glitnir-nhmac--other-bg #xc07030 "The other window's background.")
 (defconst glitnir-nhmac--gap #x20a040 "The divider colour: the gap, and what a card's corners show.")
 (defconst glitnir-nhmac--card '((corner-radius . 10)) "A card with corners only.")
@@ -592,12 +594,12 @@ Everything goes back after: the window layout, the frame's divider width and col
       (nhmac-gui--settle))))
 
 (defun glitnir-nhmac--wbox (w)
-  "Window W's edges without its dividers, (X0 Y0 X1 Y1) in device pixels of the root's surface (inclusive)."
-  (let* ((s (frame-scale-factor)) (e (window-pixel-edges w))
-         (x (round (* s (nth 0 e)))) (y (round (* s (nth 1 e)))))
+  "Window W's edges without its dividers, (X0 Y0 X1 Y1) in device pixels of the root's surface (inclusive).
+A Naglfar frame's pixels are device pixels already."
+  (let* ((e (window-pixel-edges w)) (x (nth 0 e)) (y (nth 1 e)))
     (list x y
-          (1- (+ x (round (* s (- (window-pixel-width w) (window-right-divider-width w))))))
-          (1- (+ y (round (* s (- (window-pixel-height w) (window-bottom-divider-width w)))))))))
+          (1- (+ x (- (window-pixel-width w) (window-right-divider-width w))))
+          (1- (+ y (- (window-pixel-height w) (window-bottom-divider-width w)))))))
 
 (defun glitnir-nhmac--surface-px (x y)
   "The root's newest surface's pixel at X, Y (device pixels) as 0xRRGGBB."
