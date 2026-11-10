@@ -2174,8 +2174,8 @@ fonts, and the move-frame event) have run when this returns; `accept-process-out
 (ert-deftest nhmac-new-frame-opens-its-font-once ()
   "A new frame opens its default font once for the screen it shows on: it starts at the selected frame's scale, so
 its font is re-opened only when AppKit puts it on a screen of another scale (once), never when it shows at the scale
-it started at.  Either way the font's pixel size is its height in points times the frame's scale.  (Each re-open
-runs `nidhogg-frame-scale-change-functions'.)"
+it started at.  Either way the font's pixel size is its height in points times the frame's scale, and the frame keeps
+the size it was made with in characters.  (Each re-open runs `nidhogg-frame-scale-change-functions'.)"
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame)) (f nil) (reopens 0) (monitors 0) (moves 0)
@@ -2195,7 +2195,11 @@ runs `nidhogg-frame-scale-change-functions'.)"
                      "%d re-opens, %d monitor changes, %d moves")
              s (frame-scale-factor root) pt (nhmac-gui--font-px f) (nhmac-gui--font-px root) reopens monitors moves)
             (should (= reopens (if (= s (frame-scale-factor root)) 0 1)))
-            (should (= (nhmac-gui--font-px f) (floor (+ (* pt s) 0.5))))))
+            (should (= (nhmac-gui--font-px f) (floor (+ (* pt s) 0.5))))
+            ;; it keeps the size it was made with, in characters, at whichever scale it shows
+            (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: %dx%d characters, %S px"
+                            (frame-width f) (frame-height f) (list (frame-pixel-width f) (frame-pixel-height f)))
+            (should (equal (list (frame-width f) (frame-height f)) '(40 10)))))
       (remove-hook 'nidhogg-frame-scale-change-functions on-scale)
       (remove-hook 'display-monitors-changed-functions on-monitors)
       (remove-hook 'move-frame-functions on-move)
