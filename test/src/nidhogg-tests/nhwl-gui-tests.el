@@ -2982,8 +2982,6 @@ see the `default' they started with."
       (should (equal (nth 0 back) (nth 0 before)))
       (should (equal (nhwl-gui--default-font-state) before)))))
 
-(provide 'nhwl-gui-tests)
-
 (ert-deftest nhwl-gui/scale-change-keeps-the-window-size ()
   "The lane's scale to its double (or half) and back: the window keeps its size on the screen (its device pixels over
 the scale, within a pixel) and the text follows: the default font re-opens at the new scale's device size.  A font
@@ -3014,3 +3012,4 @@ re-opened for a scale never resizes the window the compositor sized."
     (should (<= (abs (- (nth 1 (nth 0 mid)) (nth 1 before))) 1))
     (should (= (nth 1 mid) (nth 2 mid)))))
 
+(provide 'nhwl-gui-tests)
