@@ -139,5 +139,58 @@ font at the size a frame opened now at that scale shows."
         (select-frame a)
         (nhwl-gui--pump)))))
 
+;;;; Fonts from their setting, per frame
+
+(ert-deftest nhwl-gui/scale-round-trip-from-1.25-keeps-the-font ()
+  "Heights whose sizes sit on the rounding edges, through 1.25 → 1 → 1.25 → 2 → 4/3 → 1.25: at each step the default
+font is the size a fresh open at that scale gives, not one carried over from the scale before."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui-scale--keeping
+    (dolist (h '(101 102 105 113))
+      (nhwl-gui-scale--set 150)
+      (set-face-attribute 'default nil :height h)
+      ;; from the first scale change on (setting the height opens the font on Emacs's own path)
+      (dolist (s '(120 150 240 160 150))
+        (nhwl-gui-scale--set s)
+        (glitnir-gui--say "scale-probe: %s" (nhwl-gui-scale--state h s))
+        (should (= (nhwl-gui-scale--font-px) (nhwl-gui-scale--px h s)))))))
+
+(ert-deftest nhwl-gui/scale-round-trip-from-2-keeps-the-font ()
+  "The same from 2: 2 → 1 → 1.25 → 2."
+  (skip-unless (nhwl-gui--recorder-p))
+  (nhwl-gui-scale--keeping
+    (dolist (h '(102 105))
+      (nhwl-gui-scale--set 240)
+      (set-face-attribute 'default nil :height h)
+      (dolist (s '(120 150 240))
+        (nhwl-gui-scale--set s)
+        (glitnir-gui--say "scale-probe: %s" (nhwl-gui-scale--state h s))
+        (should (= (nhwl-gui-scale--font-px) (nhwl-gui-scale--px h s)))))))
+
+(defface nhwl-gui-scale--probe '((t :height 120)) "A face first realised after the frames have their scales.")
+
+(ert-deftest nhwl-gui/two-frames-keep-their-own-dpi ()
+  "Frame A at 1.25, frame B at 2: a face realised on each afterwards has each frame's own size (20 and 32 px for
+12 pt), not the size at the scale the last frame heard."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((a (selected-frame)) b)
+    (nhwl-gui-scale--keeping
+      (unwind-protect
+          (progn
+            (nhwl-gui-scale--set 150)
+            (setq b (make-frame))
+            (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (frame-visible-p b)) 5))
+            (nhwl-gui-scale--set 240 "toplevel")
+            (should (= (frame-scale-factor a) 1.25))
+            (should (= (frame-scale-factor b) 2.0))
+            (glitnir-gui--say "scale-probe: probe face %d px on A, %d px on B"
+                              (nhwl-gui-scale--font-px 'nhwl-gui-scale--probe a)
+                              (nhwl-gui-scale--font-px 'nhwl-gui-scale--probe b))
+            (should (= (nhwl-gui-scale--font-px 'nhwl-gui-scale--probe a) (nhwl-gui-scale--px 120 150)))
+            (should (= (nhwl-gui-scale--font-px 'nhwl-gui-scale--probe b) (nhwl-gui-scale--px 120 240))))
+        (when (frame-live-p b) (delete-frame b))
+        (select-frame a)
+        (nhwl-gui--pump)))))
+
 (provide 'nhwl-gui-scale-tests)
 ;;; nhwl-gui-scale-tests.el ends here

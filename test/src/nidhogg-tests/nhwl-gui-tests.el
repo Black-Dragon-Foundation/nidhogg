@@ -2939,8 +2939,10 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
             (should (= (nth 1 (plist-get tb :margins)) 12))
             (should (= (funcall alpha (+ (nth 1 strip) 47)) 255))
             (should (= (funcall alpha (1- (nth 1 strip))) 0))))
-      (gui-runner-recorder '(:cmd "scale" :value120 120))
-      (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
+      ;; back to the lane's scale, not 1: the rows after this one run at the lane's
+      (let ((lane (round (* 120 (glitnir-gui--scale)))))
+        (gui-runner-recorder `(:cmd "scale" :value120 ,lane))
+        (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) (/ lane 120.0))) 5))
       (nhwl-gui--windowed))))
 
 (defun nhwl-gui--default-font-state ()
@@ -2950,29 +2952,31 @@ while the top-level has the keyboard.  Delete the child and focus the parent aft
         (prin1-to-string (face-attribute 'default :font)) (prin1-to-string (font-at (point-min)))))
 
 (ert-deftest nhwl-gui/scale-round-trip-keeps-the-default-font ()
-  "Scale 1 to 1.25 and back: the frame's font and the `default' face are what they were before.
-The font is re-opened at each scale's device size and comes back to the same size; its fontset is a new one
-\(`set-frame-font' makes one too), which `gui-runner-keeping-frame-font' gives back, so the rows after this one
+  "The lane's scale to another (1.25 from 1, else 1) and back: the frame's font and the `default' face are what they
+were before.  The font is re-opened at each scale's device size and comes back to the same size; its fontset is a new
+one \(`set-frame-font' makes one too), which `gui-runner-keeping-frame-font' gives back, so the rows after this one
 see the `default' they started with."
   (skip-unless (nhwl-gui--recorder-p))
   (with-temp-buffer
     (switch-to-buffer (current-buffer))
     (insert "x\n")
     (goto-char (point-min))
-    (let ((before (nhwl-gui--default-font-state)) mid back)
+    (let* ((lane (round (* 120 (glitnir-gui--scale)))) (other (if (= lane 120) 150 120))
+           (before (nhwl-gui--default-font-state)) mid back)
       (gui-runner-keeping-frame-font
         (unwind-protect
             (progn
-              (gui-runner-recorder '(:cmd "scale" :value120 150))
-              (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.25)) 5))
+              (gui-runner-recorder `(:cmd "scale" :value120 ,other))
+              (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) (/ other 120.0)))
+                                      5))
               (setq mid (nhwl-gui--default-font-state)))
-          (gui-runner-recorder '(:cmd "scale" :value120 120))
-          (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) 1.0)) 5)
+          (gui-runner-recorder `(:cmd "scale" :value120 ,lane))
+          (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) (/ lane 120.0))) 5)
           (nhwl-gui--windowed)
           (setq back (nhwl-gui--default-font-state))))
-      (glitnir-gui--say "scale-round-trip: before %S\n  at 1.25 %S\n  back at 1 %S\n  kept %S"
-                        before mid back (nhwl-gui--default-font-state))
-      (should (= (frame-scale-factor) 1.0))
+      (glitnir-gui--say "scale-round-trip: before %S\n  at %d %S\n  back at %d %S\n  kept %S"
+                        before other mid lane back (nhwl-gui--default-font-state))
+      (should (= (frame-scale-factor) (/ lane 120.0)))
       ;; the scale's own font comes back; only the fontset is new
       (should (equal (seq-remove #'stringp (nthcdr 1 back)) (seq-remove #'stringp (nthcdr 1 before))))
       (should (equal (nth 0 back) (nth 0 before)))
