@@ -606,4 +606,53 @@ PARAMS come first, so they win over the defaults here."
       (should (equal (assoc p seen) (cons p 'prompt))))
     (should (eq 'prompt (cdr (seq-find (lambda (e) (string-prefix-p "Keys? " (car e))) seen))))))
 
+;; The first frame born with a child-frame minibuffer (lisp/nidhogg-frame.el): a child Nidhogg whose early-init.el asks
+;; for one under its window system's `window-system-default-frame-alist' entry makes its first frame that way, deletes
+;; none and does not wait; with stock settings the first frame has its own minibuffer.
+
+(defun glitnir-gui--first-frame (early)
+  "Start a child Nidhogg whose early-init.el holds EARLY (a string of Lisp) and return what it saw once its frame was
+up: (:deleted N :box BOOL :own-mini BOOL :frames N :exited BOOL), or (:timeout OUTPUT), all of the selected frame.  N
+deleted counts graphical frames deleted while shown, N frames graphical frames (the initial terminal frame always goes); :exited says the child's
+`kill-emacs' ended it within 20 s.  :all lists each frame's (GRAPHICAL CHILD OWN-MINI SELECTED)."
+  (let* ((dir (make-temp-file "nh-first-frame" t))
+         (out (expand-file-name "out.eld" dir))
+         (emacs (expand-file-name invocation-name invocation-directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "early-init.el" dir)
+            (insert "(message \"nh-first: nidhogg-frame %S\" (featurep 'nidhogg-frame))\n"
+                    "(defvar nh-first--deleted 0)\n"
+                    "(add-hook 'delete-frame-functions (lambda (f) (when (and (display-graphic-p f) (frame-visible-p f)) (setq nh-first--deleted (1+ nh-first--deleted)))))\n"
+                    early "\n"))
+          (with-temp-file (expand-file-name "init.el" dir)
+            (insert (format "(add-hook 'window-setup-hook (lambda () (let* ((f (selected-frame)) (m (window-frame (minibuffer-window f)))) (with-temp-file %S (prin1 (list :deleted nh-first--deleted :box (and (not (eq m f)) (eq (frame-parent m) f)) :own-mini (eq m f) :frames (length (seq-filter #'display-graphic-p (frame-list))) :all (mapcar (lambda (x) (list (display-graphic-p x) (and (frame-parent x) t) (eq (window-frame (minibuffer-window x)) x) (eq x f))) (frame-list))) (current-buffer)))) (kill-emacs 0)))\n" out)))
+          (let* ((log (generate-new-buffer " *nh-first-frame*"))
+                 (p (start-process "nh-first-frame" log emacs "--init-directory" dir)))
+            (set-process-query-on-exit-flag p nil)
+            (unwind-protect
+                (if (gui-runner-wait (lambda () (file-exists-p out)) 60)
+                    (append (with-temp-buffer (insert-file-contents out) (read (current-buffer)))
+                            (list :exited (and (gui-runner-wait (lambda () (not (process-live-p p))) 20) t)))
+                  (list :timeout (with-current-buffer log (buffer-string))))
+              (delete-process p)
+              (kill-buffer log))))
+      (delete-directory dir t))))
+
+(ert-deftest glitnir-gui/first-frame-born-with-the-child-minibuffer ()
+  "Asked for in early-init.el, the first frame has its minibuffer in a child frame from the start: no frame deleted."
+  (let ((r (glitnir-gui--first-frame
+            "(setf (alist-get 'minibuffer (alist-get initial-window-system window-system-default-frame-alist)) 'child-frame)")))
+    (ert-info ((format "%S" r))
+      (should (equal (list (plist-get r :deleted) (plist-get r :box) (plist-get r :own-mini) (plist-get r :frames)
+                           (plist-get r :exited))
+                     '(0 t nil 2 t))))))
+
+(ert-deftest glitnir-gui/first-frame-stock-settings ()
+  "Asked for nothing, the first frame has its own minibuffer, as in stock Emacs."
+  (let ((r (glitnir-gui--first-frame "")))
+    (should (equal (plist-get r :own-mini) t))
+    (should (equal (plist-get r :deleted) 0))
+    (should (plist-get r :exited))))
+
 ;;; glitnir-gui-tests.el ends here

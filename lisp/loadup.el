@@ -360,7 +360,7 @@
       (load "touch-screen")
       (load "term/common-win")
       (load "term/pgtk-win")))
-(if (featurep 'glitnir) (load "glitnir"))
+(if (featurep 'glitnir) (progn (load "glitnir") (load "nidhogg-frame")))
 (if (featurep 'nidhogg-wayland) (progn (load "term/nhwl-settings") (load "term/nhwl-session") (load "term/nhwl-win") (load "term/nhwl-menu") (load "term/nhwl-portal") (load "term/nhwl-dnd")))
 (if (fboundp 'x-create-frame)
     ;; Do it after loading term/foo-win.el since the value of the
