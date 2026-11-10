@@ -1979,9 +1979,12 @@ a child again, and the child moves to another root."
   (let* ((root (selected-frame))
          (other (make-frame '((width . 40) (height . 10))))
          (c nil)
-         (windows nil))
+         (windows nil)
+         (blink blink-cursor-mode))
     (unwind-protect
         (progn
+          ;; no cursor blinks while the row counts draws
+          (blink-cursor-mode -1)
           (select-frame root)
           (nhmac-gui--settle)
           (setq c (nhmac-gui--child))
@@ -2007,11 +2010,15 @@ a child again, and the child moves to another root."
             (should (eq (plist-get (nhmac--test-child c) :contents-is-newest) t))
             (set-frame-parameter c 'parent-frame other)
             (nhmac-gui--settle)
+            (nhmac-gui--say "nhmac-parent-frame-changes: under the other root: %d draws; scale %s (other %s, %S px); %S"
+                            (nhmac-gui--delta before :draws) (frame-scale-factor c) (frame-scale-factor other)
+                            (list (frame-pixel-width other) (frame-pixel-height other)) (nhmac--test-child c))
             (should (eq (frame-parent c) other))
             (should (eq (plist-get (nhmac--test-child c) :host) 'parent))
             (should (eq (plist-get (nhmac--test-child c) :contents-is-newest) t))
             (nhmac-gui--say "nhmac-parent-frame-changes: %S" (nhmac-stats))
             (should (= (nhmac-gui--delta before :draws) 0))))
+      (blink-cursor-mode (if blink 1 -1))
       (when (and c (frame-live-p c)) (delete-frame c t))
       (delete-frame other t)
       (select-frame root))))
