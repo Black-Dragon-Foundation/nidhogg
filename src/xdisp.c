@@ -26939,11 +26939,11 @@ display_line (struct it *it, int cursor_vpos)
     highlight_trailing_whitespace (it);
 
 #ifdef HAVE_GLITNIR /* A boxed string stretch that ends its line closes its box.  */
-  struct glyph *g = row->glyphs[TEXT_AREA];
+  struct glyph *g = row->glyphs[TEXT_AREA]; struct face *gf;
   g += row->reversed_p || !row->used[TEXT_AREA] ? 0 : row->used[TEXT_AREA] - 1;
   if (row->used[TEXT_AREA] && !row->continued_p && !row->truncated_on_right_p
-      && g->type == STRETCH_GLYPH && STRINGP (g->object)
-      && FACE_FROM_ID (it->f, g->face_id)->box != FACE_NO_BOX)
+      && g->type == STRETCH_GLYPH && STRINGP (g->object)  /* Lisp may free faces mid-line.  */
+      && (gf = FACE_FROM_ID_OR_NULL (it->f, g->face_id)) && gf->box != FACE_NO_BOX)
     g->left_box_line_p |= row->reversed_p, g->right_box_line_p |= !row->reversed_p;
 #endif
   /* Compute pixel dimensions of this line.  */
