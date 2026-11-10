@@ -164,6 +164,8 @@ void
 nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
 {
   nhwl_begin_cr_clip (f);
+  if (CONSP (Vnhmac__damage_log))
+    Vnhmac__damage_log = Fcons (Qclear, Vnhmac__damage_log);
   nhwl_damage (f, x, y, width, height);
   nhmac_rect (f, NHG_DRAW_FILL, NHG_DRAW_COPY,
 	      nhmac_argb (f, FRAME_NHWL_OUTPUT (f)->background_color, true),

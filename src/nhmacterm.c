@@ -243,6 +243,13 @@ syms_of_nhmacterm (void)
   defsubr (&Snhmac__query);
   syms_of_nhmacfont ();
 
+  DEFSYM (Qclear, "clear");
+  DEFVAR_LISP ("nhmac--damage-log", Vnhmac__damage_log,
+	       doc: /* A diagnostic: when a cons, each damage pushes its rectangle (X Y W H)
+in device pixels onto it, t for the whole frame, and `clear' before a
+clear's rectangle.  Nil (the default) logs nothing.  */);
+  Vnhmac__damage_log = Qnil;
+
   /* `window-system' reads `ns', so ns-win.el and packages take their
      macOS branches; `nidhogg-macos' and `naglfar' name this shell.  */
   Fprovide (Qns, Qnil);
