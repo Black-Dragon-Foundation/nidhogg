@@ -122,8 +122,7 @@ struct nhwl_display_info
   ptrdiff_t bitmaps_size;
   ptrdiff_t bitmaps_last;
 
-  /* DPI resolution of this display: 96 times the preferred scale, so that
-     fonts are opened at the device size.  */
+  /* SVG's resolution: 96 times scale120.  Fonts go by nhwl_frame_res.  */
   double resx, resy;
 
   /* The preferred scale of the display, times 120: the newest value any
@@ -456,6 +455,7 @@ extern void nhwl_set_scroll_bar_default_width (struct frame *);
 extern void nhwl_set_scroll_bar_default_height (struct frame *);
 extern void nhwl_default_font_parameter (struct frame *, Lisp_Object);
 extern double nhwl_frame_scale_factor (struct frame *);
+extern double nhwl_frame_res (struct frame *);
 extern const char *nhwl_get_string_resource (XrmDatabase, const char *,
 					     const char *);
 extern void nhwl_create_frame_window (struct frame *);
