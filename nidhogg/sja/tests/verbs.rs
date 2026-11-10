@@ -503,6 +503,29 @@ fn a_tree_pages_at_its_visible_edge() {
     );
 }
 
+/// A splice that names `from` moves the window over the same list: `from` is set and the total stays (a move, not a
+/// growth), so a hub moves a long window by the ids that change, not the window whole.
+#[test]
+fn a_splice_with_from_moves_the_window() {
+    let mut v = view_with(&trail_window());
+    let p = ops(vec![
+        json!({"nodes": [node("s6", "step", json!({}))]}),
+        json!({"remove": ["s3"]}),
+        json!({"splice": {"name": "steps", "at": 0, "remove": 1, "ids": [], "from": 4}}),
+        json!({"splice": {"name": "steps", "at": 2, "remove": 0, "ids": ["s6"], "from": 4}}),
+    ]);
+    assert_eq!(v.apply("h1", 2, &p, BIG), Status::Applied);
+    assert_eq!(v.window("steps"), Some((4, 3, 10)));
+    assert_eq!(snap(&v).2["steps"], vec!["s4", "s5", "s6"]);
+    // a splice without `from` still grows the total
+    let grow = ops(vec![
+        json!({"nodes": [node("s7", "step", json!({}))]}),
+        json!({"splice": {"name": "steps", "at": 3, "remove": 0, "ids": ["s7"]}}),
+    ]);
+    assert_eq!(v.apply("h1", 3, &grow, BIG), Status::Applied);
+    assert_eq!(v.window("steps"), Some((4, 4, 11)));
+}
+
 #[test]
 fn window_tells_from_length_and_total() {
     let v = view_with(&trail_window());

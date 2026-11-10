@@ -303,14 +303,28 @@ impl Model {
         );
     }
 
-    pub fn splice(&mut self, name: &str, at: usize, remove: usize, ids: &[String]) {
+    /// List NAME's ids `at..at + remove` become IDS; with FROM a window move (its first position FROM, its total
+    /// kept), else the total moves by what came less what went.
+    pub fn splice(
+        &mut self,
+        name: &str,
+        at: usize,
+        remove: usize,
+        ids: &[String],
+        from: Option<usize>,
+    ) {
         let new: Vec<Id> = ids.iter().map(|i| self.id(i)).collect();
         let l = self.lists.entry(name.to_string()).or_default();
         let gone: usize = l.ids[at..at + remove].iter().map(|i| 16 + i.len()).sum();
         let came: usize = ids.iter().map(|i| 16 + i.len()).sum();
         l.ids.splice(at..at + remove, new);
-        if let Some(t) = l.total.as_mut() {
-            *t = (*t + ids.len()).saturating_sub(remove);
+        match from {
+            Some(f) => l.from = f,
+            None => {
+                if let Some(t) = l.total.as_mut() {
+                    *t = (*t + ids.len()).saturating_sub(remove);
+                }
+            }
         }
         let b = self.list_bytes.entry(name.to_string()).or_insert(64);
         *b = *b + came - gone;
