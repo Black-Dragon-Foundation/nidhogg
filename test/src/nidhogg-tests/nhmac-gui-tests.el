@@ -2016,13 +2016,16 @@ any thread that does not block it: Emacs's SIGCHLD can reach the helper.)"
               (display-monitor-attributes-list))))
 
 (defun nhmac-gui--move-to (frame monitor)
-  "Move FRAME into MONITOR's work area; wait (bounded) until AppKit puts its window on that screen."
+  "Move FRAME into MONITOR's work area; wait (bounded) until AppKit puts its window on that screen, then settle.
+The settle reads input, so the special events the move raised (the scale's config-changed event, which re-opens the
+fonts, and the move-frame event) have run when this returns; `accept-process-output' alone leaves them queued."
   (let ((g (alist-get 'workarea monitor)) (end (+ (float-time) 5)))
     (set-frame-position frame (+ (nth 0 g) 40) (+ (nth 1 g) 40))
     (while (and (not (equal (alist-get 'geometry (frame-monitor-attributes frame)) (alist-get 'geometry monitor)))
                 (< (float-time) end))
       (accept-process-output nil 0.05)
-      (redisplay t))))
+      (redisplay t))
+    (nhmac-gui--settle)))
 
 (defun nhmac-gui--font-px (&optional frame)
   "The pixel size of FRAME's default font."
