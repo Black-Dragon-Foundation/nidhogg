@@ -1986,8 +1986,10 @@ a child again, and the child moves to another root."
           ;; no cursor blinks while the row counts draws
           (blink-cursor-mode -1)
           (select-frame root)
-          (nhmac-gui--settle)
+          ;; the other root finishes showing (placed, configured, drawn) before anything is counted
+          (dotimes (_ 3) (nhmac-gui--settle))
           (setq c (nhmac-gui--child))
+          (dotimes (_ 3) (nhmac-gui--settle))
           (setq windows (length (nhmac--test-windows)))
           (let ((before (nhmac-stats)))
             (set-frame-parameter c 'parent-frame nil)
