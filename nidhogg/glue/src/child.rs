@@ -255,14 +255,20 @@ fn child_mut(state: &mut Display, window: u64) -> Result<&mut Frame, GlueError> 
 }
 
 /// Lay child `window`'s border out again (`nhg_csd_layout` for a child frame): the shadow margin its chrome needs at
-/// `s120`, with no title strip.  Whether it changed, and the layout.
+/// `s120`, with no title strip; none where the shell draws the chrome on the window's layers.  Whether it changed, and
+/// the layout.
 pub fn layout(
     state: &mut Display,
     window: u64,
     s120: u32,
 ) -> Result<(bool, NhgCsdLayout), GlueError> {
-    let f = child_mut(state, window)?;
-    let m = margins(&f.child.chrome, s120);
+    child_mut(state, window)?;
+    let (backend, _, f) = state.csd_parts(window)?;
+    let m = if backend.chrome_on_layers() {
+        [0; 4]
+    } else {
+        margins(&f.child.chrome, s120)
+    };
     let changed = f.csd.set_margins(s120, m);
     Ok((
         changed,
@@ -585,7 +591,15 @@ pub fn apply_chrome(state: &mut Display, window: u64, key: u64, s120: u32) {
         border_px: border as f32,
         border_argb,
     });
-    let p = g.as_ref().map_or(ptr::null(), |g| g as *const Chrome);
+    // a shell that draws a child's chrome on its layers takes it there; Glitnir's layer then dresses nothing
+    let p = match state.csd_parts(window) {
+        Ok((backend, ..)) if !top && backend.chrome_on_layers() => {
+            // as C did, a failed request is tried again with the next change
+            let _ = backend.set_chrome(window, g.as_ref());
+            ptr::null()
+        }
+        _ => g.as_ref().map_or(ptr::null(), |g| g as *const Chrome),
+    };
     // SAFETY: `p` is null or points to `g`, a readable Chrome for the call.  Glitnir's answer is ignored, as C did (a
     // root without that layer has nothing to dress).
     unsafe { glitnir_layer_set_chrome(key, key, p) };
