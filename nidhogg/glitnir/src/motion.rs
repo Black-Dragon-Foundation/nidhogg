@@ -160,6 +160,13 @@ impl Motion {
         Sample::lerp(a.from, a.to, a.curve.y(p as f32))
     }
 
+    /// The leg the last commit started, for a platform that runs it itself: its start, duration (ns), curve, and the
+    /// samples it moves from and to.  `None` when the commit started none (the frame rests).
+    pub fn leg(&self) -> Option<(u64, u64, Curve, Sample, Sample)> {
+        self.leg
+            .map(|a| (a.start_ns, a.duration_ns, a.curve, a.from, a.to))
+    }
+
     /// Whether a leg has not ended at `t_ns`.
     pub fn running(&self, t_ns: u64) -> bool {
         self.leg
@@ -232,6 +239,26 @@ mod tests {
         assert_eq!(m.sample(end), Sample::IDENTITY);
         assert_eq!(m.sample(end + 5_000 * MS), Sample::IDENTITY);
         assert!(!m.unmap_due(end));
+    }
+
+    #[test]
+    fn the_leg_reads_back_as_a_platform_runs_it() {
+        let mut m = hidden(spec(Kind::Pop, Kind::Fade));
+        m.request(true);
+        m.commit(1_000 * MS);
+        let (start, dur, curve, from, to) = m.leg().expect("a show of a hidden frame runs a leg");
+        assert_eq!((start, dur), (1_000 * MS, 120 * MS));
+        assert_eq!(curve.points(), Curve::LINEAR.points());
+        assert_eq!((from.opacity, from.scale), (0.0, POP_SCALE));
+        assert_eq!(to, Sample::IDENTITY);
+        // a hide halfway through goes back from where it is, for the share of its duration that is left
+        m.request(false);
+        m.commit(1_060 * MS);
+        let (start, dur, _, from, to) = m.leg().expect("a hide mid-show runs a leg");
+        assert_eq!(start, 1_060 * MS);
+        assert!((from.opacity - 0.5).abs() < 1e-5);
+        assert_eq!(dur, 40 * MS);
+        assert_eq!(to.opacity, 0.0);
     }
 
     #[test]
