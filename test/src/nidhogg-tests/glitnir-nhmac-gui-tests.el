@@ -198,17 +198,26 @@ root's white, and a pixel just inside the curve at 45° is not the child's colou
 (ert-deftest nhmac-resize-shadow-renders ()
   "A chromed child resized five times renders no shadow image (the nine-slice image stretches): `:shadow-renders' 0,
 while its shadow layer's frame follows each size.  The child is first made large enough for the image to stretch at
-every scale (a smaller one renders its own image, by design), and counting starts there."
+every scale (a smaller one renders its own image, by design: the image's least side is in device pixels, so a child
+of the same characters needs more of them at scale 2 while the font's pixel size does not follow the scale), and
+counting starts there."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let ((c (glitnir-nhmac--chromed '((width . 40) (height . 12)))))
+  (let ((c (glitnir-nhmac--chromed '((width . 40) (height . 12))))
+        (cw 40) (ch 12))
     (unwind-protect
         (let (before (frames nil))
-          (set-frame-size c 40 12)
+          (set-frame-size c cw ch)
           (nhmac-gui--settle)
+          (while (and (not (plist-get (plist-get (nhmac--test-child c) :shadow) :stretches)) (< ch 48))
+            (setq cw (+ cw 8) ch (+ ch 6))
+            (set-frame-size c cw ch)
+            (nhmac-gui--settle))
+          (nhmac-gui--say "nhmac-resize-shadow-renders: from %dx%d: %S" cw ch (plist-get (nhmac--test-child c) :shadow))
+          (should (plist-get (plist-get (nhmac--test-child c) :shadow) :stretches))
           (setq before (nhmac-stats))
-          (dolist (w '(42 46 50 54 58))
-            (set-frame-size c w 12)
+          (dolist (w (list (+ cw 2) (+ cw 6) (+ cw 10) (+ cw 14) (+ cw 18)))
+            (set-frame-size c w ch)
             (nhmac-gui--settle)
             (push (nth 2 (plist-get (plist-get (nhmac--test-child c) :shadow) :frame)) frames))
           (nhmac-gui--say "nhmac-resize-shadow-renders: renders %d, shadow widths %S"

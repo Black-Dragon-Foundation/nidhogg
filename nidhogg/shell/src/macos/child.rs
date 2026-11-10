@@ -929,12 +929,13 @@ impl MacShell {
             // SAFETY: `contents` is an object or nil; only its presence is read.
             let image = unsafe { l.shadow.contents() }.is_some();
             format!(
-                "(:frame ({} {} {} {}) :image {})",
+                "(:frame ({} {} {} {}) :image {} :stretches {})",
                 f.origin.x,
                 f.origin.y,
                 f.size.width,
                 f.size.height,
-                if image { "t" } else { "nil" }
+                if image { "t" } else { "nil" },
+                if k.chrome_shown.stretches() == Some(true) { "t" } else { "nil" }
             )
         };
         let chrome = format!(
