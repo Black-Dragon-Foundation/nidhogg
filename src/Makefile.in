@@ -588,9 +588,9 @@ $(abs_top_builddir)/src/lisp.mk: $(lispsource)/loadup.el
 -include $(abs_top_builddir)/src/lisp.mk
 shortlisp_filter = leim/leim-list.el site-load.elc site-init.elc
 shortlisp := $(filter-out ${shortlisp_filter},${shortlisp})
-## Nidhogg: lisp/glitnir.el and lisp/nidhogg-frame.el are loaded by a featurep-guarded line in loadup.el, which the
-## sed above does not see.  They are preloaded like the rest: compiled before the dump, dumped again when they change,
-## and native-compiled with the preloaded Lisp.
+## Nidhogg: lisp/glitnir.el is loaded by a featurep-guarded line in loadup.el, which the sed above does not see, and
+## loads lisp/nidhogg-frame.el.  They are preloaded like the rest: compiled before the dump, dumped again when they
+## change, and native-compiled with the preloaded Lisp.
 ifeq ($(HAVE_GLITNIR),yes)
 shortlisp += glitnir.elc nidhogg-frame.elc
 endif
