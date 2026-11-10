@@ -2301,7 +2301,7 @@ and `top' it opens there, at the scale of the screen there (the main screen, the
               (setq frame-size-history nil)
               (when (fboundp 'nhmac--startup-log)
                 (dolist (e (funcall 'nhmac--startup-log))
-                  (when (and (stringp e) (string-match-p "compare:\\|configure queued\\|window made" e))
+                  (when (and (stringp e) (string-match-p "configure queued\\|window made\\|full copy" e))
                     (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: shell %s" case e))))
               (let ((now (list (frame-scale-factor f) (frame-width f) (frame-height f)
                                (frame-pixel-width f) (frame-pixel-height f))))
