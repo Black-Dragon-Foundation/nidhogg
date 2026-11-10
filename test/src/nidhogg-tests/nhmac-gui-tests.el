@@ -1067,8 +1067,9 @@ It measures; it asserts only that it ran."
     ;; time can be compared function by function; the call tree goes to GLITNIR_GUI_OUT/sample-BUILD.txt
     (when (executable-find "sample")
       (let* ((out (expand-file-name (format "sample-%s.txt" build) (file-name-directory file)))
-             (p (start-process "nhmac-sample" nil "sample" (number-to-string (emacs-pid)) "4" "1"
-                               "-mayDie" "-file" out))
+             (p (let ((process-environment (nhmac-gui--capture-env)))
+                  (start-process "nhmac-sample" nil "sample" (number-to-string (emacs-pid)) "4" "1"
+                                 "-mayDie" "-file" out)))
              (end (+ (float-time) 4)))
         (sleep-for 0.5)
         (while (< (float-time) end) (execute-kbd-macro "x") (redisplay))
