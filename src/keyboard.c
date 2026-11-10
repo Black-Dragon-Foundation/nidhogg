@@ -640,6 +640,20 @@ echo_update (void)
     }
 }
 
+#ifdef HAVE_GLITNIR
+/* Bind `nidhogg-echo-prompt' to WHAT (`prompt' or `keys') for what C
+   shows next in the echo area, so a `set-message-function' can tell a
+   prompt from a message.  Return the count to unbind to.  */
+
+static specpdl_ref
+nidhogg_echo_as (Lisp_Object what)
+{
+  specpdl_ref count = SPECPDL_INDEX ();
+  specbind (Qnidhogg_echo_prompt, what);
+  return count;
+}
+
+#endif
 /* Display the current echo string, and begin echoing if not already
    doing so.  */
 
@@ -658,7 +672,15 @@ echo_now (void)
 
   echoing = true;
   /* FIXME: Use call (Qmessage) so it can be advised (e.g. emacspeak).  */
+#ifdef HAVE_GLITNIR
+  specpdl_ref echo_count
+    = nidhogg_echo_as (NILP (KVAR (current_kboard, echo_prompt))
+		       ? Qnidhogg_keys : Qnidhogg_prompt);
+#endif
   message3_nolog (KVAR (current_kboard, echo_string));
+#ifdef HAVE_GLITNIR
+  unbind_to (echo_count, Qnil);
+#endif
   echoing = false;
 
   /* Record in what buffer we echoed, and from which kboard.  */
@@ -10834,7 +10856,13 @@ If `inhibit-interaction' is non-nil, this function will signal an
   if (! NILP (prompt))
     {
       cancel_echoing ();
+#ifdef HAVE_GLITNIR
+      specpdl_ref echo_count = nidhogg_echo_as (Qnidhogg_prompt);
+#endif
       message_with_string ("%s", prompt, 0);
+#ifdef HAVE_GLITNIR
+      unbind_to (echo_count, Qnil);
+#endif
     }
   val = read_filtered_event (1, 1, 1, ! NILP (inherit_input_method), seconds);
 
@@ -10872,7 +10900,13 @@ If `inhibit-interaction' is non-nil, this function will signal an
   if (! NILP (prompt))
     {
       cancel_echoing ();
+#ifdef HAVE_GLITNIR
+      specpdl_ref echo_count = nidhogg_echo_as (Qnidhogg_prompt);
+#endif
       message_with_string ("%s", prompt, 0);
+#ifdef HAVE_GLITNIR
+      unbind_to (echo_count, Qnil);
+#endif
     }
   return read_filtered_event (0, 0, 0, ! NILP (inherit_input_method), seconds);
 }
@@ -10911,7 +10945,13 @@ If `inhibit-interaction' is non-nil, this function will signal an
   if (! NILP (prompt))
     {
       cancel_echoing ();
+#ifdef HAVE_GLITNIR
+      specpdl_ref echo_count = nidhogg_echo_as (Qnidhogg_prompt);
+#endif
       message_with_string ("%s", prompt, 0);
+#ifdef HAVE_GLITNIR
+      unbind_to (echo_count, Qnil);
+#endif
     }
 
   val = read_filtered_event (1, 1, 0, ! NILP (inherit_input_method), seconds);
@@ -13509,6 +13549,21 @@ syms_of_keyboard (void)
   pending_funcalls = Qnil;
   staticpro (&pending_funcalls);
 
+#ifdef HAVE_GLITNIR
+  DEFSYM (Qnidhogg_echo_prompt, "nidhogg-echo-prompt");
+  DEFSYM (Qnidhogg_prompt, "prompt");
+  DEFSYM (Qnidhogg_keys, "keys");
+  DEFVAR_LISP ("nidhogg-echo-prompt", Vnidhogg_echo_prompt,
+	       doc: /* What C shows in the echo area, while it shows it.
+`prompt' while the prompt of `read-char', `read-event',
+`read-char-exclusive' or `read-key-sequence' shows (and so the
+`interactive' codes that read with them); `keys' while the keys typed
+so far echo; nil otherwise, as for `message'.  A `set-message-function'
+reads it to keep a prompt where the user looks while sending messages
+elsewhere.  Bind it, never set it.  */);
+  Vnidhogg_echo_prompt = Qnil;
+
+#endif
   Vlispy_mouse_stem = build_string ("mouse");
   staticpro (&Vlispy_mouse_stem);
 
