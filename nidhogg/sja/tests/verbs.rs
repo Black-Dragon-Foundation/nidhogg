@@ -371,3 +371,32 @@ fn fold_and_tick_toggle() {
     assert!(!v.toggle(1, "file:x", false));
     assert!(v.inst(1).unwrap().ticked.contains("file:x"));
 }
+
+#[test]
+fn ticked_class_marks_the_ticked_set_when_named() {
+    // a descriptor naming `ticked` (the Explorer's marks): selected 0, ticked 1
+    let desc = json!({"scheme": "list", "lists": ["all"], "classes": ["selected", "ticked"], "start": "all"});
+    let nodes = ["a", "b", "c"]
+        .map(|i| json!({"id": i, "kind": "file"}))
+        .to_vec();
+    let mut v = view_with(&reset(
+        desc,
+        nodes,
+        vec![],
+        vec![json!({"name": "all", "ids": ["a", "b", "c"]})],
+    ));
+    v.toggle(1, "b", true);
+    v.toggle(1, "c", true);
+    v.select(1, Some("c"));
+    assert_eq!(v.class_of(1, "a"), None);
+    assert_eq!(v.class_of(1, "b"), Some(1));
+    assert_eq!(
+        v.class_of(1, "c"),
+        Some(0),
+        "the selection wins over a mark"
+    );
+    // a descriptor that doesn't name it (Search's ticks): the set is no class
+    let mut w = view_with(&small_map());
+    w.toggle(1, "agent:c", true);
+    assert_eq!(w.class_of(1, "agent:c"), None);
+}

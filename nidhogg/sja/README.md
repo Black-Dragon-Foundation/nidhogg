@@ -72,8 +72,9 @@ fallback), a form, a search, a lit list, expanded and ticked sets, and the class
 
 ## Classes
 
-For an instance, in order: `selected`; while a search is set, `match` or `dim`; else `lit` for the lit list's nodes;
-else, while there is a selection, `chain` or `dim`; else none. A class is its position in the descriptor's `classes`,
+For an instance, in order: `selected`; `ticked` for the nodes of the instance's ticked set, when the descriptor names
+that class (the Explorer's marks; Search's ticks name none); while a search is set, `match` or `dim`; else `lit` for the
+lit list's nodes; else, while there is a selection, `chain` or `dim`; else none. A class is its position in the descriptor's `classes`,
 which is the index into the face vector Lisp keeps. `classes` answers only the nodes whose class changed since the
 last call.
 
