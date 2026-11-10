@@ -8797,6 +8797,18 @@ get_next_display_element (struct it *it)
 		  int string_face_id = face_after_it_pos (it);
 		  if (FACE_FROM_ID (it->f, string_face_id)->box == FACE_NO_BOX)
 		    it->end_of_box_run_p = true;
+#ifdef HAVE_GLITNIR
+		  /* As in buffer text, a box that differs from the one
+		     after it in the string ends its run.  */
+		  if (string_face_id != it->face_id)
+		    {
+		      struct face *this_face = FACE_FROM_ID (it->f, it->face_id);
+		      struct face *next_face
+			= FACE_FROM_ID (it->f, string_face_id);
+		      if (glitnir_box_differs (this_face, next_face))
+			it->end_of_box_run_p = true;
+		    }
+#endif
 		}
 	      /* Otherwise, the box comes from the underlying face.
 		 If this is the last string character displayed, check
