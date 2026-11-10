@@ -1079,6 +1079,13 @@ a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the syn
   first auto-save after the 20 minutes writes it). Test primitives: `nidhogg-workers--test-keyboard-auto-save`,
   `--test-save-await`, `--test-save-jobs`, `--test-save-age`, `--test-save-encode`, `nidhogg-workers--save-unnamed`
   and the `before-write` pause point.
+- Buffer hashes (`src/nidhogg-blk.c`, on `nh-save`): `(nidhogg-buffer-sha256 BUFFER)` returns the SHA-256 of BUFFER's whole
+  text in hex, and `(nidhogg-buffer-sha256-async BUFFER CALLBACK)` copies the text (a memcpy around the gap, about 5 ms at
+  20 MB) and hashes the copy on a worker, calling `(CALLBACK HASH)` at the next timer check, whatever happens to the buffer
+  meanwhile; with the workers off, or the job refused, it runs the same job on the main thread and calls CALLBACK before it
+  returns. Both hash the bytes `secure-hash` hashes of the buffer with `coding-system-for-write` `utf-8-unix` (narrowing
+  ignored; a raw byte is one byte; a unibyte buffer's bytes are themselves). drgnx's edit history sends the hash with
+  every batch. Test files: `workers-hash-tests`, with the `before-done` pause point.
 - Host-name lookups (`src/nidhogg-blk.c`, `nh-blk` class `dns`): with `nidhogg-workers-dns` on,
   `make-network-process` with `:nowait` runs `getaddrinfo` with the same hints on a worker on every platform, in place
   of glibc's `getaddrinfo_a` (and of the synchronous lookup where that is missing: macOS, Android, musl). The wait loop
