@@ -702,24 +702,58 @@ the window's; without the card the corner is the window's."
        (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
        (should (equal base (glitnir-nhmac--grab "card-gone")))))))
 
+(deftheme glitnir-nhmac-test
+  "Colours the shadow and the dividers (`nhmac-cards-theme-switch', `nhmac-colour-push-not-poll').")
+(custom-theme-set-faces 'glitnir-nhmac-test
+                        '(child-frame-shadow ((t :foreground "#ff0000")))
+                        '(window-divider ((t :foreground "#4060e0"))))
+
 (ert-deftest nhmac-cards-theme-switch ()
-  "A new divider colour (what a theme switch changes) gives the card new images at once: its corners show the new
-gap colour."
+  "A theme that gives the dividers a new colour gives the card new images at once: its corners show the new gap
+colour."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (glitnir-nhmac--with-cards
    glitnir-nhmac--card
    (lambda (_left _right)
-     (let ((n (plist-get (glitnir-nhmac--cards t) :images)) (new #x4060e0))
-       (set-face-foreground 'window-divider (glitnir-nhmac--hex new) (selected-frame))
-       (let* ((c (glitnir-nhmac--cards t))
-              (img (glitnir-nhmac--grab "card-theme"))
-              (b (glitnir-nhmac--box img glitnir-nhmac--card-bg)))
-         (nhmac-gui--say "nhmac-cards-theme-switch: images %d -> %d, corner %06x" n (plist-get c :images)
-                         (if b (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) 0))
-         (should (> (plist-get c :images) n))
-         (should b)
-         (should-not (nhmac-gui--far (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) new 8)))))))
+     (let ((n (plist-get (glitnir-nhmac--cards t) :images)) (new #x4060e0)
+           (face (face-foreground 'window-divider (selected-frame))))
+       ;; enabling a theme recomputes the face on every frame from the themes (the row's own colour goes)
+       (enable-theme 'glitnir-nhmac-test)
+       (unwind-protect
+           (let* ((c (glitnir-nhmac--cards t))
+                  (img (glitnir-nhmac--grab "card-theme"))
+                  (b (glitnir-nhmac--box img glitnir-nhmac--card-bg)))
+             (nhmac-gui--say "nhmac-cards-theme-switch: images %d -> %d, corner %06x" n (plist-get c :images)
+                             (if b (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) 0))
+             (should (> (plist-get c :images) n))
+             (should b)
+             (should-not (nhmac-gui--far (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) new 8)))
+         (disable-theme 'glitnir-nhmac-test)
+         (set-face-foreground 'window-divider face (selected-frame)))))))
+
+(ert-deftest nhmac-colour-push-not-poll ()
+  "Redisplay reads no chrome colour; a theme switch pushes the new shadow colour to a shown child."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((c (glitnir-nhmac--chromed)) (reads 0))
+    (unwind-protect
+        (let ((count (lambda (&rest _) (setq reads (1+ reads)))))
+          (nhmac-gui--settle)
+          (should (equal (plist-get (plist-get (glitnir--chrome c) :shadow) :color) '(0 0 0)))
+          (advice-add 'glitnir--shadow-color :before count)
+          (unwind-protect
+              (dotimes (_ 5)
+                (force-window-update)
+                (redisplay t))
+            (advice-remove 'glitnir--shadow-color count))
+          (nhmac-gui--say "nhmac-colour-push-not-poll: %d colour reads in 5 redisplays" reads)
+          (should (= reads 0))
+          (enable-theme 'glitnir-nhmac-test)
+          (nhmac-gui--settle)
+          (should (equal (plist-get (plist-get (glitnir--chrome c) :shadow) :color) '(255 0 0))))
+      (disable-theme 'glitnir-nhmac-test)
+      (delete-frame c t))))
 
 (ert-deftest glitnir-nhmac/active-p-follows-enable ()
   "`glitnir-active-p' is t for a Naglfar frame while `glitnir-enable' is on, nil while it is off."
