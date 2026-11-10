@@ -207,6 +207,31 @@ chip's corners.  AFTER, called last with the chip's buffer still shown, makes AF
     (should (equal (nth 0 r) '(16 48 16)))
     (should (equal (nth 1 r) '(16 48 16)))))
 
+(ert-deftest glitnir-decor-gui/decor-corners-at-the-row-edges ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; A rounded run that is its row's first glyph has nothing to its left, one that is its row's last nothing to its
+  ;; right: their corners there are what the row shows past its glyphs (the window's background), not the far
+  ;; neighbour's colour (the run's own fill when the run is split into several glyph strings: a button's pads are
+  ;; stretches, its label characters).
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-decor-gui-edge")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :background "#303060" :foreground "white" :box glitnir-decor-gui--box)
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "white")
+      (setq-local cursor-type nil)
+      (let ((fo (glitnir-decor-gui--calibrate))
+            (pad (propertize " " 'face face 'display '(space :width (12)))))
+        (insert "\n\n" pad (propertize "ab" 'face face) pad "\n\n")
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (let* ((g (gui-runner-screen-grab))
+               (left (cdr (glitnir-decor-gui--at g 3 fo)))
+               (right (cdr (glitnir-decor-gui--at g 7 fo))))
+          (should (equal (list 'left (glitnir-decor-gui--px g (car left) (cdr left))) '(left (32 32 32))))
+          (should (equal (list 'right (glitnir-decor-gui--px g (1- (car right)) (cdr left))) '(right (32 32 32)))))))))
+
 (ert-deftest glitnir-decor-gui/decor-partial-equals-full ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Redrawing only the neighbour gives the same pixels as a full redraw.
