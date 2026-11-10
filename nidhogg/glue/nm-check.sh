@@ -49,6 +49,8 @@ fi
 # of Emacs (the check above covers its members, which are the archive's)
 if ! printf '%s\n' "$def" | grep -qx sja_call; then
   echo "nm-check: libnhglue.a does not define sja_call (Sjá's entry point; glitnir's pub use sja::abi::sja_call)"
+  echo "nm-check: $(printf '%s\n' "$def" | grep -c .) defined names read; nm's lines naming sja_call:"
+  nm -P -g "$lib" 2>&1 | grep -F sja_call | head -n 5 | sed 's/^/  /'
   bad=1
 fi
 
