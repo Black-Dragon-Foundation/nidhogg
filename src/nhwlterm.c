@@ -1000,14 +1000,27 @@ static struct redisplay_interface nhwl_redisplay_interface = {
 			    Frame windows
  ***********************************************************************/
 
-/* The scale of frame F's window as a factor (1.0 until the compositor
-   says); the display's resolution is 96 times the display's scale.  */
+/* The scale frame F starts at, times 120: its parent's, else the selected
+   frame's (where the user works), else the newest the display heard.  */
+static uint32_t
+nhwl_start_scale (struct frame *f)
+{
+  struct frame *s = FRAME_PARENT_FRAME (f) ? FRAME_PARENT_FRAME (f) : SELECTED_FRAME ();
+
+  if (s != f && FRAME_NHWL_P (s) && FRAME_DISPLAY_INFO (s) == FRAME_DISPLAY_INFO (f)
+      && FRAME_NHWL_OUTPUT (s)->scale120)
+    return FRAME_NHWL_OUTPUT (s)->scale120;
+  return FRAME_DISPLAY_INFO (f)->scale120 ? FRAME_DISPLAY_INFO (f)->scale120 : 120;
+}
+
+/* The scale of frame F's window as a factor (the one it starts at until
+   the compositor says).  */
 static double
 nhwl_frame_scale (struct frame *f)
 {
   uint32_t s120 = FRAME_NHWL_OUTPUT (f)->scale120;
 
-  return (s120 ? s120 : 120) / 120.0;
+  return (s120 ? s120 : nhwl_start_scale (f)) / 120.0;
 }
 
 double
@@ -1142,7 +1155,7 @@ nhwl_create_frame_window (struct frame *f)
     encoded = ENCODE_UTF_8 (title);
 
   memset (&desc, 0, sizeof desc);
-  out->scale120 = dpyinfo->scale120 ? dpyinfo->scale120 : 120;
+  out->scale120 = nhwl_start_scale (f);
   desc.w = max (1, nhwl_to_logical (FRAME_PIXEL_WIDTH (f), out->scale120));
   desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
   desc.title = STRINGP (encoded) ? SSDATA (encoded) : "";
@@ -1150,11 +1163,6 @@ nhwl_create_frame_window (struct frame *f)
   desc.flags = FRAME_UNDECORATED (f) ? NHG_WIN_UNDECORATED : 0;
   if (nhwl_child_p (f))
     {
-      /* A child frame starts at its parent's scale.  */
-      out->scale120 = FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f))->scale120
-	? FRAME_NHWL_OUTPUT (FRAME_PARENT_FRAME (f))->scale120 : out->scale120;
-      desc.w = max (1, nhwl_to_logical (FRAME_PIXEL_WIDTH (f), out->scale120));
-      desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
       /* The surface starts its shadow margin before the native area; the
 	 glue places it in the parent's surface (logical pixels).  */
       desc.kind = NHG_KIND_CHILD;

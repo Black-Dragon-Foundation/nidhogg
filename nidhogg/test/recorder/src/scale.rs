@@ -24,7 +24,9 @@ delegate_fractional_scale!(State);
 delegate_viewporter!(State);
 
 /// `{"cmd":"scale","value120":N}`: `preferred_scale(N)` to every fractional-scale object, `preferred_buffer_scale`
-/// and `wl_output.scale` (+ `done`) with the ceiling of N/120.
+/// and `wl_output.scale` (+ `done`) with the ceiling of N/120.  With `"surface"` (an id or "toplevel"): only that
+/// surface's `preferred_scale` and `preferred_buffer_scale`, as a compositor tells a window on another monitor; the
+/// outputs keep theirs.
 pub fn scale(state: &mut State, req: &Value) -> Value {
     let Some(n) = req
         .get("value120")
@@ -33,6 +35,18 @@ pub fn scale(state: &mut State, req: &Value) -> Value {
     else {
         return err("\"value120\" must be a positive integer");
     };
+    if let Some(v) = req.get("surface") {
+        let surface = match crate::input::find_surface(state, v) {
+            Ok(s) => s,
+            Err(e) => return err(e),
+        };
+        let ceil = (n as u32).div_ceil(120) as i32;
+        with_states(&surface, |s| {
+            with_fractional_scale(s, |f| f.set_preferred_scale(n as f64 / 120.0));
+            compositor::send_surface_state(&surface, s, ceil, Transform::Normal);
+        });
+        return json!({"ok": true});
+    }
     state.scale120 = n as u32;
     let ceil = (n as u32).div_ceil(120) as i32;
     state.surfaces.retain(|s| s.is_alive());

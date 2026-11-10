@@ -233,6 +233,13 @@ on a Nidhogg frame of the native shell, under a headless sway, or the compositor
 - CI job `native-gui` (below) runs the fedora-45 tarball, every file at scales 1 and 2 and the native shell's rows on each
   compositor.
 
+## Scales and fonts on the native shell
+
+On the native shell a Lisp pixel is a device pixel, and each frame has its own scale: `(frame-scale-factor)` is the
+exact fractional scale the compositor gave the frame's window (1.25, 4/3, 2). A new frame starts at its parent's scale,
+else the selected frame's, until the compositor says otherwise; `frame-monitor-attributes` reports the fractional
+scale of the monitor a frame is on (learnt from a window alone on it; `wl_output` gives only its ceiling). The rows are in `test/src/nidhogg-tests/nhwl-gui-scale-tests.el`.
+
 ## The test clock
 
 A test that waits for time spends real time and races the machine it runs on. The test clock replaces both: a
