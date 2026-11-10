@@ -920,7 +920,10 @@ impl ShellBackend for MacShell {
                 continue;
             }
             let start = now_ns();
-            match s.draw(f, &damage, start) {
+            let fill = surface::Timed::start(&surface::STATS.fill_ns);
+            let drew = s.draw(f, &damage, start);
+            drop(fill);
+            match drew {
                 Some(surface::Drew::Drawn) => {
                     // `glitnir-stats`: one entry per drawing a layer shows (Core Animation composes; no compose time)
                     let px = damage

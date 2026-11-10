@@ -994,6 +994,51 @@ with a sign test."
     (should (file-exists-p file))
     (kill-buffer)))
 
+;; Where the paired row's time goes (the M1 gate's paired timing): the same 50 keys, each split into the command and
+;; the redisplay, and on Naglfar the redisplay's shell stages from `nhmac-stats' (painting the draw records, filling
+;; the surfaces, committing and flushing the layer transaction); the rest of the redisplay is C and the glue.
+(defun nhmac-gui--median (xs)
+  "The median of the numbers XS."
+  (let ((v (vconcat (sort (copy-sequence xs) #'<)))) (aref v (/ (length v) 2))))
+
+(ert-deftest nhmac-pair-stages ()
+  "The paired row's keys split by stage, medians in microseconds, written to GLITNIR_GUI_OUT/stages-BUILD.txt.
+It measures; it asserts only that it ran."
+  (let* ((naglfar (not (nhmac-gui--ns-build-p)))
+         (build (if naglfar "naglfar" "ns"))
+         (file (expand-file-name (format "stages-%s.txt" build)
+                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+         (us (lambda (a b) (/ (- b a) 1000.0)))
+         cmd redisp paint fill commit)
+    (switch-to-buffer (generate-new-buffer " *nhmac-pair*"))
+    (insert "paired timing")
+    (redisplay t)
+    (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
+    (dotimes (_ 50)
+      (let* ((s0 (and naglfar (nhmac-stats))) (t0 (float-time)))
+        (execute-kbd-macro "x")
+        (let ((t1 (float-time)))
+          (redisplay)
+          (let ((t2 (float-time)))
+            (push (* 1e6 (- t1 t0)) cmd)
+            (push (* 1e6 (- t2 t1)) redisp)
+            (when naglfar
+              (let ((s1 (nhmac-stats)))
+                (push (funcall us (plist-get s0 :paint-ns) (plist-get s1 :paint-ns)) paint)
+                (push (funcall us (plist-get s0 :fill-ns) (plist-get s1 :fill-ns)) fill)
+                (push (funcall us (plist-get s0 :commit-ns) (plist-get s1 :commit-ns)) commit)))))))
+    (let ((line (if naglfar
+                    (format "%s: command %.0f redisplay %.0f (paint %.0f fill %.0f commit %.0f, the rest %.0f) us"
+                            build (nhmac-gui--median cmd) (nhmac-gui--median redisp) (nhmac-gui--median paint)
+                            (nhmac-gui--median fill) (nhmac-gui--median commit)
+                            (nhmac-gui--median (cl-mapcar (lambda (r p f c) (- r p f c)) redisp paint fill commit)))
+                  (format "%s: command %.0f redisplay %.0f us" build (nhmac-gui--median cmd)
+                          (nhmac-gui--median redisp)))))
+      (nhmac-gui--say "nhmac-pair-stages: %s" line)
+      (write-region (concat line "\n") nil file t 'silent))
+    (kill-buffer)
+    (should (file-exists-p file))))
+
 ;; Draw records painted with Core Graphics
 (defun nhmac-gui--pixel-at (x y)
   "The committed surface's premultiplied ARGB at device pixel X, Y of the selected frame, once the commit pacer holds

@@ -51,8 +51,11 @@ pub fn transaction<R>(f: impl FnOnce() -> R) -> R {
     CATransaction::begin();
     CATransaction::setDisableActions(true);
     let r = f();
-    CATransaction::commit();
-    CATransaction::flush();
+    {
+        let _t = super::surface::Timed::start(&super::surface::STATS.commit_ns);
+        CATransaction::commit();
+        CATransaction::flush();
+    }
     IMPLICIT.with(|i| i.set(false));
     if STATS.commits.fetch_add(1, Ordering::Relaxed) == 0 {
         crate::trace::note(|| "first commit".into());
