@@ -1000,10 +1000,16 @@ default_pixels_per_inch_y (void)
 
 #ifdef HAVE_WINDOW_SYSTEM
 
+#ifdef HAVE_NHWL
+/* Each frame has its own: its scale and its text zoom (nhwlterm.c).  */
+#define FRAME_RES_X(f) (eassert (FRAME_WINDOW_P (f)), nhwl_frame_res (f))
+#define FRAME_RES_Y(f) FRAME_RES_X (f)
+#else
 #define FRAME_RES_X(f)						\
   (eassert (FRAME_WINDOW_P (f)), FRAME_DISPLAY_INFO (f)->resx)
 #define FRAME_RES_Y(f)						\
   (eassert (FRAME_WINDOW_P (f)), FRAME_DISPLAY_INFO (f)->resy)
+#endif
 
 #ifdef HAVE_ANDROID
 
