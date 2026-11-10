@@ -34,7 +34,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #endif
 
 /* True when the :box plist entry KEY VALUE is one of Glitnir's decoration keys
-   (:corner-radius, :open, :label) with a valid value.  Built on every Glitnir
+   (:corner-radius, :open, :label, :fit) with a valid value.  Built on every Glitnir
    build, so the other displays accept the keys (and ignore them).  */
 
 bool
@@ -54,6 +54,8 @@ glitnir_box_key_ok (Lisp_Object key, Lisp_Object value)
     }
   if (EQ (key, QClabel))
     return STRINGP (value);
+  if (EQ (key, QCfit))
+    return EQ (value, Qtext);
   return false;
 }
 
@@ -592,6 +594,9 @@ syms_of_nidhogg_glitnir (void)
 {
   DEFSYM (QCcorner_radius, ":corner-radius");
   DEFSYM (QCopen, ":open");
+  /* :fit text: the box hugs the text's height (the font's ascent and
+     descent), not the row's, which `line-spacing' may make taller.  */
+  DEFSYM (QCfit, ":fit");
 
   defsubr (&Sglitnir__probe);
   defsubr (&Sglitnir__decor_bench);

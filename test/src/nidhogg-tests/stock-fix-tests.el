@@ -32,6 +32,7 @@ itself multiplies the printed size of a command that holds the map (about ten
 times each: with ten of them, printing the release's command, as a command
 recorder or `view-lossage' prints `this-command', made 700 MB and the session
 was killed for its memory).  So the prefixes reach the map through a symbol."
+  (skip-unless (featurep 'glitnir))     ; the fix is Glitnir's Lisp (lisp/glitnir.el); mouse.el is upstream's
   (let ((overriding-terminal-local-map nil)
         (track-mouse nil)
         (pre-command-hook nil)

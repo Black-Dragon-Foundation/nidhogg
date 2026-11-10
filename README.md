@@ -148,7 +148,15 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   Glitnir's decorations off and nothing else. `glitnir-reduced-motion-p` is non-nil when Glitnir turns child-frame
   transitions off (`glitnir-reduced-motion` t, or `auto` while the desktop asks for reduced motion). With the flag, an empty echo area whose minibuffer remaps `default`
   (drgnx's look puts the echo area on the gap between cards) draws in that face; stock Emacs blanks it in the frame's
-  background. Emacs draws each frame into its own backing and publishes the damage, the
+  background. With the flag, `nidhogg-echo-prompt` is `prompt` while C shows a prompt in the echo area (`read-char`,
+  `read-event`, `read-char-exclusive`, `read-key-sequence`, and the `interactive` codes that read with them), `keys`
+  while the keys typed so far echo, and nil for `message`: a `set-message-function` that sends messages elsewhere keeps
+  prompts where the user looks. With the flag, `lisp/nidhogg-frame.el` makes the first frame with its minibuffer in a
+  child frame when early-init.el asks for one (`(minibuffer . child-frame)` under the window system's entry of
+  `window-system-default-frame-alist`): stock Emacs makes it with a minibuffer of its own and, after init, deletes it
+  and makes it again once it is visible. The minibuffer frame C makes for the first frame to borrow from while it is
+  made is invisible and goes once the box is there; the box starts hidden. Asked for nothing, the first frame is as in
+  stock Emacs. Emacs draws each frame into its own backing and publishes the damage, the
   copied pixels and the scene per tree (a root and its child frames); the presenter, one thread per display
   (`NHWL_PRESENTER=0` runs it inline), composes and commits. Child frames are subsurfaces of their parent, so the Wayland
   compositor puts the tree together.
@@ -1097,6 +1105,13 @@ a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the syn
   first auto-save after the 20 minutes writes it). Test primitives: `nidhogg-workers--test-keyboard-auto-save`,
   `--test-save-await`, `--test-save-jobs`, `--test-save-age`, `--test-save-encode`, `nidhogg-workers--save-unnamed`
   and the `before-write` pause point.
+- Buffer hashes (`src/nidhogg-blk.c`, on `nh-save`): `(nidhogg-buffer-sha256 BUFFER)` returns the SHA-256 of BUFFER's whole
+  text in hex, and `(nidhogg-buffer-sha256-async BUFFER CALLBACK)` copies the text (a memcpy around the gap, about 5 ms at
+  20 MB) and hashes the copy on a worker, calling `(CALLBACK HASH)` at the next timer check, whatever happens to the buffer
+  meanwhile; with the workers off, or the job refused, it runs the same job on the main thread and calls CALLBACK before it
+  returns. Both hash the bytes `secure-hash` hashes of the buffer with `coding-system-for-write` `utf-8-unix` (narrowing
+  ignored; a raw byte is one byte; a unibyte buffer's bytes are themselves). drgnx's edit history sends the hash with
+  every batch. Test files: `workers-hash-tests`, with the `before-done` pause point.
 - Host-name lookups (`src/nidhogg-blk.c`, `nh-blk` class `dns`): with `nidhogg-workers-dns` on,
   `make-network-process` with `:nowait` runs `getaddrinfo` with the same hints on a worker on every platform, in place
   of glibc's `getaddrinfo_a` (and of the synchronous lookup where that is missing: macOS, Android, musl). The wait loop
@@ -1177,8 +1192,9 @@ selection follows a link or walks a list the hub sent, with no round trip and no
 - Files: `src/nidhogg-views.c`, one DEFUN, `nidhogg-view--call (OP &rest ARGS)`: up to 16 arguments, each nil, a fixnum
   or a string; the answer is built from Sjá's tokens (ints, multibyte strings, lists, vectors). A bad argument signals
   `args-out-of-range`; a panic inside Sjá answers `resync` for that view (its model is dropped), and two within a minute
-  mark it broken until it is reopened. `lisp/nidhogg-views.el` holds the thin functions: `nidhogg-view-apply`, `-open`,
-  `-close`, `-follow`, `-walk`, `-walk-to`, `-set`, `-get`, `-hub-lost`, `-stats`. The feature is `nidhogg-views`.
+  mark it broken until it is reopened. `lisp/nidhogg-views.el` holds the thin functions: `nidhogg-view-push` (a hub's
+  whole `view-model` line), `-drain`, `-named`, `-due`, `-open`, `-close`, `-follow`, `-walk`, `-walk-to`, `-set`, `-get`,
+  `-hub-lost`, `-stats`; a model comes only as the hub's line. The feature is `nidhogg-views`.
 - Caps: 200,000 nodes, 400,000 edges, 64 lists, 4 KiB per value, 32 MiB in all; a patch past them answers `too-large`.
 - Tests: `test/src/nidhogg-tests/sja-tests.el` (pure; in `check-subset.txt`); the panic row needs a build with Sjá's
   test hooks and skips without them. The model's own tests are Sjá's (`nidhogg/sja/check.sh`).
