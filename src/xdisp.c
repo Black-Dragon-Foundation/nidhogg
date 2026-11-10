@@ -4935,8 +4935,8 @@ glitnir_box_differs (struct face *face, struct face *other)
   bool colour_differs = face->box_color != other->box_color;
   return kind_differs || colour_differs;
 }
-#endif
 
+#endif
 /* Set up iterator IT from face properties at its current position.
    Called from handle_stop.  */
 static enum prop_handled
