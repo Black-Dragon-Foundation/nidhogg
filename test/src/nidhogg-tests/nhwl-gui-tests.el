@@ -2983,3 +2983,34 @@ see the `default' they started with."
       (should (equal (nhwl-gui--default-font-state) before)))))
 
 (provide 'nhwl-gui-tests)
+
+(ert-deftest nhwl-gui/scale-change-keeps-the-window-size ()
+  "The lane's scale to its double (or half) and back: the window keeps its size on the screen (its device pixels over
+the scale, within a pixel) and the text follows: the default font re-opens at the new scale's device size.  A font
+re-opened for a scale never resizes the window the compositor sized."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((lane (round (* 120 (glitnir-gui--scale)))) (other (if (= lane 120) 240 120))
+         (logical (lambda () (list (/ (frame-pixel-width) (frame-scale-factor))
+                                   (/ (frame-pixel-height) (frame-scale-factor)))))
+         (font-px (lambda () (font-get (face-attribute 'default :font) :size)))
+         (want-px (lambda () (floor (+ (/ (* (/ (face-attribute 'default :height nil t) 10.0) (nidhogg-scale--dpi nil))
+                                          72.0)
+                                       0.5))))
+         (before (funcall logical)) mid)
+    (gui-runner-keeping-frame-font
+      (unwind-protect
+          (progn
+            (gui-runner-recorder `(:cmd "scale" :value120 ,other))
+            (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) (/ other 120.0)))
+                                    5))
+            (dotimes (_ 5) (nhwl-gui--pump) (redisplay t))
+            (setq mid (list (funcall logical) (funcall font-px) (funcall want-px))))
+        (gui-runner-recorder `(:cmd "scale" :value120 ,lane))
+        (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-scale-factor) (/ lane 120.0))) 5)
+        (nhwl-gui--windowed)))
+    (glitnir-gui--say "scale-change-keeps-the-window-size: at %d %S logical px; at %d %S logical px, font %d px (want %d)"
+                      lane before other (nth 0 mid) (nth 1 mid) (nth 2 mid))
+    (should (<= (abs (- (nth 0 (nth 0 mid)) (nth 0 before))) 1))
+    (should (<= (abs (- (nth 1 (nth 0 mid)) (nth 1 before))) 1))
+    (should (= (nth 1 mid) (nth 2 mid)))))
+
