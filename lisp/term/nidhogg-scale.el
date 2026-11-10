@@ -109,7 +109,10 @@ screen); other types go to `dynamic-setting-handle-config-changed-event'."
           ;; the window keeps its size on the screen, which the compositor or AppKit
           ;; already gave it at the new scale: the text follows, never the window
           (let ((frame-inhibit-implied-resize t))
-            (nidhogg-scale--reopen frame (nidhogg-scale--height frame (cdr type)))))
+            (nidhogg-scale--reopen frame (nidhogg-scale--height frame (cdr type)))
+            ;; a menu bar Emacs draws re-measures its height at redisplay, which
+            ;; would grow the frame by the change: that happens here, under the rule
+            (redisplay t)))
       (when (fboundp 'dynamic-setting-handle-config-changed-event)
         (dynamic-setting-handle-config-changed-event event)))))
 
