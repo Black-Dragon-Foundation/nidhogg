@@ -51,6 +51,8 @@ struct box_keys
 {
   double radius;
   bool open_top, open_bottom, open_left, open_right;
+  /* :fit text: the box is as tall as the text, not the row.  */
+  bool fit_text;
 };
 
 /* Read the decoration keys of face FACE's :box plist.  True when it has
@@ -76,8 +78,10 @@ box_keys (struct face *face, struct box_keys *k)
 	    k->open_left |= EQ (o, Qleft);
 	    k->open_right |= EQ (o, Qright);
 	  }
+      else if (EQ (key, QCfit))
+	k->fit_text = EQ (val, Qtext);
     }
-  return k->radius > 0
+  return k->radius > 0 || k->fit_text
 	 || k->open_top || k->open_bottom || k->open_left || k->open_right;
 }
 
@@ -367,6 +371,16 @@ glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
 
   if (!nhwl_glitnir_active_p (f) || !box_keys (s->face, &k))
     return false;
+
+  /* :fit text: from the font's ascent above the baseline to its descent
+     below, the box's own lines outside that when they are drawn outside;
+     never more than the row.  */
+  if (k.fit_text && s->font)
+    {
+      int line = max (s->face->box_horizontal_line_width, 0);
+      top_y = max (top_y, s->ybase - FONT_BASE (s->font) - line);
+      bottom_y = min (bottom_y, s->ybase + FONT_DESCENT (s->font) + line - 1);
+    }
 
   cairo_t *cr = nhwl_begin_cr_clip (f);
   double sx = 1, sy = 1;
