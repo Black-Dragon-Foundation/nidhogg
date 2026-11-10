@@ -60,12 +60,18 @@ pub struct Monitors {
 }
 
 impl Monitors {
-    /// Add the output `m.id`, or replace it.  False when the list is full and `m` is new.
+    /// Add the output `m.id`, or replace it.  False when the list is full and `m` is new.  A fractional scale learnt
+    /// for the output stays while the output's integer scale is still its ceiling.
     pub fn set(&mut self, m: &NhgMonitor) -> bool {
         let mut m = *m;
         m.name[m.name.len() - 1] = 0;
         match self.list.iter().position(|o| o.id == m.id) {
-            Some(i) => self.list[i] = m,
+            Some(i) => {
+                if self.list[i].scale120.div_ceil(120) * 120 == m.scale120 {
+                    m.scale120 = self.list[i].scale120;
+                }
+                self.list[i] = m
+            }
             None if self.list.len() == MAX_OUTPUTS => return false,
             None => self.list.push(m),
         }
@@ -73,6 +79,18 @@ impl Monitors {
             self.scale120 = m.scale120;
         }
         true
+    }
+
+    /// A window alone on output `id` was given the scale `s120`: that is the output's own (`wl_output.scale` only
+    /// gives its ceiling), when the ceilings agree.  True when the output's scale changed.
+    pub fn learn(&mut self, id: u64, s120: u32) -> bool {
+        match self.list.iter_mut().find(|o| o.id == id) {
+            Some(o) if o.scale120 != s120 && o.scale120.div_ceil(120) == s120.div_ceil(120) => {
+                o.scale120 = s120;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Drop the output `id`.  False when it was not there.

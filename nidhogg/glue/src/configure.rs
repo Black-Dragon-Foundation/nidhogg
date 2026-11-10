@@ -77,6 +77,7 @@ pub fn scale(state: &mut Display, ev: &Record, s: &ScaleEv) {
     a.code = s as i32;
     a.scale = f64::from(s) / 120.0;
     state.actions.push(a);
+    crate::monitors::learn(state, ev);
 }
 
 /// Record `window`'s due ack with the shell, if it has one.  The shell sends it with the commit that carries it and

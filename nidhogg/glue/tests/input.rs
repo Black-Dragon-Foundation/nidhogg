@@ -517,4 +517,32 @@ mod monitors {
         );
         close(d);
     }
+
+    /// An output keeps the fractional scale its one window was given, whichever comes first: the window's scale or
+    /// the output's new integer one (the recorder sends the window's first).
+    #[test]
+    fn output_scale_learnt_in_either_order() {
+        let rec = Recorder::start("mutter");
+        let d = open(&rec);
+        let id = ready(&rec, d);
+        let first = list_monitors(d)[0];
+        rec.control_ok(&format!(
+            r#"{{"cmd":"output","op":"enter","name":"{}","surface":{id}}}"#,
+            name_of(&first)
+        ));
+        let scale_now = |d| list_monitors(d)[0].scale120;
+        for want in [150, 120, 150, 160] {
+            rec.control_ok(&format!(r#"{{"cmd":"scale","value120":{want}}}"#));
+            let end = Instant::now() + Duration::from_secs(5);
+            while scale_now(d) != want && Instant::now() < end {
+                backend(d).dispatch_main().unwrap();
+                step(d, 0);
+                // SAFETY: a live display.
+                readable_within(unsafe { nhg_fd(d) }, 50);
+            }
+            settle(d);
+            assert_eq!(scale_now(d), want);
+        }
+        close(d);
+    }
 }

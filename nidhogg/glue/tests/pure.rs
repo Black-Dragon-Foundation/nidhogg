@@ -196,6 +196,36 @@ mod monitors {
         assert_eq!(device_origin(0, -1080, 120), (0, -1080));
         assert_eq!(device_origin(0, -1, 180), (0, -2));
     }
+
+    /// A window's fractional scale is its output's when the ceilings agree; it stays through an `OUTPUT_CHANGE` that
+    /// still reports its ceiling, and goes when the integer scale changes.
+    #[test]
+    fn fractional_scale_learnt_from_a_window() {
+        use nhglue::query::{Monitors, NhgMonitor};
+        let m = |s120| NhgMonitor {
+            id: 7,
+            x: 0,
+            y: 0,
+            w: 2880,
+            h: 1800,
+            mm_w: 0,
+            mm_h: 0,
+            scale120: s120,
+            name: [0; 32],
+        };
+        let mut ms = Monitors::default();
+        assert!(ms.set(&m(240)));
+        assert!(!ms.learn(7, 360), "1.25's ceiling is 2, not 3");
+        assert!(!ms.learn(8, 150), "no such output");
+        assert!(ms.learn(7, 150));
+        assert!(!ms.learn(7, 150), "no change");
+        assert_eq!(ms.all()[0].scale120, 150);
+        assert!(ms.set(&m(240)));
+        assert_eq!(ms.all()[0].scale120, 150, "the ceiling again keeps 1.25");
+        assert!(ms.learn(7, 160));
+        assert!(ms.set(&m(120)));
+        assert_eq!(ms.all()[0].scale120, 120, "a new integer scale replaces it");
+    }
 }
 
 mod stacking {
