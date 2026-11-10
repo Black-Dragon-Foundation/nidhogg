@@ -61,6 +61,14 @@ pub struct Shown {
     frame: Option<(f64, f64, f64, f64)>,
 }
 
+impl Shown {
+    /// Whether the shadow image shown stretches (one image for every size); `None` without one.  For tests.
+    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+    pub fn stretches(&self) -> Option<bool> {
+        self.image.map(|(_, size)| size.is_none())
+    }
+}
+
 /// One CGImage of `img`'s pixels (+1, the caller releases it); null on failure.
 fn cg_image(img: &ShadowImage) -> CFRef {
     argb_image(&img.argb, img.w, img.h)
