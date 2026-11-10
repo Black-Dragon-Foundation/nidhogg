@@ -1,14 +1,14 @@
 {
   "list": "order",
   "ids": [
-    "f:/r/a.txt",
-    "m:/r/a.txt:1:2",
-    "m:/r/a.txt:5:0",
-    "f:/r/b.txt",
-    "m:/r/b.txt:2:0",
-    "f:/r/c.txt",
-    "m:/r/c.txt:9:2",
-    "m:/r/c.txt:10:0"
+    "f:a.txt",
+    "m:a.txt:1:2",
+    "m:a.txt:5:0",
+    "f:b.txt",
+    "m:b.txt:2:0",
+    "f:c.txt",
+    "m:c.txt:9:2",
+    "m:c.txt:10:0"
   ],
   "steps": [
     {
@@ -41,7 +41,7 @@
               },
               "nodes": [
                 {
-                  "id": "f:/r/a.txt",
+                  "id": "f:a.txt",
                   "kind": "file",
                   "flags": 1,
                   "fields": [
@@ -56,18 +56,14 @@
                   ]
                 },
                 {
-                  "id": "m:/r/a.txt:1:2",
+                  "id": "m:a.txt:1:2",
                   "kind": "match",
                   "flags": 0,
-                  "parent": "f:/r/a.txt",
+                  "parent": "f:a.txt",
                   "fields": [
                     [
                       "label",
                       "x needle y"
-                    ],
-                    [
-                      "file",
-                      "/r/a.txt"
                     ],
                     [
                       "line",
@@ -88,18 +84,14 @@
                   ]
                 },
                 {
-                  "id": "m:/r/a.txt:5:0",
+                  "id": "m:a.txt:5:0",
                   "kind": "match",
                   "flags": 0,
-                  "parent": "f:/r/a.txt",
+                  "parent": "f:a.txt",
                   "fields": [
                     [
                       "label",
                       "needle"
-                    ],
-                    [
-                      "file",
-                      "/r/a.txt"
                     ],
                     [
                       "line",
@@ -125,9 +117,9 @@
                 {
                   "name": "order",
                   "ids": [
-                    "f:/r/a.txt",
-                    "m:/r/a.txt:1:2",
-                    "m:/r/a.txt:5:0"
+                    "f:a.txt",
+                    "m:a.txt:1:2",
+                    "m:a.txt:5:0"
                   ]
                 }
               ]
@@ -145,7 +137,7 @@
           {
             "nodes": [
               {
-                "id": "f:/r/b.txt",
+                "id": "f:b.txt",
                 "kind": "file",
                 "flags": 1,
                 "fields": [
@@ -160,18 +152,14 @@
                 ]
               },
               {
-                "id": "m:/r/b.txt:2:0",
+                "id": "m:b.txt:2:0",
                 "kind": "match",
                 "flags": 0,
-                "parent": "f:/r/b.txt",
+                "parent": "f:b.txt",
                 "fields": [
                   [
                     "label",
                     "needle z"
-                  ],
-                  [
-                    "file",
-                    "/r/b.txt"
                   ],
                   [
                     "line",
@@ -199,8 +187,8 @@
               "at": 3,
               "remove": 0,
               "ids": [
-                "f:/r/b.txt",
-                "m:/r/b.txt:2:0"
+                "f:b.txt",
+                "m:b.txt:2:0"
               ]
             }
           }
@@ -216,7 +204,7 @@
           {
             "nodes": [
               {
-                "id": "f:/r/c.txt",
+                "id": "f:c.txt",
                 "kind": "file",
                 "flags": 1,
                 "fields": [
@@ -231,18 +219,14 @@
                 ]
               },
               {
-                "id": "m:/r/c.txt:10:0",
+                "id": "m:c.txt:10:0",
                 "kind": "match",
                 "flags": 0,
-                "parent": "f:/r/c.txt",
+                "parent": "f:c.txt",
                 "fields": [
                   [
                     "label",
                     "needleq"
-                  ],
-                  [
-                    "file",
-                    "/r/c.txt"
                   ],
                   [
                     "line",
@@ -263,18 +247,14 @@
                 ]
               },
               {
-                "id": "m:/r/c.txt:9:2",
+                "id": "m:c.txt:9:2",
                 "kind": "match",
                 "flags": 0,
-                "parent": "f:/r/c.txt",
+                "parent": "f:c.txt",
                 "fields": [
                   [
                     "label",
                     "p needle"
-                  ],
-                  [
-                    "file",
-                    "/r/c.txt"
                   ],
                   [
                     "line",
@@ -302,9 +282,9 @@
               "at": 5,
               "remove": 0,
               "ids": [
-                "f:/r/c.txt",
-                "m:/r/c.txt:9:2",
-                "m:/r/c.txt:10:0"
+                "f:c.txt",
+                "m:c.txt:9:2",
+                "m:c.txt:10:0"
               ]
             }
           }
