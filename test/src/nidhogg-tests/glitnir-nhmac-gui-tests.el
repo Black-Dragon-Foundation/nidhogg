@@ -576,9 +576,10 @@ not held, and the screen shows neither card row background (colours only the car
                                               (cl-incf n))))
                        (format "%d of %d" n seen))))
             (before (nhmac-stats)))
-        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: windows %S"
+        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: windows %S; own layers %S (nhwl-scroll-layers %S), glitnir--cards %S"
                         row (mapcar (lambda (w) (list (buffer-name (window-buffer w)) (window-pixel-edges w)))
-                                    (window-list nil 'never)))
+                                    (window-list nil 'never))
+                        (nhwl--scroll-layers) nhwl-scroll-layers (frame-parameter nil 'glitnir--cards))
         (nhmac-gui--say "glitnir-nhmac/clean-root: %s: %s sampled surface pixels are the card background"
                         row (funcall count))
         (redraw-frame)
@@ -620,6 +621,8 @@ width and colour."
           (force-window-update)
           (nhmac-gui--settle)
           (funcall fn left right))
+      (nhmac-gui--say "glitnir-nhmac/with-cards: %s ends with %S own layers"
+                      (ert-test-name (ert-running-test)) (nhwl--scroll-layers))
       (when (window-live-p left)
         (dolist (k '(corner-radius shadow ring)) (set-window-parameter left k nil)))
       (set-window-configuration conf)
