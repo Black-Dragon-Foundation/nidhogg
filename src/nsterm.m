@@ -9195,9 +9195,6 @@ static void cancel_ns_deferred_UAZoomChangeFocus_timer ()
       clear_mouse_face (hlinfo);
       hlinfo->mouse_face_mouse_frame = 0;
     }
-#ifdef HAVE_GLITNIR
-  note_mouse_sensor_leave (emacsframe);
-#endif
 }
 
 

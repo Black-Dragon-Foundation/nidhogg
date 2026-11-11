@@ -1232,11 +1232,10 @@ with unsaved changes, which becomes × to close it, as VS Code's does). Mouse se
   error is reported in a message, never raised. POS is the buffer position; in an overlay or display string, its row's
   start.
 - Leaving: moving off a window's text (a mode line, a fringe, another window, nothing) leaves the run, and each shell's
-  leave handler calls `note_mouse_sensor_leave` (Wayland: `nhwl_leave_apply`; the NS port: `mouseExited:`; Naglfar:
-  its mouse-exited path, once it reports motion).
+  leave handler calls `note_mouse_sensor_leave` (Wayland: `nhwl_leave_apply`; Naglfar: its mouse-exited path, once it
+  reports motion).  The NS port is frozen until Naglfar replaces it: there, leaving the frame leaves no run.
 - Files: `src/xdisp.c` (`note_mouse_sensor`, the read in `note_mouse_highlight`, `nidhogg--note-mouse` for tests),
-  `src/keyboard.c` (the event, `run_mouse_sensor`), `src/termhooks.h`, `src/dispextern.h`, `src/nhwlterm.c`,
-  `src/nsterm.m`.
+  `src/keyboard.c` (the event, `run_mouse_sensor`), `src/termhooks.h`, `src/dispextern.h`, `src/nhwlterm.c`.
 - Tests: `test/src/nidhogg-tests/mouse-sensor-gui-tests.el` (order, leaving, off, a key sequence across a sensor, an
   error; `mouse-sensor-gui/motion-cost`, tagged `:timing`, measures the pointer's cost off and on).
 
