@@ -1564,7 +1564,11 @@ frame's text still reaches the surface."
                           (let ((p (nhmac-gui--pixel-at x y)))
                             (when (and p (< (logand (ash p -8) 255) 64))
                               (setq dark (list x y p))))))
-        (nhmac-gui--say "nhmac-font-open-close: a text pixel %S, stats %S" dark (nhmac-stats))
+        (nhmac-gui--say "nhmac-font-open-close: a text pixel %S; searched from %S, the first pixel %S, line 2 %S; stats %S"
+                        dark (list (nth 0 edges) y0) (nhmac-gui--pixel-at (nth 0 edges) y0)
+                        (save-excursion (goto-char (window-start)) (forward-line 1)
+                                        (buffer-substring-no-properties (point) (line-end-position)))
+                        (nhmac-stats))
         (should dark)))))
 
 ;; Images through ImageIO
@@ -1688,7 +1692,15 @@ on screen of each that NS decoded are within 2/255 of NS's in the same run (NS p
                       (mapcar (lambda (d) (format "%x" (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) d)
                                                                             (+ (nth 1 edges) (cdr xy) d))))
                               '(0 1 2 4 8 16)))
-      (should (= (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
+      ;; where the blue frame is drawn when it is not at its position: the frame's top left 48x128 pixels
+      (unless (eql (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)
+        (nhmac-gui--say "nhmac-images-native: the first blue pixel %S"
+                        (catch 'found
+                          (dotimes (y 64)
+                            (dotimes (x 24)
+                              (when (eql (nhmac-gui--pixel-at (* 2 x) (* 2 y)) #xff0000ff)
+                                (throw 'found (list (* 2 x) (* 2 y)))))))))
+      (should (=(nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
     (kill-buffer)))
 
 (defun nhmac-gui--image-screen (file &optional worker)
@@ -2503,7 +2515,7 @@ reported and skipped; one NS has and Naglfar does not is a failure."
             (message "nhmac-font-metrics-parity: %s is not on this machine (NS), skipped" family)
           (let ((got (nhmac-gui--font-facts family height (cdr (assoc family nhmac-gui--parity-fonts)))))
             (cl-incf compared)
-            (message "nhmac-font-metrics-parity: %s %d: NS %S, Naglfar %S" family height want got)
+            (nhmac-gui--say "nhmac-font-metrics-parity: %s %d: NS %S, Naglfar %S" family height want got)
             (unless (and got
                          (nhmac-gui--near (plist-get want :info) (plist-get got :info) scale)
                          (equal (mapcar #'car (plist-get want :glyphs)) (mapcar #'car (plist-get got :glyphs)))
@@ -2512,7 +2524,7 @@ reported and skipped; one NS has and Naglfar does not is a failure."
                          ;; the underline is captured in device pixels on both
                          (or (= scale 2) (equal (plist-get want :underline) (plist-get got :underline))))
               (push (list family height) bad))))))
-    (message "nhmac-font-metrics-parity: %d compared, differ: %S" compared bad)
+    (nhmac-gui--say "nhmac-font-metrics-parity: %d compared, differ: %S" compared bad)
     (should (> compared 0))
     (should-not bad)))
 
@@ -2539,7 +2551,7 @@ families as on NS."
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((ns (nhmac-gui--lane-read "font-fallback"))
         (mine (nhmac-gui--fallback-facts)))
-    (message "nhmac-font-fallback-same: NS %S, Naglfar %S" ns mine)
+    (nhmac-gui--say "nhmac-font-fallback-same: NS %S, Naglfar %S" ns mine)
     (should (cl-every #'cadr mine))
     (should (equal mine ns))))
 
@@ -2555,6 +2567,8 @@ families as on NS."
        (nhmac-gui--with-text 'default text
          (let* ((font (font-at (point)))
                 (g (font-shape-gstring (composition-get-gstring 0 (length text) font text) (cdr td))))
+           (nhmac-gui--say "nhmac-font-shaping: %s: font %S, pixel size %S, default face font %S" (cdr td)
+                           (font-xlfd-name font) (font-get font :size) (face-font 'default))
            (list (symbol-name (font-get font :family))
                  (and g
                       (cl-loop for i from 0 below (lgstring-glyph-len g)
@@ -2573,7 +2587,7 @@ families as on NS."
   (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
         (ns (nhmac-gui--lane-read "font-shaping"))
         (mine (nhmac-gui--shaping-facts)))
-    (message "nhmac-font-shaping: NS %S, Naglfar %S" ns mine)
+    (nhmac-gui--say "nhmac-font-shaping: NS %S, Naglfar %S" ns mine)
     (should (cl-every #'cadr mine))
     (cl-loop for (nf nglyphs) in ns
              for (mf mglyphs) in mine
