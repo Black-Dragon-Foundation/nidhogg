@@ -251,5 +251,33 @@ monitor is the new one."
        (gui-runner-recorder '(:cmd "output" :op "leave" :name "nh-1" :surface "toplevel"))
        (nhwl-gui--pump)))))
 
+;;;; A full-screen frame whose output changes scale
+
+(defun nhwl-gui-scale--fill (s120 w h)
+  "Full screen at S120 on a W x H output (device pixels): the compositor's configure with the output's logical size
+first, then the scale, as mutter sends a display settings change.  Return (S120 WIDTH HEIGHT) once the frame fills
+the output, else as it is."
+  (gui-runner-recorder (list :cmd "configure" :surface "focused"
+                             :size (vector (round (* w 120) s120) (round (* h 120) s120))
+                             :states ["fullscreen" "activated"]))
+  (nhwl-gui-scale--set s120)
+  (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-pixel-width) w)) 5)
+  (list s120 (frame-pixel-width) (frame-pixel-height)))
+
+(ert-deftest nhwl-gui/fullscreen-fills-the-output-across-a-scale-change ()
+  "A full-screen frame whose output goes 1.25 → 1 → 2 → 1.25 fills the output in device pixels at each step: the
+new logical size at the new scale, not at the old one (it was 3600x2250 at 1 after 1.25 on a 2880x1800 output, and a
+full-screen frame keeps the compositor's size, so the scale change did not correct it)."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((size (mapcar #'string-to-number (split-string (getenv "GLITNIR_GUI_SIZE") "x")))
+         (w (car size)) (h (cadr size)) got)
+    (nhwl-gui-scale--keeping
+      (set-frame-parameter nil 'fullscreen 'fullboth)
+      (dolist (s '(150 120 240 150))
+        (push (nhwl-gui-scale--fill s w h) got)))
+    ;; full screen again at the lane's scale, as the runner started it
+    (nhwl-gui-scale--fill (round (* 120 (glitnir-gui--scale))) w h)
+    (should-not (seq-remove (lambda (r) (equal (cdr r) (list w h))) (nreverse got)))))
+
 (provide 'nhwl-gui-scale-tests)
 ;;; nhwl-gui-scale-tests.el ends here

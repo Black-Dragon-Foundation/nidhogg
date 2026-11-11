@@ -2495,9 +2495,34 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
   nhwl_res_changed (f, was);
   nhwl_csd_layout (f);
 #ifdef NHWL_WAYLAND
+  /* A maximized, fullscreen or tiled window has the compositor's size,
+     which nhwl_set_window_size leaves alone: it takes the last
+     configure's logical size at the new scale instead.  The compositor
+     sends that configure before the scale when an output changes scale
+     (mutter does), and it was fitted at the old one.  */
   if (old && old != scale120)
-    nhwl_set_window_size (f, false, (int) (((int64_t) lw * scale120 + 60) / 120),
-			  (int) (((int64_t) lh * scale120 + 60) / 120));
+    {
+      struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+      int dw, dh;
+
+      if (out->states & (NHG_STATE_MAXIMIZED | NHG_STATE_FULLSCREEN
+			 | NHG_STATE_TILED_L | NHG_STATE_TILED_R
+			 | NHG_STATE_TILED_T | NHG_STATE_TILED_B))
+	{
+	  if (nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+			    NHG (nhg_frame_fit (FRAME_NHG (f), out->window,
+						scale120, out->logical_w,
+						out->logical_h, out->states,
+						FRAME_PIXEL_WIDTH (f),
+						FRAME_PIXEL_HEIGHT (f),
+						NHG_FIT_UNDECORATED, &dw, &dh)))
+	      == 1)
+	    change_frame_size (f, dw, dh, false, true, false);
+	}
+      else
+	nhwl_set_window_size (f, false, (int) (((int64_t) lw * scale120 + 60) / 120),
+			      (int) (((int64_t) lh * scale120 + 60) / 120));
+    }
 #endif
   SET_FRAME_GARBAGED (f);
 }
