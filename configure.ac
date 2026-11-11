@@ -4103,7 +4103,7 @@ if test "${with_glitnir}" = yes; then
     dnl native-static-libs); Glitnir's chrome is Core Animation layers, not Cairo tiles
     if test "$HAVE_NHMAC" = yes; then
       GLITNIR_CARGO_FLAGS="--no-default-features --features macos"
-      NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o nhmacterm.o nhmacdraw.o nhmacfont.o"
+      NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o glitnir-decor.o nhmacterm.o nhmacdraw.o nhmacfont.o"
     fi
   fi
   GLITNIR_LIBNAME=$glitnir_lib
