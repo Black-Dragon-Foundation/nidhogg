@@ -31,7 +31,8 @@
   (let ((file (make-temp-file "nhmac-drop" nil ".txt" "dropped\n")))
     (save-window-excursion
       (nhmac-dnd--drop t file)
-      (let ((b (get-file-buffer file)))
+      ;; by its true name too (/private/var/... for a temporary file under /var)
+      (let ((b (find-buffer-visiting file)))
         (should b)
         (kill-buffer b)))))
 
