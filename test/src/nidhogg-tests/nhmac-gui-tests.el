@@ -2550,6 +2550,87 @@ its fallback fonts for nhmac-font-fallback-same; its shaping for nhmac-font-shap
     (nhmac-gui--lane-write "font-parity" facts)
     (should (cl-some (lambda (r) (nth 2 r)) facts))))
 
+;; The font oracle: NS's answers (macfont's) over a fixed corpus, recorded once (NS is frozen) as
+;; nidhogg/glue/tests/fixtures/ns-font-oracle.tsv, which the glue's macOS unit test `font_oracle' checks the Rust port
+;; against with no GUI.  This row writes it; a change to the corpus is recorded again from a run's NS lane.
+(defconst nhmac-gui--oracle-fonts
+  '(("Menlo" . "Hg.W|_~") ("Monaco" . "Hg.W") ("Courier" . "Hg.W") ("Courier New" . "Hg.W")
+    ("Helvetica" . "Hg.W") ("Helvetica Neue" . "Hg.W") ("Times" . "Hg.W") ("Lucida Grande" . "Hg.Wα")
+    ("PingFang SC" . "中文字。") ("Hiragino Sans" . "あア漢") ("Apple SD Gothic Neo" . "한글")
+    ("Apple Color Emoji" . "😀🐉") ("Geeza Pro" . "مرحبا") ("Kohinoor Devanagari" . "नमस्ते")
+    ("Thonburi" . "กขค") ("Arial Hebrew" . "אבג"))
+  "The oracle's fonts, each with the characters whose glyphs it records.")
+
+(defconst nhmac-gui--oracle-sizes '(10 12 13 16 24) "The pixel sizes the oracle opens each font at.")
+
+(defconst nhmac-gui--oracle-shaping
+  '(("Geeza Pro" "مرحبا بالعالم" R2L) ("Kohinoor Devanagari" "नमस्ते दुनिया" L2R)
+    ("Apple Color Emoji" "👩‍👩‍👧🇬🇧" L2R) ("Menlo" "é fi" L2R))
+  "The oracle's shaping runs: family, text (a string of characters, combining ones too) and direction.")
+
+(defun nhmac-gui--oracle-lines ()
+  "The font oracle's lines (tab-separated):
+  font FAMILY PX ASCENT DESCENT SPACE AVERAGE MAX OPENED-FAMILY  (or: missing FAMILY)
+  glyph FAMILY PX CHAR CODE WIDTH LBEARING RBEARING ASCENT DESCENT
+  shape FAMILY PX DIRECTION TEXT GLYPHS, GLYPHS each FROM,TO,CHAR,CODE,WIDTH,LBEARING,RBEARING,ASCENT,DESCENT,XOFF,
+        YOFF,WADJUST joined by ;
+  fallback CHAR FAMILY  (the frame's font Menlo 12)."
+  (let (out)
+    (dolist (f nhmac-gui--oracle-fonts)
+      (let ((ent (find-font (font-spec :family (car f) :registry 'iso10646-1))))
+        (if (null ent)
+            (push (format "missing\t%s" (car f)) out)
+          (dolist (px nhmac-gui--oracle-sizes)
+            (let* ((fo (open-font ent px)) (q (query-font fo)) (text (cdr f)))
+              (push (format "font\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s" (car f) px (aref q 4) (aref q 5) (aref q 6)
+                            (aref q 7) (aref q 3) (font-get fo :family))
+                    out)
+              (dotimes (i (length text))
+                (let ((g (aref (font-get-glyphs fo i (1+ i) text) 0)))
+                  (when g
+                    (push (format "glyph\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d" (car f) px (aref g 2) (aref g 3)
+                                  (aref g 4) (aref g 5) (aref g 6) (aref g 7) (aref g 8))
+                          out)))))))))
+    (dolist (sh nhmac-gui--oracle-shaping)
+      (let ((ent (find-font (font-spec :family (nth 0 sh) :registry 'iso10646-1))) (text (nth 1 sh)))
+        (when ent
+          (dolist (px '(12 24))
+            (let* ((fo (open-font ent px))
+                   (g (font-shape-gstring (composition-get-gstring 0 (length text) fo text) (nth 2 sh))))
+              (push (format "shape\t%s\t%d\t%s\t%s\t%s" (nth 0 sh) px (nth 2 sh)
+                            (mapconcat (lambda (c) (number-to-string c)) text ",")
+                            (if (null g) "nil"
+                              (mapconcat
+                               (lambda (gl)
+                                 (let ((adj (lglyph-adjustment gl)))
+                                   (mapconcat #'number-to-string
+                                              (list (lglyph-from gl) (lglyph-to gl) (lglyph-char gl) (lglyph-code gl)
+                                                    (lglyph-width gl) (lglyph-lbearing gl) (lglyph-rbearing gl)
+                                                    (lglyph-ascent gl) (lglyph-descent gl)
+                                                    (if adj (aref adj 0) 0) (if adj (aref adj 1) 0)
+                                                    (if adj (aref adj 2) 0))
+                                              ",")))
+                               (cl-loop for i from 0 below (lgstring-glyph-len g)
+                                        for gl = (lgstring-glyph g i)
+                                        while gl collect gl)
+                               ";")))
+                    out))))))
+    (dolist (fb (nhmac-gui--fallback-facts))
+      (push (format "fallback\t%d\t%s" (nth 0 fb) (or (nth 1 fb) "nil")) out))
+    (nreverse out)))
+
+(ert-deftest nhmac-ns-font-oracle-dump ()
+  "NS's font answers over the oracle's corpus, written to nhmac-ns-font-oracle-scale1.tsv (scale 1 only: NS's pixel
+sizes are points there, as the Rust port's are device pixels)."
+  (skip-unless (and (nhmac-gui--ns-build-p) (equal (or (getenv "GLITNIR_GUI_SCALE") "1") "1")))
+  (let ((lines (nhmac-gui--oracle-lines)))
+    (with-temp-file (nhmac-gui--lane-file "font-oracle" "tsv")
+      (insert "# NS's font answers (nhmac-gui-tests.el, nhmac-ns-font-oracle-dump), " (emacs-version) "\n")
+      (dolist (l lines) (insert l "\n")))
+    (nhmac-gui--say "nhmac-ns-font-oracle-dump: %d lines, %d fonts missing" (length lines)
+                    (cl-count-if (lambda (l) (string-prefix-p "missing" l)) lines))
+    (should (cl-some (lambda (l) (string-prefix-p "font\t" l)) lines))))
+
 (ert-deftest nhmac-font-metrics-parity ()
   "For Menlo, SF Mono, Helvetica, PingFang SC and Apple Color Emoji at :height 100, 120 and 160: the pixel size,
 ascent, descent, space and average widths, line height, each glyph's code and extents, and the underline's thickness
