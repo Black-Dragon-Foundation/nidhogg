@@ -15,12 +15,19 @@
     (goto-char (point-min)) (forward-line (1- line))
     (pcase-let ((`(,_ . ,y) (posn-x-y (posn-at-point (point))))
                 (`(,left ,top . ,_) (window-inside-pixel-edges)))
-      (cons (+ (- left (* (car (window-margins)) (frame-char-width))) (* col (frame-char-width)) 1)
+      ;; the margin sits outside the fringe unless `fringes-outside-margins'
+      (cons (+ (- left (* (car (window-margins)) (frame-char-width))
+                  (if (nth 2 (window-fringes)) 0 (car (window-fringes))))
+               (* col (frame-char-width)) 1)
             (+ top y 1)))))
 
 (defun margin-mouse-face-gui--at (line col)
   "Note the pointer in the left margin's column COL on LINE; the lit run."
   (pcase-let ((`(,x . ,y) (margin-mouse-face-gui--xy line col)))
+    ;; the point is in the margin, on that line (relative to the window: posn-at-x-y's coordinates)
+    (pcase-let ((`(,wl ,wt . ,_) (window-pixel-edges)))
+      (let ((p (posn-at-x-y (- x wl) (- y wt))))
+        (should (eq (posn-area p) 'left-margin))))
     (nidhogg--note-mouse nil x y)))
 
 (defmacro margin-mouse-face-gui--with (&rest body)
