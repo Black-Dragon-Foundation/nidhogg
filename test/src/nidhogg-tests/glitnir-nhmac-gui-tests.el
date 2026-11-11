@@ -742,8 +742,10 @@ the window's; without the card the corner is the window's."
        (should-not (nhmac-gui--far (glitnir-nhmac--px img (+ (nth 0 b) r) (nth 1 b)) glitnir-nhmac--card-bg 8))
        (set-window-parameter left 'corner-radius nil)
        (glitnir-nhmac--cards t)
+       ;; read two pixels in, as above: the rim tints the corner pixel itself (#f2dca9 for the card's #f0d8a0)
        (let ((img2 (glitnir-nhmac--grab "card-corner-off")))
-         (should-not (nhmac-gui--far (glitnir-nhmac--px img2 (nth 0 b) (nth 1 b)) glitnir-nhmac--card-bg 8)))))))
+         (should-not (nhmac-gui--far (glitnir-nhmac--px img2 (+ (nth 0 b) 2) (+ (nth 1 b) 2))
+                                     glitnir-nhmac--card-bg 8)))))))
 
 (ert-deftest glitnir-nhmac/card-shadow-only-in-gap ()
   "The look's card leaves the other window's pixels as they are without it; the gap beside the card is darker."
