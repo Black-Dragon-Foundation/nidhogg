@@ -2119,6 +2119,11 @@ the window server moves to such a screen does (`nidhogg-frame-scale-change-funct
     (unwind-protect
         (progn
           (dotimes (_ 3) (nhmac-gui--settle))
+          ;; a new frame opens on the root's screen: move it to one of another scale (the lane's virtual display
+          ;; and the runner's own, at scale 2), as nhmac-scale-round-trip-keeps-the-font does
+          (let ((m (nhmac-gui--other-monitor
+                    (lambda (m) (/= (alist-get 'scale-factor m 1.0) (frame-scale-factor root))))))
+            (when m (nhmac-gui--move-to other m)))
           (skip-unless (/= (frame-scale-factor other) (frame-scale-factor root)))
           (select-frame root)
           (setq c (nhmac-gui--child))
