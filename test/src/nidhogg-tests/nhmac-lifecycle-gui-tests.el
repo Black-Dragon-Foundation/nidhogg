@@ -30,7 +30,8 @@
     (nhmac--call 'test-open-files file)
     (should (eq (key-binding (vector (read-event nil nil 2) (read-event nil nil 2))) 'nhmac-open-files))
     (nhmac-open-files)
-    (should (get-file-buffer file))))
+    ;; `ns-find-file' visits the true name (/private/var/... for a temporary file under /var)
+    (should (find-buffer-visiting file))))
 
 (ert-deftest nhmac-reopen-hide ()
   "A reopen with no visible window shows a frame."
