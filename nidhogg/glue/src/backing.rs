@@ -34,6 +34,8 @@ pub const WINDOW_TAG: u64 = 1 << 63;
 /// A window card's layer id is the window's `sequence_number` with this bit set (`cards.rs`): a layer of its own beside
 /// the window's output (`WINDOW_TAG`), so promotion never touches the card.
 pub const CARD_TAG: u64 = 1 << 62;
+/// A window's block layer id is the window's `sequence_number` with this bit set (`blocks.rs`).
+pub const BLOCK_TAG: u64 = 1 << 61;
 
 /// The last key given (C's `static last_id`: one counter for every display, as Glitnir's ids are global).
 static LAST_ID: AtomicU64 = AtomicU64::new(0);
@@ -145,6 +147,8 @@ pub struct Frame {
     pub(crate) layers: crate::layers::Layers,
     /// The frame's window cards (`cards.rs`).
     pub(crate) cards: crate::cards::Cards,
+    /// The frame's windows with blocks (`blocks.rs`).
+    pub(crate) blocks: crate::blocks::Blocks,
     /// The frame's windows with a capture or a layout leg (`legs.rs`).
     pub(crate) legs: crate::legs::Legs,
     /// The rows the visible bell inverted, until they are put back (`bell.rs`).

@@ -644,6 +644,158 @@ nhwl_layers_sync (struct frame *r)
 				      nhwl_layer_flags (r))));
 }
 
+/* The blocks nhg_blocks_sync takes, kept between publishes.  */
+static NhgBlock *nhwl_blocks;
+static ptrdiff_t nhwl_nblocks, nhwl_blocks_cap;
+
+/* Position P of block slot in window W's buffer (a marker of that
+   buffer, or an integer), or -1.  */
+static ptrdiff_t
+nhwl_block_pos (struct window *w, Lisp_Object p)
+{
+  if (MARKERP (p))
+    return (XMARKER (p)->buffer == XBUFFER (w->contents)
+	    ? marker_position (p) : -1);
+  return FIXNUMP (p) ? XFIXNUM (p) : -1;
+}
+
+/* The slot I of block vector V as an integer, or DFLT.  */
+static intmax_t
+nhwl_block_int (Lisp_Object v, int i, intmax_t dflt)
+{
+  Lisp_Object x = AREF (v, i);
+  return (FIXNUMP (x) ? XFIXNUM (x)
+	  : FLOATP (x) ? (intmax_t) XFLOAT_DATA (x) : dflt);
+}
+
+/* List block V of leaf window W, whose text area is CLIP: the rows of
+   W's current matrix holding its text, from its first row's top to its
+   last row's bottom, from x0 to x1 of the text area.  V is
+   [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB] as
+   glitnir--block-vector makes it (KIND 0 a ring, 1 a rule; START and END
+   positions, END exclusive; X0, X1 and RADIUS device pixels).  A block
+   whose text starts above the window's first row (scrolled out) is open
+   at the top; one that goes on below its last row, at the bottom.  This
+   is all C does: the glue plans the layers and Glitnir draws.  */
+static void
+nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
+{
+  struct glyph_matrix *m = w->current_matrix;
+
+  if (!m || !VECTORP (v) || ASIZE (v) < 9)
+    return;
+  ptrdiff_t start = nhwl_block_pos (w, AREF (v, 1));
+  ptrdiff_t end = nhwl_block_pos (w, AREF (v, 2));
+  if (start < 0 || end <= start)
+    return;
+
+  struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (m);
+  struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
+  struct glyph_row *top = NULL, *last = NULL;
+  bool stopped = false;
+  for (struct glyph_row *row = first; row < bottom && row->enabled_p; row++)
+    {
+      ptrdiff_t rs = MATRIX_ROW_START_CHARPOS (row);
+      ptrdiff_t re = MATRIX_ROW_END_CHARPOS (row);
+      if (rs >= end)
+	{
+	  stopped = true;
+	  break;
+	}
+      if (re <= start && !(row->ends_at_zv_p && re >= start))
+	continue;
+      if (!top)
+	top = row;
+      last = row;
+      if (row->ends_at_zv_p)
+	{
+	  stopped = true;
+	  break;
+	}
+    }
+  if (!top)
+    return;
+
+  int x0 = clip_to_bounds (0, nhwl_block_int (v, 3, 0), clip.w);
+  int x1 = clip_to_bounds (x0, nhwl_block_int (v, 4, clip.w), clip.w);
+  int y0 = WINDOW_TO_FRAME_PIXEL_Y (w, top->y);
+  int y1 = WINDOW_TO_FRAME_PIXEL_Y (w, last->y) + last->height;
+  uint32_t flags = (EQ (AREF (v, 0), make_fixnum (1)) ? NHG_BLOCK_RULE : 0);
+  if (top == first && MATRIX_ROW_START_CHARPOS (top) > start)
+    flags |= NHG_BLOCK_OPEN_TOP;
+  if (!stopped && MATRIX_ROW_END_CHARPOS (last) < end)
+    flags |= NHG_BLOCK_OPEN_BOTTOM;
+
+  if (nhwl_nblocks == nhwl_blocks_cap)
+    nhwl_blocks = xpalloc (nhwl_blocks, &nhwl_blocks_cap, 1, -1,
+			   sizeof *nhwl_blocks);
+  Lisp_Object op = AREF (v, 7);
+  nhwl_blocks[nhwl_nblocks++]
+    = (NhgBlock) { w->sequence_number, clip,
+		   { clip.x + x0, y0, x1 - x0, y1 - y0 },
+		   flags, (int32_t) nhwl_block_int (v, 5, 0),
+		   (int32_t) nhwl_block_int (v, 6, -1),
+		   NUMBERP (op) ? (float) XFLOATINT (op) : 1.0f,
+		   (int32_t) nhwl_block_int (v, 8, 0) };
+}
+
+/* List the blocks of WINDOW's leaf windows and its next siblings' (the
+   window parameter glitnir--blocks, a vector of block vectors).  */
+static void
+nhwl_blocks_add (Lisp_Object window)
+{
+  for (; !NILP (window); window = XWINDOW (window)->next)
+    {
+      struct window *w = XWINDOW (window);
+
+      if (WINDOWP (w->contents))
+	{
+	  nhwl_blocks_add (w->contents);
+	  continue;
+	}
+      Lisp_Object v = Fwindow_parameter (window, Qglitnir__blocks);
+      if (!VECTORP (v) || !BUFFERP (w->contents))
+	continue;
+      int x, y, width, height;
+      window_box (w, TEXT_AREA, &x, &y, &width, &height);
+      NhgRect clip = { x, y, width, height };
+      for (ptrdiff_t i = 0; i < ASIZE (v); i++)
+	nhwl_block_add (w, AREF (v, i), clip);
+    }
+}
+
+/* Before F's tree (its root R) is published: F and each drawable child
+   frame under it give the glue their windows' blocks, while the frame
+   has some (its parameter glitnir--blocks) or block layers left.  Each
+   frame is a Glitnir root of its own, so a child frame's blocks are in
+   its own coordinates and follow its moves and scale.  */
+static void
+nhwl_blocks_sync (struct frame *f, struct frame *r)
+{
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  Lisp_Object tail, frame;
+
+  if (!nhwl_frame_drawable (f))
+    return;
+  if (out->glitnir_id
+      && (!NILP (get_frame_param (f, Qglitnir__blocks))
+	  || nhwl_glue_rc (dpyinfo, NHG (nhg_blocks_count (dpyinfo->glue,
+							   out->glitnir_id))) > 0))
+    {
+      nhwl_nblocks = 0;
+      nhwl_blocks_add (FRAME_ROOT_WINDOW (f));
+      nhwl_glue_rc (dpyinfo,
+		    NHG (nhg_blocks_sync (dpyinfo->glue,
+					  FRAME_NHWL_OUTPUT (r)->window,
+					  out->glitnir_id, nhwl_blocks,
+					  nhwl_nblocks)));
+    }
+  FOR_EACH_FRAME (tail, frame)
+    if (nhwl_child_of (XFRAME (frame), f))
+      nhwl_blocks_sync (XFRAME (frame), r);
+}
+
 /* A consistency point for F's tree (F, its root, a top-level, tip or popup
    frame, and the child frames under it, sync subsurfaces): Emacs is not
    redisplaying and buffer flips are not blocked, so every frame of the tree
@@ -673,6 +825,7 @@ nhwl_publish (struct frame *f)
   nhwl_nsurfaces = 0;
   nhwl_surface_add (r, 0, true);
   nhwl_layers_sync (r);
+  nhwl_blocks_sync (r, r);
   int32_t rc = nhwl_glue_rc (dpyinfo,
 			     NHG (nhg_present (dpyinfo->glue, out->window,
 					       nhwl_surfaces, nhwl_nsurfaces,

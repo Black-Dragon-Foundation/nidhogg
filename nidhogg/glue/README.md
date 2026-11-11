@@ -270,6 +270,16 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   tiling one, the same sync gives each its own card again. A card window may be promoted: its output stays `seq | WINDOW_TAG` at the box, so promotion and
   demotion never touch the card. A scale change and the first sync after a reconnect give the cards again.
   `nhg_layers_count` counts outputs and cards, so the publish after the last card went still lists the windows.
+- **Blocks** (`src/blocks.rs`): rings and rules around runs of a window's rows (the window parameter `glitnir-blocks`,
+  which `glitnir.el` resolves into `glitnir--blocks`). At each publish of a tree, C resolves every frame's blocks (child
+  frames too: each is a root of its own) against the windows' current matrices, the only C part, and passes them to
+  `nhg_blocks_sync` as `NhgBlock`s (the window's text area, the block's rows from x0 to x1, the radius, the line's and
+  the beneath colour, whether a side was scrolled out), while the frame parameter `glitnir--blocks` is set or
+  `nhg_blocks_count` is not 0. Each window with blocks gets a WINDOW layer, id `sequence_number | BLOCK_TAG`, at its
+  text area, holding Glitnir `Block`s in root device px; compose draws a ring just inside the block (its corners
+  outside the rounded path in the beneath colour) or a rule on its bottom pixel rows, over the frame's pixels, never a
+  fill. The block layers stay above the frame's outputs. A scale change and a reconnect give them again. A shell with
+  cards on layers of its own (macOS) draws no blocks yet.
 - **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose
   last full-window scroll is 2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
   box demotes first. Demotion is `set_output (…, 0)` and the layer's removal, in that publish: Glitnir damages the
@@ -326,6 +336,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_popup_show` / `nhg_popup_place` / `nhg_popup_size` / `nhg_popup_hide` | - | popup frames for menus | a borderless `NSPanel` with a grab |
 | `nhg_scroll_window` | W | scroll a window's rows; promote or demote its layer | same; a layer is a `CALayer` |
 | `nhg_layers_sync` / `nhg_layers_count` | - | demote layers that are gone, resized or idle; count them | same |
+| `nhg_blocks_sync` / `nhg_blocks_count` | - | a frame's window blocks (rings and rules around rows) as block layers; count them | same |
 | `nhg_bell_flash` / `nhg_bell_restore` | W | the visible bell's rows inverted and put back | same |
 | `nhg_frame_param` | - | what changing a frame parameter does (validation, clamps, defaults, what to redo): `params.rs` | same |
 | `nhg_font_id` / `nhg_font_name` / `nhg_font_list` / `nhg_font_match` / `nhg_font_has_char` | - | font-spec records and `macfont_list`/`macfont_match`/`macfont_has_char` over a font source (`fontspec.rs`; none on Linux) | Core Text source |

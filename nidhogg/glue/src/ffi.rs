@@ -1973,6 +1973,36 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Frame `frame` (shell window `window`, its tree's root's) is about to be published with the `n` resolved blocks
+    /// at `blocks` (`blocks.rs`): each window with blocks gets its block layer, the others lose theirs.  Returns how
+    /// many windows have block layers.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `blocks` holds `n` readable records, or is null when `n` is 0.
+    fn nhg_blocks_sync(d: *mut NhgDisplay, window: u64, frame: u64, blocks: *const crate::blocks::NhgBlock, n: usize) -> i32 |state| {
+        let b = match (n, blocks.is_null()) {
+            (0, _) => &[][..],
+            (_, true) => return Err(GlueError::Arg),
+            // SAFETY: non-null, with `n` readable records (the caller's promise).
+            _ => unsafe { std::slice::from_raw_parts(blocks, n) },
+        };
+        let left = crate::blocks::sync(state, window, frame, b)?;
+        Ok(i32::try_from(left).unwrap_or(i32::MAX))
+    }
+}
+
+nhg_export! {
+    /// How many of the frame's Emacs windows have a block layer (0 for a frame without a backing).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_blocks_count(d: *mut NhgDisplay, frame: u64) -> i32 |state| {
+        let n = crate::blocks::count(&mut state.backings, frame);
+        Ok(i32::try_from(n).unwrap_or(i32::MAX))
+    }
+}
+
+nhg_export! {
     /// How many of the frame's Emacs windows are their own outputs, plus how many have a card layer (0 for a frame
     /// without a backing).
     ///
