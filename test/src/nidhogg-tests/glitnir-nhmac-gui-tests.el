@@ -831,10 +831,11 @@ colour."
                   (img (glitnir-nhmac--grab "card-theme"))
                   (b (glitnir-nhmac--box img glitnir-nhmac--card-bg)))
              (nhmac-gui--say "nhmac-cards-theme-switch: images %d -> %d, corner %06x" n (plist-get c :images)
-                             (if b (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) 0))
+                             (if b (glitnir-nhmac--px img (+ (nth 0 b) 2) (+ (nth 1 b) 2)) 0))
              (should (> (plist-get c :images) n))
              (should b)
-             (should-not (nhmac-gui--far (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) new 8)))
+             ;; two pixels in, inside the window server's rim (as glitnir-nhmac/card-corner-shows-gap)
+             (should-not (nhmac-gui--far (glitnir-nhmac--px img (+ (nth 0 b) 2) (+ (nth 1 b) 2)) new 8)))
          (disable-theme 'glitnir-nhmac-test)
          (set-face-foreground 'window-divider face (selected-frame)))))))
 
