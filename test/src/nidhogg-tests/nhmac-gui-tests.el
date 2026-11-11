@@ -1213,20 +1213,24 @@ within its width, so the title bar, a tool bar and scroll bars (each build has i
   (concat (propertize " " 'display '(space :align-to right) 'face `(:background ,nhmac-gui--crop-marker)) "\n"))
 
 (defmacro nhmac-gui--bare-frame (&rest body)
-  "Run BODY with the selected frame showing one window, no tool bar and an empty echo area; put them back after.
-drgnx never shows Emacs's tool bar, and an earlier window (a *Compile-Log* of the test files' loading) or message
-differs between the builds' captures."
+  "Run BODY with the selected frame 80 by 24 characters, showing one window, no tool bar and an empty echo area; put
+them back after.  drgnx never shows Emacs's tool bar, and an earlier window (a *Compile-Log* of the test files'
+loading) or message differs between the builds' captures; without its tool bar NS keeps the frame's outer size and
+Naglfar its text size, so the size is set after."
   (declare (indent 0))
   `(let ((conf (current-window-configuration))
-         (tb (frame-parameter nil 'tool-bar-lines)))
+         (tb (frame-parameter nil 'tool-bar-lines))
+         (cols (frame-width)) (lines (frame-height)))
      (unwind-protect
          (progn
            (set-frame-parameter nil 'tool-bar-lines 0)
+           (set-frame-size nil 80 24)
            (delete-other-windows)
            (message nil)
            ,@body)
        (set-window-configuration conf)
-       (set-frame-parameter nil 'tool-bar-lines tb))))
+       (set-frame-parameter nil 'tool-bar-lines tb)
+       (set-frame-size nil cols lines))))
 
 (defmacro nhmac-gui--with-font-scene (&rest body)
   "Run BODY with the frame in Menlo 12, black on `nhmac-gui--font-bg', no cursor, mode line or fringes, showing the
@@ -1327,27 +1331,32 @@ environment (`nhmac-gui--capture-env')."
   (cl-some (lambda (sh) (> (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))) tol)) '(16 8 0)))
 
 (defun nhmac-gui--text-crop (img &optional pad)
-  "The text in IMG (from `nhmac-gui--bmp-read'): the commonest colour is the frame's background; inside the box of
-the pixels near it, the box of the pixels away from it.  Where IMG shows the crop marker (`nhmac-gui--marker-line'),
-that inside is below the marker and within its width widened by PAD pixels on each side (a fringe), down to 16 pixels
-above the background box's bottom (the window's rounded corners); elsewhere it is the box less 16 pixels on each
-side.  Returns (W H PIXELS) of that box."
+  "The text in IMG (from `nhmac-gui--bmp-read'): inside the box of the pixels near the frame's background, the box
+of the pixels away from it.  Where IMG shows the crop marker (`nhmac-gui--marker-line'), the background is
+`nhmac-gui--font-bg' (a small window shows less of it than of the desktop) and that inside is below the marker and
+within its width widened by PAD pixels on each side (a fringe), down to 16 pixels above the background box's bottom
+\(the window's rounded corners); elsewhere the background is the commonest colour and the inside is the box less 16
+pixels on each side.  Returns (W H PIXELS) of that box."
   (pcase-let* ((`(,w ,h ,px) img)
                (counts (make-hash-table))
-               (bg (progn (mapc (lambda (p) (puthash p (1+ (gethash p counts 0)) counts)) px)
-                          (let ((best nil) (n 0))
-                            (maphash (lambda (k v) (when (> v n) (setq best k n v))) counts)
-                            best)))
                (marker (string-to-number (substring nhmac-gui--crop-marker 1) 16))
                (x0 w) (y0 h) (x1 -1) (y1 -1)
                (mx0 w) (mx1 -1) (my1 -1))
     (dotimes (y h)
       (dotimes (x w)
         (let ((p (aref px (+ (* y w) x))))
-          (unless (nhmac-gui--far p bg 2)
-            (setq x0 (min x0 x) y0 (min y0 y) x1 (max x1 x) y1 (max y1 y)))
+          (puthash p (1+ (gethash p counts 0)) counts)
           (unless (nhmac-gui--far p marker 8)
             (setq mx0 (min mx0 x) mx1 (max mx1 x) my1 (max my1 y))))))
+    (let ((bg (if (>= mx1 0)
+                  (string-to-number (substring nhmac-gui--font-bg 1) 16)
+                (let ((best nil) (n 0))
+                  (maphash (lambda (k v) (when (> v n) (setq best k n v))) counts)
+                  best))))
+      (dotimes (y h)
+        (dotimes (x w)
+          (unless (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
+            (setq x0 (min x0 x) y0 (min y0 y) x1 (max x1 x) y1 (max y1 y)))))
     (pcase-let ((`(,cx0 ,cy0 ,cx1 ,cy1)
                  (if (>= mx1 0)
                      (list (max x0 (- mx0 (or pad 0))) (1+ my1) (min x1 (+ mx1 (or pad 0))) (- y1 16))
@@ -1363,7 +1372,7 @@ side.  Returns (W H PIXELS) of that box."
           (dotimes (y ch)
             (dotimes (x cw)
               (aset out (+ (* y cw) x) (aref px (+ (* (+ ty0 y) w) tx0 x)))))
-          (list cw ch out))))))
+          (list cw ch out)))))))
 
 ;; These loop over every pixel of a 900 by 700 point capture: interpreted in a checking build, a capture's read and
 ;; crop took minutes (nhmac-images-worker: about 300 s a file); compiled, they take seconds.
