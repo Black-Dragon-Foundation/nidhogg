@@ -1197,16 +1197,22 @@ checked against the faces, tolerance 0 for fills and box lines."
 
 (defmacro nhmac-gui--with-font-scene (&rest body)
   "Run BODY with the frame in Menlo 12, black on `nhmac-gui--font-bg', no cursor, mode line or fringes, showing a
-blank line and then a line of ASCII; the frame's font and colours are put back after."
+blank line and then a line of ASCII in its only window, the echo area empty; the frame's font, colours and windows
+are put back after."
   (declare (indent 0))
   `(let ((font (frame-parameter nil 'font))
          (fg (frame-parameter nil 'foreground-color))
-         (bg (frame-parameter nil 'background-color)))
+         (bg (frame-parameter nil 'background-color))
+         (conf (current-window-configuration)))
      (unwind-protect
          (progn
            (set-frame-font "Menlo-12" nil (list (selected-frame)))
            (set-foreground-color "#000000")
            (set-background-color nhmac-gui--font-bg)
+           ;; nothing else in the capture: no other window (a *Compile-Log* the test files' loading showed) and no
+           ;; message, in either build
+           (delete-other-windows)
+           (message nil)
            (switch-to-buffer (generate-new-buffer " *nhmac-font*"))
            (setq-local cursor-type nil mode-line-format nil)
            (set-window-fringes nil 0 0)
@@ -1217,6 +1223,7 @@ blank line and then a line of ASCII; the frame's font and colours are put back a
            ,@body)
        (kill-buffer)
        (set-window-fringes nil nil nil)
+       (set-window-configuration conf)
        (set-frame-font font nil (list (selected-frame)))
        (set-foreground-color fg)
        (set-background-color bg))))
@@ -1423,12 +1430,16 @@ frame's text still reaches the surface."
 
 (defmacro nhmac-gui--with-image-scene (file &rest body)
   "Run BODY with FILE's image alone at the top left of a buffer on `nhmac-gui--font-bg', no cursor, mode line or
-fringes; the frame's colours are put back after."
+fringes, in the frame's only window, the echo area empty; the frame's colours and windows are put back after."
   (declare (indent 1))
-  `(let ((bg (frame-parameter nil 'background-color)))
+  `(let ((bg (frame-parameter nil 'background-color))
+         (conf (current-window-configuration)))
      (unwind-protect
          (progn
            (set-background-color nhmac-gui--font-bg)
+           ;; nothing else in the capture (as `nhmac-gui--with-font-scene')
+           (delete-other-windows)
+           (message nil)
            (switch-to-buffer (generate-new-buffer " *nhmac-img*"))
            (setq-local cursor-type nil mode-line-format nil)
            (set-window-fringes nil 0 0)
@@ -1440,6 +1451,7 @@ fringes; the frame's colours are put back after."
            ,@body)
        (kill-buffer)
        (set-window-fringes nil nil nil)
+       (set-window-configuration conf)
        (set-background-color bg))))
 
 (ert-deftest nhmac-ns-images-dump ()
