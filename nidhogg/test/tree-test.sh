@@ -76,6 +76,10 @@ flag_rule() {
                  <(git show "${gbase[i]}:$f" | unifdef "${flags[@]}" 2>/dev/null) ||
             fail "$f changes code outside ${gdef[i]}" ;;
         lisp/*)
+          # A Lisp file identical to the upstream base at HEAD cannot break the rule (a group's base may still hold an
+          # old change that a later commit reverted to upstream: the base-to-HEAD diff would show the revert).
+          up=${base:-$(git rev-list --max-parents=0 HEAD | tail -n 1)}
+          [ "$(git rev-parse -q --verify "$up:$f")" != "$(git rev-parse "HEAD:$f")" ] || continue
           # A Lisp file a flag group created is the groups' own file: it passes while only flag-group commits touch it.
           # (Upstream files, and files whose history has any other commit, still go through the loadup-line rule.)
           if [ -z "$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1 | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ] &&
@@ -202,6 +206,11 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: pgtk: p" lisp/g.el '(a)\n(b)\n'
   echo "$(git -C "$self/r" rev-parse HEAD) a listed exception" > "$self/exc"
   SERIES_EXCEPTIONS="$self/exc" expect "a listed exception edits a group-created Lisp file" ""
+  fixture; putf "upstream m" lisp/m.el '(a)\n'; base=$(git -C "$self/r" rev-parse HEAD)
+  putf "nidhogg: pgtk: old" lisp/m.el '(a)\n(drag)\n'; putf "nidhogg: glitnir: g" src/b.c '#ifdef HAVE_GLITNIR\nint g;\n#endif\n'
+  putf "nidhogg: pgtk: revert" lisp/m.el '(a)\n'
+  expect "a Lisp file reverted to upstream after a group's base held a change" ""
+  unset base
   fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
   putf "nidhogg: shell: s2" src/nhwl.c 'int s;\nint t;\n'
   expect "a shell commit above history editing a C file the shell created" ""
@@ -215,7 +224,7 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; put "pgtk change without the prefix" "int a;\n/* p */\n"
   RULE=subj expect "a non-merge commit with a non-nidhogg subject" "commit subject does not start with 'nidhogg: '"
   unset RULE
-  echo "tree self-test: 29 cases ok"
+  echo "tree self-test: 30 cases ok"
   exit 0
 fi
 
