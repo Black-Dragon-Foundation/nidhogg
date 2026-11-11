@@ -3030,6 +3030,12 @@ typedef struct {
 
   /* True means that the mouse highlight should not be shown.  */
   bool_bf mouse_face_hidden : 1;
+#ifdef HAVE_GLITNIR
+
+  /* The glyph area the columns above count in: TEXT_AREA, or a margin
+     whose string has a mouse face under the pointer.  */
+  enum glyph_row_area mouse_face_area;
+#endif
 } Mouse_HLInfo;
 
 INLINE void
@@ -3046,6 +3052,9 @@ reset_mouse_highlight (Mouse_HLInfo *hlinfo)
   hlinfo->mouse_face_past_end = false;
   hlinfo->mouse_face_hidden = false;
   hlinfo->mouse_face_defer = false;
+#ifdef HAVE_GLITNIR
+  hlinfo->mouse_face_area = TEXT_AREA;
+#endif
 }
 
 /***********************************************************************

@@ -1248,6 +1248,22 @@ with unsaved changes, which becomes × to close it, as VS Code's does). Mouse se
 - Tests: `test/src/nidhogg-tests/mouse-sensor-gui-tests.el` (order, leaving, off, a key sequence across a sensor, an
   error; `mouse-sensor-gui/motion-cost`, tagged `:timing`, measures the pointer's cost off and on).
 
+### `mouse-face` in the margins
+
+Stock Emacs lights a string's `mouse-face` in the mode, header and tab lines only; in a window margin the property is
+read for `help-echo` and ignored. Nidhogg lights it there too on graphical frames (group `glitnir`, `HAVE_GLITNIR`), so
+a debugger's breakpoint column can show a faint dot under the pointer.
+
+- `note_line_or_margin_highlight` finds the margin's row and glyph under the pointer and lights the string's run of
+  that `mouse-face`, as on a mode line. `Mouse_HLInfo` gains `mouse_face_area` (the glyph area the run's columns count
+  in; `TEXT_AREA` otherwise, and again after every clear), which `draw_row_with_mouse_face` draws in. Text positions
+  are never inside a margin's run (`coords_in_mouse_face_p`), and the cursor's mouse-face offset counts text runs only.
+- A mouse face changes the face only: an image glyph keeps its picture, so the lit thing is text (drgnx draws the
+  hover dot as a character).
+- Terminals are unchanged: a margin there lights nothing.
+- Naglfar draws through the same `draw_glyphs` with the area, so it needs nothing beyond reporting pointer motion.
+- Tests: `test/src/nidhogg-tests/margin-mouse-face-gui-tests.el`.
+
 ## Reporting issues
 
 - Problems specific to Nidhogg (its patches, build, or `nidhogg-version`) go to this repository's issue tracker.
