@@ -9,9 +9,9 @@ use super::appdelegate::{self, AppDelegate};
 use super::defaults;
 use super::kq::{self, Kq};
 use super::layers;
-use super::pacer;
 use super::menus;
 use super::nsapp;
+use super::pacer;
 use super::power;
 use super::runloop::{MacEv, SCOPE};
 use super::screens;
@@ -20,8 +20,8 @@ use super::window::Win;
 use super::windowing;
 use super::{dialogs, pasteboard};
 use crate::api::{
-    Abandon, ChildDesc, NHSHELL_SEL_DND, NHSHELL_WIN_UNDECORATED, NhShellPresenterStats, Place, PresenterTiming,
-    ShellBackend, ShellError, ShellResult, SurfaceFrame, WindowDesc, WindowId,
+    Abandon, ChildDesc, NHSHELL_SEL_DND, NHSHELL_WIN_UNDECORATED, NhShellPresenterStats, Place,
+    PresenterTiming, ShellBackend, ShellError, ShellResult, SurfaceFrame, WindowDesc, WindowId,
 };
 use crate::caps::NhShellCaps;
 use crate::event::{
@@ -269,6 +269,22 @@ impl MacShell {
                 }
             },
             MacEv::Pace => self.release_held(),
+            MacEv::Screens => {
+                let new = screens::outputs(self.mtm);
+                for (change, o) in crate::outputs::diff(&self.known_outputs, &new) {
+                    let ev = match change {
+                        crate::outputs::Change::Added => ShellEvent::OutputAdd(o),
+                        crate::outputs::Change::Removed => ShellEvent::OutputRemove(o),
+                        crate::outputs::Change::Changed => ShellEvent::OutputChange(o),
+                    };
+                    self.push(ev, 0);
+                }
+                self.known_outputs = new;
+            }
+            MacEv::Menu(generation, index) => {
+                self.push(ShellEvent::Menu(MenuEv { generation, index }), 0);
+            }
+            MacEv::Resize(id, frame) => self.resize_step(id, frame),
         }
     }
 
@@ -300,22 +316,6 @@ impl MacShell {
             {
                 self.push(ShellEvent::FrameReady, id);
             }
-            MacEv::Screens => {
-                let new = screens::outputs(self.mtm);
-                for (change, o) in crate::outputs::diff(&self.known_outputs, &new) {
-                    let ev = match change {
-                        crate::outputs::Change::Added => ShellEvent::OutputAdd(o),
-                        crate::outputs::Change::Removed => ShellEvent::OutputRemove(o),
-                        crate::outputs::Change::Changed => ShellEvent::OutputChange(o),
-                    };
-                    self.push(ev, 0);
-                }
-                self.known_outputs = new;
-            }
-            MacEv::Menu(generation, index) => {
-                self.push(ShellEvent::Menu(MenuEv { generation, index }), 0);
-            }
-            MacEv::Resize(id, frame) => self.resize_step(id, frame),
         }
         if holding {
             self.pacer.arm();
