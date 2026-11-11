@@ -358,6 +358,11 @@ impl MacShell {
         let window = u64::try_from(n[0]).map_err(|_| ShellError::Arg)?;
         let rest = rest.trim_end_matches(')');
         let (appearance, titlebar) = rest.split_once(' ').unwrap_or((rest, "nil"));
+        // a child frame is a layer in its root's window: it has no window of its own to give a look (every new
+        // frame gets this call, from after-make-frame-functions)
+        if self.kids.contains_key(&window) {
+            return Ok(());
+        }
         windowing::look(
             &self.win(window)?.window,
             appearance,
