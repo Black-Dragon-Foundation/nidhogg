@@ -55,6 +55,9 @@
        (nidhogg--note-mouse nil 'leave nil)
        (kill-buffer buf))))
 
+(ert-deftest margin-mouse-face-gui/the-build-says-it-lights-margins ()
+  (should (featurep 'glitnir-margin-mouse-face)))
+
 (ert-deftest margin-mouse-face-gui/the-pointer-lights-a-margin-string ()
   (margin-mouse-face-gui--with
     ;; line 2's dot, glyph 1 of the margin's row: lit
