@@ -1260,7 +1260,9 @@ environment (`nhmac-gui--capture-env')."
                            (if size (format "%d bytes" size) "missing")
                            (condition-case e (frame-position) (error e))
                            (frame-pixel-width) (frame-pixel-height) (getenv "GLITNIR_GUI_FRAME"))))
-      (message "nhmac-gui--capture: %s" report)
+      ;; *Messages* only: in the echo area the report wraps to three lines, the mini-window grows and the next
+      ;; capture shows other window heights than the one before it
+      (let ((inhibit-message t)) (message "nhmac-gui--capture: %s" report))
       (unless (and (eql rc 0) size)
         (ert-fail (list "nhmac-gui--capture failed" report))))
     file))
