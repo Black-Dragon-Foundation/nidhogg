@@ -42,6 +42,9 @@ struct CGPoint {
 struct KeyCallBacks([usize; 6]);
 #[repr(C)]
 struct ValueCallBacks([usize; 5]);
+/// `CFSetCallBacks`, whose address is all that is used.
+#[repr(C)]
+struct SetCallBacks([usize; 6]);
 
 const NUMBER_SINT64: isize = 4;
 const NUMBER_FLOAT32: isize = 5;
@@ -53,6 +56,8 @@ const RUN_RTL: u32 = 1;
 unsafe extern "C" {
     static kCFTypeDictionaryKeyCallBacks: KeyCallBacks;
     static kCFTypeDictionaryValueCallBacks: ValueCallBacks;
+    static kCFTypeSetCallBacks: SetCallBacks;
+    fn CFSetCreate(alloc: CFRef, values: *const CFRef, n: isize, cb: *const c_void) -> CFRef;
     fn CFRetain(r: CFRef) -> CFRef;
     fn CFRelease(r: CFRef);
     fn CFEqual(a: CFRef, b: CFRef) -> u8;
@@ -258,8 +263,10 @@ fn face(d: CFRef) -> Option<Face> {
     })
 }
 
-/// The faces of family `family` (a borrowed CFString), as Core Text matches its name.
-fn family_faces(family: CFRef) -> Vec<Face> {
+/// The faces of family `family` (a borrowed CFString), as Core Text matches its name; with `exact`, only faces of
+/// that family (the family name a mandatory attribute, as macfont_list asks): a name Core Text does not have then
+/// matches nothing, where without it Core Text offers other faces.
+fn family_faces(family: CFRef, exact: bool) -> Vec<Face> {
     // SAFETY: the attribute key is Core Text's; the family name is live.
     let Some(attrs) = dictionary(&[unsafe { kCTFontFamilyNameAttribute }], &[family]) else {
         return Vec::new();
@@ -268,9 +275,28 @@ fn family_faces(family: CFRef) -> Vec<Face> {
     let Some(pat) = Cf::new(unsafe { CTFontDescriptorCreateWithAttributes(attrs.get()) }) else {
         return Vec::new();
     };
-    let Some(descs) = Cf::new(unsafe {
-        CTFontDescriptorCreateMatchingFontDescriptors(pat.get(), std::ptr::null())
-    }) else {
+    let mandatory = if exact {
+        // SAFETY: one live key; the CF type callbacks retain it; the set is +1.
+        let key = unsafe { kCTFontFamilyNameAttribute };
+        let Some(m) = Cf::new(unsafe {
+            CFSetCreate(
+                std::ptr::null(),
+                &key,
+                1,
+                (&raw const kCFTypeSetCallBacks).cast(),
+            )
+        }) else {
+            return Vec::new();
+        };
+        Some(m)
+    } else {
+        None
+    };
+    let m = mandatory.as_ref().map_or(std::ptr::null(), Cf::get);
+    // SAFETY: a live pattern, and a live set or null; the result is +1.
+    let Some(descs) =
+        Cf::new(unsafe { CTFontDescriptorCreateMatchingFontDescriptors(pat.get(), m) })
+    else {
         return Vec::new();
     };
     // SAFETY: a live array of descriptors, borrowed.
@@ -301,7 +327,7 @@ pub fn faces() -> &'static [Face] {
                     // SAFETY: two live strings (kCFCompareEqualTo is 0).
                     .is_some_and(|l| unsafe { CTFontManagerCompareFontFamilyNames(family, l.get(), std::ptr::null_mut()) } == 0);
             if !hidden {
-                out.extend(family_faces(family));
+                out.extend(family_faces(family, false));
             }
         }
         out
@@ -347,7 +373,7 @@ pub fn named(family: &str) -> Vec<usize> {
     if n.asked.insert(family.to_lowercase())
         && let Some(name) = cf_string(family)
     {
-        for f in family_faces(name.get()) {
+        for f in family_faces(name.get(), true) {
             if f.family.eq_ignore_ascii_case(family) {
                 n.faces.push(Box::leak(Box::new(f)));
             }

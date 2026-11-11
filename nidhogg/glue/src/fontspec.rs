@@ -389,7 +389,8 @@ fn candidates(src: &dyn FontSource, spec: &FontSpec) -> Vec<(usize, FontFace)> {
                     .filter(|f| f.family.eq_ignore_ascii_case(n))
                     .map(|f| (rank, f.clone())),
             );
-            if order.len() == before {
+            // a generic name (`monospace`) stands for listed families, and is never a family itself
+            if order.len() == before && src.aliases(n).is_empty() {
                 order.extend(src.named(n).into_iter().map(|f| (rank, f)));
             }
         }
@@ -779,7 +780,10 @@ mod tests {
                 bitmap,
                 koi,
             ],
-            hidden: vec![face(13, "Courier Hidden", 80, 100, 100, latin)],
+            hidden: vec![
+                face(13, "Courier Hidden", 80, 100, 100, latin),
+                face(14, "sans-serif", 80, 100, 0, latin),
+            ],
         }
     }
 
@@ -902,6 +906,15 @@ mod tests {
             },
         );
         assert_eq!(ids(&got), [(6, 0)]);
+        // a generic name is not looked up by name: it stands for the families it lists
+        let got = list(
+            &fx,
+            &FontSpec {
+                family: "sans-serif".into(),
+                ..spec()
+            },
+        );
+        assert_eq!(ids(&got), [(4, 0), (5, 0)]);
     }
 
     #[test]
