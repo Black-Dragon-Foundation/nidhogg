@@ -171,6 +171,32 @@ ends a `sit-for' early."
     (cons (+ (nth 0 edges) (car xy) (/ (frame-char-width) 2))
           (+ (nth 1 edges) (cdr xy) (/ (frame-char-height) 2)))))
 
+(ert-deftest nhmac-menu-bar-takes-no-frame-lines ()
+  "The menu bar is the system's (as NS's): `menu-bar-lines' 1 leaves the frame's text at its top, with no strip above
+the root window, and turning it off and on changes no size."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((f (selected-frame)) (mb (frame-parameter f 'menu-bar-lines))
+         (tb (frame-parameter f 'tool-bar-lines)) (tab (frame-parameter f 'tab-bar-lines))
+         (top (lambda () (nth 1 (window-pixel-edges (frame-root-window f))))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter f 'tool-bar-lines 0)
+          (set-frame-parameter f 'tab-bar-lines 0)
+          (set-frame-parameter f 'menu-bar-lines 1)
+          (redisplay t)
+          (let ((on (list (funcall top) (frame-pixel-height f))))
+            (set-frame-parameter f 'menu-bar-lines 0)
+            (redisplay t)
+            (let ((off (list (funcall top) (frame-pixel-height f))))
+              (nhmac-gui--say "nhmac-menu-bar-takes-no-frame-lines: on (top height) %S, off %S" on off)
+              (should (= (car on) 0))
+              (should (equal on off)))))
+      (set-frame-parameter f 'menu-bar-lines mb)
+      (set-frame-parameter f 'tab-bar-lines tab)
+      (set-frame-parameter f 'tool-bar-lines tb)
+      (nhmac-gui--settle))))
+
 (ert-deftest nhmac-pointer-leaving-leaves-the-sensor ()
   "The pointer moved onto a mouse sensor's text, then off the frame's window: the sensor is entered, then left (the
 view's `mouseExited:', which gives the frame a leave: note_mouse_sensor_leave), as on Wayland."
@@ -1105,7 +1131,11 @@ It measures; it asserts only that it ran."
         (let ((heap (garbage-collect)) (gcs gcs-done) (gct gc-elapsed) (keys 0))
           (while (< (float-time) end) (execute-kbd-macro "x") (redisplay) (cl-incf keys))
           (nhmac-gui--say "nhmac-pair-stages: %s: %d keys, %d GCs in %.3f s, gc-cons-threshold %d, heap %S"
-                          build keys (- gcs-done gcs) (- gc-elapsed gct) gc-cons-threshold heap))
+                          build keys (- gcs-done gcs) (- gc-elapsed gct) gc-cons-threshold heap)
+          ;; G1: Naglfar's GC time is in mark_char_table under the intervals' marking: which char-tables the text
+          ;; properties hold, in the mode line's strings and in the buffers
+          (nhmac-gui--say "nhmac-pair-stages: %s: char-tables in text properties %S" build
+                          (nhmac-gui--property-char-tables)))
         ;; sample symbolicates after its 4 s, which took over 10 s on the runner; the profile is a diagnostic, so a
         ;; sample still writing after a minute is dropped
         (while (and (process-live-p p) (< (float-time) (+ end 60))) (accept-process-output p 0.2))
@@ -1121,6 +1151,36 @@ It measures; it asserts only that it ran."
     (should (file-exists-p file))))
 
 ;; Draw records painted with Core Graphics
+(defun nhmac-gui--property-char-tables ()
+  "Where text properties hold char-tables: an alist of (WHERE PROPERTY SUBTYPE COUNT), WHERE the mode line or a buffer's
+name.  The mode line's constructs are walked through symbols' values (4 deep); plist values through lists and vectors
+\(3 deep)."
+  (let ((found (make-hash-table :test #'equal)) (seen (make-hash-table :test #'eq)))
+    (cl-labels ((value (where prop v depth)
+                  (cond ((char-table-p v)
+                         (cl-incf (gethash (list where prop (char-table-subtype v)) found 0)))
+                        ((<= depth 0))
+                        ((consp v) (dolist (x (take 20 v)) (value where prop x (1- depth))))
+                        ((vectorp v) (dotimes (i (min 20 (length v))) (value where prop (aref v i) (1- depth))))))
+                (intervals (where obj)
+                  (dolist (iv (object-intervals obj))
+                    (let ((pl (nth 2 iv)))
+                      (while pl
+                        (value where (car pl) (cadr pl) 3)
+                        (setq pl (cddr pl))))))
+                (construct (c depth)
+                  (unless (or (<= depth 0) (and (or (consp c) (stringp c)) (gethash c seen)))
+                    (when (or (consp c) (stringp c)) (puthash c t seen))
+                    (cond ((stringp c) (intervals 'mode-line c))
+                          ((and (symbolp c) c (boundp c)) (construct (symbol-value c) (1- depth)))
+                          ((consp c) (dolist (x (take 40 c)) (construct x (1- depth))))))))
+      (construct mode-line-format 6)
+      (dolist (b (buffer-list))
+        (intervals (buffer-name b) b)))
+    (let (out)
+      (maphash (lambda (k n) (push (append k (list n)) out)) found)
+      out)))
+
 (defun nhmac-gui--pixel-at (x y)
   "The committed surface's premultiplied ARGB at device pixel X, Y of the selected frame, once the commit pacer holds
 none of its commits (bounded)."
