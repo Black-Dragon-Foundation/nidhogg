@@ -24,7 +24,8 @@
 # --naglfar builds Nidhogg's own macOS shell (--with-nidhogg-macos) instead of the NS app; on macOS only, except with
 # --dry-config, which stops after configure (src/config.h in the build dir) and on Linux configures for a darwin host.
 # --checking configures --enable-checking (dev builds only): Emacs's assertions, and the shell's and glue's test hooks
-# (the macOS rows inject events and read counters through them).
+# (the macOS rows inject events and read counters through them).  --test-hooks (dev builds only) configures the hooks
+# alone (--enable-nidhogg-test-hooks): a timing build, compared with a release build that has no assertions.
 # Exit: 0 ok, 1 build/check failed or not enough memory, 2 usage.
 # Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN,
 # NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300).
@@ -67,6 +68,7 @@ HISTORY=1    # the edit history's change hook is built in with Glitnir (it holds
 NAGLFAR=0    # --naglfar: the macOS shell (--with-nidhogg-macos), not the NS app
 DRYCONF=0    # --dry-config: configure only
 CHECKING=0   # --checking: --enable-checking, so the test hooks are built; dev builds only
+HOOKS=0      # --test-hooks: the test hooks without --enable-checking (a timing build); dev builds only
 CHAOS=0      # --chaos: seeded delays at the workers' sync points (src/nidhogg-chaos.h); dev builds only, so never in a release
 while [ $# -gt 0 ]; do
   case $1 in
@@ -85,6 +87,7 @@ while [ $# -gt 0 ]; do
     --native-preloaded) PRELOADED=1; shift ;;
     --chaos) CHAOS=1; shift ;;
     --checking) CHECKING=1; shift ;;
+    --test-hooks) HOOKS=1; shift ;;
     --without-nidhogg-watchdog) WATCHDOG=0; shift ;;
     --without-nidhogg-workers) WORKERS=0; shift ;;
     --without-nidhogg-history) HISTORY=0; shift ;;
@@ -100,6 +103,7 @@ if [ "$DEV" = 1 ] && { [ -n "$OUT" ] || [ "$STAGE" = pack ]; }; then
 fi
 [ "$CHAOS" = 0 ] || [ "$DEV" = 1 ] || die "--chaos is for dev builds only: add --dev"
 [ "$CHECKING" = 0 ] || [ "$DEV" = 1 ] || die "--checking is for dev builds only: add --dev"
+[ "$HOOKS" = 0 ] || [ "$DEV" = 1 ] || die "--test-hooks is for dev builds only: add --dev"
 [ "$NHWL" = 0 ] || [ -n "$GLITNIR" ] || die "--nidhogg-wayland needs Glitnir: leave out --without-glitnir"
 NATIVE=aot; { [ "$DEV" = 0 ] && [ "$PRELOADED" = 0 ]; } || NATIVE=yes
 # NIDHOGG_BUILD_SANITIZE=address,undefined adds -fsanitize=... to CFLAGS and LDFLAGS: dev builds only (the workers-asan CI job)
@@ -208,6 +212,7 @@ if [ -n "$GLITNIR" ]; then PKGS="$PKGS)"; else PKGS="$PKGS | grep -vxE 'cargo|ru
 [ "$HISTORY" = 0 ] || [ -z "$GLITNIR" ] || CONF="$CONF --with-nidhogg-history"
 [ "$CHAOS" = 0 ] || CONF="$CONF --with-nidhogg-chaos"
 [ "$CHECKING" = 0 ] || CONF="$CONF --enable-checking"
+[ "$HOOKS" = 0 ] || CONF="$CONF --enable-nidhogg-test-hooks"
 # the quotes are parsed by the build script, not here
 [ -z "$SANITIZE" ] || CONF="$CONF CFLAGS='-g -O1 -fno-omit-frame-pointer -fsanitize=$SANITIZE' LDFLAGS='-fsanitize=$SANITIZE'"
 
@@ -435,7 +440,7 @@ lc_unlock() { if command -v flock >/dev/null; then flock -u 9; exec 9>&-; fi; }
 elc_norm() {
   local w o=""
   for w in $1; do
-    case $w in aot|aot-*|yes|yes-*|--with-native-compilation=*|--with-ns|--with-nidhogg-macos|--enable-checking) ;; *) o="$o $w" ;; esac
+    case $w in aot|aot-*|yes|yes-*|--with-native-compilation=*|--with-ns|--with-nidhogg-macos|--enable-checking|--enable-nidhogg-test-hooks) ;; *) o="$o $w" ;; esac
   done
   printf '%s\n' "$o"
 }
