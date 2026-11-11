@@ -71,6 +71,8 @@ pub const MOUSE_UP: i64 = 1;
 pub const MOUSE_DRAG: i64 = 2;
 pub const MOUSE_MOVE: i64 = 3;
 pub const MOUSE_WHEEL: i64 = 4;
+/// The pointer leaving the view at `x`, `y` (outside it): `mouseExited:`, sent to the view as its tracking area would.
+pub const MOUSE_EXIT: i64 = 5;
 
 fn one_char(c: i64) -> ShellResult<Retained<NSString>> {
     if c == 0 {
@@ -168,6 +170,26 @@ pub fn mouse(
             CFRelease(cg.cast());
             let ev = ev.ok_or(ShellError::State)?;
             let () = msg_send![&*w.view, scrollWheel: &*ev];
+        }
+        return Ok(());
+    }
+    if kind == MOUSE_EXIT {
+        // AppKit hands an exit to its tracking area's owner itself; a posted one reaches no area
+        // SAFETY: AppKit's constructor with null user data; the view takes the event as AppKit would give it.
+        unsafe {
+            let ev = NSEvent::enterExitEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_trackingNumber_userData(
+                NSEventType::MouseExited,
+                at,
+                flags,
+                0.0,
+                w.window.windowNumber(),
+                None,
+                0,
+                0,
+                std::ptr::null_mut(),
+            )
+            .ok_or(ShellError::State)?;
+            let () = msg_send![&*w.view, mouseExited: &*ev];
         }
         return Ok(());
     }

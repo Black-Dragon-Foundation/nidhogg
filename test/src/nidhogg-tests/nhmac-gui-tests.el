@@ -171,6 +171,35 @@ ends a `sit-for' early."
     (cons (+ (nth 0 edges) (car xy) (/ (frame-char-width) 2))
           (+ (nth 1 edges) (cdr xy) (/ (frame-char-height) 2)))))
 
+(ert-deftest nhmac-pointer-leaving-leaves-the-sensor ()
+  "The pointer moved onto a mouse sensor's text, then off the frame's window: the sensor is entered, then left (the
+view's `mouseExited:', which gives the frame a leave: note_mouse_sensor_leave), as on Wayland."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((log nil) (mouse-sensor-enabled t))
+    (switch-to-buffer (generate-new-buffer " *nhmac-sensor*"))
+    (insert (propertize "aaaa" 'mouse-sensor-functions (list (lambda (_w _pos dir) (push dir log))))
+            " bbbb\n")
+    (redisplay t)
+    (unwind-protect
+        (let ((a (nhmac-gui--pos-xy 2)))
+          (nhmac--test-post-mouse 'move (car a) (cdr a))
+          ;; the posted events reach Emacs at the pump, and read_char runs the sensors (bounded reads)
+          (let ((n 0))
+            (while (and (< n 40) (not (memq 'entered log)))
+              (read-event nil nil 0.05)
+              (setq n (1+ n))))
+          (nhmac-gui--say "nhmac-pointer-leaving-leaves-the-sensor: after the move %S" log)
+          (should (memq 'entered log))
+          (nhmac--test-post-mouse 'exit (- (* 20 (frame-scale-factor))) (cdr a))
+          (let ((n 0))
+            (while (and (< n 40) (not (memq 'left log)))
+              (read-event nil nil 0.05)
+              (setq n (1+ n))))
+          (nhmac-gui--say "nhmac-pointer-leaving-leaves-the-sensor: after the exit %S" log)
+          (should (eq (car log) 'left)))
+      (kill-buffer))))
+
 (ert-deftest nhmac-mouse-basic ()
   "A click posted as AppKit mouse events lands on its character, a drag spans its region, a wheel notch scrolls,
 and `mouse-pixel-position' follows motion."
