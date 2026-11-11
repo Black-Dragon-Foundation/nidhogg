@@ -563,6 +563,7 @@ impl MacShell {
         let Some(w) = self.windows.get_mut(&root) else {
             return;
         };
+        let mut constrained = None;
         if drawn.contains(&root) && w.surfaces.newest().is_some() {
             let (sw, sh) = w.surfaces.size();
             if w.follow_surface(sw, sh) {
@@ -571,8 +572,24 @@ impl MacShell {
                 crate::trace::note(|| {
                     format!("window {root} takes its surface's size: {size:?} points")
                 });
+                // AppKit keeps a window on its screen (constrainFrameRect): a size past the screen's is cut, and the
+                // host is told the size the window has, as NS's frame takes the size its window got
+                let scale = w.window.backingScaleFactor();
+                let want = (
+                    (f64::from(sw) / scale).round() as i32,
+                    (f64::from(sh) / scale).round() as i32,
+                );
+                if size != want {
+                    constrained = Some(size);
+                }
             }
         }
+        if let Some((cw, ch)) = constrained {
+            self.configure(root, cw, ch);
+        }
+        let Some(w) = self.windows.get_mut(&root) else {
+            return;
+        };
         let scale = w.window.backingScaleFactor();
         let (rw, rh) = w.size;
         let tree = self.tree(root);
