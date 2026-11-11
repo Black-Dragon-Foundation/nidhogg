@@ -2830,16 +2830,17 @@ one-pixel lines (waves, reliefs, cursor bars) are device pixels there, NS's are 
   (nhmac-gui--with-draw-scene
     (let ((ns (with-temp-buffer (insert-file-contents (nhmac-gui--font-file "draw.eld" t)) (read (current-buffer))))
           (mine (nhmac-gui--draw-geometry)))
-      (message "nhmac-draw-all-records: scale %d geometry NS %S Naglfar %S" k ns mine)
+      ;; logged, never shown: a message in the echo area would be in the captures below
+      (nhmac-gui--say "nhmac-draw-all-records: scale %d geometry NS %S Naglfar %S" k ns mine)
       (should (equal mine (mapcar (lambda (p) (cons (* k (car p)) (* k (cdr p)))) ns))))
     (dolist (c (nhmac-gui--draw-captures))
       (let* ((name (car c))
-             (d (nhmac-gui--crop-diff
-                 (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t)))
-                 (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c)))))
-             (n (let ((cr (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c))))) (* (nth 0 cr) (nth 1 cr)))))
-        (message "nhmac-draw-all-records: scale %d %s: same size %S, worst %d, %d of %d pixels off; stats %S"
-                 k name (nth 0 d) (nth 1 d) (nth 2 d) n (nhmac-stats))
+             (theirs (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t))))
+             (cr (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c))))
+             (d (nhmac-gui--crop-diff theirs cr))
+             (n (* (nth 0 cr) (nth 1 cr))))
+        (nhmac-gui--say "nhmac-draw-all-records: scale %d %s: NS %dx%d, Naglfar %dx%d, worst %d, %d of %d pixels off"
+                        k name (nth 0 theirs) (nth 1 theirs) (nth 0 cr) (nth 1 cr) (nth 1 d) (nth 2 d) n)
         (when (= k 1)
           (should (nth 0 d))
           (should (<= (* 1000 (nth 2 d)) n)))))))
@@ -2855,7 +2856,7 @@ wide as NS's, draw it as scale by scale pixels.  The bitmaps' crop is NS's size 
            (mine (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "fringe.bmp")))
                                        (nhmac-gui--fringe-pad)))
            (d (nhmac-gui--crop-diff ns mine)))
-      (message "nhmac-draw-fringe-bitmaps: scale %d: NS %dx%d %d dark, Naglfar %dx%d %d dark; diff %S"
+      (nhmac-gui--say "nhmac-draw-fringe-bitmaps: scale %d: NS %dx%d %d dark, Naglfar %dx%d %d dark; diff %S"
                k (nth 0 ns) (nth 1 ns) (funcall dark ns) (nth 0 mine) (nth 1 mine) (funcall dark mine) d)
       (should (> (nth 0 ns) 0))
       (should (equal (list (nth 0 mine) (nth 1 mine)) (list (nth 0 ns) (nth 1 ns))))
