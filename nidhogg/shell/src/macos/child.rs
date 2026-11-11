@@ -27,6 +27,7 @@ use crate::api::{
 };
 use crate::event::{PointerEv, ScaleEv, ShellEvent};
 use crate::mac_child::{self, Node};
+use crate::units::Scale;
 use glitnir::geom::Rect;
 use glitnir::scene::Chrome;
 use objc2::rc::Retained;
@@ -166,14 +167,12 @@ impl Kid {
     }
 
     /// How far its shadow reaches past its surface at `scale`, points (left, top, right, bottom).
-    fn shadow_reach(&self, scale: f64) -> (i32, i32, i32, i32) {
+    fn shadow_reach(&self, s: Scale) -> (i32, i32, i32, i32) {
         let Some(c) = self.chrome.as_ref() else {
             return (0, 0, 0, 0);
         };
-        let dev = |v: i32| (f64::from(v) * scale).round().max(1.0) as u32;
-        let (l, t, r, b) = crate::mac_chrome::reach(c, dev(self.w), dev(self.h));
-        let pt = |v: u32| (f64::from(v) / scale).ceil() as i32;
-        (pt(l), pt(t), pt(r), pt(b))
+        let (l, t, r, b) = crate::mac_chrome::reach(c, s.px_min1(self.w), s.px_min1(self.h));
+        (s.pt_ceil(l), s.pt_ceil(t), s.pt_ceil(r), s.pt_ceil(b))
     }
 
     /// Its panel's frame on `w`'s screen: its surface grown by its shadow's reach; and the surface's place in it.
@@ -306,13 +305,14 @@ impl MacShell {
                 win.size = win.content_size();
                 win.surfaces = std::mem::take(&mut k.surfaces);
                 win.mapped = k.mapped;
-                let scale = win.window.backingScaleFactor();
+                // placed: on the screen its frame is on
+                let scale = win.placed();
                 layers::transaction(|| {
                     if let Some(l) = &k.layers {
                         l.container.removeFromSuperlayer();
                     }
                     if let Some(s) = win.surfaces.newest() {
-                        layers::show(&win.layer, s, false, scale);
+                        layers::show(&win.layer, s, false, scale.factor());
                     }
                 });
                 // shown, not key: the keys stay where they were
@@ -322,7 +322,7 @@ impl MacShell {
                 layers::changed_outside();
                 // the scale of the screen it is on now: `make` read it where AppKit first put the window, and a stale
                 // one has the frame resized to its points as pixels, then back (as a new window's, `window_new`)
-                win.scale120 = win.scale_now();
+                win.placed();
                 let scale120 = win.scale120;
                 self.windows.insert(id, win);
                 // its panel, if it overhung, goes with `k`
@@ -355,15 +355,12 @@ impl MacShell {
                     }
                 };
                 let root = self.root_of(d.parent).ok_or(ShellError::State)?;
-                let scale = self.windows[&root].window.backingScaleFactor();
+                let scale = self.windows[&root].scale();
                 if let Some(s) = k.surfaces.newest() {
                     let l = k.layers.get_or_insert_with(Layers::new);
-                    layers::transaction(|| layers::show(&l.content, s, false, scale));
+                    layers::transaction(|| layers::show(&l.content, s, false, scale.factor()));
                     let (sw, sh) = k.surfaces.size();
-                    (k.w, k.h) = (
-                        (f64::from(sw) / scale).round() as i32,
-                        (f64::from(sh) / scale).round() as i32,
-                    );
+                    (k.w, k.h) = (scale.pt_i(sw), scale.pt_i(sh));
                 }
                 k.shown = Shown::default();
                 self.kids.insert(id, k);
@@ -578,11 +575,8 @@ impl MacShell {
                 });
                 // AppKit keeps a window on its screen (constrainFrameRect): a size past the screen's is cut, and the
                 // host is told the size the window has, as NS's frame takes the size its window got
-                let scale = w.window.backingScaleFactor();
-                let want = (
-                    (f64::from(sw) / scale).round() as i32,
-                    (f64::from(sh) / scale).round() as i32,
-                );
+                let scale = w.scale();
+                let want = (scale.pt_i(sw), scale.pt_i(sh));
                 if size != want {
                     constrained = Some(size);
                 }
@@ -594,7 +588,7 @@ impl MacShell {
         let Some(w) = self.windows.get_mut(&root) else {
             return;
         };
-        let scale = w.window.backingScaleFactor();
+        let scale = w.scale();
         let (rw, rh) = w.size;
         let tree = self.tree(root);
         // which of the root's own children overhang now
@@ -637,7 +631,7 @@ impl MacShell {
                     if k.shown.hidden == Some(false)
                         && let Some(s) = k.surfaces.newest()
                     {
-                        layers::show(&p.standin, s, false, scale);
+                        layers::show(&p.standin, s, false, scale.factor());
                     }
                 }
             });
@@ -679,10 +673,7 @@ impl MacShell {
         // a stretched or cropped picture: the surface shown is not the window's content size in device pixels
         if drawn.contains(&root) && w.surfaces.newest().is_some() {
             let (cw, ch) = w.content_size();
-            let content = (
-                (f64::from(cw) * scale).round() as i32,
-                (f64::from(ch) * scale).round() as i32,
-            );
+            let content = (scale.px_i(cw), scale.px_i(ch));
             if w.surfaces.size() != content {
                 super::surface::STATS
                     .stretched_frames
@@ -693,7 +684,7 @@ impl MacShell {
             if drawn.contains(&root)
                 && let Some(s) = w.surfaces.newest()
             {
-                layers::show(&w.layer, s, w.surfaces.was_same(), scale);
+                layers::show(&w.layer, s, w.surfaces.was_same(), scale.factor());
             }
             if let Some(c) = cards {
                 c.apply(&w.layer, f64::from(rh), scale);
@@ -728,12 +719,9 @@ impl MacShell {
                 if drawn.contains(&id)
                     && let Some(s) = k.surfaces.newest()
                 {
-                    layers::show(&content, s, k.surfaces.was_same(), scale);
+                    layers::show(&content, s, k.surfaces.was_same(), scale.factor());
                     let (sw, sh) = k.surfaces.size();
-                    (k.w, k.h) = (
-                        (f64::from(sw) / scale).round() as i32,
-                        (f64::from(sh) / scale).round() as i32,
-                    );
+                    (k.w, k.h) = (scale.pt_i(sw), scale.pt_i(sh));
                 }
                 let host = if k.out { Host::Panel } else { Host::Parent };
                 if k.shown.host != host {
@@ -746,7 +734,7 @@ impl MacShell {
                         _ => {
                             if let (Some(p), Some(s)) = (k.panel.as_ref(), k.surfaces.newest()) {
                                 // the panel keeps showing the child until it is ordered out
-                                layers::show(&p.standin, s, false, scale);
+                                layers::show(&p.standin, s, false, scale.factor());
                             }
                             parent_layer.addSublayer(&container);
                         }
@@ -834,7 +822,7 @@ impl MacShell {
             if let Some(p) = k.panel.as_mut() {
                 if k.out {
                     p.place(frame, inner);
-                    let radius = k.chrome.map_or(0.0, |c| f64::from(c.radius_px) / scale);
+                    let radius = k.chrome.map_or(0.0, |c| scale.pt(f64::from(c.radius_px)));
                     p.set_blur(mtm, (k.backdrop > 0.0).then_some((inner, radius)));
                 } else if p.shown {
                     p.set_blur(mtm, None);
@@ -884,11 +872,7 @@ impl MacShell {
         let Some(root) = self.root_of(id) else {
             return;
         };
-        let Some(scale) = self
-            .windows
-            .get(&root)
-            .map(|w| w.window.backingScaleFactor())
-        else {
+        let Some(scale) = self.windows.get(&root).map(Win::scale) else {
             return;
         };
         let nodes = self.nodes(root);
@@ -898,7 +882,7 @@ impl MacShell {
         } else {
             let (x, y) = mac_child::origin(&nodes, id);
             let (l, t, _, _) = self.kids.get(&id).map_or((0, 0, 0, 0), |k| k.reach);
-            (f64::from(x - l) * scale, f64::from(y - t) * scale)
+            (scale.px(f64::from(x - l)), scale.px(f64::from(y - t)))
         };
         let p = match ev {
             ShellEvent::PointerMotion(p) | ShellEvent::Button(p) => p,
@@ -913,11 +897,11 @@ impl MacShell {
         let (target, lx, ly) = match self.grab {
             Some((r, t)) if r == root => {
                 let (x, y) = mac_child::origin(&nodes, t);
-                (t, rx - f64::from(x) * scale, ry - f64::from(y) * scale)
+                (t, rx - scale.px(f64::from(x)), ry - scale.px(f64::from(y)))
             }
             _ => {
-                let (t, x, y) = mac_child::hit(root, &nodes, rx / scale, ry / scale);
-                (t, x * scale, y * scale)
+                let (t, x, y) = mac_child::hit(root, &nodes, scale.pt(rx), scale.pt(ry));
+                (t, scale.px(x), scale.px(y))
             }
         };
         let old = self.hover.insert(root, target);

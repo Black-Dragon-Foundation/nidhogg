@@ -517,19 +517,20 @@ impl Canvas {
                     y,
                     w,
                     rows,
-                    scale,
+                    scale: mag,
                     fg,
                     bg,
                 } => {
+                    // `mag`: a bitmap's magnification, whole device pixels per bit (not a backing scale)
                     if let Some(bg) = bg {
                         self.fill_colour(*bg);
                         CGContextFillRect(
                             c,
-                            cg(&Rect::new(*x, *y, w * scale, rows.len() as i32 * scale)),
+                            cg(&Rect::new(*x, *y, w * mag, rows.len() as i32 * mag)),
                         );
                     }
                     self.fill_colour(*fg);
-                    for r in crate::shapes::bitmap_runs(*x, *y, *w, rows, *scale) {
+                    for r in crate::shapes::bitmap_runs(*x, *y, *w, rows, *mag) {
                         CGContextFillRect(c, cg(&r));
                     }
                 }

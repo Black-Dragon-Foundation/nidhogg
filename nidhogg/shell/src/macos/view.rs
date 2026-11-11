@@ -369,8 +369,7 @@ impl NhView {
     /// The event's position in this view, in device pixels from the top left.
     fn position(&self, e: &NSEvent) -> (f64, f64) {
         let p = self.convertPoint_fromView(e.locationInWindow(), None);
-        let scale = self.window().map_or(1.0, |w| w.backingScaleFactor());
-        mac_input::device_point(p.x, p.y, self.bounds().size.height, scale)
+        super::scale::of_view(self).device_point(p.x, p.y, self.bounds().size.height)
     }
 
     fn motion(&self, e: &NSEvent) {
