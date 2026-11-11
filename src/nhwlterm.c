@@ -1499,14 +1499,6 @@ nhwl_tool_bar_fit (struct frame *f, int *height)
   /* Measured at the tool bar window's width, which change_frame_size
      has just set.  */
   new = XFIXNUM (Ftool_bar_height (frame, Qt));
-#ifndef NHWL_WAYLAND
-  if (CONSP (Vnhmac__damage_log))
-    Vnhmac__damage_log
-      = Fcons (listn (6, make_fixnum (4), make_fixnum (old), make_fixnum (new),
-		      make_fixnum (WINDOW_PIXEL_WIDTH (XWINDOW (f->tool_bar_window))),
-		      make_fixnum (f->n_tool_bar_rows),
-		      make_fixnum (f->n_tool_bar_items)), Vnhmac__damage_log);
-#endif
   if (new == 0 || new == old
       || (EQ (Vauto_resize_tool_bars, Qgrow_only) && new < old))
     return false;
@@ -1547,11 +1539,6 @@ nhwl_set_window_size (struct frame *f, bool change_gravity, int pixelwidth,
     return;
 
   bool delay = FRAME_VISIBLE_P (f) && !FRAME_PARENT_FRAME (f);
-#ifndef NHWL_WAYLAND
-  if (CONSP (Vnhmac__damage_log))
-    Vnhmac__damage_log
-      = Fcons (list4i (2, pixelwidth, pixelheight, delay), Vnhmac__damage_log);
-#endif
 
   NHG (nhg_frame_clamp (FRAME_NHG (f), window, &pixelwidth, &pixelheight));
   nhwl_popup_set_size (f, pixelwidth, pixelheight);
@@ -2500,12 +2487,6 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
   int lh = nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), old);
 #endif
 
-#ifndef NHWL_WAYLAND
-  if (CONSP (Vnhmac__damage_log))
-    Vnhmac__damage_log
-      = Fcons (list4i (3, FRAME_NHWL_OUTPUT (f)->scale120, scale120,
-		       FRAME_PIXEL_HEIGHT (f)), Vnhmac__damage_log);
-#endif
   FRAME_NHWL_OUTPUT (f)->scale120 = FRAME_DISPLAY_INFO (f)->scale120 = scale120;
   FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = NHWL_DPI * scale120 / 120.0;
   nhwl_res_changed (f, was);
@@ -2553,13 +2534,6 @@ nhwl_configure (struct frame *f, const NhgAction *a)
      geometry (the native area, and the title strip when we draw one); the
      frame keeps its own size when it already is that size once rounded.
      The glue fits it and records the ack now, as a content ack.  */
-#ifndef NHWL_WAYLAND
-  if (CONSP (Vnhmac__damage_log))
-    Vnhmac__damage_log
-      = Fcons (listn (5, make_fixnum (0), make_fixnum (a->w), make_fixnum (a->h),
-		      make_fixnum (out->scale120),
-		      make_fixnum (FRAME_PIXEL_HEIGHT (f))), Vnhmac__damage_log);
-#endif
   {
     int dw, dh;
 
@@ -2571,14 +2545,6 @@ nhwl_configure (struct frame *f, const NhgAction *a)
 					  NHG_FIT_CONFIGURE, &dw, &dh)))
 	== 1)
       {
-#ifndef NHWL_WAYLAND
-	if (CONSP (Vnhmac__damage_log))
-	  Vnhmac__damage_log
-	    = Fcons (listn (7, make_fixnum (1), make_fixnum (a->w),
-			    make_fixnum (a->h), make_fixnum (out->scale120),
-			    make_fixnum (FRAME_PIXEL_HEIGHT (f)), make_fixnum (dw),
-			    make_fixnum (dh)), Vnhmac__damage_log);
-#endif
 	change_frame_size (f, dw, dh, false, true, false);
 	SET_FRAME_GARBAGED (f);
       }
@@ -4066,15 +4032,6 @@ nhwl_change_tool_bar_height (struct frame *f, int height)
   int old_height = FRAME_TOOL_BAR_HEIGHT (f);
   int lines = (height + unit - 1) / unit;
   Lisp_Object fullscreen = get_frame_param (f, Qfullscreen);
-#ifndef NHWL_WAYLAND
-  if (CONSP (Vnhmac__damage_log) && WINDOWP (f->tool_bar_window))
-    Vnhmac__damage_log
-      = Fcons (listn (6, make_fixnum (5), make_fixnum (old_height),
-		      make_fixnum (height),
-		      make_fixnum (WINDOW_PIXEL_WIDTH (XWINDOW (f->tool_bar_window))),
-		      make_fixnum (f->n_tool_bar_rows),
-		      make_fixnum (f->n_tool_bar_items)), Vnhmac__damage_log);
-#endif
 
   /* Make sure we redisplay all windows in this frame.  */
   fset_redisplay (f);
