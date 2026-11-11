@@ -37,7 +37,10 @@ pub fn fullscreen(w: &mut Win, on: bool, native: bool) {
     if on == is_fullscreen(w) {
         return;
     }
-    if native {
+    if native && w.fs_busy {
+        // AppKit drops a toggle inside a transition: the transition's end applies it
+        w.fs_want = Some(on);
+    } else if native {
         w.window.toggleFullScreen(None);
     } else if on {
         w.saved = Some((w.window.frame(), w.window.styleMask()));
@@ -48,6 +51,18 @@ pub fn fullscreen(w: &mut Win, on: bool, native: bool) {
     } else if let Some((frame, style)) = w.saved.take() {
         w.window.setStyleMask(style);
         w.window.setFrame_display(frame, true);
+    }
+}
+
+/// A native transition started (`busy`) or ended: at its end, the state asked for during it, unless the window is
+/// in that state already.
+pub fn fullscreen_transition(w: &mut Win, busy: bool) {
+    w.fs_busy = busy;
+    if !busy
+        && let Some(on) = w.fs_want.take()
+        && on != is_fullscreen(w)
+    {
+        w.window.toggleFullScreen(None);
     }
 }
 

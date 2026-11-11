@@ -35,6 +35,8 @@ pub enum MacEv {
     Screens,
     /// A drag in the window's resize band asks for this frame (`resize::NhWindow`).
     Resize(WindowId, NSRect),
+    /// A native full-screen transition started (`true`) or ended, entered, exited or failed.
+    FullScreen(WindowId, bool),
 }
 
 thread_local! {
@@ -91,6 +93,36 @@ define_class!(
         #[unsafe(method(windowDidResignKey:))]
         fn did_resign_key(&self, _n: &NSNotification) {
             deliver(MacEv::Key(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowWillEnterFullScreen:))]
+        fn will_enter_full_screen(&self, _n: &NSNotification) {
+            deliver(MacEv::FullScreen(*self.ivars(), true));
+        }
+
+        #[unsafe(method(windowWillExitFullScreen:))]
+        fn will_exit_full_screen(&self, _n: &NSNotification) {
+            deliver(MacEv::FullScreen(*self.ivars(), true));
+        }
+
+        #[unsafe(method(windowDidEnterFullScreen:))]
+        fn did_enter_full_screen(&self, _n: &NSNotification) {
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn did_exit_full_screen(&self, _n: &NSNotification) {
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidFailToEnterFullScreen:))]
+        fn did_fail_to_enter_full_screen(&self, _w: &objc2_app_kit::NSWindow) {
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidFailToExitFullScreen:))]
+        fn did_fail_to_exit_full_screen(&self, _w: &objc2_app_kit::NSWindow) {
+            deliver(MacEv::FullScreen(*self.ivars(), false));
         }
     }
 );
