@@ -205,13 +205,25 @@ fn keypad(c: char) -> Option<u32> {
 /// A key press: `ignoring` is `charactersIgnoringModifiers`, `chars` is `characters`, `flags` the modifier flags.
 /// `None` for a key with no character (a dead key's first press).
 pub fn key(ignoring: &str, chars: &str, flags: usize, repeat: bool) -> Option<KeyEv> {
-    let c = ignoring.chars().next().or_else(|| chars.chars().next())?;
+    let map = MODMAP.with(Cell::get);
+    // an Option key that is no modifier (the right one by its own choice) gives its composed character, as NS's
+    // `characters`: the key is that character, and so is its text
+    let option = if flags & NS_RIGHT_OPTION != 0 {
+        map.right_alternate.unwrap_or(map.alternate)
+    } else {
+        map.alternate
+    };
+    let composes = flags & NS_OPTION != 0 && option == Choice::None;
+    let c = if composes && flags & (NS_CONTROL | NS_COMMAND) == 0 {
+        chars.chars().next().or_else(|| ignoring.chars().next())?
+    } else {
+        ignoring.chars().next().or_else(|| chars.chars().next())?
+    };
     let ks = if flags & NS_NUMERIC_PAD != 0 {
         keypad(c).unwrap_or_else(|| keysym(c))
     } else {
         keysym(c)
     };
-    let map = MODMAP.with(Cell::get);
     let mut k = KeyEv {
         keycode: 0,
         keysym: ks,
@@ -222,9 +234,8 @@ pub fn key(ignoring: &str, chars: &str, flags: usize, repeat: bool) -> Option<Ke
     };
     // text only from a plain (or shifted) printable key: chords and named keys go by their keysym
     let printable = !(0xfe00..0x0100_0000).contains(&ks);
-    // an Option key that is no modifier gives its composed character (option-e dead keys aside)
     let mut chord = NS_CONTROL | NS_COMMAND;
-    if map.alternate != Choice::None {
+    if flags & NS_OPTION != 0 && !composes {
         chord |= NS_OPTION;
     }
     if printable && flags & chord == 0 {
