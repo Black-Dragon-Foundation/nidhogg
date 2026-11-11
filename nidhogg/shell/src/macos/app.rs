@@ -969,11 +969,10 @@ impl ShellBackend for MacShell {
     }
 
     fn set_cards(&mut self, window: WindowId, list: &[crate::api::CardImage]) -> ShellResult {
-        if !self.windows.contains_key(&window) || self.kids.contains_key(&window) {
-            return Err(ShellError::State);
-        }
+        // a top-level window's or a child's (its blocks): shown by its root tree's next commit
+        let root = self.root_of(window).ok_or(ShellError::State)?;
         self.cards.entry(window).or_default().set(list)?;
-        self.owe(window);
+        self.owe(root);
         Ok(())
     }
 

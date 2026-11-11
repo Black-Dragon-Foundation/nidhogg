@@ -764,13 +764,13 @@ nhwl_blocks_add (Lisp_Object window)
     }
 }
 
-/* Before F's tree (its root R) is published: F and each drawable child
+/* Before F's tree is published: F and each drawable child
    frame under it give the glue their windows' blocks, while the frame
    has some (its parameter glitnir--blocks) or block layers left.  Each
    frame is a Glitnir root of its own, so a child frame's blocks are in
    its own coordinates and follow its moves and scale.  */
 static void
-nhwl_blocks_sync (struct frame *f, struct frame *r)
+nhwl_blocks_sync (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
@@ -786,14 +786,13 @@ nhwl_blocks_sync (struct frame *f, struct frame *r)
       nhwl_nblocks = 0;
       nhwl_blocks_add (FRAME_ROOT_WINDOW (f));
       nhwl_glue_rc (dpyinfo,
-		    NHG (nhg_blocks_sync (dpyinfo->glue,
-					  FRAME_NHWL_OUTPUT (r)->window,
+		    NHG (nhg_blocks_sync (dpyinfo->glue, out->window,
 					  out->glitnir_id, nhwl_blocks,
 					  nhwl_nblocks)));
     }
   FOR_EACH_FRAME (tail, frame)
     if (nhwl_child_of (XFRAME (frame), f))
-      nhwl_blocks_sync (XFRAME (frame), r);
+      nhwl_blocks_sync (XFRAME (frame));
 }
 
 #ifdef HAVE_NHMAC
@@ -865,7 +864,7 @@ nhwl_publish (struct frame *f)
   nhwl_nsurfaces = 0;
   nhwl_surface_add (r, 0, true);
   nhwl_layers_sync (r);
-  nhwl_blocks_sync (r, r);
+  nhwl_blocks_sync (r);
   int32_t rc = nhwl_glue_rc (dpyinfo,
 			     NHG (nhg_present (dpyinfo->glue, out->window,
 					       nhwl_surfaces, nhwl_nsurfaces,

@@ -21,6 +21,7 @@ use crate::display::Display;
 use crate::guard::GlueError;
 use glitnir::geom::Rect;
 use glitnir::scene::{Block, BlockKind, LayerDesc};
+use nhshell::api::CardImage;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -62,6 +63,9 @@ type Applied = (Rect, u32, Arc<[Block]>);
 #[derive(Debug, Default)]
 pub struct Blocks {
     applied: BTreeMap<u64, Applied>,
+    /// The block images last given to a shell that shows them itself (id and place): the cards' list carries them,
+    /// as images kept, since the shell's list is the window's whole list.
+    pub(crate) sent: Vec<(u64, (i32, i32, u32, u32))>,
 }
 
 impl Blocks {
@@ -187,35 +191,96 @@ pub fn sync_at(b: &mut Backings, key: u64, blocks: &[NhgBlock]) -> Result<u32, i
     Ok(u32::try_from(applied.len()).unwrap_or(u32::MAX))
 }
 
-/// [`sync_at`] for a shell that shows the cards on layers of its own (`cards_on_layers`): not drawn yet.
+/// [`sync_at`] for a shell that shows the cards on layers of its own (`cards_on_layers`, macOS): each window's blocks
+/// drawn alone over its text area ([`glitnir::compose::block_overlay`]), as images placed in the frame's native area,
+/// whenever any changed; `None` when nothing did (or the frame has no scale yet).  An empty list: the blocks went.
 pub fn images_at(
-    _b: &mut Backings,
-    _key: u64,
-    _blocks: &[NhgBlock],
-) -> Result<Option<Vec<nhshell::api::CardImage>>, i32> {
-    Ok(None)
+    b: &mut Backings,
+    key: u64,
+    blocks: &[NhgBlock],
+) -> Result<Option<Vec<CardImage>>, i32> {
+    let f = b.frame_mut(key)?;
+    let (s120, origin) = (f.scale120(), f.origin());
+    if s120 == 0 {
+        return Ok(None);
+    }
+    let planned = plan(blocks, s120, origin);
+    let applied = &mut f.blocks.applied;
+    let same = planned.len() == applied.len()
+        && planned.iter().all(|(seq, (clip, v))| {
+            applied
+                .get(seq)
+                .is_some_and(|(r, q, old)| r == clip && *q == s120 && **old == **v)
+        });
+    if same {
+        return Ok(None);
+    }
+    *applied = planned
+        .iter()
+        .map(|(seq, (clip, v))| (*seq, (*clip, s120, Arc::from(v.as_slice()))))
+        .collect();
+    let s = f64::from(s120) / 120.0;
+    Ok(Some(
+        planned
+            .into_iter()
+            .map(|(seq, (clip, v))| CardImage {
+                id: block_id(seq),
+                rect: (
+                    clip.x - origin.0,
+                    clip.y - origin.1,
+                    clip.w as u32,
+                    clip.h as u32,
+                ),
+                argb: Some(glitnir::compose::block_overlay(clip, &v, s).into()),
+            })
+            .collect(),
+    ))
 }
 
-/// [`sync_at`] for frame `frame` of shell window `window`.  A shell that shows window cards on layers of its own
-/// (`cards_on_layers`, macOS) draws no blocks yet: nothing is kept for it.
+/// [`sync_at`] for frame `frame`, whose shell window is `window` (a child frame's own).  A shell that shows window
+/// cards on layers of its own (`cards_on_layers`, macOS) shows the blocks the same way: [`images_at`]'s images, with
+/// the frame's cards as they are, as the window's list.
 pub fn sync(
     state: &mut Display,
     window: u64,
     frame: u64,
     blocks: &[NhgBlock],
 ) -> Result<u32, GlueError> {
-    let on_layers =
-        matches!(state.csd_parts(window), Ok((backend, ..)) if backend.cards_on_layers());
-    if on_layers {
-        return Ok(0);
+    if !state.backend().cards_on_layers() {
+        return Ok(sync_at(&mut state.backings, frame, blocks)?);
     }
-    Ok(sync_at(&mut state.backings, frame, blocks)?)
+    if let Some(list) = images_at(&mut state.backings, frame, blocks)? {
+        let cards = state
+            .backings
+            .frame_mut(frame)
+            .map(|f| f.cards.sent.clone())
+            .unwrap_or_default();
+        let mut full: Vec<CardImage> = cards
+            .iter()
+            .map(|&(id, rect)| CardImage {
+                id,
+                rect,
+                argb: None,
+            })
+            .collect();
+        full.extend(list.iter().cloned());
+        let given = state.backend().set_cards(window, &full).is_ok();
+        let f = state.backings.frame_mut(frame)?;
+        if given {
+            f.blocks.sent = list.iter().map(|c| (c.id, c.rect)).collect();
+        } else {
+            // refused: given again at the next publish
+            f.blocks.applied.clear();
+        }
+    }
+    Ok(u32::try_from(count(&mut state.backings, frame)).unwrap_or(u32::MAX))
 }
 
 /// The next sync gives every frame's blocks again (a reconnect: the shell's surfaces start over).
 pub fn forget_all(b: &mut Backings) {
     for (_, f) in b.frames_mut() {
         f.blocks.applied.clear();
+        f.blocks.sent.clear();
     }
 }
 

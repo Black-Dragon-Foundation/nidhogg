@@ -48,6 +48,9 @@ struct Applied {
 #[derive(Debug, Default)]
 pub struct Cards {
     applied: BTreeMap<u64, Applied>,
+    /// The card images last given to a shell that shows them itself (id and place): the block images' list carries
+    /// them, as images kept, since the shell's list is the window's whole list.
+    pub(crate) sent: Vec<(u64, (i32, i32, u32, u32))>,
 }
 
 impl Cards {
@@ -348,11 +351,26 @@ pub fn sync(
     if !on_layers {
         return Ok(sync_at(&mut state.backings, frame, windows)?);
     }
-    if let Some(list) = images_at(&mut state.backings, frame, windows)?
-        && let Ok((backend, ..)) = state.csd_parts(window)
-    {
-        // as for a child's chrome, a refused list is given again with the next change
-        let _ = backend.set_cards(window, &list);
+    if let Some(list) = images_at(&mut state.backings, frame, windows)? {
+        // the window's whole list: the cards, then its block images as they are (`blocks::sync`)
+        let blocks = state
+            .backings
+            .frame_mut(frame)
+            .map(|f| f.blocks.sent.clone())
+            .unwrap_or_default();
+        let mut full = list.clone();
+        full.extend(blocks.iter().map(|&(id, rect)| CardImage {
+            id,
+            rect,
+            argb: None,
+        }));
+        if let Ok((backend, ..)) = state.csd_parts(window) {
+            // as for a child's chrome, a refused list is given again with the next change
+            let _ = backend.set_cards(window, &full);
+        }
+        if let Ok(f) = state.backings.frame_mut(frame) {
+            f.cards.sent = list.iter().map(|c| (c.id, c.rect)).collect();
+        }
     }
     Ok(u32::try_from(count(&mut state.backings, frame)).unwrap_or(u32::MAX))
 }
@@ -361,6 +379,7 @@ pub fn sync(
 pub fn forget_all(b: &mut Backings) {
     for (_, f) in b.frames_mut() {
         f.cards.applied.clear();
+        f.cards.sent.clear();
     }
 }
 
