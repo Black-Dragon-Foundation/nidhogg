@@ -15,9 +15,12 @@
   (lambda (_window pos dir) (push (list name dir pos) mouse-sensor-gui--log)))
 
 (defun mouse-sensor-gui--run ()
-  "Run the queued sensor events: read_char runs each as it fetches it, so read what is pending, never waiting."
-  (let ((input-pending-p-filter-events nil))
-    (while (input-pending-p) (read-event nil nil 0))))
+  "Run the queued sensor events: read_char runs each as it fetches them, so one read with a short timeout runs all that
+are pending (a read with no timeout left returns before it looks).  At most 20 reads: other input pending ends it too."
+  (let ((input-pending-p-filter-events nil) (n 0))
+    (while (and (< n 20) (input-pending-p))
+      (read-event nil nil 0.01)
+      (setq n (1+ n)))))
 
 (defun mouse-sensor-gui--xy (pos)
   "Frame pixel coordinates of buffer position POS in the selected window."
@@ -44,6 +47,10 @@
            (insert (propertize "aaaa" 'mouse-sensor-functions (list (mouse-sensor-gui--sensor 'A))) " bbbb cccc")
            (overlay-put (make-overlay 6 10) 'mouse-sensor-functions (list (mouse-sensor-gui--sensor 'B)))
            (redisplay t)
+           ;; start off every sensor, with nothing queued: what an earlier test or the setup's redisplay noted is gone
+           (nidhogg--note-mouse nil 'leave nil)
+           (mouse-sensor-gui--run)
+           (setq mouse-sensor-gui--log nil)
            ,@body)
        ;; off every sensor before the buffer goes
        (nidhogg--note-mouse nil 'leave nil)
@@ -93,7 +100,9 @@
         (nidhogg--note-mouse nil x y))
       (let ((unread-command-events (list ?\C-x))
             (keys nil))
-        (setq keys (read-key-sequence nil))
+        ;; the deadline only bounds a failure (no sensor event: nothing would give the o)
+        (setq keys (with-timeout (10 (ert-fail (list "no sensor event" :log mouse-sensor-gui--log)))
+                     (read-key-sequence nil)))
         (should ran)
         (should (equal keys (kbd "C-x o")))
         ;; nothing of it is input: not in the recent keys
