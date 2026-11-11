@@ -546,7 +546,26 @@ mod coretext {
         s.preferred.clear();
     }
 
-    /// The faces Core Text lists (`macfont_list`'s families, in Core Text's order); a face's id is its index plus one.
+    /// Core Text's face `i` (`text::face_at`) as the matcher sees it; its id is `i` plus one.
+    fn font_face(i: usize, f: &text::Face) -> FontFace {
+        FontFace {
+            id: i as u64 + 1,
+            family: f.family.clone(),
+            foundry: "apple".into(),
+            weight: crate::fontspec::weight_from_trait(f.weight),
+            slant: crate::fontspec::slant_from_trait(f.slant),
+            width: crate::fontspec::width_from_trait(f.width),
+            spacing: spacing(f.symbolic & text::TRAIT_MONO != 0),
+            // coverage is read lazily, in `fits`
+            scripts: Vec::new(),
+            languages: Vec::new(),
+            registries: Vec::new(),
+            color: f.symbolic & text::TRAIT_COLOR != 0,
+            bitmap_only: false,
+        }
+    }
+
+    /// The faces Core Text lists (`macfont_list`'s families, in Core Text's order), then those found by name.
     pub struct CoreText;
 
     impl FontSource for CoreText {
@@ -554,21 +573,14 @@ mod coretext {
             text::faces()
                 .iter()
                 .enumerate()
-                .map(|(i, f)| FontFace {
-                    id: i as u64 + 1,
-                    family: f.family.clone(),
-                    foundry: "apple".into(),
-                    weight: crate::fontspec::weight_from_trait(f.weight),
-                    slant: crate::fontspec::slant_from_trait(f.slant),
-                    width: crate::fontspec::width_from_trait(f.width),
-                    spacing: spacing(f.symbolic & text::TRAIT_MONO != 0),
-                    // coverage is read lazily, in `fits`
-                    scripts: Vec::new(),
-                    languages: Vec::new(),
-                    registries: Vec::new(),
-                    color: f.symbolic & text::TRAIT_COLOR != 0,
-                    bitmap_only: false,
-                })
+                .map(|(i, f)| font_face(i, f))
+                .collect()
+        }
+
+        fn named(&self, family: &str) -> Vec<FontFace> {
+            text::named(family)
+                .into_iter()
+                .filter_map(|i| text::face_at(i).map(|f| font_face(i, f)))
                 .collect()
         }
 
@@ -608,11 +620,10 @@ mod coretext {
         /// languages the one asked for (`zh-Hans` is had by a face that lists `zh`).  A script without characters is
         /// had by every face.
         fn fits(&self, face: &FontFace, script: &str, language: &str) -> bool {
-            let faces = text::faces();
             let Some(f) = usize::try_from(face.id)
                 .ok()
                 .and_then(|i| i.checked_sub(1))
-                .and_then(|i| faces.get(i))
+                .and_then(text::face_at)
             else {
                 return false;
             };
@@ -633,11 +644,10 @@ mod coretext {
 
         /// The face's character set (`macfont_has_char` on an entity).
         fn has_char(&self, id: u64, c: u32) -> Option<bool> {
-            let faces = text::faces();
             let f = usize::try_from(id)
                 .ok()
                 .and_then(|i| i.checked_sub(1))
-                .and_then(|i| faces.get(i))?;
+                .and_then(text::face_at)?;
             Some(f.has(c))
         }
     }
@@ -666,8 +676,7 @@ mod coretext {
 
     /// `macfont_open`: the face's font at `size` pixels, its spacing and synthesised traits from `flags`.
     pub fn open(id: u64, size: i32, flags: u32) -> Option<NhgFontMetrics> {
-        let faces = text::faces();
-        let face = faces.get(usize::try_from(id).ok()?.checked_sub(1)?)?;
+        let face = text::face_at(usize::try_from(id).ok()?.checked_sub(1)?)?;
         let synthetic_italic =
             flags & NHG_FONT_SYNTH_ITALIC != 0 && face.symbolic & text::TRAIT_ITALIC == 0;
         let synthetic_bold =
@@ -810,12 +819,16 @@ mod coretext {
         const ORACLE: &str = include_str!("../tests/fixtures/ns-font-oracle.tsv");
 
         /// The face NS's `find-font` opened for FAMILY: of WEIGHT (Emacs's numeric weight) when the oracle says, else
-        /// the family's upright regular face (Core Text's order).
+        /// the family's upright regular face (Core Text's order); a family the listing leaves out is found by name.
         fn face_of(family: &str, weight: Option<i32>) -> Option<u64> {
-            let faces = text::faces();
-            faces
+            text::faces()
                 .iter()
                 .enumerate()
+                .chain(
+                    text::named(family)
+                        .into_iter()
+                        .filter_map(|i| text::face_at(i).map(|f| (i, f))),
+                )
                 .filter(|(_, f)| f.family == family)
                 .filter(|(_, f)| {
                     weight.is_none_or(|w| crate::fontspec::weight_from_trait(f.weight) == w)

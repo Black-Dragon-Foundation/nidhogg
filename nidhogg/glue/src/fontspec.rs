@@ -220,6 +220,11 @@ impl FontFace {
 pub trait FontSource {
     /// Every face, grouped by family in the order the platform prefers.
     fn faces(&self) -> Vec<FontFace>;
+    /// The faces of `family` when `faces` leaves it out but the platform opens it by name (`macfont_list` matches a
+    /// named family directly); none by default.
+    fn named(&self, _family: &str) -> Vec<FontFace> {
+        Vec::new()
+    }
     /// The families `family` stands for (`monospace`, `sans-serif`), most wanted first.
     fn aliases(&self, _family: &str) -> Vec<String> {
         Vec::new()
@@ -377,12 +382,16 @@ fn candidates(src: &dyn FontSource, spec: &FontSpec) -> Vec<(usize, FontFace)> {
         let mut names = vec![spec.family.clone()];
         names.extend(src.aliases(&spec.family));
         for (rank, n) in names.iter().enumerate() {
+            let before = order.len();
             order.extend(
                 faces
                     .iter()
                     .filter(|f| f.family.eq_ignore_ascii_case(n))
                     .map(|f| (rank, f.clone())),
             );
+            if order.len() == before {
+                order.extend(src.named(n).into_iter().map(|f| (rank, f)));
+            }
         }
     }
     let charset = if unicode_registry(&spec.registry) {
@@ -685,10 +694,19 @@ mod tests {
 
     struct Fixture {
         faces: Vec<FontFace>,
+        /// Faces the listing leaves out, found by their family's name.
+        hidden: Vec<FontFace>,
     }
     impl FontSource for Fixture {
         fn faces(&self) -> Vec<FontFace> {
             self.faces.clone()
+        }
+        fn named(&self, family: &str) -> Vec<FontFace> {
+            self.hidden
+                .iter()
+                .filter(|f| f.family.eq_ignore_ascii_case(family))
+                .cloned()
+                .collect()
         }
         fn aliases(&self, family: &str) -> Vec<String> {
             match family {
@@ -761,6 +779,7 @@ mod tests {
                 bitmap,
                 koi,
             ],
+            hidden: vec![face(13, "Courier Hidden", 80, 100, 100, latin)],
         }
     }
 
@@ -860,6 +879,29 @@ mod tests {
         assert_eq!(slant_from_trait(0.1), 200);
         assert_eq!(width_from_trait(0.4), 200);
         assert_eq!(width_from_trait(-1.0), 50);
+    }
+
+    #[test]
+    fn family_left_out_of_the_listing_found_by_name() {
+        // macfont_list matches a named family directly: Core Text hides some from its list (Courier on macOS 27)
+        let fx = fixture();
+        let got = list(
+            &fx,
+            &FontSpec {
+                family: "courier hidden".into(),
+                ..spec()
+            },
+        );
+        assert_eq!(ids(&got), [(13, 0)]);
+        // a listed family does not ask
+        let got = list(
+            &fx,
+            &FontSpec {
+                family: "Courier".into(),
+                ..spec()
+            },
+        );
+        assert_eq!(ids(&got), [(6, 0)]);
     }
 
     #[test]
