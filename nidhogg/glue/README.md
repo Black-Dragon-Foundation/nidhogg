@@ -175,7 +175,10 @@ stacking, input region and mapping go out with its tree's commit.
   parameters change. A window made again (a reparent) gets both again; the debug check compares the parent. When C
   paints the frame's border (its child-frame border) it pushes its width and colour too (`nhg_child_border`): the
   layer takes them with the chrome, so the rounded corners keep the border as a ring, as Glitnir's pgtk path did.
-- **Margin:** the shadow needs room around the native area (spread, three sigma of blur, the offset). It is the frame's
+  A `ring` in the chrome (slots 22-23, as a window card's) is an edge line one logical px wide just outside the frame,
+  drawn after the shadow.
+- **Margin:** the shadow needs room around the native area (spread, three sigma of blur, the offset); a ring keeps its
+  width on every side. It is the frame's
   border, laid out by `nhg_csd_layout` like a title bar, so `nhg_frame_offsets`, the backing, the damage and the
   pointer use it. `nhg_layer_ensure` puts a child's Glitnir layer inside it and hands the layer the chrome. The
   frame's own pixels stop at the native area: C clears the margin each time the backing is made or resized
