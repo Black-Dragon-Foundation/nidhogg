@@ -792,6 +792,81 @@ the window's; without the card the corner is the window's."
            (nhmac-gui--say "nhmac-cards-typing-no-change: %S -> %S" c1 c2)
            (should (equal c1 c2))))))))
 
+(defconst glitnir-nhmac--block-ring #xff0000 "A block's ring: a colour no other row shows.")
+
+(defun glitnir-nhmac--ring-on (w)
+  "Give window W, whose buffer has at least five lines, a ring block around its lines 2 to 4; return their height.
+The line count is the default line height times 3 (no line spacing in the rows)."
+  (with-current-buffer (window-buffer w)
+    (let ((s (save-excursion (goto-char (point-min)) (forward-line 1) (point-marker)))
+          (e (save-excursion (goto-char (point-min)) (forward-line 4) (point-marker))))
+      (set-window-parameter w 'glitnir-blocks
+                            `((ring ,s ,e :radius 6 :ring (,(glitnir-nhmac--hex glitnir-nhmac--block-ring) . 1)
+                                    :beneath ,(glitnir-nhmac--hex glitnir-nhmac--gap))))
+      (* 3 (frame-char-height (window-frame w))))))
+
+(defun glitnir-nhmac--ring-check (row img box height)
+  "Assert that IMG shows the block ring inside BOX (X0 Y0 X1 Y1), HEIGHT device pixels tall within 3; ROW names it."
+  (let ((r (glitnir-nhmac--box img glitnir-nhmac--block-ring)))
+    (nhmac-gui--say "%s: ring %S in %S, rows %d px" row r box height)
+    (should r)
+    (should (>= (nth 0 r) (nth 0 box)))
+    (should (<= (nth 2 r) (nth 2 box)))
+    (should (> (nth 1 r) (nth 1 box)))
+    (should (<= (nth 3 r) (nth 3 box)))
+    (should (<= (abs (- (1+ (- (nth 3 r) (nth 1 r))) height)) 3))))
+
+(ert-deftest nhmac-blocks-drawn-like-cards ()
+  "A window's ring block shows on the screen around its rows, as one image over the frame's pixels next to its
+cards; a child frame's window's ring shows the same way, on the child; each goes with its parameter."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-cards
+   nil
+   (lambda (left _right)
+     (with-current-buffer (window-buffer left) (dotimes (i 8) (insert (format "line %d\n" i))))
+     (let ((h (glitnir-nhmac--ring-on left)))
+       (should (= (length (plist-get (glitnir-nhmac--cards t) :cards)) 1))
+       (glitnir-nhmac--ring-check 'nhmac-blocks-drawn-like-cards (glitnir-nhmac--grab "block-ring")
+                                  (glitnir-nhmac--wbox left) h)
+       (set-window-parameter left 'glitnir-blocks nil)
+       (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
+       (should-not (glitnir-nhmac--box (glitnir-nhmac--grab "block-ring-gone") glitnir-nhmac--block-ring))))))
+
+(ert-deftest nhmac-blocks-drawn-on-a-child-frame ()
+  "A child frame's window with a ring block: the child's own layers show the ring, inside the child on the screen;
+the root has no block image."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((child (nhmac-gui--child '((width . 30) (height . 8)) 80 200))
+         (w (frame-root-window child)))
+    (unwind-protect
+        (progn
+          (with-current-buffer (window-buffer w)
+            (erase-buffer)
+            (dotimes (i 7) (insert (format "line %d\n" i))))
+          (let ((h (glitnir-nhmac--ring-on w)))
+            (force-window-update)
+            (redisplay t)
+            (nhmac-gui--settle)
+            (let* ((cards (nhmac--test-cards child))
+                   (x0 80) (y0 200)
+                   (box (list x0 y0 (+ x0 (frame-pixel-width child) -1) (+ y0 (frame-pixel-height child) -1))))
+              (nhmac-gui--say "nhmac-blocks-drawn-on-a-child-frame: child cards %S, root cards %S"
+                              cards (nhmac--test-cards))
+              (should (= (length (plist-get cards :cards)) 1))
+              (should (null (plist-get (nhmac--test-cards) :cards)))
+              (glitnir-nhmac--ring-check 'nhmac-blocks-drawn-on-a-child-frame
+                                         (glitnir-nhmac--grab "block-ring-child") box h)))
+          (set-window-parameter w 'glitnir-blocks nil)
+          (force-window-update)
+          (redisplay t)
+          (nhmac-gui--settle)
+          (should (null (plist-get (nhmac--test-cards child) :cards))))
+      (with-current-buffer (window-buffer w) (erase-buffer))
+      (delete-frame child)
+      (nhmac-gui--settle))))
+
 (ert-deftest glitnir-nhmac/card-removed-no-residue ()
   "A card that goes leaves the screen as it was before it came, and the root has no card layers."
   :tags '(draws)

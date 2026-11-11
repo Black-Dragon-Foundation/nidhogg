@@ -6,6 +6,7 @@
 use super::chrome::{CGImageRelease, argb_image};
 use crate::api::{CardImage, ShellError, ShellResult};
 use crate::units::Scale;
+use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -15,10 +16,12 @@ use std::collections::BTreeMap;
 /// A card's place in its root's surface: x, y, width, height, device pixels.
 type Place = (i32, i32, u32, u32);
 
-/// A root's cards: the layers shown, by card id, and the list waiting for the next commit.
+/// A window's cards (a root's window cards, and its windows' blocks; a child's blocks): the layers shown, by card id,
+/// the layer they are in, and the list waiting for the next commit.
 #[derive(Default)]
 pub struct Cards {
     shown: BTreeMap<u64, (Retained<CALayer>, Place)>,
+    host: Option<Retained<CALayer>>,
     pending: Option<Vec<CardImage>>,
     /// Images set on a layer since the window opened (test hook).
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
@@ -45,13 +48,40 @@ impl Cards {
                 _ => {}
             }
         }
-        self.pending = Some(list.to_vec());
+        // an image kept (None) that the list before had not shown yet is still to be shown: it carries over
+        let before = self.pending.take().unwrap_or_default();
+        self.pending = Some(
+            list.iter()
+                .map(|c| match &c.argb {
+                    None => CardImage {
+                        argb: before
+                            .iter()
+                            .find(|p| p.id == c.id)
+                            .and_then(|p| p.argb.clone()),
+                        ..c.clone()
+                    },
+                    Some(_) => c.clone(),
+                })
+                .collect(),
+        );
         Ok(())
     }
 
     /// Apply the waiting list to `root` (the root's layer, `h` points tall) at `scale`: inside the root tree's
     /// transaction.
     pub fn apply(&mut self, root: &CALayer, h: f64, scale: Scale) {
+        // a window that changed hosts (a child made top-level, or the reverse): its layers move to the new one
+        if !self
+            .host
+            .as_ref()
+            .is_some_and(|l| std::ptr::eq(Retained::as_ptr(l), root))
+        {
+            for (l, _) in self.shown.values() {
+                l.removeFromSuperlayer();
+                root.insertSublayer_atIndex(l, 0);
+            }
+            self.host = Some(root.retain());
+        }
         let Some(list) = self.pending.take() else {
             return;
         };

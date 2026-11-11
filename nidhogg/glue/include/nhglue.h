@@ -869,8 +869,9 @@ typedef struct
   int32_t beneath_rgb;
 } NhgBlock;
 
-/* FRAME (WINDOW its tree's shell window) is about to be published with the N blocks at BLOCKS: each window with blocks
-   gets its block layer, the others lose theirs.  Returns how many windows have block layers.  */
+/* FRAME (WINDOW its own shell window, a child frame's too) is about to be published with the N blocks at BLOCKS: each
+   window with blocks gets its block layer, the others lose theirs (a shell that shows cards itself gets them as images
+   with the frame's cards).  Returns how many windows have block layers.  */
 int32_t nhg_blocks_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const NhgBlock *blocks, size_t n);
 
 /* How many of FRAME's windows have a block layer (while it is not 0, C lists the frame's blocks at each publish).  */

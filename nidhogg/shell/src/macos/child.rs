@@ -269,6 +269,8 @@ impl MacShell {
         if let Some(o) = self.order.get_mut(&k.parent) {
             o.retain(|&c| c != id);
         }
+        // its card layers are in its content layer, which leaves with its container
+        self.cards.remove(&id);
         let under = self.order.remove(&id).unwrap_or_default();
         self.retired.push((root, k));
         for c in under {
@@ -669,7 +671,6 @@ impl MacShell {
             ..
         } = self;
         let w = &windows[&root];
-        let cards = cards.get_mut(&root);
         // a stretched or cropped picture: the surface shown is not the window's content size in device pixels
         if drawn.contains(&root) && w.surfaces.newest().is_some() {
             let (cw, ch) = w.content_size();
@@ -686,7 +687,7 @@ impl MacShell {
             {
                 layers::show(&w.layer, s, w.surfaces.was_same(), scale.factor());
             }
-            if let Some(c) = cards {
+            if let Some(c) = cards.get_mut(&root) {
                 c.apply(&w.layer, f64::from(rh), scale);
             }
             for (r, k) in retired.iter() {
@@ -722,6 +723,10 @@ impl MacShell {
                     layers::show(&content, s, k.surfaces.was_same(), scale.factor());
                     let (sw, sh) = k.surfaces.size();
                     (k.w, k.h) = (scale.pt_i(sw), scale.pt_i(sh));
+                }
+                // its images (its windows' blocks) over its picture, as a root's cards over the root's
+                if let Some(c) = cards.get_mut(&id) {
+                    c.apply(&content, f64::from(k.h), scale);
                 }
                 let host = if k.out { Host::Panel } else { Host::Parent };
                 if k.shown.host != host {
