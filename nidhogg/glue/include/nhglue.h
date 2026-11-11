@@ -839,6 +839,39 @@ int32_t nhg_layers_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const N
    windows at each publish).  */
 int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
 
+/* ---- Window blocks -------------------------------------------------------------------------------------------------
+   Rings and rules around runs of a window's rows (the window parameter glitnir-blocks, resolved by glitnir.el into
+   glitnir--blocks), drawn by Glitnir over the frame's pixels inside the window's text area.  C only resolves each
+   block's rows against the window's current matrix; the glue plans the layers and Glitnir draws.  Every frame of a
+   published tree lists its own, child frames too.  */
+
+#define NHG_BLOCK_RULE         1   /* the bottom line only, not a ring */
+#define NHG_BLOCK_OPEN_TOP     2   /* the block goes on above the window's first text row: no top side */
+#define NHG_BLOCK_OPEN_BOTTOM  4   /* the block goes on below its last text row: no bottom side */
+
+/* One block of Emacs window SEQ: CLIP its text area (window_box (w, TEXT_AREA)) and RECT the block's rows from x0 to
+   x1, both device pixels with the native area's origin; FLAGS NHG_BLOCK_*; RADIUS the outer corner radius in device
+   pixels; RING_RGB the line's 0xRRGGBB (-1 none) at RING_OPACITY (0 to 1); BENEATH_RGB the colour beneath the block,
+   what a ring's corners show outside its rounded path.  */
+typedef struct
+{
+  uint64_t seq;
+  NhgRect clip;
+  NhgRect rect;
+  uint32_t flags;
+  int32_t radius;
+  int32_t ring_rgb;
+  float ring_opacity;
+  int32_t beneath_rgb;
+} NhgBlock;
+
+/* FRAME (WINDOW its tree's shell window) is about to be published with the N blocks at BLOCKS: each window with blocks
+   gets its block layer, the others lose theirs.  Returns how many windows have block layers.  */
+int32_t nhg_blocks_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const NhgBlock *blocks, size_t n);
+
+/* How many of FRAME's windows have a block layer (while it is not 0, C lists the frame's blocks at each publish).  */
+int32_t nhg_blocks_count (NhgDisplay *d, uint64_t frame);
+
 /* Layout legs.  Emacs window W_SEQ of FRAME (WINDOW its shell window, a top-level's) has the layout leg vector V, N
    floats as glitnir--leg-vector gave them (lisp/glitnir.el's glitnir--leg-slots; N 0 for none).  A new capture number
    asks the presenter for a picture of the window's text area before the packets published after this call, and makes

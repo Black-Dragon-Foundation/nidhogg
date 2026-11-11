@@ -161,6 +161,46 @@ pub struct Card {
     pub fill_argb: u32,
 }
 
+/// What a [`Block`] draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BlockKind {
+    /// A ring just inside the block's rectangle with rounded corners, the corners outside the rounded path carved in
+    /// the colour beneath.
+    #[default]
+    Ring,
+    /// Only the bottom side: a hairline on the rectangle's last pixel rows, its full width, no corners.
+    Rule,
+}
+
+/// A block of rows inside a window ([`Scene::set_blocks`]), drawn OVER the frame's pixels: a ring inside its rectangle
+/// (or a rule along its bottom), never a fill, so the rows' own text, tints and boxes stay; outside the rounded path
+/// the ring's four corner squares show the colour beneath the block, so a fill the rows give themselves reads as
+/// rounded.  A side cut off by scrolling is open: no line and no corners there.  Colours are premultiplied ARGB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Block {
+    /// Root device px.
+    pub rect: Rect,
+    pub kind: BlockKind,
+    /// The outer edge's corner radius, device px (clamped to half the shorter side).
+    pub radius_px: u32,
+    /// The line's width, device px, and its colour (0: none).
+    pub ring_px: u32,
+    pub ring_argb: u32,
+    /// What lies beneath the block (opaque): what the corners show outside the rounded path.
+    pub beneath_argb: u32,
+    pub open_top: bool,
+    pub open_bottom: bool,
+}
+
+/// The parts of the scene the blocks of a window layer at P draw (root px, clipped to its rectangle).
+pub fn block_patches(p: &Placed) -> Vec<Rect> {
+    p.blocks
+        .iter()
+        .map(|b| b.rect.intersect(&p.rect))
+        .filter(|r| !r.is_empty())
+        .collect()
+}
+
 /// The widest divider a card group fills, in device px: windows further apart are separate cards.
 pub const CARD_GROUP_GAP: i32 = 32;
 
@@ -254,7 +294,11 @@ fn scrolled_corners(
         placed
             .iter()
             .filter(|p| p.parent == root)
-            .flat_map(card_patches)
+            .flat_map(|p| {
+                let mut v = card_patches(p);
+                v.extend(block_patches(p));
+                v
+            })
             .map(|sq| sq.intersect(&rect).translate(-rect.x, -rect.y))
             .filter(|r| !r.is_empty())
             .collect()
@@ -365,6 +409,8 @@ struct Layer {
     visible: bool,
     chrome: Option<Chrome>,
     card: Option<Card>,
+    /// A window layer's blocks.
+    blocks: Arc<[Block]>,
     /// A window layer that is its own output.
     own: bool,
 }
@@ -380,6 +426,8 @@ pub struct Placed {
     pub chrome: Option<Chrome>,
     /// A window layer's card ([`Scene::set_card`]).
     pub card: Option<Card>,
+    /// A window layer's blocks ([`Scene::set_blocks`]).
+    pub blocks: Arc<[Block]>,
     /// [`bounds`] of the rectangle and chrome, with a card's ring.
     pub bounds: Rect,
 }
@@ -391,6 +439,7 @@ impl Placed {
             && self.scale == o.scale
             && self.chrome == o.chrome
             && self.card == o.card
+            && self.blocks == o.blocks
     }
 }
 
@@ -424,10 +473,12 @@ impl Scene {
                 self.mark_restacked(d.id);
             }
         }
-        let (chrome, card, own) = self
+        let (chrome, card, blocks, own) = self
             .layers
             .get(&d.id)
-            .map_or((None, None, false), |l| (l.chrome, l.card.clone(), l.own));
+            .map_or((None, None, Arc::from([]), false), |l| {
+                (l.chrome, l.card.clone(), Arc::clone(&l.blocks), l.own)
+            });
         let window = kind == Kind::Window;
         self.layers.insert(
             d.id,
@@ -438,6 +489,7 @@ impl Scene {
                 visible: d.visible != 0,
                 chrome,
                 card: card.filter(|_| window),
+                blocks: if window { blocks } else { Arc::from([]) },
                 own: own && window,
             },
         );
@@ -519,6 +571,17 @@ impl Scene {
         match self.layers.get_mut(&id) {
             Some(l) if l.kind == Kind::Window => {
                 l.card = card;
+                Ok(())
+            }
+            _ => Err(GLITNIR_E_ARG),
+        }
+    }
+
+    /// Set window layer ID's blocks (empty: none).  `GLITNIR_E_ARG` for an unknown id or a layer that is not a window.
+    pub fn set_blocks(&mut self, id: u64, blocks: Arc<[Block]>) -> Result<(), i32> {
+        match self.layers.get_mut(&id) {
+            Some(l) if l.kind == Kind::Window => {
+                l.blocks = blocks;
                 Ok(())
             }
             _ => Err(GLITNIR_E_ARG),
@@ -681,6 +744,7 @@ impl Scene {
                     scale: l.scale,
                     chrome: l.chrome,
                     card: l.card.clone(),
+                    blocks: Arc::clone(&l.blocks),
                     bounds: card_bounds(l.rect, l.chrome.as_ref(), l.card.as_ref()),
                 });
                 self.walk(id, out);
@@ -778,6 +842,23 @@ impl Scene {
                         } else {
                             out.extend(card_change(o, n));
                         }
+                        if o.blocks != n.blocks {
+                            out.extend(block_patches(o));
+                            out.extend(block_patches(n));
+                        }
+                    }
+                    // a window that only changed its blocks: where they draw, old and new
+                    (Some(o), Some(n))
+                        if !rescaled
+                            && o.kind == Kind::Window
+                            && n.kind == Kind::Window
+                            && o.rect == n.rect
+                            && o.scale == n.scale
+                            && o.chrome == n.chrome
+                            && !self.restacked.contains(&id) =>
+                    {
+                        out.extend(block_patches(o));
+                        out.extend(block_patches(n));
                     }
                     _ => {
                         out.extend(o.map(|p| p.bounds));
@@ -893,6 +974,11 @@ pub fn with<R>(root: u64, f: impl FnOnce(&mut Scene) -> Result<R, i32>) -> Resul
 /// none.
 pub fn set_card(root: u64, layer: u64, card: Option<Card>) -> Result<(), i32> {
     with(root, |s| s.set_card(layer, card))
+}
+
+/// Set window layer LAYER's blocks in ROOT's scene ([`Scene::set_blocks`]); `GLITNIR_E_STATE` when ROOT has no scene.
+pub fn set_blocks(root: u64, layer: u64, blocks: Arc<[Block]>) -> Result<(), i32> {
+    with(root, |s| s.set_blocks(layer, blocks))
 }
 
 /// ROOT's committed scene as its last commit left it; `None` when ROOT has no scene.
