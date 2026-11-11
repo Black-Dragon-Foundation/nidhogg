@@ -119,8 +119,16 @@ nhwl_apply_param (struct frame *f, uint32_t key, Lisp_Object prop,
     switch (key)
       {
       case NHG_PK_MENU_BAR_LINES:
+#ifdef HAVE_EXT_MENU_BAR
+	/* The system's menu bar (Naglfar), as NS's: it takes no lines of
+	   the frame (ns_set_menu_bar_lines).  */
+	FRAME_EXTERNAL_MENU_BAR (f) = a->n > 0;
+	FRAME_MENU_BAR_LINES (f) = 0;
+	FRAME_MENU_BAR_HEIGHT (f) = 0;
+#else
 	FRAME_MENU_BAR_LINES (f) = a->n;
 	FRAME_MENU_BAR_HEIGHT (f) = a->n * FRAME_LINE_HEIGHT (f);
+#endif
 	break;
       case NHG_PK_CHILD_FRAME_BORDER_WIDTH:
 	f->child_frame_border_width = a->n;
