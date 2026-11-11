@@ -1412,6 +1412,15 @@ frame's text still reaches the surface."
         (push out files)))
     (sort files #'string<)))
 
+(defun nhmac-gui--image-pixel-size (file)
+  "FILE's pixel size (W . H) as sips reads it (ImageIO's own header read), or nil."
+  (with-temp-buffer
+    (call-process "sips" nil t nil "-g" "pixelWidth" "-g" "pixelHeight" file)
+    (goto-char (point-min))
+    (let ((w (and (re-search-forward "pixelWidth: \\([0-9]+\\)" nil t) (string-to-number (match-string 1))))
+          (h (and (re-search-forward "pixelHeight: \\([0-9]+\\)" nil t) (string-to-number (match-string 1)))))
+      (and w h (cons w h)))))
+
 (defmacro nhmac-gui--with-image-scene (file &rest body)
   "Run BODY with FILE's image alone at the top left of a buffer on `nhmac-gui--font-bg', no cursor, mode line or
 fringes; the frame's colours are put back after."
@@ -1447,8 +1456,8 @@ fringes; the frame's colours are put back after."
     (should (= (length sizes) 8))))
 
 (ert-deftest nhmac-images-native ()
-  "PNG, JPEG, GIF (animated), TIFF, WebP and HEIC decode through ImageIO at NS's sizes; at scale 1 their pixels on
-screen are within 2/255 of NS's in the same run (NS points are pixels there)."
+  "PNG, JPEG, GIF (animated), TIFF, WebP and HEIC decode through ImageIO at their files' sizes; at scale 1 the pixels
+on screen of each that NS decoded are within 2/255 of NS's in the same run (NS points are pixels there)."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (type '(png jpeg gif tiff webp heic))
@@ -1458,10 +1467,15 @@ screen are within 2/255 of NS's in the same run (NS points are pixels there)."
               (read (current-buffer)))))
     (dolist (f (nhmac-gui--image-files))
       (let* ((name (file-name-nondirectory f))
-             (size (image-size (create-image f nil nil :scale 1) t)))
-        (nhmac-gui--say "nhmac-images-native: %s NS %S Naglfar %S" name (cdr (assoc name ns)) size)
-        (should (equal size (cdr (assoc name ns))))
-        (when (equal (getenv "GLITNIR_GUI_SCALE") "1")
+             (size (image-size (create-image f nil nil :scale 1) t))
+             (pixels (nhmac-gui--image-pixel-size f))
+             ;; the stock NS build on the runner decodes no TIFF or HEIC (its image is Emacs's 30 x 30 stand-in,
+             ;; nothing on screen): the file's own size is the reference, and only images NS decoded are compared
+             ;; pixel by pixel
+             (ns-decoded (equal (cdr (assoc name ns)) pixels)))
+        (nhmac-gui--say "nhmac-images-native: %s NS %S Naglfar %S file %S" name (cdr (assoc name ns)) size pixels)
+        (should (equal size pixels))
+        (when (and ns-decoded (equal (getenv "GLITNIR_GUI_SCALE") "1"))
           (nhmac-gui--with-image-scene f
             (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop
                                           (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t))))
