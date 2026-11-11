@@ -25,6 +25,7 @@ pub mod startup;
 #[cfg(feature = "svg")]
 pub mod svg;
 pub mod trace;
+pub mod units;
 pub mod vars;
 pub mod wait;
 #[cfg(feature = "wayland")]
