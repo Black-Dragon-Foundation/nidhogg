@@ -2818,6 +2818,35 @@ fonts, and the move-frame event) have run when this returns; `accept-process-out
     (should (= px1 (floor (+ (* pt s1) 0.5))))
     (should (= px2 px0))))
 
+(ert-deftest nhmac-scale-move-keeps-the-points ()
+  "The root frame moved to a monitor of another scale keeps its size in points, as an AppKit window (and NS's
+frame) does: its device-pixel size follows the scale, and the window shows its surface whole."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((f (selected-frame)) (s0 (frame-scale-factor f))
+         (other (nhmac-gui--other-monitor (lambda (m) (/= (alist-get 'scale-factor m 1.0) s0))))
+         (home (frame-monitor-attributes f)) (pos (frame-position f))
+         (pt0 (cons (/ (frame-pixel-width f) s0) (/ (frame-pixel-height f) s0)))
+         s1 pt1 surface)
+    (skip-unless other)
+    (unwind-protect
+        (progn
+          (nhmac-gui--move-to f other)
+          (nhmac-gui--settle)
+          (setq s1 (frame-scale-factor f)
+                pt1 (cons (/ (frame-pixel-width f) s1) (/ (frame-pixel-height f) s1))
+                surface (nhmac--test-surface 0 0)))
+      (nhmac-gui--move-to f home)
+      (set-frame-position f (car pos) (cdr pos))
+      (nhmac-gui--settle))
+    (nhmac-gui--say "nhmac-scale-move-keeps-the-points: scale %s %S points, scale %s %S points, %S" s0 pt0 s1 pt1
+                    surface)
+    (should (/= s1 s0))
+    (should (<= (abs (- (car pt1) (car pt0))) 1))
+    (should (<= (abs (- (cdr pt1) (cdr pt0))) 1))
+    (should (equal (plist-get surface :points)
+                   (list (round (/ (plist-get surface :w) s1)) (round (/ (plist-get surface :h) s1)))))))
+
 (ert-deftest nhmac-no-session-calls ()
   "A Naglfar frame names no compositor session: making a frame calls none of the Wayland shell's session functions
 \(they are not loaded here, so each call would only log a void-function error)."
