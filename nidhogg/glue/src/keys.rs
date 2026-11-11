@@ -21,6 +21,10 @@ pub const NHG_KEY_SYMBOL: u32 = 4;
 /// `KEY` flags: when the keysym table has nothing, the key gives the text's first character `x`.  With none of
 /// `NHG_KEY_CHAR`, `NHG_KEY_SYMBOL` and `NHG_KEY_TEXT`, only the keysym table gives an event.
 pub const NHG_KEY_TEXT: u32 = 8;
+/// `KEY` flags: the key was released.  The action repeats its press's keysym, class, character and text (whatever
+/// the modifiers did meanwhile), with the modifier mask at the release.  C passes it on only while Lisp asks
+/// (`nidhogg-key-events`).
+pub const NHG_KEY_RELEASE: u32 = 16;
 
 fn is_cursor_key(k: u32) -> bool {
     (0xff50..0xff60).contains(&k)
@@ -113,8 +117,24 @@ pub struct Keyboard {
     pub window: u64,
 }
 
-/// A `KEY` event: one `KEY` action for a press, none for a release, with the keysym's class (`classify`).  A repeat is dropped when the call that takes it
-/// says input is waiting (`NHG_IN_INPUT_WAITING`, sampled for each call, so a key stored earlier in the same drain
+/// A key that is down: its press's action fields, for the release (`Display::held`).
+#[derive(Clone, Debug)]
+pub(crate) struct Held {
+    keycode: u32,
+    code: i32,
+    class: u32,
+    x: i32,
+    text: Vec<u8>,
+}
+
+/// The most keys held at once that the glue remembers; a press past it forgets the oldest (whose release then gives
+/// no action).
+const HELD_MAX: usize = 32;
+
+/// A `KEY` event: one `KEY` action for a press, with the keysym's class (`classify`), and one for its release
+/// (`NHG_KEY_RELEASE`, the press's fields and the modifiers at the release).  A release whose press gave no action
+/// (a dead key, a press before the window had the keyboard) gives none.  A repeat is dropped when the call that takes
+/// it says input is waiting (`NHG_IN_INPUT_WAITING`, sampled for each call, so a key stored earlier in the same drain
 /// counts): the shell holds a repeat back only while the previous one is in its own queue, and the input poll empties
 /// that queue into Emacs's even while Lisp is busy, so without this a stalled Lisp would find one repeat per poll.
 ///
@@ -122,6 +142,17 @@ pub struct Keyboard {
 /// window's tree that Emacs focused, or to the focus frame when it has none.
 pub fn key(state: &mut Display, ev: &Record, k: &KeyEv, input: NhgNextIn) {
     if k.pressed == 0 {
+        state.keyboard.mods = k.mods;
+        let Some(i) = state.held.iter().position(|h| h.keycode == k.keycode) else {
+            return;
+        };
+        let h = state.held.remove(i);
+        let mut a = NhgAction::new(NHG_ACT_KEY, ev.window, ev.time_ns);
+        a.code = h.code;
+        a.mods = k.mods;
+        a.flags = h.class | NHG_KEY_RELEASE;
+        a.x = h.x;
+        state.actions.push_text(a, Some(h.text));
         return;
     }
     let repeat = k.repeat != 0;
@@ -137,6 +168,19 @@ pub fn key(state: &mut Display, ev: &Record, k: &KeyEv, input: NhgNextIn) {
     let (class, x) = classify(k.keysym, &k.utf8[..len]);
     a.flags = class | if repeat { NHG_KEY_REPEAT } else { 0 };
     a.x = x;
+    if !repeat {
+        state.held.retain(|h| h.keycode != k.keycode);
+        if state.held.len() == HELD_MAX {
+            state.held.remove(0);
+        }
+        state.held.push(Held {
+            keycode: k.keycode,
+            code: a.code,
+            class,
+            x,
+            text: k.utf8[..len].to_vec(),
+        });
+    }
     state.actions.push_text(a, Some(k.utf8[..len].to_vec()));
 }
 

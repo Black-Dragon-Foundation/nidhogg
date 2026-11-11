@@ -848,6 +848,46 @@ user displays takes this path, and a build without the image libraries would not
           (should (<= 1 n 2)))
       (kill-buffer buf))))
 
+(ert-deftest nhwl-gui/key-release-and-repeat-events ()
+  "A release is a `key-release' special event only while `nidhogg-key-events' is non-nil; a repeat sets
+`nidhogg-last-key-repeat'."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((buf (generate-new-buffer " *nhwl-release*"))
+         (released nil)
+         (special-event-map (let ((m (copy-keymap special-event-map)))
+                              (define-key m [key-release]
+                                          (lambda () (interactive) (push last-input-event released)))
+                              m))
+         (nidhogg-key-events nil))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+          (nhwl-gui--pump)
+          ;; off: the press arrives, the release does not
+          (gui-runner-recorder '(:cmd "key" :keycode 30 :state "press"))
+          (gui-runner-recorder '(:cmd "key" :keycode 30 :state "release"))
+          (should (nhwl-gui--wait (lambda () (eq (read-event nil nil 0.1) ?a))))
+          (nhwl-gui--wait (lambda () (read-event nil nil 0.1) nil) 0.5)
+          (should-not released)
+          ;; on: the release arrives as (key-release ?a), the press's event
+          (setq nidhogg-key-events t)
+          (gui-runner-recorder '(:cmd "key" :keycode 30 :state "press"))
+          (gui-runner-recorder '(:cmd "key" :keycode 30 :state "release"))
+          (should (nhwl-gui--wait (lambda () (read-event nil nil 0.1) released)))
+          (should (equal released '((key-release ?a))))
+          ;; a held key: the press reads as no repeat, a repeat as one (600 ms delay, 25 Hz)
+          (let ((seen nil))
+            (gui-runner-recorder '(:cmd "key" :keycode 30 :state "press"))
+            (nhwl-gui--wait (lambda ()
+                              (when (eq (read-event nil nil 0.1) ?a)
+                                (push nidhogg-last-key-repeat seen))
+                              (memq t seen)))
+            (gui-runner-recorder '(:cmd "key" :keycode 30 :state "release"))
+            (should (eq (car (last seen)) nil))
+            (should (memq t seen))))
+      (kill-buffer buf))))
+
 ;; Child frames (nhwlchild.c).  A child frame is a subsurface of its parent's window; the recorder's `tree'
 ;; shows each surface's role, parent, position (logical), input region and buffer.
 

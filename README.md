@@ -1199,6 +1199,23 @@ selection follows a link or walks a list the hub sent, with no round trip and no
 - Tests: `test/src/nidhogg-tests/sja-tests.el` (pure; in `check-subset.txt`); the panic row needs a build with Sjá's
   test hooks and skips without them. The model's own tests are Sjá's (`nidhogg/sja/check.sh`).
 
+## Key releases and repeats
+
+drgnx's terminal passes key releases and repeats to programs that ask for them (the kitty keyboard protocol's event
+types). Emacs reads only presses, so Nidhogg's native shell (Wayland and Naglfar) delivers the rest on request.
+
+- `nidhogg-key-events`: nil (the default) drops releases; non-nil makes each release the special event
+  `(key-release EVENT)`, EVENT the event its press gave (with the modifiers held at the release). Bind `key-release` in
+  `special-event-map`. A release whose press gave no event (a dead key, a key pressed before the frame had the
+  keyboard) gives none, and a release is no input: it neither hides the mouse highlight nor starts a frame-time record.
+- `nidhogg-last-key-repeat`: t when the last keystroke read was the keyboard repeating a held key, nil otherwise; set
+  as each keystroke is read.
+- Files: the glue keeps each held key's press (`nidhogg/glue/src/keys.rs`, `NHG_KEY_RELEASE`); `src/nhwlterm.c`
+  (`nhwl_key_apply`) makes the event `NHWL_KEY_RELEASE_EVENT` and marks repeats; `src/keyboard.c` turns it into the
+  special event and sets the repeat flag. Naglfar sends `keyUp:` with the key code its `keyDown:` sent.
+- Tests: `nidhogg/glue/tests/keys.rs` (`release_repeats_the_press`, the compose row) and the GUI row
+  `nhwl-gui/key-release-and-repeat-events` (recorder).
+
 ## Reporting issues
 
 - Problems specific to Nidhogg (its patches, build, or `nidhogg-version`) go to this repository's issue tracker.

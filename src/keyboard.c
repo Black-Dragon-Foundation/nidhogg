@@ -4377,6 +4377,7 @@ kbd_buffer_get_event (KBOARD **kbp,
 #ifdef HAVE_NHWL
       case NHWL_DELETE_SURROUNDING_EVENT:
       case NHWL_SESSION_EVENT:
+      case NHWL_KEY_RELEASE_EVENT:
 #endif
       case PREEDIT_TEXT_EVENT:
 #ifdef HAVE_NTGUI
@@ -4557,6 +4558,15 @@ kbd_buffer_get_event (KBOARD **kbp,
 		  XSETCAR (event->ie.arg,
 			   make_fixnum (XFIXNUM (XCAR (event->ie.arg)) + 1));
 		}
+
+#ifdef HAVE_NHWL
+	      /* nhwlterm.c marks a key repeat in .arg.  */
+	      if (event->kind == ASCII_KEYSTROKE_EVENT
+		  || event->kind == MULTIBYTE_CHAR_KEYSTROKE_EVENT
+		  || event->kind == NON_ASCII_KEYSTROKE_EVENT)
+		Vnidhogg_last_key_repeat
+		  = EQ (event->ie.arg, Qnidhogg_key_repeat) ? Qt : Qnil;
+#endif
 
 	      obj = make_lispy_event (&event->ie);
 
@@ -7414,6 +7424,16 @@ make_lispy_event (struct input_event *event)
       return list2 (Qnhwl_delete_surrounding, event->arg);
     case NHWL_SESSION_EVENT:
       return list2 (Qnhwl_session, event->arg);
+    case NHWL_KEY_RELEASE_EVENT:
+      {
+	/* The press's keystroke, with the release's modifiers.  */
+	struct input_event press = *event;
+
+	press.kind = XFIXNUM (XCAR (event->arg));
+	press.code = XFIXNUM (XCDR (event->arg));
+	press.arg = Qnil;
+	return list2 (Qkey_release, make_lispy_event (&press));
+      }
 #endif
       /* The 'kind' field of the event is something we don't recognize.  */
     default:
@@ -13793,6 +13813,8 @@ This is effective only in `noninteractive' sessions.  */);
 #ifdef HAVE_NHWL
   DEFSYM (Qnhwl_delete_surrounding, "nhwl-delete-surrounding");
   DEFSYM (Qnhwl_session, "nhwl-session");
+  DEFSYM (Qkey_release, "key-release");
+  DEFSYM (Qnidhogg_key_repeat, "nidhogg-key-repeat");
 #endif
 
   button_down_location = make_nil_vector (5);
