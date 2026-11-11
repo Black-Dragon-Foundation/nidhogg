@@ -599,6 +599,11 @@ mod coretext {
             p
         }
 
+        /// A registry's preferred family: its characters laid out in its language (macfont's charset string).
+        fn preferred_chars(&self, chars: &[u32], language: &str) -> Option<String> {
+            text::preferred_family_in(chars, language)
+        }
+
         /// `macfont_supports_charset_and_languages_p`: the face's character set has the script's characters, and its
         /// languages the one asked for (`zh-Hans` is had by a face that lists `zh`).  A script without characters is
         /// had by every face.

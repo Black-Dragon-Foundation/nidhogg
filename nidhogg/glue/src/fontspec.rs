@@ -280,6 +280,85 @@ fn unicode_registry(r: &str) -> bool {
     r.is_empty() || matches!(r, "iso10646-1" | "ascii-0" | "unicode-bmp")
 }
 
+/// A registry's characters and language (macfont's `cf_charset_table`): a face has the registry when it has every one
+/// of the characters.
+struct Charset {
+    name: &'static str,
+    chars: &'static [u32],
+    language: &'static str,
+}
+
+#[rustfmt::skip]
+static CHARSETS: &[Charset] = &[
+    Charset { name: "iso8859-1", chars: &[0x00A0, 0x00A1, 0x00B4, 0x00BC, 0x00D0], language: "" },
+    Charset { name: "iso8859-2", chars: &[0x00A0, 0x010E], language: "" },
+    Charset { name: "iso8859-3", chars: &[0x00A0, 0x0108], language: "" },
+    Charset { name: "iso8859-4", chars: &[0x00A0, 0x00AF, 0x0128, 0x0156, 0x02C7], language: "" },
+    Charset { name: "iso8859-5", chars: &[0x00A0, 0x0401], language: "" },
+    Charset { name: "iso8859-6", chars: &[0x00A0, 0x060C], language: "" },
+    Charset { name: "iso8859-7", chars: &[0x00A0, 0x0384], language: "" },
+    Charset { name: "iso8859-8", chars: &[0x00A0, 0x05D0], language: "" },
+    Charset { name: "iso8859-9", chars: &[0x00A0, 0x00A1, 0x00BC, 0x011E], language: "" },
+    Charset { name: "iso8859-10", chars: &[0x00A0, 0x00D0, 0x0128, 0x2015], language: "" },
+    Charset { name: "iso8859-11", chars: &[0x00A0, 0x0E01], language: "" },
+    Charset { name: "iso8859-13", chars: &[0x00A0, 0x201C], language: "" },
+    Charset { name: "iso8859-14", chars: &[0x00A0, 0x0174], language: "" },
+    Charset { name: "iso8859-15", chars: &[0x00A0, 0x00A1, 0x00D0, 0x0152], language: "" },
+    Charset { name: "iso8859-16", chars: &[0x00A0, 0x0218], language: "" },
+    Charset { name: "gb2312.1980-0", chars: &[0x4E13], language: "zh-Hans" },
+    Charset { name: "big5-0", chars: &[0x4EDC], language: "zh-Hant" },
+    Charset { name: "jisx0208.1983-0", chars: &[0x4E55], language: "ja" },
+    Charset { name: "ksc5601.1987-0", chars: &[0xAC00], language: "ko" },
+    Charset { name: "cns11643.1992-1", chars: &[0xFE32], language: "zh-Hant" },
+    Charset { name: "cns11643.1992-2", chars: &[0x4E33, 0x7934], language: "" },
+    Charset { name: "cns11643.1992-3", chars: &[0x201A9], language: "" },
+    Charset { name: "cns11643.1992-4", chars: &[0x20057], language: "" },
+    Charset { name: "cns11643.1992-5", chars: &[0x20000], language: "" },
+    Charset { name: "cns11643.1992-6", chars: &[0x20003], language: "" },
+    Charset { name: "cns11643.1992-7", chars: &[0x20055], language: "" },
+    Charset { name: "gbk-0", chars: &[0x4E06], language: "zh-Hans" },
+    Charset { name: "jisx0212.1990-0", chars: &[0x4E44], language: "" },
+    Charset { name: "jisx0213.2000-1", chars: &[0xFA10], language: "ja" },
+    Charset { name: "jisx0213.2000-2", chars: &[0xFA49], language: "" },
+    Charset { name: "jisx0213.2004-1", chars: &[0x20B9F], language: "" },
+    Charset { name: "viscii1.1-1", chars: &[0x1EA0, 0x1EAE, 0x1ED2], language: "vi" },
+    Charset { name: "tis620.2529-1", chars: &[0x0E01], language: "th" },
+    Charset { name: "windows-1251", chars: &[0x0401, 0x0490], language: "ru" },
+    Charset { name: "koi8-r", chars: &[0x0401, 0x2219], language: "ru" },
+    Charset { name: "mulelao-1", chars: &[0x0E81], language: "lo" },
+    Charset { name: "unicode-sip", chars: &[0x20000], language: "" },
+];
+
+/// Whether `pattern` (`*` any run, `?` and `.` any character) matches somewhere in `s`, ignoring case
+/// (`macfont_get_charset`'s unanchored regexp: `.` in a registry is literal there, so it is here too).
+fn glob_in(pattern: &[u8], s: &[u8]) -> bool {
+    fn at(p: &[u8], s: &[u8]) -> bool {
+        match p.split_first() {
+            None => true,
+            Some((b'*', rest)) => (0..=s.len()).any(|i| at(rest, &s[i..])),
+            Some((&c, rest)) => s.split_first().is_some_and(|(&d, srest)| {
+                (c == b'?' || c.eq_ignore_ascii_case(&d)) && at(rest, srest)
+            }),
+        }
+    }
+    (0..=s.len()).any(|i| at(pattern, &s[i..]))
+}
+
+/// The first table charset `registry` matches.
+fn registry_charset(registry: &str) -> Option<&'static Charset> {
+    CHARSETS
+        .iter()
+        .find(|c| glob_in(registry.as_bytes(), c.name.as_bytes()))
+}
+
+/// The language a list asks for: a registry's own first, else the spec's (macfont's `languages`' first).
+fn spec_language<'a>(spec: &'a FontSpec, charset: Option<&'static Charset>) -> &'a str {
+    match charset {
+        Some(c) if !c.language.is_empty() => c.language,
+        _ => &spec.language,
+    }
+}
+
 fn cjk(language: &str) -> bool {
     ["ja", "ko", "zh"].iter().any(|p| language.starts_with(p))
 }
@@ -306,10 +385,24 @@ fn candidates(src: &dyn FontSource, spec: &FontSpec) -> Vec<(usize, FontFace)> {
             );
         }
     }
-    if spec.family.is_empty()
-        && !spec.script.is_empty()
-        && let Some(p) = src.preferred(&spec.script)
-    {
+    let charset = if unicode_registry(&spec.registry) {
+        None
+    } else {
+        registry_charset(&spec.registry)
+    };
+    let language = spec_language(spec, charset);
+    // a registry's characters stand for the script (macfont looks at the script only without a charset)
+    let script = if charset.is_some() { "" } else { &spec.script };
+    let preferred = if !spec.family.is_empty() {
+        None
+    } else if let Some(c) = charset {
+        src.preferred_chars(c.chars, language)
+    } else if !script.is_empty() {
+        src.preferred(script)
+    } else {
+        None
+    };
+    if let Some(p) = preferred {
         // a stable move: the preferred family's faces first, in their order
         let (mut front, rest): (Vec<_>, Vec<_>) = order
             .into_iter()
@@ -317,12 +410,16 @@ fn candidates(src: &dyn FontSource, spec: &FontSpec) -> Vec<(usize, FontFace)> {
         front.extend(rest);
         order = front;
     }
-    let synth_mono = !spec.language.is_empty()
-        && cjk(&spec.language)
-        && (spec.spacing < 0 || spec.spacing == NHG_FS_SPACING_MONO);
+    let synth_mono = cjk(language) && (spec.spacing < 0 || spec.spacing == NHG_FS_SPACING_MONO);
     order.retain(|(_, f)| {
-        (unicode_registry(&spec.registry) || covers(&f.registries, &spec.registry))
-            && src.fits(f, &spec.script, &spec.language)
+        (unicode_registry(&spec.registry)
+            || covers(&f.registries, &spec.registry)
+            || charset.is_some_and(|c| {
+                c.chars
+                    .iter()
+                    .all(|&ch| src.has_char(f.id, ch) == Some(true))
+            }))
+            && src.fits(f, script, language)
             && !(spec.spacing >= 0
                 && !synth_mono
                 && f.mono() != (spec.spacing >= NHG_FS_SPACING_MONO))
@@ -338,8 +435,12 @@ fn distance(a: u32, b: u32) -> u32 {
 /// `macfont_list`: every font that fits `spec`, the faces in the source's order, a face's synthetic variants after it.
 pub fn list(src: &dyn FontSource, spec: &FontSpec) -> Vec<FontEntity> {
     let found = candidates(src, spec);
-    let synth_mono = !spec.language.is_empty()
-        && cjk(&spec.language)
+    let charset = if unicode_registry(&spec.registry) {
+        None
+    } else {
+        registry_charset(&spec.registry)
+    };
+    let synth_mono = cjk(spec_language(spec, charset))
         && (spec.spacing < 0 || spec.spacing == NHG_FS_SPACING_MONO);
     let want_italic = spec.slant < 0 || spec.slant == NHG_FS_SYNTHETIC_ITALIC;
     let want_bold = spec.weight < 0 || spec.weight == NHG_FS_SYNTHETIC_BOLD;
@@ -988,9 +1089,9 @@ mod tests {
     fn a_registry_is_its_characters_and_language_and_has_a_preferred_family() {
         let mut fx = fixture().faces;
         let mut song = face(15, "Song", 80, 100, 0, &["han"]);
-        song.languages = vec!["zh".into()];
+        song.languages = vec!["zh-Hans".into()];
         let mut pingfang = face(13, "PingFang SC", 80, 100, 0, &["han"]);
-        pingfang.languages = vec!["zh".into()];
+        pingfang.languages = vec!["zh-Hans".into()];
         let mut gothic = face(14, "Gothic", 80, 100, 0, &["han", "hangul"]);
         gothic.languages = vec!["ko".into()];
         fx.extend([song, pingfang, gothic]);
