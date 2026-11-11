@@ -2024,7 +2024,7 @@ settle (no configure took it back), and the content size times the scale is the 
 
 (ert-deftest nhmac-tool-bar-off-and-on-window-follows ()
   "The tool bar turned off and on again: the window shows the frame's surface at the surface's size (its points times
-the scale), and a later `set-frame-size' (smaller: a larger one may pass the screen) is followed.
+the scale), and a later `set-frame-size' (smaller: a larger one may pass the screen) is followed."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (tb (frame-parameter f 'tool-bar-lines))
