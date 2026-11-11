@@ -1068,13 +1068,17 @@ It measures; it asserts only that it ran."
     (when (executable-find "sample")
       (let* ((out (expand-file-name (format "sample-%s.txt" build) (file-name-directory file)))
              (p (let ((process-environment (nhmac-gui--capture-env)))
-                  (start-process "nhmac-sample" nil "sample" (number-to-string (emacs-pid)) "4" "1"
-                                 "-mayDie" "-file" out)))
+                  (start-process "nhmac-sample" (generate-new-buffer " *nhmac-sample*") "sample"
+                                 (number-to-string (emacs-pid)) "4" "1" "-mayDie" "-file" out)))
              (end (+ (float-time) 4)))
         (sleep-for 0.5)
         (while (< (float-time) end) (execute-kbd-macro "x") (redisplay))
         (while (and (process-live-p p) (< (float-time) (+ end 10))) (accept-process-output p 0.2))
-        (nhmac-gui--say "nhmac-pair-stages: %s: sample %s %s" build out (file-exists-p out))))
+        ;; sample's own output says why a file is missing
+        (nhmac-gui--say "nhmac-pair-stages: %s: sample %s %s, exit %S: %s" build out (file-exists-p out)
+                        (process-exit-status p)
+                        (with-current-buffer (process-buffer p) (string-trim (buffer-string))))
+        (kill-buffer (process-buffer p))))
     (kill-buffer)
     (should (file-exists-p file))))
 
