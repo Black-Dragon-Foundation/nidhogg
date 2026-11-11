@@ -30,6 +30,7 @@ use crate::mac_child::{self, Node};
 use glitnir::geom::Rect;
 use glitnir::scene::Chrome;
 use objc2::rc::Retained;
+use objc2_app_kit::NSWindow;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::CALayer;
 
@@ -843,6 +844,34 @@ impl MacShell {
         if !going_out.is_empty() {
             self.capture_point(root, 1);
         }
+    }
+
+    /// The pointer left window `id`'s view for `at` (screen points): the window it was over gets a leave
+    /// (`note_mouse_sensor_leave`, `clear_mouse_face`), unless `at` is on another window of the same root (the root's,
+    /// or one of its overhang panels), where the next motion moves it.  A press holding the pointer keeps it.
+    pub(super) fn pointer_left(&mut self, id: WindowId, at: NSPoint) {
+        let Some(root) = self.root_of(id) else {
+            return;
+        };
+        if self.grab.is_some_and(|(r, _)| r == root) {
+            return;
+        }
+        let under = NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(at, 0, self.mtm);
+        let ours = self
+            .windows
+            .get(&root)
+            .is_some_and(|w| w.window.windowNumber() == under)
+            || self.kids.iter().any(|(&k, kid)| {
+                kid.panel
+                    .as_ref()
+                    .is_some_and(|p| p.panel.windowNumber() == under)
+                    && self.root_of(k) == Some(root)
+            });
+        if ours {
+            return;
+        }
+        let target = self.hover.remove(&root).unwrap_or(root);
+        self.push(ShellEvent::PointerLeave(PointerEv::default()), target);
     }
 
     /// A pointer record of window `id`'s view (a root's, or an overhang panel's), in that view's device pixels: the

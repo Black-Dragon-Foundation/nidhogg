@@ -261,6 +261,9 @@ impl MacShell {
                 ShellEvent::PointerMotion(_) | ShellEvent::Button(_) | ShellEvent::Scroll(_) => {
                     self.pointer(id, ev)
                 }
+                ShellEvent::PointerLeave(p) => {
+                    self.pointer_left(id, objc2_foundation::NSPoint::new(p.x, p.y))
+                }
                 // keys go to the root's window (an overhang panel never becomes key)
                 _ => {
                     if let Some(root) = self.root_of(id) {
