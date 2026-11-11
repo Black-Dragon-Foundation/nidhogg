@@ -197,6 +197,27 @@ root's white, and a pixel just inside the curve at 45° is not the child's colou
              (should (nhmac-gui--far on-curve #xff00ff 64)))
          (delete-frame c t))))))
 
+(ert-deftest glitnir-nhmac/ring-outside-the-child ()
+  "A child frame's `ring' is a line one point wide just outside its edge, as Glitnir's compositor draws it: the pixel
+above the middle of the child's top edge is the ring's colour, and past the ring the root's white shows."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let ((c (glitnir-nhmac--chromed '((shadow . nil) (ring . ("#ff0000" . 1.0))))))
+       (unwind-protect
+           (let* ((s (glitnir-nhmac--scale))
+                  (img (glitnir-nhmac--grab "ring"))
+                  (b (glitnir-nhmac--box img #xff00ff))
+                  (x (/ (+ (nth 0 b) (nth 2 b)) 2))
+                  (rw (max 1 (round s)))
+                  (on (glitnir-nhmac--px img x (- (nth 1 b) 1)))
+                  (past (glitnir-nhmac--px img x (- (nth 1 b) rw 2))))
+             (nhmac-gui--say "glitnir-nhmac/ring-outside-the-child: box %S, ring %06x, past it %06x" b on past)
+             (should-not (nhmac-gui--far on #xff0000 24))
+             (should-not (nhmac-gui--far past #xffffff 24)))
+         (delete-frame c t))))))
+
 (ert-deftest nhmac-resize-shadow-renders ()
   "A chromed child resized five times renders no shadow image (the nine-slice image stretches): `:shadow-renders' 0,
 while its shadow layer's frame follows each size.  The child is first made large enough for the image to stretch at
