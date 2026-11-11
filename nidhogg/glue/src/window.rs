@@ -18,8 +18,8 @@ use crate::display::Display;
 use crate::frame::{Frame, NHG_FACT_CSD, NHG_FACT_ICONIFIED, NHG_FACT_VISIBLE, NHG_FRAME_CHILD};
 use crate::guard::GlueError;
 use nhshell::api::{
-    Anchor, ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_PLACED, NHSHELL_WIN_RESTORE, Place,
-    ShellError, WindowDesc,
+    Anchor, ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_PLACED,
+    NHSHELL_WIN_RESTORE, Place, ShellError, WindowDesc,
 };
 use std::ffi::c_char;
 
@@ -159,7 +159,11 @@ pub fn new(
             h: d.h,
             title: title.into(),
             app_id: app_id.into(),
-            flags: restore_flag(d.flags & !NHSHELL_WIN_PLACED, state.session_saved, session_name),
+            flags: restore_flag(
+                d.flags & !NHSHELL_WIN_PLACED,
+                state.session_saved,
+                session_name,
+            ),
         };
         // where it opens: at its frame's position (device pixels at the scale C made it for), or beside the frame
         // it was made from, so it shows first on the screen of that scale
