@@ -1142,6 +1142,8 @@ PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, si
             ("NHG_DRAW_CORNERS", NHG_DRAW_CORNERS.into()),
             ("NHG_DRAW_GLYPHS", NHG_DRAW_GLYPHS.into()),
             ("NHG_DRAW_IMAGE", NHG_DRAW_IMAGE.into()),
+            ("NHG_DRAW_RING", NHG_DRAW_RING.into()),
+            ("NHG_DRAW_RELIEF", NHG_DRAW_RELIEF.into()),
             ("NHG_DRAW_BACKGROUND", NHG_DRAW_BACKGROUND.into()),
             ("NHG_DRAW_PADDING", NHG_DRAW_PADDING.into()),
             ("NHG_DRAW_COPY", NHG_DRAW_COPY.into()),

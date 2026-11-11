@@ -671,6 +671,9 @@ extern void nhwl_fill_trapezoid_for_relief (struct frame *, unsigned long,
 extern void nhwl_erase_corners_for_relief (struct frame *, unsigned long,
 					   int, int, int, int, double,
 					   double, int);
+extern void nhmac_draw_ring (struct frame *, int, int, int, int, int, int,
+			     double, unsigned, unsigned long, unsigned long,
+			     bool);
 extern void nhwl_set_clip_rectangles (struct frame *, nhwl_cr *,
 				      XRectangle *, int);
 extern void nhwl_clip_to_row (struct window *, struct glyph_row *,

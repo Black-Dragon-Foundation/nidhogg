@@ -892,11 +892,9 @@ nhwl_draw_glyph_string_box (struct glyph_string *s)
   /* PD's keys (:corner-radius, :open): Glitnir's box.  */
   if (s->face->box != FACE_SIMPLE_BOX)
     nhwl_setup_relief_colors (s);
-#ifdef NHWL_WAYLAND
   if (glitnir_decor_draw_box (s, left_x, top_y, right_x, bottom_y, hwidth,
 			      vwidth, left_p, right_p, &clip_rect))
     return;
-#endif
   if (s->face->box == FACE_SIMPLE_BOX)
     nhwl_draw_box_rect (s, left_x, top_y, right_x, bottom_y, hwidth,
 			vwidth, left_p, right_p, &clip_rect);
@@ -2379,11 +2377,10 @@ nhwl_damage_glyphs (struct glyph_string *s)
   if (s->extends_to_end_of_line_p)
     x1 = max (x1, clip.x + (int) clip.width);
   nhwl_damage (s->f, x0, clip.y, x1 - x0, clip.height);
-#ifdef NHWL_WAYLAND
   /* PD: rounded neighbours' corners, and the label anchors S covers
-     (glitnir-decor.c draws with Cairo; Naglfar's decorations come with
-     its chrome).  */
+     (labels are Wayland's: glitnir-decor.c renders them with Cairo).  */
   glitnir_decor_after_glyphs (s);
+#ifdef NHWL_WAYLAND
   glitnir_decor_record (s);
 #endif
 }

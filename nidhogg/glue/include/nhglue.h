@@ -1251,7 +1251,10 @@ int32_t nhg_font_fill (uint64_t handle, uint32_t page);
    half wave.  NHG_DRAW_DASH: a line R.h thick along R's top, dashes A long from phase B.  NHG_DRAW_BITMAP: R.h rows at
    BITS, R.w (at most 16) bits wide, the leftmost in bit R.w - 1, each bit A (0 or 1: one; at most 8) pixels square;
    set bits in FG, the rest in BG unless NHG_DRAW_OVERLAY.  NHG_DRAW_CORNERS: R in FG outside quarter circles of radius A set B pixels outside the corners
-   the flags' low four bits name (bottom right, bottom left, top left, top right).  NCLIP (0-2) clip rectangles
+   the flags' low four bits name (bottom right, bottom left, top left, top right).  NHG_DRAW_RING: a box's ring on
+   R (glitnir-decor.c's draw_ring), radius A, horizontal lines B & 0xff high and vertical ones B >> 8 wide; the flags'
+   low four bits name the rounded corners (top left, then clockwise), the next four the sides with a line (top,
+   right, bottom, left); with NHG_DRAW_RELIEF it is FG above R's anti-diagonal and BG below.  NCLIP (0-2) clip rectangles
    apply.  A refused record is skipped and the call returns NHG_E_ARG; NHG_E_UNSUPPORTED where the shell has no
    painter.  nhg_draw_glyphs paints one NHG_DRAW_GLYPHS record of the open font FONT (nhg_font_open): N glyphs at
    BITS in FG from x A on the baseline B, placed as macfont_draw places them (NHG_DRAW_PADDING: one pixel each); with
@@ -1270,12 +1273,14 @@ int32_t nhg_font_fill (uint64_t handle, uint32_t page);
 #define NHG_DRAW_CORNERS 7
 #define NHG_DRAW_GLYPHS 8
 #define NHG_DRAW_IMAGE 9
+#define NHG_DRAW_RING 10
 
 #define NHG_DRAW_COPY (1u << 0)
 #define NHG_DRAW_TOP (1u << 3)
 #define NHG_DRAW_BACKGROUND (1u << 4)
 #define NHG_DRAW_PADDING (1u << 5)
 #define NHG_DRAW_OVERLAY (1u << 7)
+#define NHG_DRAW_RELIEF (1u << 8)
 
 typedef struct
 {
