@@ -2477,25 +2477,22 @@ static void
 nhwl_scale_changed (struct frame *f, uint32_t scale120)
 {
   double was = nhwl_frame_res (f);
-#ifdef NHWL_WAYLAND
-  /* The window keeps its size on the screen (its logical size) and the
-     text follows: a Wayland client sizes its own window, so the frame
-     takes that logical size in device pixels at the new scale.  (On macOS
-     AppKit keeps the window's points and reports its new size.)  */
+  /* The window keeps its size on the screen (its logical size, AppKit's
+     points) and the text follows: the frame takes that logical size in
+     device pixels at the new scale.  On macOS too: AppKit keeps the
+     window's points but reports no new size, and a frame that kept its
+     device pixels would be shown at the old scale's size in points.  */
   uint32_t old = FRAME_NHWL_OUTPUT (f)->scale120;
   int lw = nhwl_to_logical (FRAME_PIXEL_WIDTH (f), old);
   int lh = nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), old);
-#endif
 
   FRAME_NHWL_OUTPUT (f)->scale120 = FRAME_DISPLAY_INFO (f)->scale120 = scale120;
   FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = NHWL_DPI * scale120 / 120.0;
   nhwl_res_changed (f, was);
   nhwl_csd_layout (f);
-#ifdef NHWL_WAYLAND
   if (old && old != scale120)
     nhwl_set_window_size (f, false, (int) (((int64_t) lw * scale120 + 60) / 120),
 			  (int) (((int64_t) lh * scale120 + 60) / 120));
-#endif
   SET_FRAME_GARBAGED (f);
 }
 
