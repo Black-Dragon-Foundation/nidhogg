@@ -110,8 +110,10 @@ sees what the earlier events changed, as the C drain did; before each call it sa
 - **Keys** (`src/keys.rs`): a press or a repeat gives a `KEY` action with the keysym, its text and the modifier mask;
   the shell has already run it through xkb and compose. It names the window with the keyboard, and C sends it to the
   frame of that window's tree that Emacs focused, after running the keysym cascade. A repeat taken by a call with
-  `NHG_IN_INPUT_WAITING` set is dropped, so a key stored earlier in the same drain counts. The glue keeps the modifier
-  mask (`MODIFIERS` events give no action).
+  `NHG_IN_INPUT_WAITING` set is dropped, so a key stored earlier in the same drain counts. A release gives a `KEY`
+  action flagged `NHG_KEY_RELEASE` that repeats its press's keysym, class and text (the glue keeps each held key's
+  press, 32 at most, by key code); a release whose press gave no action gives none. C drops releases unless Lisp set
+  `nidhogg-key-events`. The glue keeps the modifier mask (`MODIFIERS` events give no action).
 - **Focus** (`src/focus.rs`): a keyboard focus event gives `FOCUS_IN` or `FOCUS_OUT` for its window, and the glue
   keeps the window that has the keyboard. A popup frame's focus events give none, and neither does a top-level losing
   the keyboard while a popup frame of its own grabs (`src/popup.rs`). Emacs's focus frame and highlighting stay C.
@@ -130,14 +132,15 @@ The client-side title bar (`src/csd.rs`, from `nhwlcsd.c`) is laid out, hit-test
   toplevel's states from its own configure state, and sets the frame's CSD fact itself (C no longer pushes it). C keeps
   a copy of the offsets for its drawing (`struct nhwl_csd`). A child frame's border is its shadow margin
   (`src/child.rs`).
-- **Undecorated:** where the compositor offers no server-side decorations at all (its caps: no `xdg-decoration`, or
-  forced client-side; GNOME's mutter), an undecorated top-level is *framed*: no strip, the 8 px resize margins
+- **Undecorated:** on every compositor an undecorated top-level is *framed*: no strip, the 8 px resize margins
   (none maximized or fullscreen, none on a tiled side), and while it floats each margin wide enough for the shadow
   of its `toplevel-chrome` (`nhg_child_chrome` on a top-level, `glitnir--toplevel-vector`). Its Glitnir layer is the
   native area with that chrome (rounded corners, a shadow; a chrome of nothing while maximized or tiled, so the
   margins stay clear), the window geometry excludes the margins, and the input region is the window plus the resize
   band, so a click on the shadow goes to the window below. The pointer resizes from the band as under a title bar.
-  Where the compositor offers server-side decorations (sway, KWin) an undecorated frame has no border at all.
+  A compositor that offers server-side decorations (KWin) draws none around a window that asked for none, so there
+  too the invisible margins are the window's only outer edge to resize from; one that decorates it anyway (its
+  answer is server-side) draws its own border, and the frame keeps none.
   Lisp asks `nhwl-toplevel-chrome-p`.
 - **Painting:** at each publish C calls `nhg_csd_paint` with the native size and a hash of what it paints from that
   the glue does not see (the title, the colours, the font, the backing's generation). The glue sends the window

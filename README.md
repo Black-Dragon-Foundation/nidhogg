@@ -48,6 +48,9 @@ for upstreaming.
   `src/` the group touched must equal its base version (`unifdef -U…`); a changed `lisp/` file is new or `lisp/loadup.el`
   with one `(featurep 'FEATURE)` line per group; a commit in the range touching `src/` that belongs to no group goes
   below the groups. Needs `unifdef`.
+- Upstream NS files (`src/ns*`, `nextstep/`, `lisp/term/ns-win.el`) stay as they were at the Naglfar base while Naglfar
+  replaces the NS port: `NAGLFAR_BASE`, default the series commit pinned in `tree-test.sh` (move it on a rebase). A
+  checkout without that commit (a shallow clone) stops the check with exit 75, never skips it.
 - `bash nidhogg/test/tree-test.sh [BASE]` checks these rules; `TREE_TEST_SELF=1` runs the flag-group rule on fixtures.
 
 ## Rebasing onto a new upstream release
@@ -1198,6 +1201,46 @@ selection follows a link or walks a list the hub sent, with no round trip and no
 - Caps: 200,000 nodes, 400,000 edges, 64 lists, 4 KiB per value, 32 MiB in all; a patch past them answers `too-large`.
 - Tests: `test/src/nidhogg-tests/sja-tests.el` (pure; in `check-subset.txt`); the panic row needs a build with Sjá's
   test hooks and skips without them. The model's own tests are Sjá's (`nidhogg/sja/check.sh`).
+
+## Key releases and repeats
+
+drgnx's terminal passes key releases and repeats to programs that ask for them (the kitty keyboard protocol's event
+types). Emacs reads only presses, so Nidhogg's native shell (Wayland and Naglfar) delivers the rest on request.
+
+- `nidhogg-key-events`: nil (the default) drops releases; non-nil makes each release the special event
+  `(key-release EVENT)`, EVENT the event its press gave (with the modifiers held at the release). Bind `key-release` in
+  `special-event-map`. A release whose press gave no event (a dead key, a key pressed before the frame had the
+  keyboard) gives none, and a release is no input: it neither hides the mouse highlight nor starts a frame-time record.
+- `nidhogg-last-key-repeat`: t when the last keystroke read was the keyboard repeating a held key, nil otherwise; set
+  as each keystroke is read.
+- Files: the glue keeps each held key's press (`nidhogg/glue/src/keys.rs`, `NHG_KEY_RELEASE`); `src/nhwlterm.c`
+  (`nhwl_key_apply`) makes the event `NHWL_KEY_RELEASE_EVENT` and marks repeats; `src/keyboard.c` turns it into the
+  special event and sets the repeat flag. Naglfar sends `keyUp:` with the key code its `keyDown:` sent.
+- Tests: `nidhogg/glue/tests/keys.rs` (`release_repeats_the_press`, the compose row) and the GUI row
+  `nhwl-gui/key-release-and-repeat-events` (recorder).
+
+## Mouse sensors
+
+`mouse-face` changes a face under the pointer, never text, so a control cannot change on hover (drgnx's ● of a file
+with unsaved changes, which becomes × to close it, as VS Code's does). Mouse sensors are cursor-sensor for the pointer
+(group `glitnir`, `HAVE_GLITNIR`).
+
+- `mouse-sensor-enabled`: nil (the default) reads nothing: the pointer's path costs one flag test. Non-nil:
+  `note_mouse_highlight` reads the property `mouse-sensor-functions` (text or overlay, overlay strings included) where
+  the pointer is, beside the `mouse-face` and `help-echo` reads it already does.
+- A change of run (by `eq` of the value, or another window) is queued as a `MOUSE_SENSOR_EVENT`, never run in the
+  display code. read_char runs it as it runs `help-echo`: the old run's functions get (WINDOW POS `left`), then the new
+  one's (WINDOW POS `entered`). It is no command and no input: `this-command`, the key sequence being read, the recent
+  keys, the dribble file and keyboard macros are untouched, `while-no-input` ignores it, and the echo area stays. An
+  error is reported in a message, never raised. POS is the buffer position; in an overlay or display string, its row's
+  start.
+- Leaving: moving off a window's text (a mode line, a fringe, another window, nothing) leaves the run, and each shell's
+  leave handler calls `note_mouse_sensor_leave` (Wayland: `nhwl_leave_apply`; Naglfar: its mouse-exited path, once it
+  reports motion).  The NS port is frozen until Naglfar replaces it: there, leaving the frame leaves no run.
+- Files: `src/xdisp.c` (`note_mouse_sensor`, the read in `note_mouse_highlight`, `nidhogg--note-mouse` for tests),
+  `src/keyboard.c` (the event, `run_mouse_sensor`), `src/termhooks.h`, `src/dispextern.h`, `src/nhwlterm.c`.
+- Tests: `test/src/nidhogg-tests/mouse-sensor-gui-tests.el` (order, leaving, off, a key sequence across a sensor, an
+  error; `mouse-sensor-gui/motion-cost`, tagged `:timing`, measures the pointer's cost off and on).
 
 ## Reporting issues
 

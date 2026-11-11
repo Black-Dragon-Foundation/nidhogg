@@ -425,6 +425,46 @@ static void deliver_user_signal (int);
 static char *find_user_signal_name (int);
 static void store_user_signal_events (void);
 static bool is_ignored_event (union buffered_input_event *);
+#ifdef HAVE_GLITNIR
+/* An error in a mouse sensor's function is reported, never raised.  */
+static Lisp_Object
+mouse_sensor_error (Lisp_Object err, ptrdiff_t nargs, Lisp_Object *args)
+{
+  CALLN (Fmessage, build_string ("Error in mouse-sensor-functions: %S"), err);
+  return Qnil;
+}
+
+/* Call the functions of the sensor VALUE (a function or a list of them)
+   with WINDOW, POS and DIR.  */
+static void
+mouse_sensor_call (Lisp_Object value, Lisp_Object window, Lisp_Object pos,
+		   Lisp_Object dir)
+{
+  Lisp_Object fns = FUNCTIONP (value) ? list1 (value) : value;
+  for (; CONSP (fns); fns = XCDR (fns))
+    {
+      Lisp_Object args[] = { XCAR (fns), window, pos, dir };
+      internal_condition_case_n (Ffuncall, ARRAYELTS (args), args, Qt,
+				 mouse_sensor_error);
+    }
+}
+
+/* Run a MOUSE_SENSOR_EVENT's ARGS, (OLD OLD-WINDOW OLD-POS NEW
+   NEW-WINDOW NEW-POS): the old run is left, then the new one entered.  */
+static void
+run_mouse_sensor (Lisp_Object args)
+{
+  Lisp_Object old = Fnth (make_fixnum (0), args);
+  Lisp_Object new = Fnth (make_fixnum (3), args);
+  if (!NILP (old))
+    mouse_sensor_call (old, Fnth (make_fixnum (1), args),
+		       Fnth (make_fixnum (2), args), Qleft);
+  if (!NILP (new))
+    mouse_sensor_call (new, Fnth (make_fixnum (4), args),
+		       Fnth (make_fixnum (5), args), Qentered);
+}
+
+#endif
 
 /* Advance or retreat a buffered input event pointer.  */
 
@@ -3280,6 +3320,9 @@ read_char (int commandflag, Lisp_Object map,
      own stuff with the echo area.  */
   if (!CONSP (c)
       || (!(EQ (Qhelp_echo, XCAR (c)))
+#ifdef HAVE_GLITNIR
+	  && !(EQ (Qmouse_sensor, XCAR (c)))
+#endif
 	  && !(EQ (Qswitch_frame, XCAR (c)))
 	  /* Don't wipe echo area for select window events: These might
 	     get delayed via `mouse-autoselect-window' (Bug#11304).  */
@@ -3417,6 +3460,18 @@ read_char (int commandflag, Lisp_Object map,
 	timer_resume_idle ();
       goto retry;
     }
+#ifdef HAVE_GLITNIR
+
+  /* A mouse sensor's change: its functions run here, never as a
+     command, so a key sequence being read goes on.  */
+  if (CONSP (c) && EQ (XCAR (c), Qmouse_sensor))
+    {
+      run_mouse_sensor (XCDR (c));
+      if (!end_time)
+	timer_resume_idle ();
+      goto retry;
+    }
+#endif
 
   if ((! reread || this_command_key_count == 0)
       && !end_time)
@@ -3527,6 +3582,13 @@ record_char (Lisp_Object c)
      passwords.  */
   if (!record_all_keys && inhibit_record_char)
     return;
+#ifdef HAVE_GLITNIR
+
+  /* A mouse sensor's change is no input: not in recent_keys, the
+     dribble file or a keyboard macro.  */
+  if (CONSP (c) && EQ (XCAR (c), Qmouse_sensor))
+    return;
+#endif
 
   int recorded = 0;
 
@@ -4377,6 +4439,7 @@ kbd_buffer_get_event (KBOARD **kbp,
 #ifdef HAVE_NHWL
       case NHWL_DELETE_SURROUNDING_EVENT:
       case NHWL_SESSION_EVENT:
+      case NHWL_KEY_RELEASE_EVENT:
 #endif
       case PREEDIT_TEXT_EVENT:
 #ifdef HAVE_NTGUI
@@ -4405,6 +4468,9 @@ kbd_buffer_get_event (KBOARD **kbp,
       case SAVE_SESSION_EVENT:
       case NO_EVENT:
       case HELP_EVENT:
+#ifdef HAVE_GLITNIR
+      case MOUSE_SENSOR_EVENT:
+#endif
       case FOCUS_IN_EVENT:
       case CONFIG_CHANGED_EVENT:
       case FOCUS_OUT_EVENT:
@@ -4558,6 +4624,14 @@ kbd_buffer_get_event (KBOARD **kbp,
 			   make_fixnum (XFIXNUM (XCAR (event->ie.arg)) + 1));
 		}
 
+#ifdef HAVE_NHWL
+	      /* nhwlterm.c marks a key repeat in .arg.  */
+	      if (event->kind == ASCII_KEYSTROKE_EVENT
+		  || event->kind == MULTIBYTE_CHAR_KEYSTROKE_EVENT
+		  || event->kind == NON_ASCII_KEYSTROKE_EVENT)
+		Vnidhogg_last_key_repeat
+		  = EQ (event->ie.arg, Qnidhogg_key_repeat) ? Qt : Qnil;
+#endif
 	      obj = make_lispy_event (&event->ie);
 
 #ifdef HAVE_EXT_MENU_BAR
@@ -6386,6 +6460,15 @@ make_lispy_event (struct input_event *event)
 	return Fcons (Qhelp_echo,
 		      list5 (frame, help, window, object, position));
       }
+#ifdef HAVE_GLITNIR
+
+    case MOUSE_SENSOR_EVENT:
+      {
+	Lisp_Object arg = event->arg;
+	clear_event (event);
+	return Fcons (Qmouse_sensor, arg);
+      }
+#endif
 
     case FOCUS_IN_EVENT:
         return make_lispy_focus_in (event->frame_or_window);
@@ -7414,6 +7497,16 @@ make_lispy_event (struct input_event *event)
       return list2 (Qnhwl_delete_surrounding, event->arg);
     case NHWL_SESSION_EVENT:
       return list2 (Qnhwl_session, event->arg);
+    case NHWL_KEY_RELEASE_EVENT:
+      {
+	/* The press's keystroke, with the release's modifiers.  */
+	struct input_event press = *event;
+
+	press.kind = XFIXNUM (XCAR (event->arg));
+	press.code = XFIXNUM (XCDR (event->arg));
+	press.arg = Qnil;
+	return list2 (Qkey_release, make_lispy_event (&press));
+      }
 #endif
       /* The 'kind' field of the event is something we don't recognize.  */
     default:
@@ -13486,6 +13579,9 @@ init_while_no_input_ignore_events (void)
   events = Fcons (Qthread_event, events);
 #endif
   events = Fcons (Qsleep_event, events);
+#ifdef HAVE_GLITNIR
+  events = Fcons (Qmouse_sensor, events);
+#endif
 
   return events;
 }
@@ -13534,6 +13630,11 @@ is_ignored_event (union buffered_input_event *event)
     case TOOLKIT_THEME_CHANGED_EVENT:
       ignore_event = Qtoolkit_theme_changed;
       break;
+#ifdef HAVE_GLITNIR
+    case MOUSE_SENSOR_EVENT:
+      ignore_event = Qmouse_sensor;
+      break;
+#endif
     default:
       break;
     }
@@ -13701,6 +13802,10 @@ This is effective only in `noninteractive' sessions.  */);
   DEFSYM (Qhorizontal_handle, "horizontal-handle");
   DEFSYM (Qafter_handle, "after-handle");
   DEFSYM (Qleft, "left");
+#ifdef HAVE_GLITNIR
+  DEFSYM (Qmouse_sensor, "mouse-sensor");
+  DEFSYM (Qentered, "entered");
+#endif
   DEFSYM (Qright, "right");
   DEFSYM (Qleftmost, "leftmost");
   DEFSYM (Qrightmost, "rightmost");
@@ -13793,6 +13898,8 @@ This is effective only in `noninteractive' sessions.  */);
 #ifdef HAVE_NHWL
   DEFSYM (Qnhwl_delete_surrounding, "nhwl-delete-surrounding");
   DEFSYM (Qnhwl_session, "nhwl-session");
+  DEFSYM (Qkey_release, "key-release");
+  DEFSYM (Qnidhogg_key_repeat, "nidhogg-key-repeat");
 #endif
 
   button_down_location = make_nil_vector (5);

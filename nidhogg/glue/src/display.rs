@@ -53,6 +53,8 @@ pub struct Display {
     pub(crate) presenting: Presenting,
     /// The modifier mask and the window with the keyboard (`keys.rs`, `focus.rs`).
     pub(crate) keyboard: Keyboard,
+    /// The keys down whose press gave an action, oldest first, for their releases (`keys.rs`).
+    pub(crate) held: Vec<crate::keys::Held>,
     /// Which selections we own (`select.rs`).
     pub(crate) select: crate::select::Select,
     /// The outputs C pushed (`query.rs`).
@@ -110,6 +112,7 @@ impl NhgDisplay {
                 last_drain_took: false,
                 presenting: Presenting::default(),
                 keyboard: Keyboard::default(),
+                held: Vec::new(),
                 select: Default::default(),
                 monitors: Default::default(),
                 csd_style: Default::default(),

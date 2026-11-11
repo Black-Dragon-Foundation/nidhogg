@@ -310,6 +310,11 @@ enum event_kind
      or `replaced', ID the session's id (a string) or nil.  Lisp's
      special-event-map handles it.  */
   , NHWL_SESSION_EVENT
+  /* A key was released, while `nidhogg-key-events' is non-nil.  .arg
+     is (KIND . CODE), the kind and code of the keystroke event its
+     press gave; .modifiers and .frame_or_window are the release's.
+     make_lispy_event makes it (key-release EVENT), a special event.  */
+  , NHWL_KEY_RELEASE_EVENT
 #endif
   /* Either the mouse wheel has been released without it being
      clicked, or the user has lifted his finger from a touchpad.
@@ -358,6 +363,13 @@ enum event_kind
   /* In a TOOLKIT_THEME_CHANGED_EVENT, .arg is the value to which the
      toolkit theme was altered.  */
   , TOOLKIT_THEME_CHANGED_EVENT
+#ifdef HAVE_GLITNIR
+
+  /* A MOUSE_SENSOR_EVENT: the pointer went from one run of
+     `mouse-sensor-functions' to another (xdisp.c).  .arg is (OLD
+     OLD-WINDOW OLD-POS NEW NEW-WINDOW NEW-POS).  */
+  , MOUSE_SENSOR_EVENT
+#endif
 
 #ifdef HAVE_HAIKU
   /* In a NOTIFICATION_CLICKED_EVENT, .arg is an integer identifying

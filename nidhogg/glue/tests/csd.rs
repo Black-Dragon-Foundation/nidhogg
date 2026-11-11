@@ -496,14 +496,15 @@ mod csd {
         close(d);
     }
 
-    /// A window made anew is laid out from nothing: an undecorated layout where the compositor offers server-side
-    /// decorations is "unchanged" (0), yet the whole layout is written, which C copies over what it kept for the
-    /// frame's previous window.
+    /// A window made anew is laid out from nothing: once the compositor has said it decorates the window, its layout
+    /// is "unchanged" (0), yet the whole layout is written, which C copies over what it kept for the frame's previous
+    /// window.
     #[test]
     fn unchanged_layout_is_still_written() {
         let rec = Recorder::start("sway");
         let d = open(&rec);
         let id = window(d);
+        until(d, |a| a.kind == NHG_ACT_RESIZE && a.window == id);
         let mut l = NhgCsdLayout {
             l: 99,
             t: 99,
@@ -513,7 +514,7 @@ mod csd {
             on: 1,
         };
         // SAFETY: a live display; `l` is writable.
-        let rc = unsafe { nhg_csd_layout(d, id, 120, NHG_CSD_UNDECORATED, &mut l) };
+        let rc = unsafe { nhg_csd_layout(d, id, 120, 0, &mut l) };
         assert_eq!((rc, l), (0, NhgCsdLayout::default()));
         close(d);
     }
@@ -856,21 +857,27 @@ mod csd {
         close(d);
     }
 
-    /// [C] Where the compositor offers server-side decorations (sway), an undecorated window draws none of its own:
-    /// no margins and no chrome, whatever chrome it holds; the geometry is the whole surface.
+    /// [C] Where the compositor offers server-side decorations but grants a window's ask for none (KWin: the sway
+    /// profile answering client-side), an undecorated window keeps its invisible resize margins and its chrome, as
+    /// where none are offered: the compositor draws nothing around it, so without them the window could not be resized
+    /// from its outer edge.
     #[test]
-    fn undecorated_with_ssd_offered_draws_none() {
+    fn undecorated_with_ssd_offered_keeps_its_margins() {
         let rec = Recorder::start("sway");
+        rec.control_ok(r#"{"cmd":"decoration","mode":"client"}"#);
         let d = open(&rec);
         let id = undecorated(d);
-        assert_eq!(chrome_of(d, id, &LOOK), 0, "nothing to lay out");
-        assert_eq!(lay(d, id, 120, NHG_CSD_UNDECORATED).1, bare([0; 4]));
+        assert_eq!(chrome_of(d, id, &LOOK), 1);
+        assert_eq!(
+            lay(d, id, 120, NHG_CSD_UNDECORATED),
+            (1, bare([25, 19, 25, 31]))
+        );
         let mut key = 0;
         show(d, id, &mut key);
         rec.wait_node(id, |n| {
-            n.contains("\"geometry\":[0,0,200,100]") && n.contains("\"input_region\":null")
+            n.contains("\"geometry\":[25,19,200,100]")
+                && n.contains("\"input_region\":[[17,11,216,116]]")
         });
-        assert_eq!(shown(&rec, 0, 0), BG, "a square corner");
         close(d);
     }
 
