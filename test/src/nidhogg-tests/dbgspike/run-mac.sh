@@ -46,6 +46,8 @@ u.bind(p); u.listen(5); print(l.getsockname()[1], flush=True); time.sleep(900)' 
 hostpid=$!
 sleep 1
 hp=$(cat "$B/host-port")
+# what holds the block's ports before anything starts (run 8: the probe's bind of 47610 was EADDRINUSE)
+lsof -nP -iTCP:47610-47617 2>/dev/null | sed 's/^/dbgspike-held /'
 for n in block noloop; do
   /usr/bin/env TMPDIR="$B/t/" HOME="$B/t" /usr/bin/sandbox-exec -f "$B/$n.sb" "$B/venv/bin/python" "$B/fix/loopprobe.py" 47610 "$hp" "$dev" "$B/t" "$B/w" 47620 "$B/hostsock/s" 2>&1 |
     sed "s/^dbgspike-probe /dbgspike-probe $n /"
@@ -90,6 +92,7 @@ for a in debugpy-listen jsdebug-attach; do
       echo "dbgspike-block $a run$run never-stopped"
     fi
     wait $top
+    grep -a "drgnx-preload" "$B/w/r.json.stderr" 2>/dev/null | cut -c1-300 | sed "s/^/dbgspike-preload $a run$run /"
     echo "dbgspike-result $a run$run rc=$? $(summ "$B/w/r.json") $(head -c 300 "$B/w/se.txt" 2>/dev/null)"
   done
 done

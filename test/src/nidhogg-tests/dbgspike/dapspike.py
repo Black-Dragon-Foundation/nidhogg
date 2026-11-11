@@ -265,7 +265,7 @@ def run(adapter, fix, out_path, use_shim):
                       "autoAttachChildProcesses": True, "continueOnAttach": True, "cwd": fix}
             env = {**os.environ, "NODE_OPTIONS": "--require " + os.path.join(fix, "preload.js"),
                    "DRGNX_DEBUG_PORTS": ",".join(str(p) for p in BLOCK[2:]),
-                   "DRGNX_DEBUG_CLAIMS": os.environ["DBGSPIKE_CLAIMS"]}
+                   "DRGNX_DEBUG_CLAIMS": os.environ["DBGSPIKE_CLAIMS"], "DRGNX_DEBUG_TRACE": "1"}
             debuggee = (["node", f"--inspect-brk=127.0.0.1:{BLOCK[1]}", prog], env)
             bp_file, bp_line, probe_line, probe_expr = os.path.join(fix, "fixture.js"), 7, 5, "{total}"
         elif adapter == "delve":
