@@ -69,29 +69,44 @@ descend() {  # PID and every descendant
   done
   echo "$out"
 }
+# a listener outside the block, or a connection with neither end in it (an outbound connect's own end is an ephemeral
+# port: that is not a bind), for the processes PIDS
+outside() {
+  lsof -nP -a -p "$1" -i 2>/dev/null | awk 'NR>1{print $9, $10}' | awk '
+    function inb(x) { n = split(x, a, ":"); p = a[n] + 0; return p >= 47610 && p <= 47617 }
+    { split($1, e, "->"); if ($2 == "(LISTEN)" || e[2] == "") { if (!inb(e[1])) print $1 }
+      else if (!inb(e[1]) && !inb(e[2])) print $1 }'
+}
 for a in debugpy-listen jsdebug-attach; do
   for run in 1 2; do
     rm -rf "$B/w/r.json" "$B/w/mark" "$B/t/claims"; mkdir -p "$B/t/claims"
     : > "$B/t/claims/port-47610"; : > "$B/t/claims/port-47611"
     (cd fix && perl -e 'alarm shift; exec @ARGV' 150 /usr/bin/env TMPDIR="$B/t/" HOME="$B/t" DBGSPIKE_MARK="$B/w/mark" DBGSPIKE_CLAIMS="$B/t/claims" /usr/bin/sandbox-exec -f "$B/block.sb" "$B/venv/bin/python" dapspike.py run "$a" "$B/fix" "$B/w/r.json" > /dev/null 2>"$B/w/se.txt") &
     top=$!
-    for _ in $(seq 1 600); do [ -f "$B/w/mark" ] && break; kill -0 $top 2>/dev/null || break; sleep 0.2; done
+    : > "$B/w/sweep"
+    for i in $(seq 1 600); do
+      [ -f "$B/w/mark" ] && break; kill -0 $top 2>/dev/null || break
+      # every second, whatever the run does: the tree's sockets outside the block (a run that never stops is seen too)
+      if [ $((i % 5)) = 0 ]; then
+        sp=$(descend "$(pgrep -P $top | head -1)" | tr ' ' '\n' | sed '/^$/d' | sort -un | paste -sd, -)
+        [ -n "$sp" ] && { outside "$sp" >> "$B/w/sweep"; ps -o command= -p "$sp" | cut -c1-160 >> "$B/w/sweep-ps"; }
+      fi
+      sleep 0.2
+    done
     if [ -f "$B/w/mark" ]; then
       pids=$(descend "$(pgrep -P $top | head -1)" | tr ' ' '\n' | sed '/^$/d' | sort -un | paste -sd, -)
       ps -o pid=,ppid=,command= -p "$pids" | cut -c1-200 | sed "s/^/dbgspike-ps $a/"
       lsof -nP -a -p "$pids" -i 2>/dev/null | sed "s/^/dbgspike-lsof $a /"
       lsof -nP -a -p "$pids" -U 2>/dev/null | awk 'NR>1 && $NF ~ /\//' | sed "s/^/dbgspike-unix $a /"
-      # a listener outside the block, or a connection with neither end in it (an outbound connect's own end is an
-      # ephemeral port: that is not a bind)
-      out=$(lsof -nP -a -p "$pids" -i 2>/dev/null | awk 'NR>1{print $9, $10}' | awk '
-        function inb(x) { n = split(x, a, ":"); p = a[n] + 0; return p >= 47610 && p <= 47617 }
-        { split($1, e, "->"); if ($2 == "(LISTEN)" || e[2] == "") { if (!inb(e[1])) print $1 }
-          else if (!inb(e[1]) && !inb(e[2])) print $1 }' | sort -u | paste -sd' ' -)
+      out=$(outside "$pids" | sort -u | paste -sd' ' -)
       echo "dbgspike-block $a run$run outside=[${out}] claims=[$(ls "$B/t/claims" | paste -sd' ' -)]"
     else
       echo "dbgspike-block $a run$run never-stopped"
     fi
     wait $top
+    echo "dbgspike-sweep $a run$run outside=[$(sort -u "$B/w/sweep" | paste -sd' ' -)]"
+    sort -u "$B/w/sweep-ps" 2>/dev/null | sed "s/^/dbgspike-sweep-ps $a run$run /"; rm -f "$B/w/sweep-ps"
+    grep -a "fixture-child" "$B/w/r.json.stderr" 2>/dev/null | cut -c1-400 | sed "s/^/dbgspike-child $a run$run /"
     grep -a "drgnx-preload" "$B/w/r.json.stderr" 2>/dev/null | cut -c1-300 | sed "s/^/dbgspike-preload $a run$run /"
     echo "dbgspike-result $a run$run rc=$? $(summ "$B/w/r.json") $(head -c 300 "$B/w/se.txt" 2>/dev/null)"
   done
