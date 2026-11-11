@@ -615,7 +615,18 @@ the theme's generation), and the frame's `glitnir--blocks' flag follows whether 
               (set-window-parameter w 'glitnir-blocks nil)
               (glitnir--recheck-frame-cards w)
               (should-not (window-parameter w 'glitnir--blocks))
-              (should-not (frame-parameter nil 'glitnir--blocks)))
+              (should-not (frame-parameter nil 'glitnir--blocks))
+              ;; no blocks left: no key, and a theme change leaves the window's parameters alone
+              (should-not (window-parameter w 'glitnir--blocks-key))
+              (setq glitnir--card-generation (1+ glitnir--card-generation))
+              (glitnir--recheck-frame-cards w)
+              (should-not (window-parameter w 'glitnir--blocks-key))
+              ;; a window that never had blocks gets no key either
+              (let ((other (split-window w)))
+                (unwind-protect
+                    (progn (glitnir--recheck-frame-cards other)
+                           (should-not (assq 'glitnir--blocks-key (window-parameters other))))
+                  (delete-window other))))
           (dolist (k '(glitnir-blocks glitnir--blocks glitnir--blocks-key))
             (set-window-parameter w k nil))
           (clrhash glitnir--blocks-seen)
