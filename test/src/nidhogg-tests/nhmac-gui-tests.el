@@ -1072,7 +1072,11 @@ It measures; it asserts only that it ran."
                                  (number-to-string (emacs-pid)) "4" "1" "-mayDie" "-file" out)))
              (end (+ (float-time) 4)))
         (sleep-for 0.5)
-        (while (< (float-time) end) (execute-kbd-macro "x") (redisplay))
+        ;; the heap and the GCs of the sampled typing, to compare the builds (G1: Naglfar's GCs mark more)
+        (let ((heap (garbage-collect)) (gcs gcs-done) (gct gc-elapsed) (keys 0))
+          (while (< (float-time) end) (execute-kbd-macro "x") (redisplay) (cl-incf keys))
+          (nhmac-gui--say "nhmac-pair-stages: %s: %d keys, %d GCs in %.3f s, gc-cons-threshold %d, heap %S"
+                          build keys (- gcs-done gcs) (- gc-elapsed gct) gc-cons-threshold heap))
         ;; sample symbolicates after its 4 s, which took over 10 s on the runner; the profile is a diagnostic, so a
         ;; sample still writing after a minute is dropped
         (while (and (process-live-p p) (< (float-time) (+ end 60))) (accept-process-output p 0.2))
