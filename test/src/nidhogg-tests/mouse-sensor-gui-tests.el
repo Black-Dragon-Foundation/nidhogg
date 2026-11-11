@@ -133,7 +133,8 @@ are pending (a read with no timeout left returns before it looks).  At most 20 r
       (let ((off (funcall time nil (nth 0 xy) (nth 2 xy)))
             (none (funcall time t (nth 1 xy) (nth 1 xy)))
             (cross (funcall time t (nth 0 xy) (nth 2 xy))))
-        (message "MOUSE-SENSOR-BENCH us/motion: off %.2f; on, no sensor %.2f; on, crossing runs %.2f" off none cross)
+        (princ (format "MOUSE-SENSOR-BENCH us/motion: off %.2f; on, no sensor %.2f; on, crossing runs %.2f\n" off none cross)
+               #'external-debugging-output)
         (should (> off 0))))))
 
 ;;; mouse-sensor-gui-tests.el ends here
