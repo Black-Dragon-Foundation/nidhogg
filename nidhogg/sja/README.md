@@ -77,6 +77,11 @@ fallback), a form, a search, a lit list, expanded and ticked sets, and the class
   `right` to the first child when open. `prefix TEXT` (type-to-navigate) selects the visible sibling of the
   selection (none: the top level) whose `label` starts with TEXT, case folded, from the one after the selection,
   wrapping (a longer TEXT from the selection itself); no match leaves it.
+- **History:** `follow back` and `follow forward` are reserved links (a model's own links of those names are never
+  read): they retrace the instance's moves, like a browser's. A jump (`select`, a link that is no direction) is one
+  move; a run of steps (the directions, `walk`, `walk-to`, `prefix`) is one move too, recorded where the run began.
+  A new move drops what was ahead; `back` skips ids the model no longer holds; each ring keeps `HISTORY` (50) moves.
+  Each instance has its own history, also in a group.
 - **Removal:** when the selected node goes, the selection moves to the removed node's `then` if the model holds it,
   else (list scheme) to the primary list's entry at its old index, else to none; `finished` records the id that went.
   A reset re-resolves selections by id, with the `then` of the model before it.
