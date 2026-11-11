@@ -1237,7 +1237,13 @@ with unsaved changes, which becomes × to close it, as VS Code's does). Mouse se
 - Leaving: moving off a window's text (a mode line, a fringe, another window, nothing) leaves the run, and each shell's
   leave handler calls `note_mouse_sensor_leave` (Wayland: `nhwl_leave_apply`; Naglfar: its mouse-exited path, once it
   reports motion).  The NS port is frozen until Naglfar replaces it: there, leaving the frame leaves no run.
-- Files: `src/xdisp.c` (`note_mouse_sensor`, the read in `note_mouse_highlight`, `nidhogg--note-mouse` for tests),
+- An overlay's row and its string are one lit run: with the pointer on an overlay's before- or after-string whose
+  `mouse-face` is `equal` to the overlay's, `note_mouse_highlight` lights the overlay's whole run (its text and its
+  strings), as from its text (`mouse_face_string_owner`); stock Emacs lights the string alone. A string with a mouse
+  face of its own still lights only itself. drgnx's rows draw their tail (the ● / ×, the fill to the edge) as an
+  after-string, so the hover covers the row from any point of it.
+- Files: `src/xdisp.c` (`note_mouse_sensor`, the read in `note_mouse_highlight`, `nidhogg--note-mouse` for tests: it
+  answers the lit run, `(BEG-ROW BEG-COL END-ROW END-COL)`),
   `src/keyboard.c` (the event, `run_mouse_sensor`), `src/termhooks.h`, `src/dispextern.h`, `src/nhwlterm.c`.
 - Tests: `test/src/nidhogg-tests/mouse-sensor-gui-tests.el` (order, leaving, off, a key sequence across a sensor, an
   error; `mouse-sensor-gui/motion-cost`, tagged `:timing`, measures the pointer's cost off and on).
