@@ -21,10 +21,10 @@ pub mod resize;
 pub mod ring;
 pub mod scope;
 pub mod shapes;
+pub mod startup;
 #[cfg(feature = "svg")]
 pub mod svg;
 pub mod trace;
-pub mod startup;
 pub mod vars;
 pub mod wait;
 #[cfg(feature = "wayland")]
