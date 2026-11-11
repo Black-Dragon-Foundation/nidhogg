@@ -8,7 +8,6 @@
 
 (require 'ert)
 (require 'cl-lib)
-(defvar nhmac--damage-log)
 (load (expand-file-name "../../../nidhogg/test/mac-counts.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
 
 (defun nhmac-gui--say (fmt &rest args)
@@ -678,18 +677,11 @@ at the fastest key repeat, on a ring that has made all its slots."
       (should (= (nhmac-gui--slots) nhmac-gui--ring))
       (funcall goto)
       (redisplay)
-      (let* ((_ (setq nhmac--damage-log (list 'start)))
-             (d (nhmac-gui--type keys nil t))
+      (let* ((d (nhmac-gui--type keys nil t))
              (bytes (plist-get d :bytes-copied))
              (damage (plist-get d :damage-bytes)))
         (nhmac-gui--say "nhmac-typing-bytes: %s: %d keys: copied %d (%d per key), damage %d, full %d, row %d"
                  case keys bytes (/ bytes keys) damage (plist-get d :full-copies) row)
-        (nhmac-gui--say "nhmac-typing-bytes: %s: damage log %S" case (reverse nhmac--damage-log))
-        (when (fboundp 'nhmac--startup-log)
-          (dolist (e (funcall 'nhmac--startup-log))
-            (when (and (stringp e) (string-match-p "full copy" e))
-              (nhmac-gui--say "nhmac-typing-bytes: %s: shell %s" case e))))
-        (setq nhmac--damage-log nil)
         (should (= (plist-get d :full-copies) 0))
         (should (= (plist-get d :held-timeouts) 0))
         (should (> bytes 0))
@@ -2198,7 +2190,6 @@ the size on the screen (points) it was made with: the text follows.  (Each re-op
     (add-hook 'move-frame-functions on-move)
     (unwind-protect
         (progn
-          (setq frame-size-history '(300))
           (setq f (make-frame '((width . 40) (height . 10))))
           ;; its size in points as first drawn, at the selected frame's scale.  Not as `make-frame' returns it: the
           ;; tool bar's first measure (`tool-bar-height' in `x-create-frame', when the window is sized) comes out
@@ -2208,14 +2199,6 @@ the size on the screen (points) it was made with: the text follows.  (Each re-op
           (setq made (list (/ (frame-pixel-width f) (frame-scale-factor root))
                            (/ (frame-pixel-height f) (frame-scale-factor root))))
           (dotimes (_ 3) (nhmac-gui--settle))
-          (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: bars: tool %S menu %S tab %S border %S fiir %S"
-                          (frame-parameter f 'tool-bar-lines) (frame-parameter f 'menu-bar-lines)
-                          (frame-parameter f 'tab-bar-lines) (frame-parameter f 'internal-border-width)
-                          frame-inhibit-implied-resize)
-          (dolist (e (reverse (cdr frame-size-history)))
-            (when (eq (car-safe (car-safe e)) f)
-              (nhmac-gui--say "nhmac-new-frame-opens-its-font-once: history %S %S" (cdr (car e)) (cdr e))))
-          (setq frame-size-history nil)
           (let ((s (frame-scale-factor f)) (pt (/ (face-attribute 'default :height f t) 10.0)))
             (nhmac-gui--say
              (concat "nhmac-new-frame-opens-its-font-once: scale %s (root %s), %.1f pt, %d px (root %d px), "
@@ -2292,25 +2275,11 @@ and `top' it opens there, at the scale of the screen there (the main screen, the
       (let ((f nil) first)
         (unwind-protect
             (progn
-              (setq nhmac--damage-log (list 'start))
-              (setq frame-size-history '(300))
               (setq f (make-frame (append '((width . 40) (height . 10)) params)))
               (nhmac-gui--settle)
               (setq first (list (frame-scale-factor f) (frame-width f) (frame-height f)
                                 (frame-pixel-width f) (frame-pixel-height f)))
               (dotimes (_ 3) (nhmac-gui--settle))
-              (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: size log %S" case
-                              (cl-remove-if-not (lambda (e) (and (consp e) (or (/= (length e) 4) (memq (car e) '(2 3)))))
-                                                (reverse nhmac--damage-log)))
-              (setq nhmac--damage-log nil)
-              (dolist (e (reverse (cdr frame-size-history)))
-                (when (eq (car-safe (car-safe e)) f)
-                  (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: history %S %S" case (cdr (car e)) (cdr e))))
-              (setq frame-size-history nil)
-              (when (fboundp 'nhmac--startup-log)
-                (dolist (e (funcall 'nhmac--startup-log))
-                  (when (and (stringp e) (string-match-p "configure queued\\|window made\\|full copy" e))
-                    (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: shell %s" case e))))
               (let ((now (list (frame-scale-factor f) (frame-width f) (frame-height f)
                                (frame-pixel-width f) (frame-pixel-height f))))
                 (nhmac-gui--say "nhmac-new-frame-laid-out-once: %s: root scale %s, want %s; first draw %S, after %S"
