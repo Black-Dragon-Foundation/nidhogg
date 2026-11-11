@@ -185,6 +185,9 @@ typedef struct
   uint32_t shadow_argb;
   float border_px;
   uint32_t border_argb;
+  /* The edge ring just outside the rounded rectangle, ring_px wide (0, or a 0 colour: none).  */
+  float ring_px;
+  uint32_t ring_argb;
 } GlitnirChrome;
 
 /* Give ROOT a scene (an existing one is kept).  */
