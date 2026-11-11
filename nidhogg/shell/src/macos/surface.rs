@@ -121,8 +121,6 @@ pub struct Stats {
     pub paint_ns: AtomicU64,
     pub fill_ns: AtomicU64,
     pub commit_ns: AtomicU64,
-    /// Core Text asked for a character's glyph or a glyph's advance and bounds (an open font asks once for each).
-    pub glyph_asks: AtomicU64,
 }
 
 /// Adds the time from its making to its drop to a counter of nanoseconds.
@@ -160,7 +158,6 @@ pub static STATS: Stats = Stats {
     paint_ns: AtomicU64::new(0),
     fill_ns: AtomicU64::new(0),
     commit_ns: AtomicU64::new(0),
-    glyph_asks: AtomicU64::new(0),
 };
 
 impl Stats {
@@ -170,7 +167,7 @@ impl Stats {
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
              :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} :draws {} \
-             :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {} :paint-ns {} :fill-ns {} :commit-ns {} :glyph-asks {}",
+             :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {} :paint-ns {} :fill-ns {} :commit-ns {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -190,7 +187,6 @@ impl Stats {
             g(&self.paint_ns),
             g(&self.fill_ns),
             g(&self.commit_ns),
-            g(&self.glyph_asks),
         )
     }
 }

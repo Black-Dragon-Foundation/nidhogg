@@ -2709,8 +2709,7 @@ the size on the screen (points) it was made with: the text follows.  (Each re-op
       (nhmac-gui--settle))))
 
 (ert-deftest nhmac-glyphs-measured-once ()
-  "A font asks Core Text for a character's glyph, and a glyph's advance and bounds, once: redrawing text already
-shown asks it nothing."
+  "Redrawing text already shown makes no font driver call: its glyphs and their metrics are in the glyph tables."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (switch-to-buffer (generate-new-buffer " *nhmac-glyphs*"))
@@ -2723,9 +2722,9 @@ shown asks it nothing."
           (dotimes (_ 5)
             (redraw-frame)
             (redisplay t))
-          (nhmac-gui--say "nhmac-glyphs-measured-once: %d glyph asks over 5 full redraws"
-                          (nhmac-gui--delta before :glyph-asks))
-          (should (= (nhmac-gui--delta before :glyph-asks) 0))))
+          (nhmac-gui--say "nhmac-glyphs-measured-once: %d font calls over 5 full redraws"
+                          (nhmac-gui--delta before :font-calls))
+          (should (= (nhmac-gui--delta before :font-calls) 0))))
     (kill-buffer)))
 
 (ert-deftest nhmac-new-frame-keeps-its-columns ()
