@@ -2,22 +2,21 @@
 //! which of its pixels must be copied in first.  Platform-free, so the Linux checks test it; `macos::surface` holds
 //! the IOSurfaces it names.
 //!
-//! **Ages and what a slot owes.**  A slot's age counts the commits since its pixels were the window's: the newest
-//! committed slot is 1, the one before it 2, and 0 means a new slot, whose pixels are unknown.  A slot lacks the damage
-//! of every commit made since it was drawn, which it keeps as it goes (a bounded number of rectangles, past which their
-//! bounding box); that, plus the damage of the commit being made, is all that is copied into it.  So a slot the pick
-//! leaves out for many commits (typing alternates the other two) copies what changed meanwhile, not the whole surface.
+//! **Ages.**  A slot's age counts the commits since its pixels were the window's: the newest committed slot is 1, the
+//! one before it 2, and 0 means its pixels are unknown (new, or past the remembered history).  A slot of age `a` lacks
+//! the damage of the `a - 1` latest commits, plus the damage of the commit being made; only that is copied into it.
 //!
 //! **The pick.**  The newest slot is on screen, so it is drawn into only when it is the ring's only slot.  Among the
-//! others that the window server does not hold (`IOSurfaceIsInUse`): the youngest drawn one, else a new one's
-//! slot of unknown pixels, else a new slot while the ring is below its size.  When every other slot is held the oldest is reused
+//! others that the window server does not hold (`IOSurfaceIsInUse`): the youngest with a known age, else one of
+//! unknown age, else a new slot while the ring is below its size.  When every other slot is held the oldest is reused
 //! anyway, as NS does (`nsterm.m:11221-11228`), and counted as busy.  Committing the slot that is already the layer's
 //! contents needs the contents set to nil first (NS `:11311-11312`): [`Ring::commit`] says when.
 
 use glitnir::geom::Rect;
+use std::collections::VecDeque;
 
-/// How many rectangles a slot keeps of what it owes; past it, their bounding box.
-pub const OWED_RECTS: usize = 32;
+/// How many commits' damage a ring remembers: a slot older than this is copied whole.
+pub const HISTORY: usize = 8;
 
 /// What must be copied into a slot before it is committed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,9 +53,8 @@ pub struct Ring {
     size: usize,
     /// Each slot's age.
     ages: Vec<u32>,
-    /// What each slot owes: the damage of the commits since it was drawn, newest first, not overlapping (`None`: a
-    /// slot never drawn).
-    owed: Vec<Option<Vec<Rect>>>,
+    /// The damage of the latest commits, newest first.
+    history: VecDeque<Vec<Rect>>,
     newest: Option<usize>,
 }
 
@@ -96,7 +94,7 @@ impl Ring {
         Ring {
             size: size.max(1),
             ages: Vec::new(),
-            owed: Vec::new(),
+            history: VecDeque::new(),
             newest: None,
         }
     }
@@ -117,18 +115,19 @@ impl Ring {
     /// Forget every slot (the window's size changed: the surfaces are made again).
     pub fn clear(&mut self) {
         self.ages.clear();
-        self.owed.clear();
+        self.history.clear();
         self.newest = None;
     }
 
     /// The slot the next commit draws into; `held` says whether the window server holds slot `i`.
     pub fn pick(&self, held: impl Fn(usize) -> bool) -> Pick {
+        let known = |a: u32| a != 0 && (a as usize) <= HISTORY + 1;
         let free: Vec<usize> = (0..self.ages.len())
             .filter(|&i| Some(i) != self.newest && !held(i))
             .collect();
         if let Some(&i) = free
             .iter()
-            .filter(|&&i| self.owed(i).is_some())
+            .filter(|&&i| known(self.ages[i]))
             .min_by_key(|&&i| self.ages[i])
         {
             return Pick {
@@ -172,10 +171,14 @@ impl Ring {
     /// What must be copied into `slot` for a commit whose own damage is `damage` (clipped to `w` x `h`; a rectangle
     /// that covers the surface makes it all).  A new slot (`slot` = the slot count) is copied whole.
     pub fn fill(&self, slot: usize, damage: &[Rect], w: i32, h: i32) -> Fill {
-        let Some(owed) = self.owed(slot) else {
+        let a = self.age(slot) as usize;
+        if a == 0 || a - 1 > self.history.len() {
             return Fill::All;
-        };
-        let mut rects = owed.to_vec();
+        }
+        let mut rects: Vec<Rect> = Vec::new();
+        for d in self.history.iter().take(a - 1) {
+            rects.extend_from_slice(d);
+        }
         rects.extend_from_slice(damage);
         let out = disjoint(&rects, w, h);
         let area: u64 = out.iter().map(Rect::area).sum();
@@ -191,46 +194,19 @@ impl Ring {
     pub fn commit(&mut self, slot: usize, damage: &[Rect]) -> bool {
         if slot >= self.ages.len() {
             self.ages.resize(slot + 1, 0);
-            self.owed.resize(slot + 1, None);
         }
         let same = self.newest == Some(slot);
         for (i, a) in self.ages.iter_mut().enumerate() {
             if i != slot && *a != 0 {
-                *a = a.saturating_add(1);
-            }
-        }
-        for (i, o) in self.owed.iter_mut().enumerate() {
-            if let Some(o) = o.as_mut().filter(|_| i != slot) {
-                owe(o, damage);
+                *a = if *a as usize > HISTORY { 0 } else { *a + 1 };
             }
         }
         self.ages[slot] = 1;
-        self.owed[slot] = Some(Vec::new());
+        self.history.push_front(damage.to_vec());
+        self.history.truncate(HISTORY);
         self.newest = Some(slot);
         same
     }
-
-    /// What `slot` owes (`None`: it was never drawn, or there is no such slot).
-    pub fn owed(&self, slot: usize) -> Option<&[Rect]> {
-        self.owed.get(slot).and_then(|o| o.as_deref())
-    }
-}
-
-/// Add a commit's `damage` (inside the surface) to what a slot owes, newest first: cut so none overlaps, and past
-/// [`OWED_RECTS`] rectangles their bounding box (it copies more, never less).
-fn owe(owed: &mut Vec<Rect>, damage: &[Rect]) {
-    if damage.is_empty() {
-        return;
-    }
-    let mut all = damage.to_vec();
-    all.append(owed);
-    let bound = all.iter().fold(Rect::default(), |b, r| b.bounds(r));
-    let all = disjoint(&all, bound.x + bound.w, bound.y + bound.h);
-    *owed = if all.len() > OWED_RECTS {
-        vec![bound]
-    } else {
-        all
-    };
 }
 
 /// How long a commit may be held while the window server holds every other slot: three frames at 60 Hz.  Past it the
@@ -431,51 +407,20 @@ mod tests {
     }
 
     #[test]
-    fn a_slot_left_out_for_many_commits_copies_only_their_damage() {
-        // typing: slots 0 and 1 alternate (the youngest free one is picked) while 2 waits, then 0 and 1 are held
+    fn a_slot_past_the_history_is_copied_whole() {
         let mut ring = Ring::new(3);
         step(&mut ring, &[]); // 0
         step(&mut ring, &[]); // 1
+        // slots 0 and 1 alternate while 2 is never made; then 0 and 1 are held
         ring.commit(2, &[]);
-        for k in 0..40 {
+        for _ in 0..HISTORY + 2 {
             let p = ring.pick(|i| i == 2);
-            ring.commit(p.slot, &[r(k, 0, 1, 1)]);
+            ring.commit(p.slot, &[r(0, 0, 1, 1)]);
         }
+        assert_eq!(ring.age(2), 0);
         let p = ring.pick(|i| i != 2);
         assert_eq!(p.slot, 2);
-        // the 40 cells it missed and this commit's, not the whole surface
-        let f = ring.fill(2, &[r(0, 10, 1, 1)], W, H);
-        assert_eq!(area(&f), 41);
-    }
-
-    #[test]
-    fn a_slot_owing_the_whole_surface_is_copied_whole() {
-        let mut ring = Ring::new(3);
-        step(&mut ring, &[]);
-        step(&mut ring, &[]);
-        ring.commit(2, &[]);
-        for k in 0..H {
-            let p = ring.pick(|i| i == 2);
-            ring.commit(p.slot, &[r(0, k, W, 1)]);
-        }
         assert_eq!(ring.fill(2, &[], W, H), Fill::All);
-    }
-
-    #[test]
-    fn many_scattered_cells_owed_stay_bounded() {
-        // what a slot owes is kept in a bounded number of rectangles: past it, their bounding box
-        let mut ring = Ring::new(3);
-        step(&mut ring, &[]);
-        step(&mut ring, &[]);
-        ring.commit(2, &[]);
-        for k in 0..400 {
-            let p = ring.pick(|i| i == 2);
-            ring.commit(p.slot, &[r((k * 7) % W, (k * 3) % H, 1, 1)]);
-        }
-        assert!(ring.owed(2).is_some_and(|o| o.len() <= OWED_RECTS));
-        // all of it still covered
-        let f = ring.fill(2, &[], W, H);
-        assert!(area(&f) >= 400);
     }
 
     #[test]
