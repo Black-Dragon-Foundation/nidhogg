@@ -87,6 +87,7 @@ unsafe extern "C" {
     static kCTFontCharacterSetAttribute: CFRef;
     static kCTFontLanguagesAttribute: CFRef;
     static kCTFontAttributeName: CFRef;
+    static kCTLanguageAttributeName: CFRef;
     static kCTKernAttributeName: CFRef;
     fn CTFontManagerCopyAvailableFontFamilyNames() -> CFRef;
     fn CTFontManagerCompareFontFamilyNames(a: CFRef, b: CFRef, ctx: *mut c_void) -> isize;
@@ -349,6 +350,11 @@ fn line(units: &[u16], attrs: &Cf) -> Option<Cf> {
 
 /// The family Core Text lays `chars` out in when no font is asked for, if it is one font.
 pub fn preferred_family(chars: &[u32]) -> Option<String> {
+    preferred_family_in(chars, "")
+}
+
+/// As `preferred_family`, with the text in `language` (empty: none), as macfont asks for a registry's characters.
+pub fn preferred_family_in(chars: &[u32], language: &str) -> Option<String> {
     let mut units = Vec::new();
     for &c in chars {
         let mut b = [0u16; 2];
@@ -357,7 +363,17 @@ pub fn preferred_family(chars: &[u32]) -> Option<String> {
     if units.is_empty() {
         return None;
     }
-    let l = line(&units, &dictionary(&[], &[])?)?;
+    let lang = if language.is_empty() {
+        None
+    } else {
+        Some(cf_string(language)?)
+    };
+    // SAFETY: a CoreText constant, live for the process.
+    let attrs = match &lang {
+        Some(l) => dictionary(&[unsafe { kCTLanguageAttributeName }], &[l.get()])?,
+        None => dictionary(&[], &[])?,
+    };
+    let l = line(&units, &attrs)?;
     let f = single_font(l.get())?;
     // SAFETY: a live font; the copy is +1.
     let family = Cf::new(unsafe { CTFontCopyFamilyName(f) })?;
