@@ -35,7 +35,7 @@ export JS_DEBUG=$B/js-debug
 PATH=$B/venv/bin:$PATH:$dev/usr/bin
 spec() {   # spec NET > file
   cat <<EOF
-{"read": ["$B/venv", "$B/fix", "$B/js-debug"],
+{"read": ["$B/venv", "$B/fix", "$B/js-debug", "$dev"],
  "write": ["$B/w", "$B/t"],
  "env": [["PATH", "$PATH"], ["HOME", "$B/t"], ["TMPDIR", "$B/t"], ["JS_DEBUG", "$B/js-debug"],
          ["PYTHONDONTWRITEBYTECODE", "1"]],
@@ -63,7 +63,7 @@ for a in debugpy jsdebug delve lldb; do
       if [ "$mode" = bare ]; then
         (cd fix && perl -e 'alarm shift; exec @ARGV' 120 python3 dapspike.py run "$a" "$B/fix" "$B/w/r.json" $shim > /dev/null 2>&1)
       else
-        (cd fix && perl -e 'alarm shift; exec @ARGV' 120 /usr/bin/sandbox-exec -f "$B/$mode.sb" "$B/venv/bin/python" dapspike.py run "$a" "$B/fix" "$B/w/r.json" $shim > /dev/null 2>"$B/w/se.txt")
+        (cd fix && perl -e 'alarm shift; exec @ARGV' 120 /usr/bin/env TMPDIR="$B/t/" HOME="$B/t" /usr/bin/sandbox-exec -f "$B/$mode.sb" "$B/venv/bin/python" dapspike.py run "$a" "$B/fix" "$B/w/r.json" $shim > /dev/null 2>"$B/w/se.txt")
       fi
       echo "dbgspike-result $a${shim:+-shim} $mode rc=$? $(summ "$B/w/r.json") $(head -c 300 "$B/w/se.txt" 2>/dev/null)"
       rm -f "$B/w/se.txt"
