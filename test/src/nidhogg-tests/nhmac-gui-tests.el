@@ -1216,26 +1216,47 @@ checked against the faces, tolerance 0 for fills and box lines."
 within its width, so the title bar, a tool bar and scroll bars (each build has its own) are never in a crop."
   (concat (propertize " " 'display '(space :align-to right) 'face `(:background ,nhmac-gui--crop-marker)) "\n"))
 
+(defun nhmac-gui--say-frame-layout (what)
+  "Log WHAT and where the selected frame puts its parts: borders, bars, the window's pixel edges, the frame's sizes."
+  (nhmac-gui--say "%s: layout %S" what
+                  (list :params (mapcar (lambda (p) (cons p (frame-parameter nil p)))
+                                        '(internal-border-width vertical-scroll-bars scroll-bar-width tool-bar-lines
+                                          tab-bar-lines menu-bar-lines undecorated))
+                        :char (cons (frame-char-width) (frame-char-height))
+                        :text (cons (frame-text-width) (frame-text-height))
+                        :pixel (cons (frame-pixel-width) (frame-pixel-height))
+                        :inner (cons (frame-inner-width) (frame-inner-height))
+                        :window (window-pixel-edges) :body (window-body-pixel-edges)
+                        :geometry (condition-case err (frame-geometry) (error (list 'error err))))))
+
 (defmacro nhmac-gui--bare-frame (&rest body)
-  "Run BODY with the selected frame in Menlo 12, 80 by 24 characters, showing one window, no tool bar and an empty
-echo area; put them back after.  The builds' default fonts differ, and the size in characters follows the font.  drgnx never shows Emacs's tool bar, and an earlier window (a *Compile-Log* of the test files'
+  "Run BODY with the selected frame in Menlo 12, 80 by 24 characters, showing one window, no tool bar, no scroll
+bars, no internal border and an empty echo area; put them back after.  The builds' default fonts differ, and the size in characters follows the font.  drgnx never shows Emacs's tool bar, and an earlier window (a *Compile-Log* of the test files'
 loading) or message differs between the builds' captures; without its tool bar NS keeps the frame's outer size and
 Naglfar its text size, so the size is set after."
   (declare (indent 0))
   `(let ((conf (current-window-configuration))
          (tb (frame-parameter nil 'tool-bar-lines))
          (font (frame-parameter nil 'font))
+         (sb (frame-parameter nil 'vertical-scroll-bars))
+         (ib (frame-parameter nil 'internal-border-width))
          (cols (frame-width)) (lines (frame-height)))
      (unwind-protect
          (progn
            (set-frame-parameter nil 'tool-bar-lines 0)
+           (set-frame-parameter nil 'vertical-scroll-bars nil)
+           (set-frame-parameter nil 'internal-border-width 0)
            (set-frame-font "Menlo-12" nil (list (selected-frame)))
            (set-frame-size nil 80 24)
            (delete-other-windows)
            (message nil)
+           (redisplay t)
+           (nhmac-gui--say-frame-layout "bare frame")
            ,@body)
        (set-window-configuration conf)
        (set-frame-parameter nil 'tool-bar-lines tb)
+       (set-frame-parameter nil 'vertical-scroll-bars sb)
+       (set-frame-parameter nil 'internal-border-width ib)
        (set-frame-font font nil (list (selected-frame)))
        (set-frame-size nil cols lines))))
 
@@ -1573,6 +1594,11 @@ on screen of each that NS decoded are within 2/255 of NS's in the same run (NS p
     (redisplay t)
     (let ((xy (posn-x-y (posn-at-point (point-min))))
           (edges (window-inside-pixel-edges)))
+      (nhmac-gui--say "nhmac-images-native: gif frame 1 at %S in %S, size %S, frame %dx%d scale %s, pixels %S"
+                      xy edges (image-size img t) (frame-pixel-width) (frame-pixel-height) (frame-scale-factor)
+                      (mapcar (lambda (d) (format "%x" (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) d)
+                                                                            (+ (nth 1 edges) (cdr xy) d))))
+                              '(0 1 2 4 8 16)))
       (should (= (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
     (kill-buffer)))
 
@@ -2550,9 +2576,11 @@ difference in drgnx's fit row is then the fitter's, not the driver's."
 (defmacro nhmac-gui--with-draw-scene (&rest body)
   "Run BODY showing a buffer that uses every face attribute and glyph kind the draw records carry (decorations, boxes
 and reliefs, stretches, glyphless and composed characters, images, fringe bitmaps), in Menlo 12 on
-`nhmac-gui--font-bg', with pixel sizes in NS points (times `nhmac-gui--draw-k').  Point is on the first image."
+`nhmac-gui--font-bg', with pixel sizes in NS points (times `nhmac-gui--draw-k'), below the crop marker
+\(`nhmac-gui--marker-line'), in a bare frame (`nhmac-gui--bare-frame').  Point is on the first image."
   (declare (indent 0))
-  `(let* ((k (nhmac-gui--draw-k))
+  `(nhmac-gui--bare-frame
+    (let* ((k (nhmac-gui--draw-k))
           (font (frame-parameter nil 'font))
           (fg (frame-parameter nil 'foreground-color))
           (bg (frame-parameter nil 'background-color))
@@ -2571,6 +2599,7 @@ and reliefs, stretches, glyphless and composed characters, images, fringe bitmap
            (set-window-fringes nil (* 8 k) (* 8 k))
            (set-window-scroll-bars nil 0 nil 0 nil)
            (let ((b (lambda (s &rest face) (insert (propertize s 'face face)))))
+             (insert (nhmac-gui--marker-line))
              (insert (propertize " " 'display '(left-fringe right-triangle)))
              (funcall b "under" :underline t) (insert " ")
              (funcall b "wave" :underline '(:style wave :color "red")) (insert " ")
@@ -2608,7 +2637,7 @@ and reliefs, stretches, glyphless and composed characters, images, fringe bitmap
        (set-window-scroll-bars nil nil nil nil nil)
        (set-frame-font font nil (list (selected-frame)))
        (set-foreground-color fg)
-       (set-background-color bg))))
+       (set-background-color bg)))))
 
 (defun nhmac-gui--draw-geometry ()
   "Where each line of the draw scene starts and ends, and where the images are: (X . Y) of `posn-at-point' at every
