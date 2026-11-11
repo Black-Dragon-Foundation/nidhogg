@@ -1118,6 +1118,15 @@ It measures; it asserts only that it ran."
                                         entries ", "))))
           (nhmac-gui--say "nhmac-pair-stages: %s" line)
           (write-region (concat line "\n") nil file t 'silent))))
+    ;; G1's measure (A6): the main thread's CPU time per key, typing for 2 s with nothing else running, on both builds;
+    ;; the same line goes to the stages file, where the builds are compared
+    (let ((c0 (nhmac-gui--main-thread-cpu)) (end (+ (float-time) 2)) (keys 0))
+      (while (< (float-time) end) (execute-kbd-macro "x") (redisplay) (cl-incf keys))
+      (let* ((c1 (nhmac-gui--main-thread-cpu))
+             (line (format "%s: main-thread CPU %s per key over %d keys" build
+                           (if (and c0 c1) (format "%.1f us" (/ (* 1e6 (- c1 c0)) keys)) "unknown") keys)))
+        (nhmac-gui--say "nhmac-pair-stages: %s" line)
+        (write-region (concat line "\n") nil file t 'silent)))
     ;; both builds: macOS's `sample' profiles this process (1 ms interval) while it types for 3 s, so the C side's
     ;; time can be compared function by function; the call tree goes to GLITNIR_GUI_OUT/sample-BUILD.txt
     (when (executable-find "sample")
@@ -1151,35 +1160,70 @@ It measures; it asserts only that it ran."
     (should (file-exists-p file))))
 
 ;; Draw records painted with Core Graphics
+(defun nhmac-gui--main-thread-cpu ()
+  "This process's main thread's CPU time so far (user + system, seconds), from `ps -M': its first thread row.
+Nil when ps gives no such row."
+  (with-temp-buffer
+    (when (eq 0 (ignore-errors (call-process "ps" nil t nil "-M" "-p" (number-to-string (emacs-pid)))))
+      (let* ((rows (split-string (buffer-string) "\n" t))
+             (head (and rows (split-string (car rows))))
+             (first (and (cdr rows) (split-string (cadr rows))))
+             ;; ps's times are [[H:]M:]S.FF
+             (secs (lambda (str)
+                     (and str (let ((n 0))
+                                (dolist (part (split-string str ":"))
+                                  (setq n (+ (* n 60) (string-to-number part))))
+                                n))))
+             (col (lambda (name) (let ((i (seq-position head name))) (and i (nth i first))))))
+        (let ((st (funcall secs (funcall col "STIME"))) (ut (funcall secs (funcall col "UTIME"))))
+          (and st ut (+ st ut)))))))
+
 (defun nhmac-gui--property-char-tables ()
-  "Where text properties hold char-tables: an alist of (WHERE PROPERTY SUBTYPE COUNT), WHERE the mode line or a buffer's
-name.  The mode line's constructs are walked through symbols' values (4 deep); plist values through lists and vectors
-\(3 deep)."
-  (let ((found (make-hash-table :test #'equal)) (seen (make-hash-table :test #'eq)))
+  "Who holds char-tables through text properties: a list of (WHERE PROPERTY SUBTYPE COUNT), WHERE the mode line or a
+buffer's name, and then (intervals WHERE N) for each buffer with intervals.  The mode line's constructs are walked
+through symbols' values (6 deep); property values through conses (each element and the tail) and vectors (3 deep).
+Never signals: an object it cannot walk is skipped (G1's GC diagnostic, run on both builds)."
+  (let ((found (make-hash-table :test #'equal)) (seen (make-hash-table :test #'eq)) (counts nil))
     (cl-labels ((value (where prop v depth)
                   (cond ((char-table-p v)
                          (cl-incf (gethash (list where prop (char-table-subtype v)) found 0)))
                         ((<= depth 0))
-                        ((consp v) (dolist (x (take 20 v)) (value where prop x (1- depth))))
-                        ((vectorp v) (dotimes (i (min 20 (length v))) (value where prop (aref v i) (1- depth))))))
+                        ((consp v)
+                         ;; any list, proper or not: each element up to 20, then a non-nil tail
+                         (let ((n 0))
+                           (while (and (consp v) (< n 20))
+                             (value where prop (car v) (1- depth))
+                             (setq v (cdr v) n (1+ n)))
+                           (when (and v (not (consp v))) (value where prop v (1- depth)))))
+                        ((and (vectorp v) (not (recordp v)))
+                         (dotimes (i (min 20 (length v))) (value where prop (aref v i) (1- depth))))))
                 (intervals (where obj)
-                  (dolist (iv (object-intervals obj))
-                    (let ((pl (nth 2 iv)))
-                      (while pl
-                        (value where (car pl) (cadr pl) 3)
-                        (setq pl (cddr pl))))))
+                  (let ((ivs (ignore-errors (object-intervals obj))))
+                    (when (and ivs (bufferp obj)) (push (list 'intervals where (length ivs)) counts))
+                    (dolist (iv ivs)
+                      (let ((pl (nth 2 iv)))
+                        (while (consp pl)
+                          (value where (car pl) (car-safe (cdr pl)) 3)
+                          (setq pl (cdr-safe (cdr pl))))))))
                 (construct (c depth)
                   (unless (or (<= depth 0) (and (or (consp c) (stringp c)) (gethash c seen)))
                     (when (or (consp c) (stringp c)) (puthash c t seen))
                     (cond ((stringp c) (intervals 'mode-line c))
                           ((and (symbolp c) c (boundp c)) (construct (symbol-value c) (1- depth)))
-                          ((consp c) (dolist (x (take 40 c)) (construct x (1- depth))))))))
-      (construct mode-line-format 6)
-      (dolist (b (buffer-list))
-        (intervals (buffer-name b) b)))
+                          ((consp c)
+                           (let ((n 0))
+                             (while (and (consp c) (< n 40))
+                               (construct (car c) (1- depth))
+                               (setq c (cdr c) n (1+ n)))))))))
+      (condition-case err
+          (progn
+            (construct mode-line-format 6)
+            (dolist (b (buffer-list))
+              (intervals (buffer-name b) b)))
+        (error (push (list 'error err) counts))))
     (let (out)
       (maphash (lambda (k n) (push (append k (list n)) out)) found)
-      out)))
+      (append out (nreverse counts)))))
 
 (defun nhmac-gui--pixel-at (x y)
   "The committed surface's premultiplied ARGB at device pixel X, Y of the selected frame, once the commit pacer holds
@@ -1512,7 +1556,7 @@ pixels on each side.  Returns (W H PIXELS) of that box."
 (ert-deftest nhmac-font-ascii ()
   "Menlo 12: `font-info''s ascent, descent, average width and space width are NS's times the scale (NS counts in
 points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS's, both captured from the screen."
-  :tags '(draws)
+  :tags '(draws parity)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
     (should (file-exists-p (nhmac-gui--font-file "eld" t)))
@@ -1640,7 +1684,7 @@ are put back after."
 (ert-deftest nhmac-images-native ()
   "PNG, JPEG, GIF (animated), TIFF, WebP and HEIC decode through ImageIO at their files' sizes; at scale 1 the pixels
 on screen of each that NS decoded are within 2/255 of NS's in the same run (NS points are pixels there)."
-  :tags '(draws)
+  :tags '(draws parity)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (type '(png jpeg gif tiff webp heic))
     (should (image-type-available-p type)))
@@ -2362,6 +2406,7 @@ the window server moves to such a screen does (`nidhogg-frame-scale-change-funct
 (ert-deftest nhmac-font-calls-per-glyph ()
   "After warm-up, redisplaying a window of 1,000 glyphs in Menlo 12 makes no `nhg_font_*' call: C reads glyphs and
 metrics from the font's glyph table.  A character on a page not read yet makes calls (the fill), so the counter counts."
+  :tags '(parity)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((font (frame-parameter nil 'font))
         (buf (generate-new-buffer " *nhmac-glyphs*")))
@@ -2510,6 +2555,7 @@ its fallback fonts for nhmac-font-fallback-same; its shaping for nhmac-font-shap
 ascent, descent, space and average widths, line height, each glyph's code and extents, and the underline's thickness
 and drop equal NS's in the same run (times the scale; within a device pixel at scale 2).  A font NS does not have is
 reported and skipped; one NS has and Naglfar does not is a failure."
+  :tags '(parity)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
         (ns (nhmac-gui--lane-read "font-parity"))
@@ -2553,6 +2599,7 @@ Menlo 12."
 (ert-deftest nhmac-font-fallback-same ()
   "With Menlo 12 as the frame's font, CJK, emoji, Greek, Hebrew, Thai and the euro sign are shown in the same
 families as on NS."
+  :tags '(parity)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((ns (nhmac-gui--lane-read "font-fallback"))
         (mine (nhmac-gui--fallback-facts)))
@@ -2588,6 +2635,7 @@ families as on NS."
 (ert-deftest nhmac-font-shaping ()
   "Arabic and Devanagari runs give the same fonts, clusters and glyph ids as on NS, and the same widths and offsets
 (times the scale; within a device pixel at scale 2)."
+  :tags '(parity)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
         (ns (nhmac-gui--lane-read "font-shaping"))
@@ -2844,6 +2892,7 @@ nhmac-draw-all-records in the Naglfar lane; and the fringe scene's capture, for 
 are pixels) each capture, without a cursor and with each cursor kind over the image, is NS's size, and at most 0.1%
 of its pixels differ by more than 24/255 in a channel.  At scale 2 the pixel differences are reported: Naglfar's
 one-pixel lines (waves, reliefs, cursor bars) are device pixels there, NS's are points."
+  :tags '(parity)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (file-exists-p (nhmac-gui--font-file "draw.eld" t)))
   (nhmac-gui--with-draw-scene
@@ -2867,6 +2916,7 @@ one-pixel lines (waves, reliefs, cursor bars) are device pixels there, NS's are 
 (ert-deftest nhmac-draw-fringe-bitmaps ()
   "Fringe bitmaps against NS's in the same run: at a scale NS draws each bit as a point, so Naglfar's fringes, as
 wide as NS's, draw it as scale by scale pixels.  The bitmaps' crop is NS's size and has as many dark pixels."
+  :tags '(parity)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (file-exists-p (nhmac-gui--font-file "fringe.bmp" t)))
   (nhmac-gui--with-fringe-scene
