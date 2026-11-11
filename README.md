@@ -48,6 +48,9 @@ for upstreaming.
   `src/` the group touched must equal its base version (`unifdef -U…`); a changed `lisp/` file is new or `lisp/loadup.el`
   with one `(featurep 'FEATURE)` line per group; a commit in the range touching `src/` that belongs to no group goes
   below the groups. Needs `unifdef`.
+- Upstream NS files (`src/ns*`, `nextstep/`, `lisp/term/ns-win.el`) stay as they were at the Naglfar base while Naglfar
+  replaces the NS port: `NAGLFAR_BASE`, default the series commit pinned in `tree-test.sh` (move it on a rebase). A
+  checkout without that commit (a shallow clone) stops the check with exit 75, never skips it.
 - `bash nidhogg/test/tree-test.sh [BASE]` checks these rules; `TREE_TEST_SELF=1` runs the flag-group rule on fixtures.
 
 ## Rebasing onto a new upstream release
