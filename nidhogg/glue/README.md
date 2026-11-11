@@ -110,8 +110,10 @@ sees what the earlier events changed, as the C drain did; before each call it sa
 - **Keys** (`src/keys.rs`): a press or a repeat gives a `KEY` action with the keysym, its text and the modifier mask;
   the shell has already run it through xkb and compose. It names the window with the keyboard, and C sends it to the
   frame of that window's tree that Emacs focused, after running the keysym cascade. A repeat taken by a call with
-  `NHG_IN_INPUT_WAITING` set is dropped, so a key stored earlier in the same drain counts. The glue keeps the modifier
-  mask (`MODIFIERS` events give no action).
+  `NHG_IN_INPUT_WAITING` set is dropped, so a key stored earlier in the same drain counts. A release gives a `KEY`
+  action flagged `NHG_KEY_RELEASE` that repeats its press's keysym, class and text (the glue keeps each held key's
+  press, 32 at most, by key code); a release whose press gave no action gives none. C drops releases unless Lisp set
+  `nidhogg-key-events`. The glue keeps the modifier mask (`MODIFIERS` events give no action).
 - **Focus** (`src/focus.rs`): a keyboard focus event gives `FOCUS_IN` or `FOCUS_OUT` for its window, and the glue
   keeps the window that has the keyboard. A popup frame's focus events give none, and neither does a top-level losing
   the keyboard while a popup frame of its own grabs (`src/popup.rs`). Emacs's focus frame and highlighting stay C.

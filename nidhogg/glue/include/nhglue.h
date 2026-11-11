@@ -455,12 +455,13 @@ int32_t nhg_test_panic (NhgDisplay *d);
 
 /* ---- The keyboard --------------------------------------------------------------------------------------------------
 
-   A KEY action is a press or a repeat: WINDOW the window with the keyboard (C sends the key to the frame of its tree
-   that Emacs focused, or to the focus frame when no frame has that window), CODE the keysym, TEXT its UTF-8 (possibly
-   empty), MODS the NHG_MOD_* mask, FLAGS NHG_KEY_* (the repeat bit and the keysym's class), X the class's
-   character.  C's cascade: NHG_KEY_CHAR, then the keysym table, then NHG_KEY_SYMBOL (a function key, CODE) or
+   A KEY action is a press, a repeat or a release: WINDOW the window with the keyboard (C sends the key to the frame of
+   its tree that Emacs focused, or to the focus frame when no frame has that window), CODE the keysym, TEXT its UTF-8
+   (possibly empty), MODS the NHG_MOD_* mask, FLAGS NHG_KEY_* (the repeat or release bit and the keysym's class), X the
+   class's character.  C's cascade: NHG_KEY_CHAR, then the keysym table, then NHG_KEY_SYMBOL (a function key, CODE) or
    NHG_KEY_TEXT; with none of the three only the table gives an event.  A repeat taken by a call with
-   NHG_IN_INPUT_WAITING set gives no action.  FOCUS_IN and FOCUS_OUT name the window whose keyboard focus changed; C resolves Emacs's focus frame
+   NHG_IN_INPUT_WAITING set gives no action.  A release repeats its press's CODE, class, X and TEXT with the MODS at
+   the release; a release whose press gave no action gives none.  FOCUS_IN and FOCUS_OUT name the window whose keyboard focus changed; C resolves Emacs's focus frame
    and its highlighting.  A popup frame's focus, and the focus a top-level lends a grabbing popup frame of its own,
    give none (nhg_popup_hide says when a lent focus is lost).  */
 
@@ -468,6 +469,7 @@ int32_t nhg_test_panic (NhgDisplay *d);
 #define NHG_KEY_CHAR             2   /* the keysym names character X (before the keysym table) */
 #define NHG_KEY_SYMBOL           4   /* failing the table: a function key */
 #define NHG_KEY_TEXT             8   /* failing the table: the text's first character X */
+#define NHG_KEY_RELEASE         16   /* the key was released */
 
 /* ---- Selections, display queries, the bench, the bell and the pointer -------------------------------------------
    None of these reads or writes pixels except nhg_bench_full_redraw, which reads them.  KIND is NHG_SEL_CLIPBOARD or
