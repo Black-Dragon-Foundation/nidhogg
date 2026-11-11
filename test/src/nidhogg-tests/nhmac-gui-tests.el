@@ -1699,8 +1699,13 @@ on screen of each that NS decoded are within 2/255 of NS's in the same run (NS p
                           (dotimes (y 64)
                             (dotimes (x 24)
                               (when (eql (nhmac-gui--pixel-at (* 2 x) (* 2 y)) #xff0000ff)
-                                (throw 'found (list (* 2 x) (* 2 y)))))))))
-      (should (=(nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
+                                (throw 'found (list (* 2 x) (* 2 y))))))))
+        ;; and whether it lands later (the image worker's stand-in drawn first)
+        (sleep-for 0.5)
+        (redisplay t)
+        (nhmac-gui--say "nhmac-images-native: after 0.5 s, %x"
+                        (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1))))
+      (should (= (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
     (kill-buffer)))
 
 (defun nhmac-gui--image-screen (file &optional worker)
