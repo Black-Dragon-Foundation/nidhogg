@@ -7,6 +7,7 @@
 fresh nhmac-pair-stages
 fresh nhmac-paired-key-to-commit
 fresh nhmac-paired-cjk-emoji-scroll
+fresh nhmac-paired-cpu-per-key
 files glitnir-nhmac-gui-tests.el
 files nhmac-gui-tests.el
 files nhmac-ns-gui-tests.el nhmac-window-gui-tests.el nhmac-resize-gui-tests.el nhmac-keys-gui-tests.el
