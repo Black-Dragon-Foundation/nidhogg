@@ -151,6 +151,8 @@ mod tests {
         let s = Scale::of120(240);
         // a view 500 points tall: its point (10, 490) is 20 device pixels right, 20 down
         assert_eq!(s.device_point(10.0, 490.0, 500.0), (20.0, 20.0));
+        // a view 100 points tall at 2x: its point (10, 30) is (20, 140) device pixels from the top left
+        assert_eq!(s.device_point(10.0, 30.0, 100.0), (20.0, 140.0));
         assert_eq!(s.view_point(20.0, 20.0, 500.0), (10.0, 490.0));
         // a rectangle 40 x 20 device pixels at (20, 20): 20 x 10 points, its bottom at 500 - 10 - 10
         assert_eq!(

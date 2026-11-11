@@ -5,6 +5,7 @@
 
 use super::chrome::{CGImageRelease, argb_image};
 use crate::api::{CardImage, ShellError, ShellResult};
+use crate::units::Scale;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -50,7 +51,7 @@ impl Cards {
 
     /// Apply the waiting list to `root` (the root's layer, `h` points tall) at `scale`: inside the root tree's
     /// transaction.
-    pub fn apply(&mut self, root: &CALayer, h: f64, scale: f64) {
+    pub fn apply(&mut self, root: &CALayer, h: f64, scale: Scale) {
         let Some(list) = self.pending.take() else {
             return;
         };
@@ -87,18 +88,16 @@ impl Cards {
                         l.setContents(Some(&*i.cast::<AnyObject>()));
                         CGImageRelease(i);
                     }
-                    l.setContentsScale(scale);
+                    l.setContentsScale(scale.factor());
                     self.images += 1;
                 }
             }
             if *at != c.rect || c.argb.is_some() {
                 let (x, y, w, hh) = c.rect;
-                let (pw, ph) = (f64::from(w) / scale, f64::from(hh) / scale);
                 // device pixels from the top-left to points from the bottom-left
-                l.setPosition(NSPoint::new(
-                    f64::from(x) / scale,
-                    h - f64::from(y) / scale - ph,
-                ));
+                let (px, py, pw, ph) =
+                    scale.view_rect((f64::from(x), f64::from(y), f64::from(w), f64::from(hh)), h);
+                l.setPosition(NSPoint::new(px, py));
                 l.setBounds(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(pw, ph)));
                 *at = c.rect;
             }

@@ -282,11 +282,6 @@ pub fn wheel(dx: f64, dy: f64, precise: bool) -> ScrollEv {
     }
 }
 
-/// A point in the window's content view, flipped (AppKit's origin is bottom-left) and in device pixels.
-pub fn device_point(x: f64, y: f64, view_height: f64, scale: f64) -> (f64, f64) {
-    (x * scale, (view_height - y) * scale)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,7 +376,6 @@ mod tests {
         assert_eq!(w.v120y, 240);
         let w = wheel(0.0, 3.5, true);
         assert_eq!((w.dy, w.v120y, w.source), (-3.5, 0, NHSHELL_SCROLL_FINGER));
-        assert_eq!(device_point(10.0, 30.0, 100.0, 2.0), (20.0, 140.0));
     }
 
     #[test]

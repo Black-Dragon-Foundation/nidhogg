@@ -78,8 +78,7 @@ fn record(
     make: fn(DndEv) -> ShellEvent,
 ) {
     let p = view.convertPoint_fromView(info.draggingLocation(), None);
-    let scale = view.window().map_or(1.0, |w| w.backingScaleFactor());
-    let (x, y) = crate::mac_input::device_point(p.x, p.y, view.bounds().size.height, scale);
+    let (x, y) = super::scale::of_view(view).device_point(p.x, p.y, view.bounds().size.height);
     let ops = info.draggingSourceOperationMask().0;
     let actions = dnd_map::actions_of(ops);
     deliver(MacEv::Input(

@@ -345,11 +345,8 @@ impl MacShell {
             w.window.setFrame_display(frame, false);
             return;
         }
-        let scale = w.window.backingScaleFactor();
-        let px = (
-            (f64::from(size.0) * scale).round() as i32,
-            (f64::from(size.1) * scale).round() as i32,
-        );
+        let s = w.scale();
+        let px = (s.px_i(size.0), s.px_i(size.1));
         w.size = size;
         w.resize.inflight = Some((frame, px));
         self.configure(id, size.0, size.1);
@@ -771,7 +768,7 @@ impl ShellBackend for MacShell {
             Place::Shell => {}
         }
         win.window.makeKeyAndOrderFront(None);
-        win.scale120 = win.scale_now();
+        win.placed();
         let (w, h, scale) = (win.size.0, win.size.1, win.scale120);
         crate::trace::note(|| format!("window made: window {id} {w}x{h} points, scale120 {scale}"));
         win.surfaces.reset(self.srgb);

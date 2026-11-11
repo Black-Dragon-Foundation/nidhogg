@@ -521,7 +521,7 @@ impl MacShell {
                 let t = |b: bool| if b { "t" } else { "nil" };
                 format!(
                     "(:id {id} :points ({cw} {ch}) :scale {} :visible {} :occluded {} :key {})",
-                    w.window.backingScaleFactor(),
+                    crate::macos::scale::of_window(&w.window).factor(),
                     t(w.window.isVisible()),
                     t(occluded),
                     t(w.window.isKeyWindow())
@@ -556,7 +556,7 @@ impl MacShell {
             .view
             .layer()
             .is_some_and(|l| std::ptr::eq(Retained::as_ptr(&l), Retained::as_ptr(&w.layer)));
-        let scale = w.window.backingScaleFactor();
+        let scale = crate::macos::scale::of_window(&w.window);
         let (cw, ch) = w.content_size();
         let screen = screens::outputs(self.mtm).first().map_or(0, |o| o.w);
         // where AppKit has the window: its frame (points, y up from the main screen's bottom), the screen it is on
@@ -570,7 +570,7 @@ impl MacShell {
                 f.origin.y,
                 f.size.width,
                 f.size.height,
-                sc.backingScaleFactor()
+                crate::macos::scale::of_screen(&sc).factor()
             )
         });
         let occluded = !w
@@ -585,8 +585,8 @@ impl MacShell {
             if layer_ours { "t" } else { "nil" },
             if w.view.wantsLayer() { "t" } else { "nil" },
             w.view.subviews().len(),
-            (f64::from(cw) * scale).round() as i64,
-            (f64::from(ch) * scale).round() as i64,
+            i64::from(scale.px_i(cw)),
+            i64::from(scale.px_i(ch)),
             fr.origin.x,
             fr.origin.y,
             fr.size.width,

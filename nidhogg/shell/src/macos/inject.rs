@@ -138,10 +138,10 @@ pub fn mouse(
     flags: i64,
 ) -> ShellResult {
     focus(app, w);
-    let scale = w.window.backingScaleFactor();
     let height = w.view.bounds().size.height;
     // window coordinates: points from the content's bottom left
-    let at = NSPoint::new(x / scale, height - y / scale);
+    let (px, py) = w.scale().view_point(x, y, height);
+    let at = NSPoint::new(px, py);
     let flags = NSEventModifierFlags(usize::try_from(flags).map_err(|_| ShellError::Arg)?);
     if kind == MOUSE_WHEEL {
         let lines = i32::try_from(button).map_err(|_| ShellError::Arg)?;

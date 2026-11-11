@@ -7,6 +7,7 @@
 
 use super::super::layers::{PROPS, count};
 use crate::mac_chrome::{self, ShadowImage};
+use crate::units::Scale;
 use glitnir::scene::Chrome;
 use objc2::encode::{Encoding, RefEncode};
 use objc2::msg_send;
@@ -129,34 +130,27 @@ pub fn apply(
     ring: &CALayer,
     shadow: &CALayer,
     size: (i32, i32),
-    scale: f64,
+    scale: Scale,
 ) {
     let c = chrome.copied().unwrap_or_default();
-    if shown.chrome != chrome.copied() || shown.scale != scale {
-        content.setCornerRadius(f64::from(c.radius_px) / scale);
+    if shown.chrome != chrome.copied() || shown.scale != scale.factor() {
+        content.setCornerRadius(scale.pt(f64::from(c.radius_px)));
         content.setMasksToBounds(c.radius_px > 0.0);
         // SAFETY: a constant of the framework.
         content.setCornerCurve(unsafe { kCACornerCurveCircular });
-        content.setBorderWidth(f64::from(c.border_px) / scale);
+        content.setBorderWidth(scale.pt(f64::from(c.border_px)));
         border_colour(content, c.border_argb);
         shown.chrome = chrome.copied();
-        shown.scale = scale;
+        shown.scale = scale.factor();
         count(&PROPS.chrome);
     }
-    let dev = |v: i32| (f64::from(v) * scale).round().max(1.0) as u32;
-    let (w, h) = (dev(size.0), dev(size.1));
+    let (w, h) = (scale.px_min1(size.0), scale.px_min1(size.1));
     // the ring: its frame from the content's top left in device pixels, to points from its bottom left
     let r = chrome.and_then(|c| mac_chrome::ring(c, w, h)).map(|r| {
-        let (fx, fy, fw, fh) = r.frame;
         (
-            (
-                fx / scale,
-                f64::from(size.1) - (fy + fh) / scale,
-                fw / scale,
-                fh / scale,
-            ),
-            r.radius / scale,
-            r.width / scale,
+            scale.view_rect(r.frame, f64::from(size.1)),
+            scale.pt(r.radius),
+            scale.pt(r.width),
             c.ring_argb,
         )
     });
@@ -186,8 +180,8 @@ pub fn apply(
         return;
     }
     let key = (c, (!mac_chrome::stretches(&c, w, h)).then_some((w, h)));
-    if shown.image != Some(key) || shown.scale != scale {
-        let img = mac_chrome::image(&c, w, h, scale);
+    if shown.image != Some(key) || shown.scale != scale.factor() {
+        let img = mac_chrome::image(&c, w, h, scale.factor());
         let i = cg_image(&img);
         if !i.is_null() {
             let (cx, cy, cw, ch) = img.centre;
@@ -197,7 +191,7 @@ pub fn apply(
                 shadow.setContents(Some(&*i.cast::<AnyObject>()));
                 CGImageRelease(i);
             }
-            shadow.setContentsScale(scale);
+            shadow.setContentsScale(scale.factor());
             shadow.setContentsCenter(NSRect::new(
                 NSPoint::new(f64::from(cx) / iw, f64::from(cy) / ih),
                 NSSize::new(f64::from(cw) / iw, f64::from(ch) / ih),
@@ -208,12 +202,7 @@ pub fn apply(
     }
     let (fx, fy, fw, fh) = mac_chrome::frame(&c, w, h);
     // the frame from the content's top left in device pixels, to points from its bottom left
-    let f = (
-        fx / scale,
-        f64::from(size.1) - (fy + fh) / scale,
-        fw / scale,
-        fh / scale,
-    );
+    let f = scale.view_rect((fx, fy, fw, fh), f64::from(size.1));
     if shown.frame != Some(f) {
         shadow.setFrame(NSRect::new(NSPoint::new(f.0, f.1), NSSize::new(f.2, f.3)));
         shadow.setHidden(false);
