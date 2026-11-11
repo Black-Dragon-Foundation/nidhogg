@@ -37110,6 +37110,66 @@ note_fringe_highlight (struct frame *f, Lisp_Object window, int x, int y,
 
 #endif	/* HAVE_WINDOW_SYSTEM */
 
+#ifdef HAVE_GLITNIR
+/* Mouse sensors: the mouse's counterpart of cursor-sensor.  The run of
+   `mouse-sensor-functions' the pointer is on, the window and the buffer
+   position it was noted at; one pointer, so one record.  A change is
+   queued as a MOUSE_SENSOR_EVENT, run by read_char (keyboard.c): no
+   Lisp runs here.  */
+static Lisp_Object mouse_sensor_value;
+static Lisp_Object mouse_sensor_window;
+static ptrdiff_t mouse_sensor_pos;
+
+/* Note that the pointer is on VALUE (nil: on no sensor) in WINDOW at
+   POS, on frame F; queue the change when VALUE is another object, or
+   the same one in another window.  */
+static void
+note_mouse_sensor (struct frame *f, Lisp_Object window, Lisp_Object value,
+		   ptrdiff_t pos)
+{
+  if (EQ (value, mouse_sensor_value)
+      && (NILP (value) || EQ (window, mouse_sensor_window)))
+    return;
+  struct input_event event;
+  EVENT_INIT (event);
+  event.kind = MOUSE_SENSOR_EVENT;
+  XSETFRAME (event.frame_or_window, f);
+  event.arg = list (mouse_sensor_value, mouse_sensor_window,
+		    make_fixnum (mouse_sensor_pos), value, window,
+		    make_fixnum (pos));
+  kbd_buffer_store_event (&event);
+  mouse_sensor_value = value;
+  mouse_sensor_window = NILP (value) ? Qnil : window;
+  mouse_sensor_pos = pos;
+}
+
+/* EXPORT:
+   The pointer left frame F (a shell's leave handler): the sensor it was
+   on, if on F, is left.  */
+void
+note_mouse_sensor_leave (struct frame *f)
+{
+  if (!NILP (mouse_sensor_value) && WINDOWP (mouse_sensor_window)
+      && XFRAME (WINDOW_FRAME (XWINDOW (mouse_sensor_window))) == f)
+    note_mouse_sensor (f, Qnil, Qnil, 0);
+}
+
+DEFUN ("nidhogg--note-mouse", Fnidhogg__note_mouse, Snidhogg__note_mouse,
+       3, 3, 0,
+       doc: /* For tests: note the pointer at X, Y (pixels) on FRAME, or its
+leaving FRAME when X is `leave', as a shell would.  */)
+  (Lisp_Object frame, Lisp_Object x, Lisp_Object y)
+{
+  struct frame *f = decode_live_frame (frame);
+  if (EQ (x, Qleave))
+    note_mouse_sensor_leave (f);
+  else
+    note_mouse_highlight (f, check_integer_range (x, INT_MIN, INT_MAX),
+			  check_integer_range (y, INT_MIN, INT_MAX));
+  return Qnil;
+}
+
+#endif /* HAVE_GLITNIR */
 /* EXPORT:
    Take proper action when the mouse has moved to position X, Y on
    frame F with regards to highlighting portions of display that have
@@ -37128,6 +37188,10 @@ note_mouse_highlight (struct frame *f, int x, int y)
   Emacs_Cursor cursor = No_Cursor;
   Lisp_Object pointer = Qnil;  /* Takes precedence over cursor!  */
   struct buffer *b;
+#ifdef HAVE_GLITNIR
+  Lisp_Object sensor = Qnil;
+  ptrdiff_t sensor_pos = 0;
+#endif
 
   /* When a menu is active, don't highlight because this looks odd.  */
 #if defined (HAVE_X_WINDOWS) || defined (HAVE_NS) || defined (MSDOS) \
@@ -37165,6 +37229,12 @@ note_mouse_highlight (struct frame *f, int x, int y)
 	  && part != ON_HEADER_LINE
 	  && part != ON_TAB_LINE))
     clear_mouse_face (hlinfo);
+#ifdef HAVE_GLITNIR
+
+  /* Off the text of a window: off every sensor.  */
+  if (mouse_sensor_enabled && (!WINDOWP (window) || part != ON_TEXT))
+    note_mouse_sensor (f, Qnil, Qnil, 0);
+#endif
 
   /* Reset help_echo_string.  It will get recomputed below.  */
   help_echo_string = Qnil;
@@ -37465,6 +37535,19 @@ note_mouse_highlight (struct frame *f, int x, int y)
 
       /* Is this char mouse-active or does it have help-echo?  */
       position = make_fixnum (pos);
+#ifdef HAVE_GLITNIR
+
+      /* One property read, only when sensors are on; in a display or
+	 overlay string, the position is its row's start.  */
+      if (mouse_sensor_enabled)
+	{
+	  sensor = Fget_char_property (position, Qmouse_sensor_functions,
+				       BUFFERP (object) ? window : object);
+	  sensor_pos = (BUFFERP (object) ? pos
+			: MATRIX_ROW_START_CHARPOS (MATRIX_ROW (w->current_matrix,
+								vpos)));
+	}
+#endif
 
       USE_SAFE_ALLOCA;
 
@@ -37759,6 +37842,10 @@ note_mouse_highlight (struct frame *f, int x, int y)
     }
 
  set_cursor:
+#ifdef HAVE_GLITNIR
+  if (mouse_sensor_enabled && WINDOWP (window) && part == ON_TEXT)
+    note_mouse_sensor (f, window, sensor, sensor_pos);
+#endif
   define_frame_cursor1 (f, cursor, pointer);
 }
 
@@ -38475,6 +38562,29 @@ gui_union_rectangles (const Emacs_Rectangle *a, const Emacs_Rectangle *b,
 void
 syms_of_xdisp (void)
 {
+#ifdef HAVE_GLITNIR
+  DEFSYM (Qmouse_sensor_functions, "mouse-sensor-functions");
+  DEFSYM (Qleave, "leave");
+  defsubr (&Snidhogg__note_mouse);
+  staticpro (&mouse_sensor_value);
+  mouse_sensor_value = Qnil;
+  staticpro (&mouse_sensor_window);
+  mouse_sensor_window = Qnil;
+  DEFVAR_BOOL ("mouse-sensor-enabled", mouse_sensor_enabled,
+	       doc: /* Non-nil means the pointer runs `mouse-sensor-functions'.
+The property `mouse-sensor-functions', on text or an overlay (its
+strings included), is a list of functions, each called with three
+arguments, WINDOW, POS and DIR, when the pointer comes onto a run with
+that property value (DIR `entered') or goes off it (DIR `left'), the
+latter also when it leaves the window, the frame or the text area.  Runs
+are told apart by `eq' of the value, so give one run one object.  POS is
+the buffer position the pointer was noted at; in a display or overlay
+string, its row's start.  The functions run from the command loop, not
+as a command: `this-command', the keys read so far and keyboard macros
+are untouched, and an error is reported, not raised.  Nil (the default)
+means no property is read at all.  */);
+  mouse_sensor_enabled = false;
+#endif
   Vwith_echo_area_save_vector = Qnil;
   staticpro (&Vwith_echo_area_save_vector);
 
