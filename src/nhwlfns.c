@@ -656,7 +656,13 @@ nhwl_default_font_parameter (struct frame *f, Lisp_Object parms)
   if (!FONTP (font) && !STRINGP (font))
     {
       const char *names[] = {
+#ifdef HAVE_NHMAC
+	/* NS's default: the fixed-pitch family with no size, which
+	   font_open_by_spec opens at 12 points (Menlo 12).  */
+	"monospace",
+#else
 	"monospace-10",
+#endif
 	"-adobe-courier-medium-r-*-*-*-120-*-*-*-*-iso8859-1",
 	"-misc-fixed-medium-r-normal-*-*-140-*-*-c-*-iso8859-1",
 	"-*-*-medium-r-normal-*-*-140-*-*-c-*-iso8859-1",
