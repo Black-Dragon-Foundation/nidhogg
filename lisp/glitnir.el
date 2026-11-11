@@ -138,9 +138,6 @@ and `child-frame-chrome'.  Root frames and decorated (not
       (when radius
         (unless (and (numberp radius) (>= radius 0))
           (signal 'wrong-type-argument (list 'natnump radius))))
-      (if shadow
-          (puthash frame (plist-get shadow :color) glitnir--shadow-colors)
-        (remhash frame glitnir--shadow-colors))
       (when (or shadow ring (and radius (> radius 0)))
         (list :radius (or radius 0) :shadow shadow :ring ring)))))
 
