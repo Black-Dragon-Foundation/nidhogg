@@ -1,0 +1,418 @@
+# NS's font answers (nhmac-gui-tests.el, nhmac-ns-font-oracle-dump), GNU Emacs 31.1 (build 1, aarch64-apple-darwin27.0.0, NS appkit-2775.10 Version 27.0.1 (Build 26A434))
+ of 2026-11-11 (Nidhogg 31.1-nidhogg.6)
+font	Menlo	10	9	2	6	6	6	Menlo
+glyph	Menlo	10	72	43	6	0	6	8	0
+glyph	Menlo	10	103	74	6	0	6	6	3
+glyph	Menlo	10	46	17	6	1	5	2	0
+glyph	Menlo	10	87	58	6	-1	7	8	0
+glyph	Menlo	10	124	95	6	2	5	8	3
+glyph	Menlo	10	95	66	6	-1	7	0	2
+glyph	Menlo	10	126	97	6	-1	7	5	-1
+font	Menlo	12	11	3	7	7	7	Menlo
+glyph	Menlo	12	72	43	7	0	7	9	0
+glyph	Menlo	12	103	74	7	0	7	7	3
+glyph	Menlo	12	46	17	7	1	5	3	0
+glyph	Menlo	12	87	58	7	-1	8	9	0
+glyph	Menlo	12	124	95	7	2	5	10	3
+glyph	Menlo	12	95	66	7	-1	8	-1	3
+glyph	Menlo	12	126	97	7	-1	8	6	-2
+font	Menlo	13	12	3	8	8	8	Menlo
+glyph	Menlo	13	72	43	8	0	8	10	0
+glyph	Menlo	13	103	74	8	0	8	8	3
+glyph	Menlo	13	46	17	8	2	6	3	0
+glyph	Menlo	13	87	58	8	-1	9	10	0
+glyph	Menlo	13	124	95	8	3	6	10	4
+glyph	Menlo	13	95	66	8	-1	9	-1	3
+glyph	Menlo	13	126	97	8	-1	9	6	-2
+font	Menlo	16	15	4	10	10	10	Menlo
+glyph	Menlo	16	72	43	10	0	9	12	0
+glyph	Menlo	16	103	74	10	0	9	9	4
+glyph	Menlo	16	46	17	10	2	7	4	0
+glyph	Menlo	16	87	58	10	-1	11	12	0
+glyph	Menlo	16	124	95	10	4	7	13	4
+glyph	Menlo	16	95	66	10	-1	10	-1	3
+glyph	Menlo	16	126	97	10	-1	10	8	-2
+font	Menlo	24	22	6	14	14	14	Menlo
+glyph	Menlo	24	72	43	14	1	14	18	0
+glyph	Menlo	24	103	74	14	1	13	14	6
+glyph	Menlo	24	46	17	14	4	10	5	0
+glyph	Menlo	24	87	58	14	-1	15	18	0
+glyph	Menlo	24	124	95	14	6	10	19	6
+glyph	Menlo	24	95	66	14	-1	15	-2	5
+glyph	Menlo	24	126	97	14	-1	15	11	-4
+font	Monaco	10	10	3	6	6	6	Monaco
+glyph	Monaco	10	72	43	6	0	6	8	0
+glyph	Monaco	10	103	74	6	0	6	6	3
+glyph	Monaco	10	46	17	6	1	5	2	1
+glyph	Monaco	10	87	58	6	-1	7	8	0
+font	Monaco	12	12	4	7	7	7	Monaco
+glyph	Monaco	12	72	43	7	0	7	10	0
+glyph	Monaco	12	103	74	7	0	7	7	3
+glyph	Monaco	12	46	17	7	2	5	2	1
+glyph	Monaco	12	87	58	7	-1	8	10	0
+font	Monaco	13	13	4	8	8	8	Monaco
+glyph	Monaco	13	72	43	8	0	8	10	0
+glyph	Monaco	13	103	74	8	0	8	8	3
+glyph	Monaco	13	46	17	8	2	6	2	1
+glyph	Monaco	13	87	58	8	-1	9	10	0
+font	Monaco	16	16	5	10	10	10	Monaco
+glyph	Monaco	16	72	43	10	0	10	13	0
+glyph	Monaco	16	103	74	10	0	9	9	4
+glyph	Monaco	16	46	17	10	3	7	3	1
+glyph	Monaco	16	87	58	10	-1	10	13	0
+font	Monaco	24	24	8	14	14	14	Monaco
+glyph	Monaco	24	72	43	14	1	14	19	0
+glyph	Monaco	24	103	74	14	0	14	14	6
+glyph	Monaco	24	46	17	14	4	10	4	1
+glyph	Monaco	24	87	58	14	-1	15	19	0
+font	Courier	10	9	2	6	6	6	Courier
+glyph	Courier	10	72	43	6	0	6	6	0
+glyph	Courier	10	103	74	6	0	7	5	2
+glyph	Courier	10	46	17	6	1	5	2	1
+glyph	Courier	10	87	58	6	-1	7	6	0
+font	Courier	12	11	3	7	7	7	Courier
+glyph	Courier	12	72	43	7	0	8	7	0
+glyph	Courier	12	103	74	7	0	8	6	3
+glyph	Courier	12	46	17	7	2	6	3	1
+glyph	Courier	12	87	58	7	-1	8	7	0
+font	Courier	13	12	3	8	8	8	Courier
+glyph	Courier	13	72	43	8	0	8	8	0
+glyph	Courier	13	103	74	8	0	8	6	3
+glyph	Courier	13	46	17	8	2	6	3	1
+glyph	Courier	13	87	58	8	-1	9	8	0
+font	Courier	16	14	4	10	10	10	Courier
+glyph	Courier	16	72	43	10	0	10	10	0
+glyph	Courier	16	103	74	10	0	10	8	4
+glyph	Courier	16	46	17	10	2	7	3	1
+glyph	Courier	16	87	58	10	-1	10	10	0
+font	Courier	24	22	6	14	14	14	Courier
+glyph	Courier	24	72	43	14	0	14	14	0
+glyph	Courier	24	103	74	14	1	14	11	5
+glyph	Courier	24	46	17	14	4	10	5	1
+glyph	Courier	24	87	58	14	-1	15	14	0
+font	Courier New	10	8	3	6	6	6	Courier New
+glyph	Courier New	10	72	43	6	0	6	6	0
+glyph	Courier New	10	103	74	6	0	7	5	2
+glyph	Courier New	10	46	17	6	1	5	2	1
+glyph	Courier New	10	87	58	6	-1	7	6	0
+font	Courier New	12	10	4	7	7	7	Courier New
+glyph	Courier New	12	72	43	7	0	8	7	0
+glyph	Courier New	12	103	74	7	0	8	6	3
+glyph	Courier New	12	46	17	7	2	5	2	1
+glyph	Courier New	12	87	58	7	-1	8	7	0
+font	Courier New	13	11	4	8	8	8	Courier New
+glyph	Courier New	13	72	43	8	0	8	8	0
+glyph	Courier New	13	103	74	8	0	8	6	3
+glyph	Courier New	13	46	17	8	2	6	2	1
+glyph	Courier New	13	87	58	8	-1	8	8	0
+font	Courier New	16	13	5	10	10	10	Courier New
+glyph	Courier New	16	72	43	10	0	10	10	0
+glyph	Courier New	16	103	74	10	0	10	7	4
+glyph	Courier New	16	46	17	10	3	7	2	1
+glyph	Courier New	16	87	58	10	-1	10	10	0
+font	Courier New	24	20	7	14	14	14	Courier New
+glyph	Courier New	24	72	43	14	0	14	14	0
+glyph	Courier New	24	103	74	14	1	14	11	5
+glyph	Courier New	24	46	17	14	5	10	3	1
+glyph	Courier New	24	87	58	14	0	15	14	0
+font	Helvetica	10	9	2	3	5	3	Helvetica
+glyph	Helvetica	10	72	43	7	0	7	8	0
+glyph	Helvetica	10	103	74	6	0	6	6	3
+glyph	Helvetica	10	46	17	3	0	3	2	0
+glyph	Helvetica	10	87	58	9	-1	10	8	0
+font	Helvetica	12	11	3	3	6	3	Helvetica
+glyph	Helvetica	12	72	43	9	0	9	9	0
+glyph	Helvetica	12	103	74	7	0	7	7	3
+glyph	Helvetica	12	46	17	3	0	3	2	0
+glyph	Helvetica	12	87	58	11	-1	12	9	0
+font	Helvetica	13	12	3	4	6	4	Helvetica
+glyph	Helvetica	13	72	43	9	0	9	10	0
+glyph	Helvetica	13	103	74	7	-1	7	7	3
+glyph	Helvetica	13	46	17	4	0	4	2	0
+glyph	Helvetica	13	87	58	12	-1	13	10	0
+font	Helvetica	16	15	4	4	8	4	Helvetica
+glyph	Helvetica	16	72	43	12	1	11	12	0
+glyph	Helvetica	16	103	74	9	0	9	9	4
+glyph	Helvetica	16	46	17	4	0	4	2	0
+glyph	Helvetica	16	87	58	15	-1	16	12	0
+font	Helvetica	24	22	6	7	12	7	Helvetica
+glyph	Helvetica	24	72	43	17	1	16	18	0
+glyph	Helvetica	24	103	74	13	0	12	13	6
+glyph	Helvetica	24	46	17	7	1	6	3	0
+glyph	Helvetica	24	87	58	23	0	23	18	0
+font	Helvetica Neue	10	10	2	3	5	3	Helvetica Neue
+glyph	Helvetica Neue	10	72	47	7	0	7	8	0
+glyph	Helvetica Neue	10	103	78	6	0	6	6	3
+glyph	Helvetica Neue	10	46	21	3	0	3	2	0
+glyph	Helvetica Neue	10	87	62	9	-1	10	8	0
+font	Helvetica Neue	12	11	3	3	6	3	Helvetica Neue
+glyph	Helvetica Neue	12	72	47	9	0	9	9	0
+glyph	Helvetica Neue	12	103	78	7	0	7	7	3
+glyph	Helvetica Neue	12	46	21	3	0	3	2	0
+glyph	Helvetica Neue	12	87	62	11	-1	12	9	0
+font	Helvetica Neue	13	12	3	4	6	4	Helvetica Neue
+glyph	Helvetica Neue	13	72	47	9	0	9	10	0
+glyph	Helvetica Neue	13	103	78	7	-1	7	7	3
+glyph	Helvetica Neue	13	46	21	4	0	4	2	0
+glyph	Helvetica Neue	13	87	62	12	-1	13	10	0
+font	Helvetica Neue	16	15	4	4	8	4	Helvetica Neue
+glyph	Helvetica Neue	16	72	47	12	1	11	12	0
+glyph	Helvetica Neue	16	103	78	9	0	9	9	4
+glyph	Helvetica Neue	16	46	21	4	0	4	2	0
+glyph	Helvetica Neue	16	87	62	15	-1	16	12	0
+font	Helvetica Neue	24	23	6	7	12	7	Helvetica Neue
+glyph	Helvetica Neue	24	72	47	17	1	16	18	0
+glyph	Helvetica Neue	24	103	78	14	0	13	13	6
+glyph	Helvetica Neue	24	46	21	7	1	6	3	0
+glyph	Helvetica Neue	24	87	62	22	-1	23	18	0
+font	Times	10	9	3	3	5	3	Times
+glyph	Times	10	72	43	7	-1	8	7	0
+glyph	Times	10	103	74	5	-1	6	5	3
+glyph	Times	10	46	17	3	0	3	1	1
+glyph	Times	10	87	58	9	-1	10	7	1
+font	Times	12	11	3	3	6	3	Times
+glyph	Times	12	72	43	9	-1	9	8	0
+glyph	Times	12	103	74	6	-1	7	6	3
+glyph	Times	12	46	17	3	0	4	2	1
+glyph	Times	12	87	58	11	-1	12	8	1
+font	Times	13	12	3	3	6	3	Times
+glyph	Times	13	72	43	9	-1	10	9	0
+glyph	Times	13	103	74	7	0	7	6	3
+glyph	Times	13	46	17	3	0	4	2	1
+glyph	Times	13	87	58	12	-1	13	9	1
+font	Times	16	14	4	4	8	4	Times
+glyph	Times	16	72	43	12	0	12	11	0
+glyph	Times	16	103	74	8	0	8	8	4
+glyph	Times	16	46	17	4	1	4	2	1
+glyph	Times	16	87	58	15	-1	16	11	1
+font	Times	24	22	6	6	12	6	Times
+glyph	Times	24	72	43	17	-1	17	16	0
+glyph	Times	24	103	74	12	0	12	12	6
+glyph	Times	24	46	17	6	2	6	3	1
+glyph	Times	24	87	58	23	-1	23	16	1
+font	Lucida Grande	10	10	2	3	5	3	Lucida Grande
+glyph	Lucida Grande	10	72	43	7	0	7	8	0
+glyph	Lucida Grande	10	103	74	6	0	6	6	3
+glyph	Lucida Grande	10	46	17	3	0	3	2	0
+glyph	Lucida Grande	10	87	58	9	-1	10	8	0
+glyph	Lucida Grande	10	945	436	7	0	7	6	1
+font	Lucida Grande	12	12	3	4	6	4	Lucida Grande
+glyph	Lucida Grande	12	72	43	9	0	9	9	0
+glyph	Lucida Grande	12	103	74	7	0	7	7	3
+glyph	Lucida Grande	12	46	17	4	0	4	2	0
+glyph	Lucida Grande	12	87	58	10	-1	11	9	0
+glyph	Lucida Grande	12	945	436	8	0	8	7	1
+font	Lucida Grande	13	13	3	4	7	4	Lucida Grande
+glyph	Lucida Grande	13	72	43	10	1	9	10	0
+glyph	Lucida Grande	13	103	74	8	0	8	8	3
+glyph	Lucida Grande	13	46	17	4	0	4	2	0
+glyph	Lucida Grande	13	87	58	11	-1	12	10	0
+glyph	Lucida Grande	13	945	436	9	0	9	8	1
+font	Lucida Grande	16	15	3	5	9	5	Lucida Grande
+glyph	Lucida Grande	16	72	43	12	1	11	12	0
+glyph	Lucida Grande	16	103	74	10	0	9	9	4
+glyph	Lucida Grande	16	46	17	5	1	4	2	0
+glyph	Lucida Grande	16	87	58	14	-1	15	12	0
+glyph	Lucida Grande	16	945	436	11	0	11	9	1
+font	Lucida Grande	24	23	5	8	13	8	Lucida Grande
+glyph	Lucida Grande	24	72	43	18	2	16	18	0
+glyph	Lucida Grande	24	103	74	15	0	14	14	5
+glyph	Lucida Grande	24	46	17	8	2	6	3	0
+glyph	Lucida Grande	24	87	58	21	-1	22	18	0
+glyph	Lucida Grande	24	945	436	17	1	16	14	1
+font	PingFang SC	10	11	3	3	5	3	PingFang SC
+glyph	PingFang SC	10	20013	183	10	0	10	9	2
+glyph	PingFang SC	10	25991	302	10	0	10	9	2
+glyph	PingFang SC	10	23383	952	10	0	10	9	1
+glyph	PingFang SC	10	12290	177	10	0	5	2	2
+font	PingFang SC	12	13	4	4	6	4	PingFang SC
+glyph	PingFang SC	12	20013	183	12	0	12	10	2
+glyph	PingFang SC	12	25991	302	12	0	12	10	2
+glyph	PingFang SC	12	23383	952	12	0	12	10	2
+glyph	PingFang SC	12	12290	177	12	1	5	2	2
+font	PingFang SC	13	14	4	4	7	4	PingFang SC
+glyph	PingFang SC	13	20013	183	13	0	13	11	2
+glyph	PingFang SC	13	25991	302	13	0	13	11	2
+glyph	PingFang SC	13	23383	952	13	0	13	11	2
+glyph	PingFang SC	13	12290	177	13	1	6	2	2
+font	PingFang SC	16	17	5	5	8	5	PingFang SC
+glyph	PingFang SC	16	20013	183	16	1	15	14	2
+glyph	PingFang SC	16	25991	302	16	0	16	14	2
+glyph	PingFang SC	16	23383	952	16	0	16	14	2
+glyph	PingFang SC	16	12290	177	16	1	7	3	2
+font	PingFang SC	24	25	8	8	12	8	PingFang SC
+glyph	PingFang SC	24	20013	183	24	2	22	20	3
+glyph	PingFang SC	24	25991	302	24	0	24	20	3
+glyph	PingFang SC	24	23383	952	24	0	24	20	3
+glyph	PingFang SC	24	12290	177	24	2	10	4	3
+font	Hiragino Sans	10	10	2	2	5	2	Hiragino Sans
+glyph	Hiragino Sans	10	12354	843	10	0	10	9	1
+glyph	Hiragino Sans	10	12450	926	10	0	10	8	1
+glyph	Hiragino Sans	10	28450	1533	10	0	10	9	1
+font	Hiragino Sans	12	12	3	3	6	3	Hiragino Sans
+glyph	Hiragino Sans	12	12354	843	12	1	11	10	1
+glyph	Hiragino Sans	12	12450	926	12	1	12	9	1
+glyph	Hiragino Sans	12	28450	1533	12	0	12	10	1
+font	Hiragino Sans	13	13	3	3	7	3	Hiragino Sans
+glyph	Hiragino Sans	13	12354	843	13	1	12	11	1
+glyph	Hiragino Sans	13	12450	926	13	1	13	10	1
+glyph	Hiragino Sans	13	28450	1533	13	0	13	11	1
+font	Hiragino Sans	16	16	4	4	8	4	Hiragino Sans
+glyph	Hiragino Sans	16	12354	843	16	1	15	13	1
+glyph	Hiragino Sans	16	12450	926	16	1	15	12	1
+glyph	Hiragino Sans	16	28450	1533	16	0	16	14	1
+font	Hiragino Sans	24	24	6	5	13	5	Hiragino Sans
+glyph	Hiragino Sans	24	12354	843	24	2	22	20	1
+glyph	Hiragino Sans	24	12450	926	24	2	22	18	1
+glyph	Hiragino Sans	24	28450	1533	24	0	23	20	2
+font	Apple SD Gothic Neo	10	9	3	3	4	3	Apple SD Gothic Neo
+glyph	Apple SD Gothic Neo	10	54620	3296	9	0	10	9	1
+glyph	Apple SD Gothic Neo	10	44544	1238	9	0	9	8	1
+font	Apple SD Gothic Neo	12	11	4	3	5	3	Apple SD Gothic Neo
+glyph	Apple SD Gothic Neo	12	54620	3296	10	-1	11	10	1
+glyph	Apple SD Gothic Neo	12	44544	1238	10	-1	11	10	1
+font	Apple SD Gothic Neo	13	12	4	3	6	3	Apple SD Gothic Neo
+glyph	Apple SD Gothic Neo	13	54620	3296	11	-1	12	11	1
+glyph	Apple SD Gothic Neo	13	44544	1238	11	-1	12	10	1
+font	Apple SD Gothic Neo	16	14	5	4	7	4	Apple SD Gothic Neo
+glyph	Apple SD Gothic Neo	16	54620	3296	14	0	14	13	1
+glyph	Apple SD Gothic Neo	16	44544	1238	14	0	14	13	1
+font	Apple SD Gothic Neo	24	22	7	6	11	6	Apple SD Gothic Neo
+glyph	Apple SD Gothic Neo	24	54620	3296	21	0	21	20	2
+glyph	Apple SD Gothic Neo	24	44544	1238	21	0	21	19	2
+font	Apple Color Emoji	10	13	4	13	13	13	Apple Color Emoji
+glyph	Apple Color Emoji	10	128512	2096	13	-1	14	10	3
+glyph	Apple Color Emoji	10	128009	1018	13	-1	14	10	3
+font	Apple Color Emoji	12	15	5	16	16	16	Apple Color Emoji
+glyph	Apple Color Emoji	12	128512	2096	16	-1	16	12	3
+glyph	Apple Color Emoji	12	128009	1018	16	-1	16	12	3
+font	Apple Color Emoji	13	16	5	17	17	17	Apple Color Emoji
+glyph	Apple Color Emoji	13	128512	2096	17	-1	18	13	4
+glyph	Apple Color Emoji	13	128009	1018	17	-1	18	13	4
+font	Apple Color Emoji	16	20	6	21	21	21	Apple Color Emoji
+glyph	Apple Color Emoji	16	128512	2096	21	0	21	16	4
+glyph	Apple Color Emoji	16	128009	1018	21	0	21	16	4
+font	Apple Color Emoji	24	24	8	25	25	25	Apple Color Emoji
+glyph	Apple Color Emoji	24	128512	2096	25	-1	25	22	3
+glyph	Apple Color Emoji	24	128009	1018	25	-1	25	22	3
+font	Geeza Pro	10	9	5	3	3	3	Geeza Pro
+glyph	Geeza Pro	10	1605	344	4	-1	5	4	4
+glyph	Geeza Pro	10	1585	272	4	-1	5	3	2
+glyph	Geeza Pro	10	1581	260	6	-1	7	5	2
+glyph	Geeza Pro	10	1576	242	6	-1	7	4	2
+glyph	Geeza Pro	10	1575	240	3	1	3	8	0
+font	Geeza Pro	12	11	6	4	4	4	Geeza Pro
+glyph	Geeza Pro	12	1605	344	5	-1	6	4	5
+glyph	Geeza Pro	12	1585	272	5	-1	6	4	3
+glyph	Geeza Pro	12	1581	260	7	-1	8	6	3
+glyph	Geeza Pro	12	1576	242	8	-1	9	4	3
+glyph	Geeza Pro	12	1575	240	4	1	4	9	0
+font	Geeza Pro	13	12	6	4	4	4	Geeza Pro
+glyph	Geeza Pro	13	1605	344	5	-1	6	5	5
+glyph	Geeza Pro	13	1585	272	5	-1	6	4	3
+glyph	Geeza Pro	13	1581	260	8	0	8	7	3
+glyph	Geeza Pro	13	1576	242	8	-1	9	5	3
+glyph	Geeza Pro	13	1575	240	4	1	4	10	0
+font	Geeza Pro	16	14	7	5	5	5	Geeza Pro
+glyph	Geeza Pro	16	1605	344	7	0	8	5	7
+glyph	Geeza Pro	16	1585	272	7	-1	8	5	4
+glyph	Geeza Pro	16	1581	260	9	-1	10	8	4
+glyph	Geeza Pro	16	1576	242	10	-1	11	5	4
+glyph	Geeza Pro	16	1575	240	5	2	5	12	0
+font	Geeza Pro	24	21	11	7	7	7	Geeza Pro
+glyph	Geeza Pro	24	1605	344	10	0	11	8	10
+glyph	Geeza Pro	24	1585	272	10	-1	11	7	5
+glyph	Geeza Pro	24	1581	260	14	-1	14	12	5
+glyph	Geeza Pro	24	1576	242	15	-1	16	8	5
+glyph	Geeza Pro	24	1575	240	7	3	6	18	-1
+font	Kohinoor Devanagari	10	11	5	3	5	3	Kohinoor Devanagari
+glyph	Kohinoor Devanagari	10	2344	70	5	-1	6	7	0
+glyph	Kohinoor Devanagari	10	2350	75	6	-1	7	7	0
+glyph	Kohinoor Devanagari	10	2360	82	7	-1	8	7	1
+glyph	Kohinoor Devanagari	10	2381	132	0	-3	1	0	3
+glyph	Kohinoor Devanagari	10	2340	66	6	-1	7	7	1
+glyph	Kohinoor Devanagari	10	2375	36	0	-5	0	10	-6
+font	Kohinoor Devanagari	12	13	5	3	5	3	Kohinoor Devanagari
+glyph	Kohinoor Devanagari	12	2344	70	6	-1	7	8	0
+glyph	Kohinoor Devanagari	12	2350	75	7	-1	8	8	0
+glyph	Kohinoor Devanagari	12	2360	82	8	-1	9	8	1
+glyph	Kohinoor Devanagari	12	2381	132	0	-3	1	0	3
+glyph	Kohinoor Devanagari	12	2340	66	7	-1	8	8	1
+glyph	Kohinoor Devanagari	12	2375	36	0	-6	0	11	-7
+font	Kohinoor Devanagari	13	14	6	4	6	4	Kohinoor Devanagari
+glyph	Kohinoor Devanagari	13	2344	70	7	-1	8	9	0
+glyph	Kohinoor Devanagari	13	2350	75	8	-1	9	9	0
+glyph	Kohinoor Devanagari	13	2360	82	9	-1	10	9	1
+glyph	Kohinoor Devanagari	13	2381	132	0	-3	1	0	4
+glyph	Kohinoor Devanagari	13	2340	66	7	-1	8	9	1
+glyph	Kohinoor Devanagari	13	2375	36	0	-6	0	12	-8
+font	Kohinoor Devanagari	16	17	7	5	7	5	Kohinoor Devanagari
+glyph	Kohinoor Devanagari	16	2344	70	8	-1	9	11	0
+glyph	Kohinoor Devanagari	16	2350	75	9	-1	10	11	0
+glyph	Kohinoor Devanagari	16	2360	82	11	-1	12	11	1
+glyph	Kohinoor Devanagari	16	2381	132	0	-4	2	-1	4
+glyph	Kohinoor Devanagari	16	2340	66	9	-1	10	11	1
+glyph	Kohinoor Devanagari	16	2375	36	0	-7	-1	15	-10
+font	Kohinoor Devanagari	24	25	11	7	11	7	Kohinoor Devanagari
+glyph	Kohinoor Devanagari	24	2344	70	12	-2	14	16	0
+glyph	Kohinoor Devanagari	24	2350	75	14	-1	15	16	0
+glyph	Kohinoor Devanagari	24	2360	82	16	-2	18	16	1
+glyph	Kohinoor Devanagari	24	2381	132	0	-5	2	-1	6
+glyph	Kohinoor Devanagari	24	2340	66	13	-2	15	16	1
+glyph	Kohinoor Devanagari	24	2375	36	0	-11	-2	22	-15
+font	Thonburi	10	11	3	3	5	3	Thonburi
+glyph	Thonburi	10	3585	29	6	-1	6	6	0
+glyph	Thonburi	10	3586	30	6	-1	6	6	0
+glyph	Thonburi	10	3588	32	6	-1	6	6	0
+font	Thonburi	12	13	4	4	6	4	Thonburi
+glyph	Thonburi	12	3585	29	7	-1	7	7	0
+glyph	Thonburi	12	3586	30	7	-1	7	7	0
+glyph	Thonburi	12	3588	32	8	0	8	7	0
+font	Thonburi	13	14	4	4	7	4	Thonburi
+glyph	Thonburi	13	3585	29	8	0	8	8	0
+glyph	Thonburi	13	3586	30	7	-1	7	8	0
+glyph	Thonburi	13	3588	32	8	0	8	8	0
+font	Thonburi	16	17	5	5	9	5	Thonburi
+glyph	Thonburi	16	3585	29	10	0	9	10	0
+glyph	Thonburi	16	3586	30	9	-1	9	10	0
+glyph	Thonburi	16	3588	32	10	0	10	10	0
+font	Thonburi	24	26	7	8	13	8	Thonburi
+glyph	Thonburi	24	3585	29	14	0	13	14	0
+glyph	Thonburi	24	3586	30	14	0	13	14	0
+glyph	Thonburi	24	3588	32	15	0	14	14	0
+font	Arial Hebrew	10	7	3	3	3	3	Arial Hebrew
+glyph	Arial Hebrew	10	1488	97	6	0	6	6	0
+glyph	Arial Hebrew	10	1489	98	5	-1	6	6	0
+glyph	Arial Hebrew	10	1490	99	4	-1	5	6	0
+font	Arial Hebrew	12	9	4	3	3	3	Arial Hebrew
+glyph	Arial Hebrew	12	1488	97	7	0	7	7	0
+glyph	Arial Hebrew	12	1489	98	7	0	7	7	0
+glyph	Arial Hebrew	12	1490	99	5	-1	5	7	0
+font	Arial Hebrew	13	9	4	4	4	4	Arial Hebrew
+glyph	Arial Hebrew	13	1488	97	7	0	8	7	0
+glyph	Arial Hebrew	13	1489	98	7	-1	8	7	0
+glyph	Arial Hebrew	13	1490	99	5	-1	6	7	0
+font	Arial Hebrew	16	12	5	4	4	4	Arial Hebrew
+glyph	Arial Hebrew	16	1488	97	9	0	9	9	0
+glyph	Arial Hebrew	16	1489	98	9	0	9	9	0
+glyph	Arial Hebrew	16	1490	99	6	-1	7	9	0
+font	Arial Hebrew	24	18	8	7	7	7	Arial Hebrew
+glyph	Arial Hebrew	24	1488	97	14	1	14	13	0
+glyph	Arial Hebrew	24	1489	98	13	0	13	13	0
+glyph	Arial Hebrew	24	1490	99	10	0	10	13	0
+shape	Geeza Pro	12	R2L	1605,1585,1581,1576,1575,32,1576,1575,1604,1593,1575,1604,1605	0,0,0,345,5,-1,6,4,0,0,0,0;1,1,0,273,5,-1,7,4,3,0,0,0;2,2,0,261,7,-1,8,5,0,0,0,0;3,3,0,244,4,-1,6,5,3,0,0,0;4,4,0,241,4,1,6,9,0,0,0,0;5,5,32,3,4,0,1,0,0,0,0,0;6,6,0,243,4,-1,5,5,3,0,0,0;7,7,0,241,4,1,6,9,0,0,0,0;8,8,0,341,3,-1,4,9,0,0,0,0;9,9,0,302,5,-1,7,5,0,0,0,0;10,10,0,241,4,1,6,9,0,0,0,0;11,11,0,341,3,-1,4,9,0,0,0,0;12,12,0,347,5,-1,7,4,5,0,0,0
+shape	Geeza Pro	24	R2L	1605,1585,1581,1576,1575,32,1576,1575,1604,1593,1575,1604,1605	0,0,0,345,11,-1,12,8,0,0,0,0;1,1,0,273,10,-1,13,7,5,0,0,0;2,2,0,261,15,-1,16,9,-1,0,0,0;3,3,0,244,7,-1,10,9,5,0,0,0;4,4,0,241,7,2,10,18,-1,0,0,0;5,5,32,3,7,-1,0,0,0,0,0,0;6,6,0,243,7,-1,8,9,5,0,0,0;7,7,0,241,7,2,10,18,-1,0,0,0;8,8,0,341,6,-1,7,18,-1,0,0,0;9,9,0,302,10,-1,13,9,-1,0,0,0;10,10,0,241,7,2,10,18,-1,0,0,0;11,11,0,341,6,-1,7,18,-1,0,0,0;12,12,0,347,10,0,13,8,10,0,0,0
+shape	Kohinoor Devanagari	12	L2R	2344,2350,2360,2381,2340,2375,32,2342,2369,2344,2367,2351,2366	0,0,2344,70,6,-1,7,8,0,0,0,0;1,1,2350,75,7,-1,8,8,0,0,0,0;2,5,0,750,12,-1,13,8,1,0,0,0;2,5,2375,36,0,-6,0,11,-7,0,0,0;6,6,32,1,3,-1,0,0,0,0,0,0;7,8,0,820,6,-1,7,8,2,0,0,0;7,8,2369,30,0,-7,1,1,4,0,0,0;9,10,0,779,3,-1,9,12,0,0,0,0;9,10,2344,70,6,-1,7,8,0,0,0,0;11,12,2351,76,7,-1,8,8,0,0,0,0;11,12,2366,27,3,-1,4,8,0,0,0,0
+shape	Kohinoor Devanagari	24	L2R	2344,2350,2360,2381,2340,2375,32,2342,2369,2344,2367,2351,2366	0,0,2344,70,12,-2,14,16,0,0,0,0;1,1,2350,75,14,-1,15,16,0,0,0,0;2,5,0,750,23,-2,25,16,1,0,0,0;2,5,2375,36,0,-11,-2,22,-15,0,0,0;6,6,32,1,7,0,1,0,0,0,0,0;7,8,0,820,13,-1,14,16,3,0,0,0;7,8,2369,30,0,-13,1,1,7,-1,0,0;9,10,0,779,7,-1,17,23,0,0,0,0;9,10,2344,70,12,-2,14,16,0,0,0,0;11,12,2351,76,15,-1,16,16,0,0,0,0;11,12,2366,27,7,-1,8,16,0,0,0,0
+shape	Apple Color Emoji	12	L2R	128105,8205,128105,8205,128103,127468,127463	0,4,0,1544,16,-1,16,12,3,0,0,0;5,6,0,454,16,-1,16,12,3,0,0,0
+shape	Apple Color Emoji	24	L2R	128105,8205,128105,8205,128103,127468,127463	0,4,0,1544,25,-1,25,22,3,0,0,0;5,6,0,454,25,-1,25,22,3,0,0,0
+shape	Menlo	12	L2R	233,32,102,105	0,0,233,171,7,0,7,10,1,0,0,0;1,1,32,3,7,0,0,0,0,0,0,0;2,2,102,73,7,0,7,10,0,0,0,0;3,3,105,76,7,0,8,10,0,0,0,0
+shape	Menlo	24	L2R	233,32,102,105	0,0,233,171,14,1,14,20,1,0,0,0;1,1,32,3,14,0,0,0,0,0,0,0;2,2,102,73,14,1,13,19,0,0,0,0;3,3,105,76,14,2,14,19,0,0,0,0
+fallback	20013	PingFang SC
+fallback	12354	Hiragino Sans
+fallback	54620	Apple SD Gothic Neo
+fallback	128512	Apple Color Emoji
+fallback	945	Menlo
+fallback	1488	Lucida Grande
+fallback	8364	Menlo
+fallback	3585	Thonburi
