@@ -29,42 +29,69 @@ say "lldb-dap: $(xcrun -f lldb-dap 2>&1)"
 say "DevToolsSecurity: $(DevToolsSecurity -status 2>&1)"
 export JS_DEBUG=$B/js-debug
 PATH=$B/venv/bin:$PATH:$dev/usr/bin
-# The debug branch's profiles (gleipnir's sbpl with the loopback flag; generated off the runner, see loop.sb), the
-# stand-in developer dir replaced by this runner's. loop: the flag, own port 47613; noloop: the plain isolated tier.
+# The chosen design (spec §21): each session's fixed block of ports (47610-47617), its profile (block.sb: the debug
+# branch's loopback flag with the block as mac_loopback_ports, plus Unix connect under the session tmp), debugpy as an
+# attach with listen, js-debug attached to --inspect-brk with the port-0 preload. At each stop, lsof (outside the
+# sandbox) lists every socket of the sandboxed tree: any TCP port outside the block is a finding.
 app=${dev%/Contents/Developer}
-for n in loop noloop; do sed "s#/Applications/Xcode.app/Contents#$app/Contents#g" "$here/$n.sb" > "$B/$n.sb"; done
-say "profiles: $(grep -c . "$B/loop.sb") lines; app $app"
-cp "$here/loopprobe.py" "$here/dapspike.py" "$B/fix/"
-"$B/venv/bin/python" -c 'import socket,time,sys
-l=socket.socket(); l.bind(("127.0.0.1",0)); l.listen(5); print(l.getsockname()[1], flush=True); time.sleep(900)' > "$B/host-port" &
+for n in block noloop; do sed "s#/Applications/Xcode.app/Contents#$app/Contents#g" "$here/$n.sb" > "$B/$n.sb"; done
+say "profiles: $(grep -c . "$B/block.sb") lines; app $app"
+cp "$here/loopprobe.py" "$here/dapspike.py" "$here"/fix/* "$B/fix/"
+"$B/venv/bin/python" -c 'import socket,time,sys,os
+l=socket.socket(); l.bind(("127.0.0.1",0)); l.listen(5)
+os.makedirs(sys.argv[1], exist_ok=True); u=socket.socket(socket.AF_UNIX); p=os.path.join(sys.argv[1],"s")
+try: os.unlink(p)
+except OSError: pass
+u.bind(p); u.listen(5); print(l.getsockname()[1], flush=True); time.sleep(900)' "$B/hostsock" > "$B/host-port" &
 hostpid=$!
 sleep 1
 hp=$(cat "$B/host-port")
-for n in loop noloop; do
-  /usr/bin/env TMPDIR="$B/t/" HOME="$B/t" /usr/bin/sandbox-exec -f "$B/$n.sb" "$B/venv/bin/python" "$B/fix/loopprobe.py" 47613 "$hp" "$dev" "$B/t" "$B/w" 2>&1 |
+for n in block noloop; do
+  /usr/bin/env TMPDIR="$B/t/" HOME="$B/t" /usr/bin/sandbox-exec -f "$B/$n.sb" "$B/venv/bin/python" "$B/fix/loopprobe.py" 47610 "$hp" "$dev" "$B/t" "$B/w" 47620 "$B/hostsock/s" 2>&1 |
     sed "s/^dbgspike-probe /dbgspike-probe $n /"
 done
-"$B/venv/bin/python" "$B/fix/loopprobe.py" 47613 "$hp" "$dev" "$B/t" "$B/w" 2>&1 | sed "s/^dbgspike-probe /dbgspike-probe bare /"
-kill $hostpid 2>/dev/null
+"$B/venv/bin/python" "$B/fix/loopprobe.py" 47610 "$hp" "$dev" "$B/t" "$B/w" 47620 "$B/hostsock/s" 2>&1 | sed "s/^dbgspike-probe /dbgspike-probe bare /"
 summ() { "$B/venv/bin/python" -c 'import json,sys
 r=json.load(open(sys.argv[1]))
 st={s["step"]:s for s in r.get("steps",[])}
-print(json.dumps({"adapter":r.get("adapter"),"shim":r.get("shim"),"ok":r.get("ok"),"error":r.get("error"),
+print(json.dumps({"adapter":r.get("adapter"),"ok":r.get("ok"),"error":r.get("error"),
  "t_init":st.get("initialize",{}).get("t_ms"),"t_stop":st.get("stopped",{}).get("t_ms"),"t":r.get("t_total_ms"),
- "probes":len(r.get("probes",[])),"vars":st.get("model",{}).get("vars"),"stderr":(r.get("stderr_tail") or "")[-300:]}))' "$1" 2>&1; }
-for a in debugpy jsdebug lldb; do
-  for mode in loop; do
-    for shim in "" --shim; do
-      [ -n "$shim" ] && [ "$a" != jsdebug ] && continue
-      rm -f "$B/w/r.json"
-      if [ "$mode" = bare ]; then
-        (cd fix && perl -e 'alarm shift; exec @ARGV' 120 python3 dapspike.py run "$a" "$B/fix" "$B/w/r.json" $shim > /dev/null 2>&1)
-      else
-        (cd fix && perl -e 'alarm shift; exec @ARGV' 120 /usr/bin/env TMPDIR="$B/t/" HOME="$B/t" DBGSPIKE_PORT=47613 /usr/bin/sandbox-exec -f "$B/$mode.sb" "$B/venv/bin/python" dapspike.py run "$a" "$B/fix" "$B/w/r.json" $shim > /dev/null 2>"$B/w/se.txt")
-      fi
-      echo "dbgspike-result $a${shim:+-shim} $mode rc=$? $(summ "$B/w/r.json") $(head -c 300 "$B/w/se.txt" 2>/dev/null)"
-      rm -f "$B/w/se.txt"
-    done
+ "stop_conn":st.get("stopped",{}).get("conn"),"probes":len(r.get("probes",[])),"vars":st.get("model",{}).get("vars"),
+ "reverse":[s.get("command") for s in r.get("steps",[]) if s["step"]=="reverse"],"stderr":(r.get("stderr_tail") or "")[-400:]}))' "$1" 2>&1; }
+descend() {  # PID and every descendant
+  local all out q p c
+  all=$(ps -A -o pid=,ppid=); out=$1; q=$1
+  while [ -n "$q" ]; do
+    set -- $q; p=$1; shift; q="$*"
+    for c in $(echo "$all" | awk -v p="$p" '$2==p{print $1}'); do out="$out $c"; q="$q $c"; done
+  done
+  echo "$out"
+}
+for a in debugpy-listen jsdebug-attach; do
+  for run in 1 2; do
+    rm -rf "$B/w/r.json" "$B/w/mark" "$B/t/claims"; mkdir -p "$B/t/claims"
+    : > "$B/t/claims/port-47610"; : > "$B/t/claims/port-47611"
+    (cd fix && perl -e 'alarm shift; exec @ARGV' 150 /usr/bin/env TMPDIR="$B/t/" HOME="$B/t" DBGSPIKE_MARK="$B/w/mark" DBGSPIKE_CLAIMS="$B/t/claims" /usr/bin/sandbox-exec -f "$B/block.sb" "$B/venv/bin/python" dapspike.py run "$a" "$B/fix" "$B/w/r.json" > /dev/null 2>"$B/w/se.txt") &
+    top=$!
+    for _ in $(seq 1 600); do [ -f "$B/w/mark" ] && break; kill -0 $top 2>/dev/null || break; sleep 0.2; done
+    if [ -f "$B/w/mark" ]; then
+      pids=$(descend "$(pgrep -P $top | head -1)" | tr ' ' '\n' | sed '/^$/d' | sort -un | paste -sd, -)
+      ps -o pid=,ppid=,command= -p "$pids" | cut -c1-200 | sed "s/^/dbgspike-ps $a/"
+      lsof -nP -a -p "$pids" -i 2>/dev/null | sed "s/^/dbgspike-lsof $a /"
+      lsof -nP -a -p "$pids" -U 2>/dev/null | awk 'NR>1 && $NF ~ /\//' | sed "s/^/dbgspike-unix $a /"
+      # a listener outside the block, or a connection with neither end in it (an outbound connect's own end is an
+      # ephemeral port: that is not a bind)
+      out=$(lsof -nP -a -p "$pids" -i 2>/dev/null | awk 'NR>1{print $9, $10}' | awk '
+        function inb(x) { n = split(x, a, ":"); p = a[n] + 0; return p >= 47610 && p <= 47617 }
+        { split($1, e, "->"); if ($2 == "(LISTEN)" || e[2] == "") { if (!inb(e[1])) print $1 }
+          else if (!inb(e[1]) && !inb(e[2])) print $1 }' | sort -u | paste -sd' ' -)
+      echo "dbgspike-block $a run$run outside=[${out}] claims=[$(ls "$B/t/claims" | paste -sd' ' -)]"
+    else
+      echo "dbgspike-block $a run$run never-stopped"
+    fi
+    wait $top
+    echo "dbgspike-result $a run$run rc=$? $(summ "$B/w/r.json") $(head -c 300 "$B/w/se.txt" 2>/dev/null)"
   done
 done
+kill $hostpid 2>/dev/null
 say done

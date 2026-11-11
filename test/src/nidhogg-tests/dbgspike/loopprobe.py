@@ -1,8 +1,10 @@
 # The loopback flag's checks under a Seatbelt profile: one "dbgspike-probe NAME ok|ERRNO[ step]" line each.
-# loopprobe.py PORT HOSTPORT DEV TMP W
+# loopprobe.py PORT HOSTPORT DEV TMP W [OUTSIDE_PORT HOST_UNIX_SOCKET]
 import errno, os, socket, sys
 
 port, host_port, dev, tmp, w = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+outside = int(sys.argv[6]) if len(sys.argv) > 6 else port + 1
+host_unix = sys.argv[7] if len(sys.argv) > 7 else None
 fw = os.path.join(os.path.dirname(dev), "SharedFrameworks")
 
 
@@ -63,12 +65,18 @@ def write(path):
 
 
 say("own-port", tcp_self(port))
-say("other-port", tcp_self(port + 1))
+say("other-port", tcp_self(outside))
 say("ephemeral-port", tcp_self(0))
 say("host-listener", connect(("127.0.0.1", host_port)))
 say("non-loopback", connect(("1.1.1.1", 443)))
 say("unix-in-tmp", unix_self(os.path.join(tmp, "s")))
 say("unix-in-w", unix_self(os.path.join(w, "s")))
+if host_unix:
+    def unix_connect():
+        c = socket.socket(socket.AF_UNIX)
+        stepped("connect", lambda: c.connect(host_unix))
+        c.close()
+    say("host-unix-outside-tmp", unix_connect)
 say("frameworks-list", lambda: os.listdir(fw))
 say("lldb-framework-read", lambda: open(os.path.join(fw, "LLDB.framework/LLDB"), "rb").read(16))
 say("dev-write", write(os.path.join(dev, "dbgspike-probe")))

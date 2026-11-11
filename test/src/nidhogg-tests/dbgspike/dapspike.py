@@ -208,6 +208,9 @@ def connect(port, wait_s):
             time.sleep(0.05)
 
 
+BLOCK = [int(p) for p in os.environ.get("DBGSPIKE_BLOCK", "47610,47611,47612,47613,47614,47615,47616,47617").split(",")]
+
+
 def free_port():
     if os.environ.get("DBGSPIKE_PORT"):
         return int(os.environ["DBGSPIKE_PORT"])
@@ -227,6 +230,7 @@ def run(adapter, fix, out_path, use_shim):
 
     fix = os.path.abspath(fix)
     port = None
+    debuggee = None
     try:
         if adapter == "debugpy":
             cmd = [sys.executable, "-m", "debugpy.adapter"]
@@ -241,6 +245,29 @@ def run(adapter, fix, out_path, use_shim):
             launch = {"type": "pwa-node", "request": "launch", "program": prog, "cwd": fix,
                       "console": "internalConsole", "outputCapture": "std"}
             bp_file, bp_line, probe_line, probe_expr = prog, 7, 5, "{total}"
+        elif adapter == "debugpy-listen":
+            # attach with listen: the adapter on the block's first port, the debuggee connects to its second
+            port = BLOCK[0]
+            cmd = [sys.executable, "-m", "debugpy.adapter", "--host", "127.0.0.1", "--port", str(port)]
+            child_fix = os.path.join(fix, "fixture.py")
+            prog = os.path.join(fix, "fixture-sub.py")
+            launch = {"type": "debugpy", "request": "attach", "justMyCode": True, "subProcess": True,
+                      "listen": {"host": "127.0.0.1", "port": BLOCK[1]}}
+            debuggee = ([sys.executable, "-m", "debugpy", "--connect", f"127.0.0.1:{BLOCK[1]}",
+                         "--configure-subProcess", "true", prog], None)
+            bp_file, bp_line, probe_line, probe_expr = child_fix, 9, 7, "{total}"
+        elif adapter == "jsdebug-attach":
+            # node --inspect-brk on the block's second port; children's inspector.open(0) mapped by the preload
+            port = BLOCK[0]
+            cmd = ["node", os.path.join(os.environ.get("JS_DEBUG", "/opt/js-debug"), "src/dapDebugServer.js"), str(port), "127.0.0.1"]
+            prog = os.path.join(fix, "fixture-child.js")
+            launch = {"type": "pwa-node", "request": "attach", "address": "127.0.0.1", "port": BLOCK[1],
+                      "autoAttachChildProcesses": True, "continueOnAttach": True, "cwd": fix}
+            env = {**os.environ, "NODE_OPTIONS": "--require " + os.path.join(fix, "preload.js"),
+                   "DRGNX_DEBUG_PORTS": ",".join(str(p) for p in BLOCK[2:]),
+                   "DRGNX_DEBUG_CLAIMS": os.environ["DBGSPIKE_CLAIMS"]}
+            debuggee = (["node", f"--inspect-brk=127.0.0.1:{BLOCK[1]}", prog], env)
+            bp_file, bp_line, probe_line, probe_expr = os.path.join(fix, "fixture.js"), 7, 5, "{total}"
         elif adapter == "delve":
             port = free_port()
             cmd = ["dlv", "dap", f"--listen=127.0.0.1:{port}"]
@@ -258,6 +285,10 @@ def run(adapter, fix, out_path, use_shim):
         stderr_path = out_path + ".stderr"
         errf = open(stderr_path, "wb")
         step("spawn", cmd=cmd)
+        if debuggee and adapter == "jsdebug-attach":
+            # waits at its first line for the attach
+            procs.append(subprocess.Popen(debuggee[0], env=debuggee[1], cwd=fix, stdout=errf, stderr=errf))
+            step("debuggee", cmd=debuggee[0])
         if port is None:
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errf, cwd=fix)
             procs.append(p)
@@ -324,9 +355,14 @@ def run(adapter, fix, out_path, use_shim):
         step("initialize", filters=[f.get("filter") for f in caps.get("exceptionBreakpointFilters", [])],
              caps=sorted(k for k, v in caps.items() if v is True))
         c.request(launch["request"], launch)
+        if debuggee and adapter == "debugpy-listen":
+            # the adapter listens once it has the attach; the debuggee connects to it
+            time.sleep(1)
+            procs.append(subprocess.Popen(debuggee[0], cwd=fix, stdout=errf, stderr=errf))
+            step("debuggee", cmd=debuggee[0])
         c.wait(lambda m: m.get("event") == "initialized", 30)
         step("initialized")
-        if adapter != "jsdebug":
+        if not adapter.startswith("jsdebug"):
             configure(c)
         else:
             c.call("configurationDone")
@@ -360,6 +396,11 @@ def run(adapter, fix, out_path, use_shim):
         vs = a.call("variables", {"variablesReference": sc[0]["variablesReference"]})["variables"]
         step("model", threads=len(th), top=[top.get("name"), top.get("line")], scopes=[s["name"] for s in sc],
              vars={v["name"]: v["value"] for v in vs[:12]})
+        if os.environ.get("DBGSPIKE_MARK"):
+            # the runner lists every process's sockets now (lsof, outside the sandbox)
+            with open(os.environ["DBGSPIKE_MARK"], "w") as f:
+                f.write(str(os.getpid()))
+            time.sleep(6)
         a.call("continue", {"threadId": tid})
         step("continued")
         try:
