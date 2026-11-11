@@ -24,10 +24,9 @@
 (defun margin-mouse-face-gui--at (line col)
   "Note the pointer in the left margin's column COL on LINE; the lit run."
   (pcase-let ((`(,x . ,y) (margin-mouse-face-gui--xy line col)))
-    ;; the point is in the margin, on that line (relative to the window: posn-at-x-y's coordinates)
-    (pcase-let ((`(,wl ,wt . ,_) (window-pixel-edges)))
-      (let ((p (posn-at-x-y (- x wl) (- y wt))))
-        (should (eq (posn-area p) 'left-margin))))
+    ;; the point is in the margin (frame coordinates, as the note takes them)
+    (let ((p (posn-at-x-y x y (selected-frame))))
+      (should (equal (list (posn-area p) (posn-window p)) (list 'left-margin (selected-window)))))
     (nidhogg--note-mouse nil x y)))
 
 (defmacro margin-mouse-face-gui--with (&rest body)
