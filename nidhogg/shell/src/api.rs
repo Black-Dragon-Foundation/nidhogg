@@ -547,6 +547,12 @@ pub trait ShellBackend {
         frames: &[SurfaceFrame],
         t_key_ns: u64,
     ) -> ShellResult<bool>;
+    /// Commit now what publishes left for the next pump or wait (macOS: the commit is off the redisplay path, as
+    /// NS's).  The host's deadline after a redisplay calls it, so Lisp that runs on without waiting still has its
+    /// frame shown.  Default: a publish leaves nothing.
+    fn flush_presents(&mut self) -> ShellResult {
+        Ok(())
+    }
     /// Inline mode: present root `root`'s tree by the present path's rule; `true` when the root committed a buffer.
     /// `State` in thread mode.
     fn present_tree(&mut self, root: WindowId) -> ShellResult<bool>;

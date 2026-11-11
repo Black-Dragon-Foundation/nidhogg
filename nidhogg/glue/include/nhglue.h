@@ -66,6 +66,10 @@ int32_t nhg_fd (NhgDisplay *d);
 /* Run the shell's work that must happen on the host's thread (configure and surface events) and flush.  */
 int32_t nhg_dispatch_main (NhgDisplay *d);
 
+/* Commit now what the shell left for its next pump or wait (macOS: the commit is off the redisplay path); the host's
+   deadline after a redisplay, for Lisp that runs on without waiting.  */
+int32_t nhg_flush_presents (NhgDisplay *d);
+
 /* The shell's capabilities: one protocol version per optional feature, 0 when absent.  A missing protocol makes its
    feature do nothing.  */
 typedef struct

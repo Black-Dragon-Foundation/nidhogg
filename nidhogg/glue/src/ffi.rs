@@ -143,6 +143,18 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Commit now what the shell left for its next pump or wait (macOS: the commit is off the redisplay path); the
+    /// host's deadline after a redisplay, for Lisp that runs on without waiting.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_flush_presents(d: *mut NhgDisplay) -> i32 |state| {
+        state.backend().flush_presents()?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Copy the shell's capabilities to `*out` (`NhgCaps`).
     ///
     /// # Safety

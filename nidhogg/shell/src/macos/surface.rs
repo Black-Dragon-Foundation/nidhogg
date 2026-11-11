@@ -108,6 +108,8 @@ pub struct Stats {
     pub spins_in_redisplay: AtomicU64,
     pub pumps: AtomicU64,
     pub deferred_commits: AtomicU64,
+    /// Commits the host's deadline made (`flush_presents`): Lisp ran on after a redisplay without waiting.
+    pub deadline_flushes: AtomicU64,
     /// `nhg_dispatch_main` calls from a Lisp thread, handed to the main thread's wait.
     pub handed_pumps: AtomicU64,
     /// Publishes held by the pacer (every other slot held), and holds that outlasted its bound.
@@ -153,6 +155,7 @@ pub static STATS: Stats = Stats {
     spins_in_redisplay: AtomicU64::new(0),
     pumps: AtomicU64::new(0),
     deferred_commits: AtomicU64::new(0),
+    deadline_flushes: AtomicU64::new(0),
     handed_pumps: AtomicU64::new(0),
     held: AtomicU64::new(0),
     held_timeouts: AtomicU64::new(0),
@@ -171,7 +174,8 @@ impl Stats {
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
              :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} \
-             :stretched-frames {} :draws {} :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {} :paint-ns {} :fill-ns {} :commit-ns {}",
+             :stretched-frames {} :draws {} :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {} :paint-ns {} :fill-ns {} :commit-ns {} \
+             :deadline-flushes {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -192,6 +196,7 @@ impl Stats {
             g(&self.paint_ns),
             g(&self.fill_ns),
             g(&self.commit_ns),
+            g(&self.deadline_flushes),
         )
     }
 }

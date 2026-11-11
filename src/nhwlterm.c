@@ -796,6 +796,46 @@ nhwl_blocks_sync (struct frame *f, struct frame *r)
       nhwl_blocks_sync (XFRAME (frame), r);
 }
 
+#ifdef HAVE_NHMAC
+/* How long a published frame may wait for its commit while Lisp runs on
+   after a redisplay without waiting (the shell commits at its next pump
+   or wait; NS's Core Animation at its run loop's turn).  */
+#define NHWL_PRESENT_DEADLINE_NS (8 * 1000 * 1000)
+
+static void nhwl_present_deadline (struct atimer *);
+
+static void
+nhwl_present_deadline_arm (struct nhwl_display_info *dpyinfo)
+{
+  if (!dpyinfo->present_deadline)
+    dpyinfo->present_deadline
+      = start_atimer (ATIMER_RELATIVE,
+		      make_timespec (0, NHWL_PRESENT_DEADLINE_NS),
+		      nhwl_present_deadline, dpyinfo);
+}
+
+/* The deadline came: the shell commits what it holds.  Inside a
+   redisplay the commit waits for the redisplay's own publish.  */
+static void
+nhwl_present_deadline (struct atimer *timer)
+{
+  struct nhwl_display_info *dpyinfo = timer->client_data;
+
+  dpyinfo->present_deadline = NULL;
+  if (!dpyinfo->glue)
+    return;
+  if (redisplaying_p)
+    {
+      nhwl_present_deadline_arm (dpyinfo);
+      return;
+    }
+  block_input ();
+  nhwl_glue_rc (dpyinfo, NHG (nhg_flush_presents (dpyinfo->glue)));
+  unblock_input ();
+}
+
+#endif
+
 /* A consistency point for F's tree (F, its root, a top-level, tip or popup
    frame, and the child frames under it, sync subsurfaces): Emacs is not
    redisplaying and buffer flips are not blocked, so every frame of the tree
@@ -832,6 +872,10 @@ nhwl_publish (struct frame *f)
 					       flags, out->t_key_ns)));
   if (rc > 0 && (rc & NHG_PRESENTED_KEY_DONE))
     out->t_key_ns = 0;
+#ifdef HAVE_NHMAC
+  if (rc > 0)
+    nhwl_present_deadline_arm (dpyinfo);
+#endif
   unblock_input ();
 }
 
@@ -4531,6 +4575,11 @@ nhwl_delete_terminal (struct terminal *terminal)
 
   /* Its client data is DPYINFO, freed below.  */
   nhwl_reconnect_disarm (dpyinfo);
+#ifdef HAVE_NHMAC
+  if (dpyinfo->present_deadline)
+    cancel_atimer (dpyinfo->present_deadline);
+  dpyinfo->present_deadline = NULL;
+#endif
 
   if (dpyinfo->glue)
     {
