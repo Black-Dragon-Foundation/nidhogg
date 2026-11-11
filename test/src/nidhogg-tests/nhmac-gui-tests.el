@@ -1112,6 +1112,34 @@ redisplay's commit time (`nhmac-stats' :commit-ns) is taken off."
   "The median of the numbers XS."
   (let ((v (vconcat (sort (copy-sequence xs) #'<)))) (aref v (/ (length v) 2))))
 
+(ert-deftest nhmac-paired-cpu-per-key ()
+  "G1's measure (the architecture review's A6): the main thread's CPU time per typed key, each key a command, a
+redisplay and the wait that commits it, as typing is; 20 samples of 10 keys, microseconds per key, written to
+GLITNIR_GUI_OUT/pair-BUILD.txt.  Both builds run it in turn (nidhogg/test/nhmac-pair.sh --within 10: Naglfar's
+median within 10% of NS's).  Both builds are measured the same way, whatever thread or point each commits at."
+  (let* ((naglfar (not (nhmac-gui--ns-build-p)))
+         (build (if naglfar "naglfar" "ns"))
+         (file (expand-file-name (format "pair-%s.txt" build)
+                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+         samples)
+    (switch-to-buffer (generate-new-buffer " *nhmac-cpu*"))
+    (insert "cpu per key")
+    (redisplay t)
+    (dotimes (_ 10) (execute-kbd-macro "w") (redisplay) (accept-process-output nil 0.001))
+    (should (nhmac-gui--main-thread-cpu))
+    (dotimes (_ 20)
+      (let ((c0 (nhmac-gui--main-thread-cpu)))
+        (dotimes (_ 10)
+          (execute-kbd-macro "x")
+          (redisplay)
+          (accept-process-output nil 0.001))
+        (push (round (/ (* 1e6 (- (nhmac-gui--main-thread-cpu) c0)) 10)) samples)))
+    (setq samples (nreverse samples))
+    (nhmac-gui--say "nhmac-paired-cpu-per-key: %s: %S us per key" build samples)
+    (with-temp-file file
+      (dolist (v samples) (insert (number-to-string v) "\n")))
+    (kill-buffer)))
+
 (ert-deftest nhmac-pair-stages ()
   "The paired row's keys split by stage, medians in microseconds, written to GLITNIR_GUI_OUT/stages-BUILD.txt.
 It measures; it asserts only that it ran."
