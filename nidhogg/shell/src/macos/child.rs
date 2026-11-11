@@ -320,6 +320,9 @@ impl MacShell {
                     win.window.orderFront(None);
                 }
                 layers::changed_outside();
+                // the scale of the screen it is on now: `make` read it where AppKit first put the window, and a stale
+                // one has the frame resized to its points as pixels, then back (as a new window's, `window_new`)
+                win.scale120 = win.scale_now();
                 let scale120 = win.scale120;
                 self.windows.insert(id, win);
                 // its panel, if it overhung, goes with `k`
