@@ -107,10 +107,13 @@ flag_rule() {
   done < <(git log --format=%H "$lowest..HEAD")
 }
 
-# Upstream NS files stay as they were at the Naglfar base (NAGLFAR_BASE, default refs/naglfar/base; no base, no check).
+# Upstream NS files stay as they were at the Naglfar base (NAGLFAR_BASE, default the series commit below; a rebase onto a
+# new upstream moves it).  A base this checkout lacks stops the run with 75: a skipped check once let an NS hunk through.
+NAGLFAR_PIN=0e3f70a3eb9d1ed1cc75629b8bf63e91c5da251f
 ns_untouched() {
-  local b=${1:-${NAGLFAR_BASE:-refs/naglfar/base}} d
-  git rev-parse --verify --quiet "$b^{commit}" >/dev/null || return 0
+  local b=${1:-${NAGLFAR_BASE:-$NAGLFAR_PIN}} d
+  git rev-parse --verify --quiet "$b^{commit}" >/dev/null ||
+    { echo "tree: Naglfar base $b missing: NS check cannot run (fetch the full history, or set NAGLFAR_BASE)" >&2; exit 75; }
   d=$(git diff --name-only "$b" HEAD -- 'src/ns*' nextstep/ lisp/term/ns-win.el)
   [ -z "$d" ] || fail "an upstream NS file changed: $(echo "$d" | tr '\n' ' ')"
 }
@@ -246,6 +249,8 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fails=0; ns_untouched "$ns" >/dev/null; [ "$fails" = 1 ] || { echo "tree self-test: case 'an NS file changed' failed"; exit 1; }
   putf "nidhogg: naglfar: n2" src/nsterm.m 'a\n'; fails=0; ns_untouched "$ns"; [ "$fails" = 0 ] ||
     { echo "tree self-test: case 'an NS file restored' failed"; exit 1; }
+  (ns_untouched 0000000000000000000000000000000000000001) 2>/dev/null; [ $? = 75 ] ||
+    { echo "tree self-test: case 'a missing Naglfar base stops with 75' failed"; exit 1; }
   subj() { subject_rule "$(git -C "$self/r" rev-list --max-parents=0 HEAD)"; }
   fixture; git checkout -q -b side; putf "nidhogg: glitnir: g" src/b.c 'int b;\n'; git checkout -q -
   put "nidhogg: pgtk: p" "int a;\n/* p */\n"; git merge -q --no-ff -m "Merge side: not a series subject" side
