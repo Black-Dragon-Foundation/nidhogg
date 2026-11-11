@@ -2358,11 +2358,12 @@ nhwl_emacs_modifiers (uint32_t mods)
   return mod;
 }
 
-/* Convert the glue's KEY action A (a press or a repeat) on frame F into
-   an input event.  Adapted from key_press_event (pgtkterm.c): the shell
-   has already run the keysym through xkb and compose, and the glue has
-   classified it (keys.rs), so A carries the keysym, its class and
-   character, and the text the key produced.  Return true if INEV holds
+/* Convert the glue's KEY action A (a press, a repeat or a release) on
+   frame F into an input event.  Adapted from key_press_event
+   (pgtkterm.c): the shell has already run the keysym through xkb and
+   compose, and the glue has classified it (keys.rs), so A carries the
+   keysym, its class and character, and the text the key produced.  For
+   a release, INEV holds the press's event.  Return true if INEV holds
    an event.  */
 static bool
 nhwl_key_event (struct frame *f, const NhgAction *a,
@@ -2373,9 +2374,11 @@ nhwl_key_event (struct frame *f, const NhgAction *a,
   Lisp_Object c;
   int modifiers;
 
+  bool release = a->flags & NHG_KEY_RELEASE;
+
   /* If mouse-highlight is an integer, input clears out mouse
-     highlighting.  */
-  if (!hlinfo->mouse_face_hidden && FIXNUMP (Vmouse_highlight))
+     highlighting.  A release is not input.  */
+  if (!release && !hlinfo->mouse_face_hidden && FIXNUMP (Vmouse_highlight))
     {
       clear_mouse_face (hlinfo);
       hlinfo->mouse_face_hidden = true;
@@ -2394,7 +2397,7 @@ nhwl_key_event (struct frame *f, const NhgAction *a,
   {
     struct nhwl_output *ro = FRAME_NHWL_OUTPUT (nhwl_tree_root (f));
 
-    if (!ro->t_key_ns)
+    if (!release && !ro->t_key_ns)
       {
 	ro->t_key_ns = nhwl_now_ns ();
 	ro->key_redisplay = redisplay_counter;
@@ -2491,8 +2494,35 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
   nhwl_res_changed (f, was);
   nhwl_csd_layout (f);
   if (old && old != scale120)
-    nhwl_set_window_size (f, false, (int) (((int64_t) lw * scale120 + 60) / 120),
-			  (int) (((int64_t) lh * scale120 + 60) / 120));
+    {
+#ifdef NHWL_WAYLAND
+      /* A maximized, fullscreen or tiled window has the compositor's size,
+	 which nhwl_set_window_size leaves alone: it takes the last
+	 configure's logical size at the new scale instead.  The compositor
+	 sends that configure before the scale when an output changes scale
+	 (mutter does), and it was fitted at the old one.  */
+      struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+      int dw, dh;
+
+      if (out->states & (NHG_STATE_MAXIMIZED | NHG_STATE_FULLSCREEN
+			 | NHG_STATE_TILED_L | NHG_STATE_TILED_R
+			 | NHG_STATE_TILED_T | NHG_STATE_TILED_B))
+	{
+	  if (nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+			    NHG (nhg_frame_fit (FRAME_NHG (f), out->window,
+						scale120, out->logical_w,
+						out->logical_h, out->states,
+						FRAME_PIXEL_WIDTH (f),
+						FRAME_PIXEL_HEIGHT (f),
+						NHG_FIT_UNDECORATED, &dw, &dh)))
+	      == 1)
+	    change_frame_size (f, dw, dh, false, true, false);
+	}
+      else
+#endif
+	nhwl_set_window_size (f, false, (int) (((int64_t) lw * scale120 + 60) / 120),
+			      (int) (((int64_t) lh * scale120 + 60) / 120));
+    }
   SET_FRAME_GARBAGED (f);
 }
 
@@ -2842,14 +2872,20 @@ nhwl_key_frame (struct nhwl_display_info *dpyinfo, struct frame *f)
 }
 
 /* Apply the glue's KEY action A, whose window is F's (NULL: none): the
-   key goes to the frame of F's tree that Emacs focused.  Return the
-   number of events stored.  */
+   key goes to the frame of F's tree that Emacs focused.  A release
+   becomes a `key-release' special event, only while
+   `nidhogg-key-events' is non-nil; a repeat carries
+   Qnidhogg_key_repeat in .arg for `nidhogg-last-key-repeat'.  Return
+   the number of events stored.  */
 static int
 nhwl_key_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
 		const NhgAction *a, struct input_event *hold_quit)
 {
   union buffered_input_event inev;
+  bool release = a->flags & NHG_KEY_RELEASE;
 
+  if (release && NILP (Vnidhogg_key_events))
+    return 0;
   f = nhwl_key_frame (dpyinfo, f);
   if (!f)
     return 0;
@@ -2858,6 +2894,14 @@ nhwl_key_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
   inev.ie.arg = Qnil;
   if (!nhwl_key_event (f, a, &inev) || inev.ie.kind == NO_EVENT)
     return 0;
+  if (release)
+    {
+      inev.ie.arg = Fcons (make_fixnum (inev.ie.kind),
+			   make_fixnum (inev.ie.code));
+      inev.ie.kind = NHWL_KEY_RELEASE_EVENT;
+    }
+  else if (a->flags & NHG_KEY_REPEAT)
+    inev.ie.arg = Qnidhogg_key_repeat;
   kbd_buffer_store_event_hold (&inev.ie, hold_quit);
   return 1;
 }
@@ -2941,6 +2985,9 @@ nhwl_leave_apply (struct frame *f)
   Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
 
   clear_mouse_face (hlinfo);
+#ifdef HAVE_GLITNIR
+  note_mouse_sensor_leave (f);
+#endif
   if (FRAME_DISPLAY_INFO (f)->last_mouse_frame == f)
     FRAME_DISPLAY_INFO (f)->last_mouse_frame = NULL;
 }
@@ -4546,6 +4593,20 @@ syms_of_nhwlterm (void)
 #endif
   nhwl_glue_panic_list = Qnil;
   staticpro (&nhwl_glue_panic_list);
+
+  DEFVAR_LISP ("nidhogg-key-events", Vnidhogg_key_events,
+    doc: /* Non-nil means key releases arrive as `key-release' events.
+A release is the special event (key-release EVENT), EVENT the event its
+press gave (with the modifiers held at the release); bind `key-release'
+in `special-event-map' to handle it.  A release whose press gave no
+event (a dead key, a key pressed before the frame had the keyboard)
+gives none.  Nil, the default, drops releases.  */);
+  Vnidhogg_key_events = Qnil;
+  DEFVAR_LISP ("nidhogg-last-key-repeat", Vnidhogg_last_key_repeat,
+    doc: /* Non-nil if the last key event read was a key repeat.
+Set as each keystroke is read: t when the keyboard repeated a held key,
+nil for a press (or a key that did not come from a Nidhogg frame).  */);
+  Vnidhogg_last_key_repeat = Qnil;
 
   /* Reconnecting in place; nhwl-settings.el has the options.  */
   DEFSYM (Qnhwl_reconnect, "nhwl-reconnect");

@@ -8,7 +8,7 @@ use super::ime;
 use super::runloop::{MacEv, deliver};
 use crate::api::WindowId;
 use crate::event::{
-    NHSHELL_BUTTON_PRESSED, NHSHELL_BUTTON_RELEASED, NHSHELL_PINCH_BEGIN, NHSHELL_PINCH_END,
+    KeyEv, NHSHELL_BUTTON_PRESSED, NHSHELL_BUTTON_RELEASED, NHSHELL_PINCH_BEGIN, NHSHELL_PINCH_END,
     NHSHELL_PINCH_UPDATE, PinchEv, PointerEv, ShellEvent,
 };
 use crate::mac_input;
@@ -84,7 +84,11 @@ define_class!(
             let ignoring = e.charactersIgnoringModifiers().map(|s| s.to_string()).unwrap_or_default();
             let chars = e.characters().map(|s| s.to_string()).unwrap_or_default();
             let flags = e.modifierFlags();
-            let k = mac_input::key(&ignoring, &chars, flags.0, e.isARepeat());
+            let mut k = mac_input::key(&ignoring, &chars, flags.0, e.isARepeat());
+            if let Some(k) = &mut k {
+                // the virtual key code, + 1 so 0 stays "none": the glue pairs the release with it
+                k.keycode = u32::from(e.keyCode()) + 1;
+            }
             let chord = NSEventModifierFlags::Control | NSEventModifierFlags::Command;
             let dead = chars.is_empty() && !ignoring.is_empty() && !flags.intersects(chord);
             let id = *self.ivars();
@@ -96,8 +100,19 @@ define_class!(
             }
         }
 
+        /// A release names only its key code: the glue gives it its press's fields, or drops it when the press gave
+        /// no `KEY` action (the input system took it).
         #[unsafe(method(keyUp:))]
-        fn key_up(&self, _e: &NSEvent) {}
+        fn key_up(&self, e: &NSEvent) {
+            self.send(ShellEvent::Key(KeyEv {
+                keycode: u32::from(e.keyCode()) + 1,
+                keysym: 0,
+                mods: mac_input::mods(e.modifierFlags().0),
+                pressed: 0,
+                repeat: 0,
+                utf8: [0; 16],
+            }));
+        }
 
         #[unsafe(method(flagsChanged:))]
         fn flags_changed(&self, e: &NSEvent) {

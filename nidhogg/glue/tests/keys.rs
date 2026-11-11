@@ -8,7 +8,7 @@ mod step;
 use common::{Recorder, readable_within};
 use nhglue::action::*;
 use nhglue::ffi::*;
-use nhglue::keys::{NHG_KEY_CHAR, NHG_KEY_REPEAT, NHG_KEY_TEXT};
+use nhglue::keys::{NHG_KEY_CHAR, NHG_KEY_RELEASE, NHG_KEY_REPEAT, NHG_KEY_TEXT};
 use std::ptr;
 use std::time::{Duration, Instant};
 use step::*;
@@ -126,6 +126,47 @@ mod keys {
         close(d);
     }
 
+    /// A release gives one `KEY` action flagged `NHG_KEY_RELEASE` with its press's keysym, class, character and text;
+    /// a second release of the same key (no press between) gives none.
+    #[test]
+    fn release_repeats_the_press() {
+        let rec = Recorder::start("sway");
+        let d = open(&rec);
+        let id = focused(&rec, d);
+        key(&rec, KEY_A, true);
+        key(&rec, KEY_A, false);
+        key(&rec, KEY_A, false);
+        queued(d);
+        let mut keys = Vec::new();
+        loop {
+            let (rc, v) = step_keys(d, 0);
+            keys.extend(v);
+            // SAFETY: a live display.
+            if rc == 0 && !readable_within(unsafe { nhg_fd(d) }, 200) {
+                break;
+            }
+        }
+        assert_eq!(keys.len(), 2, "{keys:?}");
+        let (press, release) = (&keys[0], &keys[1]);
+        assert_eq!(press.0.flags, NHG_KEY_CHAR);
+        assert_eq!(
+            (
+                release.0.window,
+                release.0.code,
+                release.0.flags,
+                release.0.x
+            ),
+            (
+                id,
+                i32::from(b'a'),
+                NHG_KEY_RELEASE | NHG_KEY_CHAR,
+                i32::from(b'a')
+            )
+        );
+        assert_eq!(release.1.as_slice(), b"a");
+        close(d);
+    }
+
     /// A dead key and a letter (us intl: ' then e) give one `KEY` action, with the composed keysym and text; the dead
     /// key gives none.  The shell's compose table follows the locale (the C locale reads en_US.UTF-8's).
     #[test]
@@ -154,8 +195,14 @@ mod keys {
                 break;
             }
         }
-        assert_eq!(keys.len(), 1, "{keys:?}");
+        // the dead key's press and release give nothing; the letter gives its press and its release
+        assert_eq!(keys.len(), 2, "{keys:?}");
         let (a, text) = &keys[0];
+        assert_eq!(keys[1].0.flags, NHG_KEY_RELEASE | NHG_KEY_TEXT);
+        assert_eq!(
+            (keys[1].0.code, keys[1].1.as_slice()),
+            (0xe9, "é".as_bytes())
+        );
         // XK_eacute: not a character keysym nor a function key, so (failing the keysym table) the text's é
         assert_eq!(
             (a.window, a.code, a.flags, a.x),

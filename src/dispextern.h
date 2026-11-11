@@ -3702,6 +3702,9 @@ extern void x_y_to_column_row (struct window *, int, int, int *, int *);
 #endif	/* HAVE_WINDOW_SYSTEM */
 
 extern void note_mouse_highlight (struct frame *, int, int);
+#ifdef HAVE_GLITNIR
+extern void note_mouse_sensor_leave (struct frame *);
+#endif
 extern void gui_clear_window_mouse_face (struct window *);
 extern void cancel_mouse_face (struct frame *);
 extern bool clear_mouse_face (Mouse_HLInfo *);
