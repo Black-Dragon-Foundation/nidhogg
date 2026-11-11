@@ -2521,15 +2521,19 @@ An alist of (NAME . FILE) in this lane's output directory."
 
 (defmacro nhmac-gui--with-fringe-scene (&rest body)
   "Run BODY showing only fringe bitmaps: empty lines with an arrow in each fringe, then the empty-line indicator, the
-fringe in black on `nhmac-gui--font-bg', fringes 8 NS points wide."
+fringe in black on `nhmac-gui--font-bg', fringes 8 NS points wide, in the frame's only window, the echo area empty."
   (declare (indent 0))
   `(let ((k (nhmac-gui--draw-k))
          (bg (frame-parameter nil 'background-color))
-         (ffg (face-foreground 'fringe)) (fbg (face-background 'fringe)))
+         (ffg (face-foreground 'fringe)) (fbg (face-background 'fringe))
+         (conf (current-window-configuration)))
      (unwind-protect
          (progn
            (set-background-color nhmac-gui--font-bg)
            (set-face-attribute 'fringe nil :foreground "#000000" :background nhmac-gui--font-bg)
+           ;; nothing else in the capture (as `nhmac-gui--with-font-scene')
+           (delete-other-windows)
+           (message nil)
            (switch-to-buffer (generate-new-buffer " *nhmac-fringe*"))
            (setq-local cursor-type nil mode-line-format nil indicate-empty-lines t)
            (set-window-fringes nil (* 8 k) (* 8 k))
@@ -2547,6 +2551,7 @@ fringe in black on `nhmac-gui--font-bg', fringes 8 NS points wide."
        (set-face-attribute 'fringe nil :foreground (or ffg 'unspecified) :background (or fbg 'unspecified))
        (set-window-fringes nil nil nil)
        (set-window-scroll-bars nil nil nil nil nil)
+       (set-window-configuration conf)
        (set-background-color bg))))
 
 (ert-deftest nhmac-ns-draw-dump ()
