@@ -39,7 +39,7 @@ spec() {   # spec NET > file
  "write": ["$B/w", "$B/t"],
  "env": [["PATH", "$PATH"], ["HOME", "$B/t"], ["TMPDIR", "$B/t"], ["JS_DEBUG", "$B/js-debug"],
          ["PYTHONDONTWRITEBYTECODE", "1"]],
- "chdir": "$B/fix", "net": $1, "tmp": "$B/t"}
+ "chdir": "$B/fix", "net": $1, "tmp": "$B/t", "layers": {"landlock_min_abi": 0}}
 EOF
 }
 spec '"shared"' > spec-shared.json
