@@ -28,7 +28,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
 
-#include <cairo.h>
 #include <math.h>
 #include <string.h>
 #include <time.h>
@@ -47,10 +46,12 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "termhooks.h"
 #include "window.h"
 
+#ifdef NHWL_WAYLAND
 static void nhwl_fill_rectangle (struct frame *, unsigned long, int, int, int,
 				 int, bool);
 static void nhwl_clip_to_row (struct window *, struct glyph_row *,
 			      enum glyph_row_area, cairo_t *);
+#endif
 
 /* Set S->gc to a suitable GC for drawing glyph string S in cursor
    face.  */
@@ -171,6 +172,7 @@ nhwl_set_glyph_string_gc (struct glyph_string *s)
 }
 
 
+#ifdef NHWL_WAYLAND
 /* Set clipping for output of glyph string S.  S may be part of a mode
    line or menu if we don't have X toolkit support.  */
 
@@ -208,6 +210,7 @@ nhwl_set_glyph_string_clipping_exactly (struct glyph_string *src,
   cairo_clip (cr);
 }
 
+#endif /* NHWL_WAYLAND */
 /* Fill rectangle X, Y, W, H with background color of glyph string
    S.  */
 static void
@@ -265,6 +268,7 @@ nhwl_draw_glyph_string_background (struct glyph_string *s, bool force_p)
 }
 
 
+#ifdef NHWL_WAYLAND
 static void
 nhwl_draw_rectangle (struct frame *f, unsigned long color, int x, int y,
 		     int width, int height, bool respect_alpha_background)
@@ -278,6 +282,7 @@ nhwl_draw_rectangle (struct frame *f, unsigned long color, int x, int y,
   cairo_stroke (cr);
   nhwl_end_cr_clip (f);
 }
+#endif /* NHWL_WAYLAND */
 
 /* Draw the foreground of glyph string S.  */
 static void
@@ -588,6 +593,7 @@ nhwl_compute_lighter_color (struct frame *f, unsigned long *pixel,
   *pixel = new.pixel;
 }
 
+#ifdef NHWL_WAYLAND
 static void
 nhwl_fill_trapezoid_for_relief (struct frame *f, unsigned long color, int x,
 				int y, int width, int height, int top_p)
@@ -604,6 +610,7 @@ nhwl_fill_trapezoid_for_relief (struct frame *f, unsigned long color, int x,
   nhwl_end_cr_clip (f);
 }
 
+#endif /* NHWL_WAYLAND */
 enum corners
 {
   CORNER_BOTTOM_RIGHT,		/* 0 -> pi/2 */
@@ -613,6 +620,7 @@ enum corners
   CORNER_LAST
 };
 
+#ifdef NHWL_WAYLAND
 static void
 nhwl_erase_corners_for_relief (struct frame *f, unsigned long color, int x,
 			       int y, int width, int height, double radius,
@@ -646,6 +654,7 @@ nhwl_erase_corners_for_relief (struct frame *f, unsigned long color, int x,
   nhwl_end_cr_clip (f);
 }
 
+#endif /* NHWL_WAYLAND */
 static void
 nhwl_setup_relief_color (struct frame *f, struct relief *relief, double factor,
 			 int delta, unsigned long default_pixel)
@@ -695,6 +704,7 @@ nhwl_setup_relief_colors (struct glyph_string *s)
     }
 }
 
+#ifdef NHWL_WAYLAND
 static void
 nhwl_set_clip_rectangles (struct frame *f, cairo_t *cr,
 			  XRectangle *rectangles, int n)
@@ -708,6 +718,7 @@ nhwl_set_clip_rectangles (struct frame *f, cairo_t *cr,
     }
 }
 
+#endif /* NHWL_WAYLAND */
 /* Draw a relief on frame F inside the rectangle given by LEFT_X,
    TOP_Y, RIGHT_X, and BOTTOM_Y.  WIDTH is the thickness of the relief
    to draw, it must be >= 0.  RAISED_P means draw a raised
@@ -726,7 +737,7 @@ nhwl_draw_relief_rect (struct frame *f,
   unsigned long top_left_color, bottom_right_color;
   int corners = 0;
 
-  cairo_t *cr = nhwl_begin_cr_clip (f);
+  nhwl_cr *cr = nhwl_begin_cr_clip (f);
 
   if (raised_p)
     {
@@ -808,7 +819,7 @@ nhwl_draw_box_rect (struct glyph_string *s, int left_x,
 {
   unsigned long foreground_backup;
 
-  cairo_t *cr = nhwl_begin_cr_clip (s->f);
+  nhwl_cr *cr = nhwl_begin_cr_clip (s->f);
 
   foreground_backup = s->xgcv.foreground;
   s->xgcv.foreground = s->face->box_color;
@@ -881,9 +892,11 @@ nhwl_draw_glyph_string_box (struct glyph_string *s)
   /* PD's keys (:corner-radius, :open): Glitnir's box.  */
   if (s->face->box != FACE_SIMPLE_BOX)
     nhwl_setup_relief_colors (s);
+#ifdef NHWL_WAYLAND
   if (glitnir_decor_draw_box (s, left_x, top_y, right_x, bottom_y, hwidth,
 			      vwidth, left_p, right_p, &clip_rect))
     return;
+#endif
   if (s->face->box == FACE_SIMPLE_BOX)
     nhwl_draw_box_rect (s, left_x, top_y, right_x, bottom_y, hwidth,
 			vwidth, left_p, right_p, &clip_rect);
@@ -896,6 +909,7 @@ nhwl_draw_glyph_string_box (struct glyph_string *s)
     }
 }
 
+#ifdef NHWL_WAYLAND
 static void
 nhwl_draw_horizontal_wave (struct frame *f, unsigned long color, int x, int y,
 			   int width, int height, int wave_length)
@@ -937,6 +951,7 @@ nhwl_draw_horizontal_wave (struct frame *f, unsigned long color, int x, int y,
   nhwl_end_cr_clip (f);
 }
 
+#endif /* NHWL_WAYLAND */
 static void
 nhwl_draw_underwave (struct glyph_string *s, unsigned long color)
 {
@@ -1051,8 +1066,9 @@ nhwl_draw_glyph_string_bg_rect (struct glyph_string *s, int x, int y, int w,
     nhwl_clear_glyph_string_rect (s, x, y, w, h);
 }
 
+#ifdef NHWL_WAYLAND
 static void
-nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, cairo_pattern_t *image,
+nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, nhwl_image image,
 		    int src_x, int src_y, int width, int height,
 		    int dest_x, int dest_y, bool overlay_p)
 {
@@ -1086,6 +1102,7 @@ nhwl_cr_draw_image (struct frame *f, Emacs_GC *gc, cairo_pattern_t *image,
 
   nhwl_end_cr_clip (f);
 }
+#endif /* NHWL_WAYLAND */
 
 /* Draw foreground of image glyph string S.  */
 
@@ -1109,11 +1126,11 @@ nhwl_draw_image_foreground (struct glyph_string *s)
   if (s->slice.y == 0)
     y += s->img->vmargin;
 
-  if (s->img->cr_data)
+  if (NHWL_IMAGE (s->img))
     {
-      cairo_t *cr = nhwl_begin_cr_clip (s->f);
-      nhwl_set_glyph_string_clipping (s, cr);
-      nhwl_cr_draw_image (s->f, &s->xgcv, s->img->cr_data,
+      nhwl_cr *cr = nhwl_begin_cr_clip (s->f);
+      nhwl_draw_ops->set_clipping (s, cr);
+      nhwl_cr_draw_image (s->f, &s->xgcv, NHWL_IMAGE (s->img),
 			  s->slice.x, s->slice.y, s->slice.width, s->slice.height,
 			  x, y, true);
       if (!s->img->mask)
@@ -1268,7 +1285,7 @@ nhwl_draw_stretch_glyph_string (struct glyph_string *s)
 	  else
 	    color = s->face->background;
 
-	  cairo_t *cr = nhwl_begin_cr_clip (s->f);
+	  nhwl_cr *cr = nhwl_begin_cr_clip (s->f);
 
 	  get_glyph_string_clip_rect (s, &r);
 	  nhwl_set_clip_rectangles (s->f, cr, &r, 1);
@@ -1304,6 +1321,7 @@ nhwl_draw_stretch_glyph_string (struct glyph_string *s)
 }
 
 
+#ifdef NHWL_WAYLAND
 /* Draw a dashed underline of thickness THICKNESS and width WIDTH onto F
    at a vertical offset of OFFSET from the position of the glyph string
    S, with each segment SEGMENT pixels in length.  */
@@ -1329,6 +1347,7 @@ nhwl_draw_dash (struct frame *f, struct glyph_string *s,
   nhwl_end_cr_clip (f);
 }
 
+#endif /* NHWL_WAYLAND */
 /* Draw an underline of STYLE onto F at an offset of POSITION from the
    baseline of the glyph string S in the color provided by FOREGROUND,
    DECORATION_WIDTH in length, and THICKNESS in height.  */
@@ -1389,22 +1408,22 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 	   width += next->width, next = next->next)
 	if (next->first_glyph->type != IMAGE_GLYPH)
 	  {
-	    cairo_t *cr = nhwl_begin_cr_clip (next->f);
+	    nhwl_cr *cr = nhwl_draw_ops->begin_clip (next->f);
 	    nhwl_set_glyph_string_gc (next);
-	    nhwl_set_glyph_string_clipping (next, cr);
+	    nhwl_draw_ops->set_clipping (next, cr);
 	    if (next->first_glyph->type == STRETCH_GLYPH)
-	      nhwl_draw_stretch_glyph_string (next);
+	      nhwl_draw_ops->stretch (next);
 	    else
-	      nhwl_draw_glyph_string_background (next, true);
+	      nhwl_draw_ops->background (next, true);
 	    next->num_clips = 0;
-	    nhwl_end_cr_clip (next->f);
+	    nhwl_draw_ops->end_clip (next->f);
 	  }
     }
 
   /* Set up S->gc, set clipping and draw S.  */
   nhwl_set_glyph_string_gc (s);
 
-  cairo_t *cr = nhwl_begin_cr_clip (s->f);
+  nhwl_cr *cr = nhwl_draw_ops->begin_clip (s->f);
 
   /* Draw relief (if any) in advance for char/composition so that the
      glyph string can be drawn over it.  */
@@ -1414,10 +1433,10 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 	  || s->first_glyph->type == COMPOSITE_GLYPH))
 
     {
-      nhwl_set_glyph_string_clipping (s, cr);
-      nhwl_draw_glyph_string_background (s, true);
-      nhwl_draw_glyph_string_box (s);
-      nhwl_set_glyph_string_clipping (s, cr);
+      nhwl_draw_ops->set_clipping (s, cr);
+      nhwl_draw_ops->background (s, true);
+      nhwl_draw_ops->box (s);
+      nhwl_draw_ops->set_clipping (s, cr);
       relief_drawn_p = true;
     }
   else if (!s->clip_head	/* draw_glyphs didn't specify a clip mask. */
@@ -1427,26 +1446,26 @@ nhwl_draw_glyph_string (struct glyph_string *s)
     /* We must clip just this glyph.  left_overhang part has already
        drawn when s->prev was drawn, and right_overhang part will be
        drawn later when s->next is drawn. */
-    nhwl_set_glyph_string_clipping_exactly (s, s, cr);
+    nhwl_draw_ops->set_clipping_exactly (s, s, cr);
   else
-    nhwl_set_glyph_string_clipping (s, cr);
+    nhwl_draw_ops->set_clipping (s, cr);
 
   switch (s->first_glyph->type)
     {
     case IMAGE_GLYPH:
-      nhwl_draw_image_glyph_string (s);
+      nhwl_draw_ops->image (s);
       break;
 
     case STRETCH_GLYPH:
-      nhwl_draw_stretch_glyph_string (s);
+      nhwl_draw_ops->stretch (s);
       break;
 
     case CHAR_GLYPH:
       if (s->for_overlaps)
 	s->background_filled_p = true;
       else
-	nhwl_draw_glyph_string_background (s, false);
-      nhwl_draw_glyph_string_foreground (s);
+	nhwl_draw_ops->background (s, false);
+      nhwl_draw_ops->glyph_run (s);
       break;
 
     case COMPOSITE_GLYPH:
@@ -1454,16 +1473,16 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 			      && !s->first_glyph->u.cmp.automatic))
 	s->background_filled_p = true;
       else
-	nhwl_draw_glyph_string_background (s, true);
-      nhwl_draw_composite_glyph_string_foreground (s);
+	nhwl_draw_ops->background (s, true);
+      nhwl_draw_ops->composite_run (s);
       break;
 
     case GLYPHLESS_GLYPH:
       if (s->for_overlaps)
 	s->background_filled_p = true;
       else
-	nhwl_draw_glyph_string_background (s, true);
-      nhwl_draw_glyphless_glyph_string_foreground (s);
+	nhwl_draw_ops->background (s, true);
+      nhwl_draw_ops->glyphless_run (s);
       break;
 
     default:
@@ -1474,7 +1493,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
     {
       /* Draw relief if not yet drawn.  */
       if (!relief_drawn_p && s->face->box != FACE_NO_BOX)
-	nhwl_draw_glyph_string_box (s);
+	nhwl_draw_ops->box (s);
 
       /* Draw underline.  */
       if (s->face->underline)
@@ -1482,9 +1501,9 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 	  if (s->face->underline == FACE_UNDERLINE_WAVE)
 	    {
 	      if (s->face->underline_defaulted_p)
-		nhwl_draw_underwave (s, s->xgcv.foreground);
+		nhwl_draw_ops->underwave (s, s->xgcv.foreground);
 	      else
-		nhwl_draw_underwave (s, s->face->underline_color);
+		nhwl_draw_ops->underwave (s, s->face->underline_color);
 	    }
 	  else if (s->face->underline >= FACE_UNDERLINE_SINGLE)
 	    {
@@ -1555,7 +1574,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 	      else
 		foreground = s->face->underline_color;
 
-	      nhwl_fill_underline (s->f, s, foreground, s->face->underline,
+	      nhwl_draw_ops->underline (s->f, s, foreground, s->face->underline,
 				   position, s->width, thickness);
 
 	      /* Place a second underline above the first if this was
@@ -1565,7 +1584,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 		{
 		  /* Compute the position of the second underline.  */
 		  position = position - thickness - 1;
-		  nhwl_fill_underline (s->f, s, foreground, s->face->underline,
+		  nhwl_draw_ops->underline (s->f, s, foreground, s->face->underline,
 				       position, s->width, thickness);
 		}
 	    }
@@ -1576,10 +1595,10 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 	  unsigned long dy = 0, h = 1;
 
 	  if (s->face->overline_color_defaulted_p)
-	    nhwl_fill_rectangle (s->f, s->xgcv.foreground, s->x, s->y + dy,
+	    nhwl_draw_ops->fill (s->f, s->xgcv.foreground, s->x, s->y + dy,
 				 s->width, h, false);
 	  else
-	    nhwl_fill_rectangle (s->f, s->face->overline_color, s->x,
+	    nhwl_draw_ops->fill (s->f, s->face->overline_color, s->x,
 				 s->y + dy, s->width, h, false);
 	}
 
@@ -1599,10 +1618,10 @@ nhwl_draw_glyph_string (struct glyph_string *s)
           unsigned long dy = (glyph_height - h) / 2;
 
 	  if (s->face->strike_through_color_defaulted_p)
-	    nhwl_fill_rectangle (s->f, s->xgcv.foreground, s->x, glyph_y + dy,
+	    nhwl_draw_ops->fill (s->f, s->xgcv.foreground, s->x, glyph_y + dy,
 				 s->width, h, false);
 	  else
-	    nhwl_fill_rectangle (s->f, s->face->strike_through_color, s->x,
+	    nhwl_draw_ops->fill (s->f, s->face->strike_through_color, s->x,
 				 glyph_y + dy, s->width, h, false);
 	}
 
@@ -1620,15 +1639,15 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 
 		prev->hl = s->hl;
 		nhwl_set_glyph_string_gc (prev);
-		cairo_save (cr);
-		nhwl_set_glyph_string_clipping_exactly (s, prev, cr);
+		nhwl_draw_ops->save (cr);
+		nhwl_draw_ops->set_clipping_exactly (s, prev, cr);
 		if (prev->first_glyph->type == CHAR_GLYPH)
-		  nhwl_draw_glyph_string_foreground (prev);
+		  nhwl_draw_ops->glyph_run (prev);
 		else
-		  nhwl_draw_composite_glyph_string_foreground (prev);
+		  nhwl_draw_ops->composite_run (prev);
 		prev->hl = save;
 		prev->num_clips = 0;
-		cairo_restore (cr);
+		nhwl_draw_ops->restore (cr);
 	      }
 	}
 
@@ -1646,13 +1665,13 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 
 		next->hl = s->hl;
 		nhwl_set_glyph_string_gc (next);
-		cairo_save (cr);
-		nhwl_set_glyph_string_clipping_exactly (s, next, cr);
+		nhwl_draw_ops->save (cr);
+		nhwl_draw_ops->set_clipping_exactly (s, next, cr);
 		if (next->first_glyph->type == CHAR_GLYPH)
-		  nhwl_draw_glyph_string_foreground (next);
+		  nhwl_draw_ops->glyph_run (next);
 		else
-		  nhwl_draw_composite_glyph_string_foreground (next);
-		cairo_restore (cr);
+		  nhwl_draw_ops->composite_run (next);
+		nhwl_draw_ops->restore (cr);
 		next->hl = save;
 		next->num_clips = 0;
 		next->clip_head = s->next;
@@ -1666,7 +1685,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
     s->row->stipple_p = s->face->stipple;
 
   /* Reset clipping.  */
-  nhwl_end_cr_clip (s->f);
+  nhwl_draw_ops->end_clip (s->f);
   s->num_clips = 0;
 }
 
@@ -1691,7 +1710,7 @@ nhwl_draw_hollow_cursor (struct window *w, struct glyph_row *row)
 
   /* The foreground of cursor_gc is typically the same as the normal
      background color, which can cause the cursor box to be invisible.  */
-  cairo_t *cr = nhwl_begin_cr_clip (f);
+  nhwl_cr *cr = nhwl_begin_cr_clip (f);
   nhwl_set_cr_source_with_color (f, FRAME_X_OUTPUT (f)->cursor_color, false);
 
   /* When on R2L character, show cursor at the right edge of the
@@ -1750,7 +1769,7 @@ nhwl_draw_bar_cursor (struct window *w, struct glyph_row *row, int width,
       struct face *face = FACE_FROM_ID (f, cursor_glyph->face_id);
       unsigned long color;
 
-      cairo_t *cr = nhwl_begin_cr_clip (f);
+      nhwl_cr *cr = nhwl_begin_cr_clip (f);
 
       /* If the glyph's background equals the color we normally draw
          the bars cursor in, the bar cursor in its normal color is
@@ -1836,7 +1855,7 @@ nhwl_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
 	  switch (cursor_type)
 	    {
 	    case HOLLOW_BOX_CURSOR:
-	      nhwl_draw_hollow_cursor (w, glyph_row);
+	      nhwl_draw_ops->hollow_cursor (w, glyph_row);
 	      break;
 
 	    case FILLED_BOX_CURSOR:
@@ -1844,11 +1863,11 @@ nhwl_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
 	      break;
 
 	    case BAR_CURSOR:
-	      nhwl_draw_bar_cursor (w, glyph_row, cursor_width, BAR_CURSOR);
+	      nhwl_draw_ops->bar_cursor (w, glyph_row, cursor_width, BAR_CURSOR);
 	      break;
 
 	    case HBAR_CURSOR:
-	      nhwl_draw_bar_cursor (w, glyph_row, cursor_width, HBAR_CURSOR);
+	      nhwl_draw_ops->bar_cursor (w, glyph_row, cursor_width, HBAR_CURSOR);
 	      break;
 
 	    case NO_CURSOR:
@@ -1865,6 +1884,7 @@ nhwl_draw_window_cursor (struct window *w, struct glyph_row *glyph_row, int x,
   nhwl_damage_cursor (w, glyph_row, on_p);
 }
 
+#ifdef NHWL_WAYLAND
 /* Draw a vertical window border from (x,y0) to (x,y1)  */
 
 void
@@ -2205,6 +2225,37 @@ nhwl_fill_rectangle (struct frame *f, unsigned long color, int x, int y,
   nhwl_end_cr_clip (f);
 }
 
+/* The Cairo drawing primitives under the glyph-string walk
+   (nhwl_draw_glyph_string); the table is nhwlterm.h's.  */
+static const struct nhwl_draw_ops nhwl_cairo_draw_ops = {
+  nhwl_begin_cr_clip, nhwl_end_cr_clip, cairo_save, cairo_restore,
+  nhwl_set_glyph_string_clipping, nhwl_set_glyph_string_clipping_exactly,
+  nhwl_fill_rectangle, nhwl_draw_glyph_string_background,
+  nhwl_draw_glyph_string_foreground,
+  nhwl_draw_composite_glyph_string_foreground,
+  nhwl_draw_glyphless_glyph_string_foreground, nhwl_draw_image_glyph_string,
+  nhwl_draw_stretch_glyph_string, nhwl_draw_glyph_string_box,
+  nhwl_draw_underwave, nhwl_fill_underline, nhwl_draw_hollow_cursor,
+  nhwl_draw_bar_cursor,
+};
+const struct nhwl_draw_ops *nhwl_draw_ops = &nhwl_cairo_draw_ops;
+#else
+/* Naglfar: the same walk and geometry, its primitives emitting draw
+   records (nhmacdraw.c) and its text drawn by the font driver
+   (nhmacfont.c).  */
+static const struct nhwl_draw_ops nhwl_mac_draw_ops = {
+  nhwl_begin_cr_clip, nhwl_end_cr_clip, nhmac_save, nhmac_restore,
+  nhmac_set_clipping, nhmac_set_clipping_exactly, nhwl_fill_rectangle,
+  nhwl_draw_glyph_string_background, nhwl_draw_glyph_string_foreground,
+  nhwl_draw_composite_glyph_string_foreground,
+  nhwl_draw_glyphless_glyph_string_foreground, nhwl_draw_image_glyph_string,
+  nhwl_draw_stretch_glyph_string,
+  nhwl_draw_glyph_string_box, nhwl_draw_underwave, nhwl_fill_underline,
+  nhwl_draw_hollow_cursor, nhwl_draw_bar_cursor,
+};
+const struct nhwl_draw_ops *nhwl_draw_ops = &nhwl_mac_draw_ops;
+#endif /* NHWL_WAYLAND */
+
 /***********************************************************************
 		      Scrolling and Glitnir's damage
  ***********************************************************************/
@@ -2217,7 +2268,8 @@ nhwl_fill_rectangle (struct frame *f, unsigned long color, int x, int y,
    inside the backing (no temporary surface), and Glitnir learns the move
    and the rows it exposed; the decorations' anchors move with them.  A
    run that moves the whole window may give it a layer of its own (the
-   glue decides from the window's box, nhwl_layer_flags).  */
+   glue decides from the window's box, nhwl_layer_flags).  Naglfar's
+   backing has no Cairo surface to flush, and no decorations yet.  */
 void
 nhwl_scroll_run (struct window *w, struct run *run)
 {
@@ -2254,17 +2306,23 @@ nhwl_scroll_run (struct window *w, struct run *run)
   gui_clear_cursor (w);
 
   nhwl_backing_resize (f);
+#ifdef NHWL_WAYLAND
   cairo_surface_flush (out->cr_surface);
+#endif
   nhwl_glitnir_ensure (f);
+#ifdef NHWL_WAYLAND
   glitnir_decor_scrolled (f, w, x, min (from_y, to_y), width,
 			  max (from_y, to_y) + height - min (from_y, to_y),
 			  to_y - from_y);
+#endif
   band = (NhgRect) { x, from_y, width, height };
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		NHG (nhg_scroll_window (FRAME_NHG (f), out->window,
 					out->glitnir_id, w->sequence_number,
 					box, band, to_y, nhwl_layer_flags (f))));
+#ifdef NHWL_WAYLAND
   cairo_surface_mark_dirty (out->cr_surface);
+#endif
 
   unblock_input ();
 }
@@ -2321,9 +2379,13 @@ nhwl_damage_glyphs (struct glyph_string *s)
   if (s->extends_to_end_of_line_p)
     x1 = max (x1, clip.x + (int) clip.width);
   nhwl_damage (s->f, x0, clip.y, x1 - x0, clip.height);
-  /* PD: rounded neighbours' corners, and the label anchors S covers.  */
+#ifdef NHWL_WAYLAND
+  /* PD: rounded neighbours' corners, and the label anchors S covers
+     (glitnir-decor.c draws with Cairo; Naglfar's decorations come with
+     its chrome).  */
   glitnir_decor_after_glyphs (s);
   glitnir_decor_record (s);
+#endif
 }
 
 /* Adapted from glitnir_pgtk_damage_cursor: a hollow, bar or hbar cursor
@@ -2479,6 +2541,7 @@ nhwl_background_argb (struct frame *f)
   return argb;
 }
 
+#ifdef NHWL_WAYLAND
 /* Clear the margins around OUT's native area in its backing.  A child
    frame's margins are the room its shadow takes, which the compositor
    fills (child.rs): the frame's own pixels stop at its native area.  */
@@ -2499,6 +2562,7 @@ nhwl_clear_margins (struct nhwl_output *out)
   cairo_fill (cr);
   cairo_restore (cr);
 }
+#endif /* NHWL_WAYLAND */
 
 /* Make the backing F's size (the frame's pixel size, which is device
    pixels), keeping what it shows; a new one starts in the frame's
@@ -2506,7 +2570,9 @@ nhwl_clear_margins (struct nhwl_output *out)
    backing's background nor the picture a resize kept is the frame's
    there, and with Glitnir off (the frames' own pixels) they show what
    lies beneath, as around a child without chrome.  Adapted in role from
-   pgtk_cr_update_surface_desired_size (emacs-31.1).  */
+   pgtk_cr_update_surface_desired_size (emacs-31.1).  Naglfar keeps no
+   Cairo surface: the backing is only the glue's, which the shell copies
+   into its IOSurfaces.  */
 void
 nhwl_backing_resize (struct frame *f)
 {
@@ -2516,36 +2582,51 @@ nhwl_backing_resize (struct frame *f)
   NhgFrameGeom g;
   NhgBacking b;
 
+#ifdef NHWL_WAYLAND
   if (out->cr_context && out->cr_width == w && out->cr_height == h)
     return;
+#else
+  if (out->cr_width == w && out->cr_height == h)
+    return;
+#endif
 
   if (!out->glitnir_id)
     nhwl_glitnir_ensure (f);
   nhwl_frame_size (f, &g);
   /* No surface (or the empty one a failed try left): a new backing.  */
+#ifdef NHWL_WAYLAND
   if (!out->cr_context || !out->cr_width)
+#else
+  if (!out->cr_width)
+#endif
     {
       g.flags = NHG_GEOM_FRESH;
       g.bg_argb = nhwl_background_argb (f);
     }
+#ifdef NHWL_WAYLAND
   if (out->cr_context)
     {
       cairo_surface_flush (out->cr_surface);
       cairo_destroy (out->cr_context);
       cairo_surface_destroy (out->cr_surface);
     }
+#endif
   if (NHG (nhg_backing (FRAME_NHG (f), out->glitnir_id, &g, &b)) < 0)
     /* No backing: drawing does nothing until the next try.  */
     b = (NhgBacking) { NULL, 0, 0, 0, out->cr_gen };
+#ifdef NHWL_WAYLAND
   out->cr_surface
     = cairo_image_surface_create_for_data (b.pixels, CAIRO_FORMAT_ARGB32,
 					   b.w, b.h, b.stride);
   out->cr_context = cairo_create (out->cr_surface);
+#endif
   out->cr_width = b.w;
   out->cr_height = b.h;
   out->cr_gen = b.gen;
+#ifdef NHWL_WAYLAND
   if (b.w && nhwl_child_p (f))
     nhwl_clear_margins (out);
+#endif
   nhwl_glitnir_ensure (f);
 }
 
@@ -2560,6 +2641,7 @@ nhwl_now_ns (void)
 }
 
 
+#ifdef NHWL_WAYLAND
 /***********************************************************************
 			   The title strip
  ***********************************************************************/
@@ -2759,3 +2841,4 @@ nhwl_csd_draw (struct frame *f)
   nhwl_glitnir_ensure (f);
   glitnir_damage_add_n (out->glitnir_id, r, n);
 }
+#endif /* NHWL_WAYLAND */

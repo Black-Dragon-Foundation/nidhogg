@@ -31,7 +31,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
 
-#include <cairo.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -402,6 +401,9 @@ nhwl_query_frame_background_color (struct frame *f, Emacs_Color *bgcolor)
 		    The backing and the present path
  ***********************************************************************/
 
+#ifdef NHWL_WAYLAND
+/* Naglfar's backing primitives are in nhmacdraw.c.  */
+
 /* Adapted from pgtk_begin_cr_clip: the frame's retained backing, device
    size, made or resized on use.  NHWL_CR_DEPTH counts the open calls.  */
 static int nhwl_cr_depth;
@@ -481,6 +483,7 @@ nhwl_set_cr_source_with_color (struct frame *f, unsigned long color,
       cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
     }
 }
+#endif /* NHWL_WAYLAND */
 
 /* Whether C is a child frame of F with a window.  */
 static bool
@@ -525,10 +528,12 @@ nhwl_surface_add (struct frame *f, uint64_t parent, bool prepare)
       nhwl_backing_resize (f);
       /* The title strip; the window geometry, and a child frame's position
 	 and input region (the glue sends them).  */
+#ifdef NHWL_WAYLAND
       nhwl_csd_draw (f);
+#endif
       nhwl_glitnir_ensure (f);
-      if (out->cr_surface)
-	cairo_surface_flush (out->cr_surface);
+      if (nhwl_backing_p (out))
+	nhwl_backing_flush (out);
     }
 #ifdef ENABLE_CHECKING
   {
@@ -713,6 +718,7 @@ nhwl_present_ready (struct nhwl_display_info *dpyinfo, uint64_t root)
   return rc > 0 && (rc & NHG_PRESENTED_COMMITTED);
 }
 
+#ifdef NHWL_WAYLAND
 /* Adapted from pgtk_clear_area.  */
 void
 nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
@@ -731,6 +737,7 @@ nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
   cairo_fill (cr);
   nhwl_end_cr_clip (f);
 }
+#endif /* NHWL_WAYLAND */
 
 static void
 nhwl_clear_frame_area (struct frame *f, int x, int y, int width, int height)
@@ -752,6 +759,7 @@ nhwl_clear_frame (struct frame *f)
   unblock_input ();
 }
 
+#ifdef NHWL_WAYLAND
 /* Adapted from fill_background_by_face (pgtkterm.c).  */
 void
 nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
@@ -785,6 +793,7 @@ nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
 
   nhwl_end_cr_clip (f);
 }
+#endif /* NHWL_WAYLAND */
 
 /* Child frame F's border, WIDTH device pixels (0: none) in face
    colour RGB at alpha ALPHA, for its chrome: the rounded corners keep it
@@ -1000,13 +1009,29 @@ static struct redisplay_interface nhwl_redisplay_interface = {
 			    Frame windows
  ***********************************************************************/
 
-/* The scale frame F starts at, times 120: its parent's, else the selected
-   frame's (where the user works), else the newest the display heard.  */
+#ifdef HAVE_NHMAC
+/* Whether F was asked for at a position (its `left' and `top', from the
+   main screen's top-left), where the shell places windows itself.  */
+static bool
+nhwl_placed_p (struct frame *f)
+{
+  return ((f->size_hint_flags & (USPosition | PPosition))
+	  && !(f->size_hint_flags & (XNegative | YNegative)));
+}
+#endif
+
+/* The scale frame F starts at, times 120: for a top-level asked for at a
+   position, the scale of the screen there (START120, set before its fonts
+   open); else its parent's, else the selected frame's (where the user
+   works, and where a new top-level opens beside it), else the newest the
+   display heard.  */
 static uint32_t
 nhwl_start_scale (struct frame *f)
 {
   struct frame *s = FRAME_PARENT_FRAME (f) ? FRAME_PARENT_FRAME (f) : SELECTED_FRAME ();
 
+  if (!FRAME_PARENT_FRAME (f) && FRAME_NHWL_OUTPUT (f)->start120)
+    return FRAME_NHWL_OUTPUT (f)->start120;
   if (s != f && FRAME_NHWL_P (s) && FRAME_DISPLAY_INFO (s) == FRAME_DISPLAY_INFO (f)
       && FRAME_NHWL_OUTPUT (s)->scale120)
     return FRAME_NHWL_OUTPUT (s)->scale120;
@@ -1023,14 +1048,14 @@ nhwl_frame_scale (struct frame *f)
   return (s120 ? s120 : nhwl_start_scale (f)) / 120.0;
 }
 
-/* FRAME_RES of F: 96 dpi times its scale times its root frame's
+/* FRAME_RES of F: NHWL_DPI times its scale times its root frame's
    `nidhogg-text-zoom' parameter (nidhogg-scale.el sets it).  */
 double
 nhwl_frame_res (struct frame *f)
 {
   Lisp_Object zoom = get_frame_param (nhwl_tree_root (f), Qnidhogg_text_zoom);
 
-  return 96.0 * nhwl_frame_scale (f) * (NUMBERP (zoom) ? XFLOATINT (zoom) : 1);
+  return NHWL_DPI * nhwl_frame_scale (f) * (NUMBERP (zoom) ? XFLOATINT (zoom) : 1);
 }
 
 double
@@ -1100,8 +1125,17 @@ nhwl_window_new (struct frame *f, NhgWindowDesc *desc, uint32_t flags,
   desc->native_h = max (1, h);
   desc->scale120 = out->scale120;
 
-  int rc = nhwl_glue_rc (dpyinfo, NHG (nhg_window_new (dpyinfo->glue, desc,
-							   id)));
+  int rc;
+#ifdef HAVE_NHMAC
+  /* *ID a window already: it takes the place DESC describes instead,
+     keeping its id and its picture (nhwl_set_parent_frame).  */
+  if (*id)
+    rc = nhwl_glue_rc (dpyinfo, NHG (nhg_window_reparent (dpyinfo->glue,
+							   *id, desc)));
+  else
+#endif
+    rc = nhwl_glue_rc (dpyinfo, NHG (nhg_window_new (dpyinfo->glue, desc,
+						       id)));
   if (rc >= 0 && FRAME_COLUMN_WIDTH (f) > 0 && FRAME_LINE_HEIGHT (f) > 0)
     nhwl_glue_rc (dpyinfo, NHG (nhg_frame_units (dpyinfo->glue, *id,
 						 FRAME_COLUMN_WIDTH (f),
@@ -1144,10 +1178,15 @@ nhwl_window_visible (struct frame *f, bool on)
    parameter or get a generated one) and opens the session at the
    display's first frame, before its window exists, so the window can join
    it before its first commit.  The name is kept in F's parameters, where
-   frameset saves it.  */
+   frameset saves it.  Naglfar has no compositor session (nhwl-session.el
+   is the Wayland shell's, and is not loaded there): no name, and no call
+   into Lisp that would only signal void-function.  */
 static Lisp_Object
 nhwl_session_name (struct frame *f)
 {
+#ifdef HAVE_NHMAC
+  return Qnil;
+#else
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   bool first = !dpyinfo->session_first_done;
   Lisp_Object frame, name;
@@ -1161,12 +1200,13 @@ nhwl_session_name (struct frame *f)
     return Qnil;
   store_in_alist (&f->param_alist, Qsession_name, name);
   return name;
+#endif
 }
 
 /* Create frame F's shell window at its current pixel size.  Adapted from
-   xg_create_frame_widgets' role in pgtk.  */
+   xg_create_frame_widgets' role in pgtk.  IN_PLACE: see nhwl_window_new.  */
 void
-nhwl_create_frame_window (struct frame *f)
+nhwl_create_frame_window (struct frame *f, uint64_t in_place)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
@@ -1174,7 +1214,7 @@ nhwl_create_frame_window (struct frame *f)
   Lisp_Object title;
   Lisp_Object encoded = Qnil;
   Lisp_Object encoded_name = Qnil;
-  uint64_t id = 0;
+  uint64_t id = in_place;
   int rc;
   /* A frame that had a window (its `parent-frame' changed) starts at its
      new parent's scale: its fonts were open at the old resolution.  */
@@ -1211,6 +1251,27 @@ nhwl_create_frame_window (struct frame *f)
 	  encoded_name = ENCODE_UTF_8 (name);
 	  desc.session_name = SSDATA (encoded_name);
 	}
+#ifdef HAVE_NHMAC
+      /* It opens at its position, else beside the selected frame, whose
+	 scale it starts at (nhwl_start_scale): its first layout is at the
+	 scale it shows at, not at the main screen's.  */
+      if (nhwl_placed_p (f))
+	{
+	  desc.flags |= NHG_WIN_PLACED;
+	  desc.x = f->left_pos;
+	  desc.y = f->top_pos;
+	}
+      else
+	{
+	  struct frame *sf = SELECTED_FRAME ();
+
+	  while (FRAME_PARENT_FRAME (sf))
+	    sf = FRAME_PARENT_FRAME (sf);
+	  if (sf != f && FRAME_NHWL_P (sf)
+	      && FRAME_DISPLAY_INFO (sf) == FRAME_DISPLAY_INFO (f))
+	    desc.parent = FRAME_NHWL_OUTPUT (sf)->window;
+	}
+#endif
     }
 
   block_input ();
@@ -1525,6 +1586,18 @@ nhwl_set_offset (struct frame *f, int xoff, int yoff, int change_gravity)
 	f->top_pos += FRAME_PIXEL_HEIGHT (p) - FRAME_PIXEL_HEIGHT (f);
       f->size_hint_flags &= ~ (XNegative | YNegative);
     }
+#ifdef HAVE_NHMAC
+  /* Naglfar's top-level has a position on the screen, as NS's has.  */
+  if (!nhwl_child_p (f) && FRAME_NHWL_OUTPUT (f)->window)
+    {
+      block_input ();
+      nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
+		    NHG (nhg_window_place (FRAME_NHG (f),
+					   FRAME_NHWL_OUTPUT (f)->window,
+					   xoff, yoff)));
+      unblock_input ();
+    }
+#endif
   nhwl_child_reposition (f);
 }
 
@@ -1855,7 +1928,9 @@ nhwl_free_frame_resources (struct frame *f)
   if (out->bell_timer)
     cancel_atimer (out->bell_timer);
   out->bell_timer = NULL;
+#ifdef NHWL_WAYLAND
   nhwl_cr_destroy_frame_context (f);
+#endif
   nhwl_glitnir_forget (f);
 
   xfree (f->output_data.nhwl);
@@ -2402,20 +2477,25 @@ static void
 nhwl_scale_changed (struct frame *f, uint32_t scale120)
 {
   double was = nhwl_frame_res (f);
+#ifdef NHWL_WAYLAND
   /* The window keeps its size on the screen (its logical size) and the
      text follows: a Wayland client sizes its own window, so the frame
-     takes that logical size in device pixels at the new scale.  */
+     takes that logical size in device pixels at the new scale.  (On macOS
+     AppKit keeps the window's points and reports its new size.)  */
   uint32_t old = FRAME_NHWL_OUTPUT (f)->scale120;
   int lw = nhwl_to_logical (FRAME_PIXEL_WIDTH (f), old);
   int lh = nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), old);
+#endif
 
   FRAME_NHWL_OUTPUT (f)->scale120 = FRAME_DISPLAY_INFO (f)->scale120 = scale120;
-  FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = 96.0 * scale120 / 120.0;
+  FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = NHWL_DPI * scale120 / 120.0;
   nhwl_res_changed (f, was);
   nhwl_csd_layout (f);
+#ifdef NHWL_WAYLAND
   if (old && old != scale120)
     nhwl_set_window_size (f, false, (int) (((int64_t) lw * scale120 + 60) / 120),
 			  (int) (((int64_t) lh * scale120 + 60) / 120));
+#endif
   SET_FRAME_GARBAGED (f);
 }
 
@@ -3377,6 +3457,10 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 	 here.  */
       nhwl_present_ready (dpyinfo,
 			  FRAME_NHWL_OUTPUT (nhwl_tree_root (f))->window);
+#ifdef HAVE_NHMAC
+      /* A held commit's slot freed: its pixels are read under the lock.  */
+      nhwl_publish (f);
+#endif
       break;
 
     case NHG_ACT_TITLE_BAR:
@@ -3441,6 +3525,7 @@ nhwl_drain_events (struct nhwl_display_info *dpyinfo,
 
       /* The facts the step reads, sampled again for each event.  */
       in.flags = ((kbd_buffer_events_waiting () ? NHG_IN_INPUT_WAITING : 0)
+		  | (redisplaying_p ? NHG_IN_REDISPLAY : 0)
 		  | (mwheel_coalesce_scroll_events
 		     ? NHG_IN_COALESCE_WHEEL : 0));
       list.v = NULL;
@@ -3744,13 +3829,13 @@ nhwl_bell_restore (struct atimer *timer)
   int32_t rc = 0;
 
   out->bell_timer = NULL;
-  if (!out->glitnir_id || !out->cr_surface)
+  if (!out->glitnir_id || !nhwl_backing_p (out))
     return;
   block_input ();
-  cairo_surface_flush (out->cr_surface);
+  nhwl_backing_flush (out);
   rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		     NHG (nhg_bell_restore (FRAME_NHG (f), out->glitnir_id)));
-  cairo_surface_mark_dirty (out->cr_surface);
+  nhwl_backing_dirty (out);
   unblock_input ();
   if (rc > 0)
     nhwl_publish (f);
@@ -3772,10 +3857,10 @@ nhwl_flash (struct frame *f)
   block_input ();
   nhwl_backing_resize (f);
   nhwl_glitnir_ensure (f);
-  cairo_surface_flush (out->cr_surface);
+  nhwl_backing_flush (out);
   rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		     NHG (nhg_bell_flash (FRAME_NHG (f), out->glitnir_id, &g)));
-  cairo_surface_mark_dirty (out->cr_surface);
+  nhwl_backing_dirty (out);
   if (rc > 0)
     {
       if (out->bell_timer)
@@ -3877,6 +3962,10 @@ nhwl_free_pixmap (struct frame *f, Emacs_Pixmap pixmap)
 {
   if (pixmap)
     {
+#ifdef HAVE_NHMAC
+      /* The glue's picture of it goes too.  */
+      NHG (nhg_image_forget ((uint8_t *) pixmap->data));
+#endif
       xfree (pixmap->data);
       xfree (pixmap);
     }
@@ -4109,7 +4198,11 @@ nhwl_term_init (Lisp_Object display_name)
       terminal->kboard = share->terminal->kboard;
     else
       {
+#ifdef HAVE_NHMAC
+	terminal->kboard = allocate_kboard (Qns);
+#else
 	terminal->kboard = allocate_kboard (Qpgtk);
+#endif
 
 	/* Don't let the initial kboard remain current longer than necessary.
 	   That would cause problems if a file loaded on startup tries to
@@ -4168,7 +4261,7 @@ nhwl_term_init (Lisp_Object display_name)
   nhwl_drain_events (dpyinfo, NULL);
   if (dpyinfo->scale120 == 0)
     dpyinfo->scale120 = 120;
-  dpyinfo->resx = dpyinfo->resy = 96.0 * dpyinfo->scale120 / 120.0;
+  dpyinfo->resx = dpyinfo->resy = NHWL_DPI * dpyinfo->scale120 / 120.0;
 
   if (dpyinfo->connection >= 0)
     add_keyboard_wait_descriptor (dpyinfo->connection);
@@ -4559,8 +4652,12 @@ If it is not a float there is no wait.  */);
     doc: /* SKIP: real doc in xterm.c.  */);
   Vx_toolkit_scroll_bars = Qnil;
 
+#ifdef NHWL_WAYLAND
   /* Tell Emacs about this window system: `pgtk' at the Lisp level, so
      term/pgtk-win.el loads unchanged, and `nidhogg-wayland'.  */
   Fprovide (Qpgtk, Qnil);
   Fprovide (intern_c_string ("nidhogg-wayland"), Qnil);
+#else
+  syms_of_nhmacterm ();
+#endif
 }

@@ -4,7 +4,8 @@
 # inputs).  Documentation, tests, the nidhogg/ scripts and CI files are left out on purpose: they do not change the output.
 # nidhogg/build.sh (the configure flags) and the compiler are keyed by the workflow.  Run in the checkout.
 #   lisp-key.sh --elc   the byte-compiled part only (the generated files under lisp/ and leim/, without the .eln files),
-#                       for the dev test lanes, never a release build: the C side's bodies are left out, as make itself
+#                       for the dev test lanes and the macOS job off nidhogg-31 and tags, never a release build: the C
+#                       side's bodies are left out, as make itself
 #                       treats byte code, but the names of its functions, variables and features are in (code that tests
 #                       `fboundp', `boundp' or `featurep' at compile time compiles differently when one comes or goes)
 #   lisp-key.sh --abi   the byte-compiled part and the .eln files, keyed on what Emacs's own .eln check hashes

@@ -124,4 +124,64 @@ asked mutter for fullscreen before the size it had set reached mutter."
   ;; a bare commit went out since, and packet 6 waits for its commit, which goes out before the third read
   (should (equal (gui-runner-tests--plain-settle 6 5 1 '(3)) '(6 . 6))))
 
+(ert-deftest gui-runner/scale-ready-reads-monitors-only-for-a-size ()
+  "The scale check reads the monitors only when GLITNIR_GUI_SIZE asks for a size.
+It read them on every run, and a shell that does not serve the monitors yet (Naglfar) failed before any row."
+  (let ((process-environment (copy-sequence process-environment))
+        (monitors (lambda (&rest _) (error "Naglfar: not available yet"))))
+    (setenv "GLITNIR_GUI_SCALE" "1")
+    (setenv "GLITNIR_GUI_SIZE" nil)
+    (cl-letf (((symbol-function 'frame-scale-factor) (lambda (&rest _) 1.0))
+              ((symbol-function 'display-monitor-attributes-list) monitors))
+      (should (glitnir-gui--scale-ready-p)))
+    (setenv "GLITNIR_GUI_SIZE" "800x600")
+    (cl-letf (((symbol-function 'frame-scale-factor) (lambda (&rest _) 1.0))
+              ((symbol-function 'display-monitor-attributes-list)
+               (lambda (&rest _) '(((geometry 0 0 800 600))))))
+      (should (glitnir-gui--scale-ready-p)))
+    (cl-letf (((symbol-function 'frame-scale-factor) (lambda (&rest _) 1.0))
+              ((symbol-function 'display-monitor-attributes-list)
+               (lambda (&rest _) '(((geometry 0 0 1024 768))))))
+      (should-not (glitnir-gui--scale-ready-p)))))
+
+(ert-deftest gui-runner-undrawn-frame-fails-drawing-rows ()
+  "A frame that never drew fails the rows tagged `draws' at once, with the scale in the reason; the others run."
+  (let* ((ran nil)
+         (draws (make-ert-test :name 'gui-runner-t-draws :tags '(draws) :body (lambda () (setq ran 'draws))))
+         (other (make-ert-test :name 'gui-runner-t-other :body (lambda () (setq ran 'other)))))
+    (cl-letf (((symbol-function 'glitnir-gui--frame-drew-p) #'ignore)
+              ((symbol-function 'glitnir-gui--say) #'ignore)
+              ((symbol-function 'glitnir-gui--scale) (lambda () 2)))
+      (glitnir-gui--fail-drawing-rows (list draws other)))
+    (let ((r (ert-run-test draws)))
+      (should (ert-test-failed-p r))
+      (should (equal (cadr (ert-test-result-with-condition-condition r)) '("no frame drew at scale 2")))
+      (should-not ran))
+    (should (ert-test-passed-p (ert-run-test other)))
+    (should (eq ran 'other))))
+
+(ert-deftest gui-runner-waits-for-naglfar-first-draw ()
+  "On Naglfar the runner turns the event loop until the frame has drawn, and gives up at its deadline."
+  (let ((checks 0) (now 0.0))
+    ;; no Glitnir frame-time record (the Wayland build's wait)
+    (cl-letf (((symbol-function 'glitnir-stats) nil)
+              ((symbol-function 'nhmac-stats) #'ignore)
+              ((symbol-function 'sit-for) #'ignore)
+              ((symbol-function 'float-time) (lambda (&rest _) (setq now (+ now 1.0))))
+              ((symbol-function 'glitnir-gui--frame-drew-p) (lambda () (> (cl-incf checks) 3))))
+      (glitnir-gui--wait-for-first-paint)
+      (should (= checks 4))
+      (setq checks -1000)
+      (glitnir-gui--wait-for-first-paint)
+      (should (< checks -980)))))
+
+(ert-deftest gui-runner-drawn-frame-keeps-drawing-rows ()
+  "A frame that drew leaves the rows tagged `draws' as they are."
+  (let* ((ran nil)
+         (draws (make-ert-test :name 'gui-runner-t-draws :tags '(draws) :body (lambda () (setq ran t)))))
+    (cl-letf (((symbol-function 'glitnir-gui--frame-drew-p) (lambda () t)))
+      (glitnir-gui--fail-drawing-rows (list draws)))
+    (should (ert-test-passed-p (ert-run-test draws)))
+    (should ran)))
+
 ;;; gui-runner-tests.el ends here

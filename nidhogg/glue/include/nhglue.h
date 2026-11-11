@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/select.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -75,6 +76,7 @@ typedef struct
     single_pixel_buffer, dmabuf, xdg_foreign;
   bool ssd;        /* server-side decorations were granted, after negotiation */
   bool force_csd;  /* client-side decorations are forced (a test switch) */
+  bool overhang_panels;  /* panels may overhang their parent window (macOS child windows) */
 } NhgCaps;
 
 /* Copy the capabilities to *OUT.  NHG_E_ARG if OUT is NULL.  */
@@ -117,6 +119,9 @@ int32_t nhg_caps (NhgDisplay *d, NhgCaps *out);
 #define NHG_WIN_GRAB        (1u << 3)
 /* With a session name: ask the session to restore the window (before its first commit) instead of just adding it.  */
 #define NHG_WIN_RESTORE     (1u << 4)
+/* A top-level opens at the descriptor's x, y where the shell places windows (macOS); without it, beside its
+   parent window when it names one.  */
+#define NHG_WIN_PLACED      (1u << 5)
 
 #define NHG_EDGE_TOP    1u
 #define NHG_EDGE_BOTTOM 2u
@@ -316,6 +321,7 @@ int32_t nhg_frame_csd (NhgDisplay *d, uint64_t window, int32_t on);
 #define NHG_IN_INPUT_WAITING   1   /* kbd_buffer_events_waiting () */
 #define NHG_IN_COALESCE_WHEEL  2   /* mwheel-coalesce-scroll-events */
 #define NHG_IN_ACKS_ONLY       4   /* record the acks due, take no event */
+#define NHG_IN_REDISPLAY       8   /* redisplaying_p: the drain's end asks the platform for no new events */
 typedef struct { uint32_t flags; } NhgNextIn;
 
 /* Kinds 1-31 are the original set, 32-63 the later ones.  */
@@ -577,10 +583,12 @@ typedef struct
   const char *session_name; size_t session_name_len;   /* top-levels; empty: none */
   uint32_t flags;               /* NHG_WIN_* */
   uint32_t kind;                /* NHG_KIND_* */
-  uint64_t parent;              /* children and popups */
+  uint64_t parent;              /* children and popups; a top-level: the window it opens beside (0: anywhere) */
   int32_t x, y;                 /* children: where the surface starts in the parent's native area (device pixels:
                                    the frame's left and top less its own margin); the glue adds the parent's
-                                   border and rounds to logical pixels at SCALE120 */
+                                   border and rounds to logical pixels at SCALE120.  A top-level with
+                                   NHG_WIN_PLACED: its top-left, device pixels at SCALE120 from the main
+                                   screen's top-left */
   NhgAnchor anchor;             /* popups */
   uint32_t role;                /* NHG_FRAME_* */
   uint32_t facts;               /* NHG_FACT_VISIBLE, NHG_FACT_ICONIFIED, NHG_FACT_CSD: Emacs's, now */
@@ -591,6 +599,10 @@ typedef struct
 /* Make the window W describes and register it (it replaces nhg_frame_register for new windows), seeded with W's facts;
    its id into *OUT.  A shell error is its code.  */
 int32_t nhg_window_new (NhgDisplay *d, const NhgWindowDesc *w, uint64_t *out);
+/* `parent-frame' changed: WINDOW takes the place W describes (kind, parent, x, y; a top-level's title and flags),
+   keeping its id and its picture, and its frame takes W's role and facts.  NHG_E_UNSUPPORTED where the shell cannot
+   (a Wayland surface keeps its role): C makes the window again.  */
+int32_t nhg_window_reparent (NhgDisplay *d, uint64_t window, const NhgWindowDesc *w);
 /* The title, LEN bytes (up to a NUL).  */
 int32_t nhg_window_title (NhgDisplay *d, uint64_t window, const char *title, size_t len);
 /* `undecorated' changed at run time (ON non-zero): a top-level asks the compositor again; a child has nothing to ask.  */
@@ -639,6 +651,9 @@ int32_t nhg_frame_fit (NhgDisplay *d, uint64_t window, uint32_t scale120, int32_
                        int32_t native_w, int32_t native_h, uint32_t flags, int32_t *w, int32_t *h);
 /* The frame's smallest size, W x H device pixels (a child's window has none).  */
 int32_t nhg_window_min_size (NhgDisplay *d, uint64_t window, int32_t w, int32_t h);
+/* Place the top-level frame with its top-left at (X, Y) device pixels from the main screen's top-left, as NS places a
+   frame.  NHG_E_ARG for a child frame; NHG_E_UNSUPPORTED where clients have no position (Wayland).  */
+int32_t nhg_window_place (NhgDisplay *d, uint64_t window, int32_t x, int32_t y);
 /* Push: Emacs made the frame visible (ON non-zero) or invisible, not iconified.  Checked (nhg_debug_check_frame).  */
 int32_t nhg_window_visible (NhgDisplay *d, uint64_t window, int32_t on);
 /* Iconify: the compositor minimizes the window; a push too (iconified, not visible).  */
@@ -1006,6 +1021,14 @@ int32_t nhg_give_up (NhgDisplay *d);
    NUL into BUF, its full length into *LEN (0: the connection lives, or ended with a plain hangup).  */
 int32_t nhg_last_error (NhgDisplay *d, char *buf, size_t cap, size_t *len);
 
+/* ---- Platform calls (macOS) ---------------------------------------------------------------------------------------
+   What Lisp asks of the platform by name, with one text argument (nhmac--call, nhmac--query in nhmacterm.c).  KIND
+   and ARG are NUL-terminated UTF-8.  NHG_E_ARG for a name the shell does not know; NHG_E_UNSUPPORTED for a shell with
+   none.  A query writes its answer (a Lisp form) up to CAP - 1 bytes and a NUL into BUF, its full length into *LEN;
+   it may run a modal session.  */
+int32_t nhg_app_call (NhgDisplay *d, const char *kind, const char *arg);
+int32_t nhg_app_query (NhgDisplay *d, const char *kind, const char *arg, char *buf, size_t cap, size_t *len);
+
 /* ---- Small pure functions: colours, a monitor's place, the tree's picture -----------------------------------------
    Only nhg_tree_snapshot reads pixels.  */
 
@@ -1031,6 +1054,280 @@ int32_t nhg_frame_monitors (NhgDisplay *d, uint64_t window, uint32_t *out);
 /* A monitor's position in device pixels from its logical X, Y and SCALE120, as display-monitor-attributes-list gives
    it.  */
 int32_t nhg_monitor_origin (int32_t x, int32_t y, uint32_t scale120, int32_t *dx, int32_t *dy);
+
+/* ---- Frame parameters -------------------------------------------------------------------------------------------
+   The decisions of the shell's frame-parameter handlers (nhwlfns.c): validation, defaults, clamps and what a change
+   touches.  C reads a Lisp value into an NhgParamValue, states the frame facts in an NhgParamFrame and applies the
+   NhgParamAction it gets back.  Nothing is sent to the compositor.  */
+
+/* NhgParamValue.kind.  A bignum has INT the sign; a symbol has SYM one of NHG_PS_*.  */
+enum { NHG_PV_NIL, NHG_PV_FIXNUM, NHG_PV_FLOAT, NHG_PV_SYMBOL, NHG_PV_OTHER, NHG_PV_BIGNUM };
+enum { NHG_PS_OTHER, NHG_PS_ABOVE, NHG_PS_ABOVE_SUSPENDED, NHG_PS_BELOW };
+
+/* The parameters (KEY).  CURSOR_COLOR takes two values, the pixel and the foreground pixel; ALPHA one or two (the car
+   and the next item of a cons); the others one.  */
+enum { NHG_PK_ALPHA = 1, NHG_PK_MENU_BAR_LINES, NHG_PK_TAB_BAR_LINES, NHG_PK_TOOL_BAR_LINES,
+       NHG_PK_CHILD_FRAME_BORDER_WIDTH, NHG_PK_INTERNAL_BORDER_WIDTH, NHG_PK_UNDECORATED, NHG_PK_Z_GROUP,
+       NHG_PK_NO_ACCEPT_FOCUS, NHG_PK_CURSOR_COLOR };
+
+typedef struct
+{
+  uint32_t kind, sym;
+  int64_t int_value;
+  double flt;
+} NhgParamValue;
+
+/* The frame facts (flags are 0 or 1): FRAME_MINIBUF_ONLY_P, a parent frame, a window, visible, a child frame of this
+   shell, the new value `eq' the old, a menu bar window; CURRENT the parameter's current lines or width; the line
+   height, internal border and pixel width; the background and mouse pixels.  */
+typedef struct
+{
+  int32_t minibuf_only, has_parent, has_window, visible, child, same, has_menu_window, current, line_height, border,
+    pixel_width;
+  uint64_t bg_pixel, mouse_pixel;
+} NhgParamFrame;
+
+/* NhgParamAction.status: 0, or the signal C raises (the header of glue/src/params.rs says which).  */
+enum { NHG_PE_OK, NHG_PE_ALPHA_FLOAT_RANGE, NHG_PE_ALPHA_PERCENT_RANGE, NHG_PE_ALPHA_TYPE, NHG_PE_CHILD_BORDER,
+       NHG_PE_INTERNAL_BORDER, NHG_PE_Z_GROUP, NHG_PE_CALL };
+
+/* NhgParamAction.flags, in the order C does them (see glue/src/params.rs).  */
+enum { NHG_PA_REDISPLAY = 1 << 0, NHG_PA_STORE = 1 << 1, NHG_PA_CLEAR_BORDER_FIRST = 1 << 2,
+       NHG_PA_ADJUST_SIZE = 1 << 3, NHG_PA_CLEAR_BORDER = 1 << 4, NHG_PA_CLEAR_AREA = 1 << 5,
+       NHG_PA_CLEAR_AREA2 = 1 << 6, NHG_PA_CLEAR_MENU_MATRIX = 1 << 7, NHG_PA_ADJUST_GLYPHS = 1 << 8,
+       NHG_PA_TAB_BAR_HOOK = 1 << 9, NHG_PA_TOOL_BAR_HOOK = 1 << 10, NHG_PA_APPLY_ALPHA = 1 << 11,
+       NHG_PA_STORE_CURSOR = 1 << 12, NHG_PA_REDRAW_CURSOR = 1 << 13, NHG_PA_UNDECORATED_HINT = 1 << 14,
+       NHG_PA_RAISE_LOWER = 1 << 15, NHG_PA_REPOSITION = 1 << 16 };
+
+/* N: what to store (the lines, the width, the z-group in `enum z_group' order, or a flag), or the item of an alpha
+   error.  Y, H: an area to clear across the frame's width, Y below the top margin; Y2, H2: a second one, Y2 from the
+   frame's top.  H is also the height for a bar hook.  ALPHA: active and inactive (-1: opaque).  PIXEL: the cursor
+   colour and its foreground.  */
+typedef struct
+{
+  int32_t status;
+  uint32_t flags;
+  int32_t n, y, h, y2, h2;
+  double alpha[2];
+  uint64_t pixel[2];
+} NhgParamAction;
+
+/* Decide what changing parameter KEY (NHG_PK_*) to the N values V does on a frame with the facts F; the action goes
+   to *OUT.  NHG_E_ARG for a null F or OUT.  An unknown key or a missing value is NHG_PE_CALL in *OUT.  */
+int32_t nhg_frame_param (uint32_t key, const NhgParamFrame *f, const NhgParamValue *v, size_t n,
+                         NhgParamAction *out);
+
+/* ---- Font specs and matching ----------------------------------------------------------------------------------
+   A native font driver's records (glue/src/fontspec.rs).  Names (family, foundry, registry, script, language, `:otf`
+   features) are ids from nhg_font_id, 0 for unset; the numbers are FONT_*_NUMERIC (-1: unset); the size is in device
+   pixels (0: unset).  The matching is macfont_list and macfont_match's, over the faces the driver's font source lists.
+   Neither reads nor writes pixels.  */
+
+#define NHG_FS_OTF_MAX 8
+
+typedef struct
+{
+  uint32_t family, foundry, registry, script, language;
+  int32_t weight, slant, width, spacing;
+  float size;
+  uint32_t otf_n;
+  uint32_t otf[NHG_FS_OTF_MAX];
+} NhgFontSpec;
+
+/* A listed font: the spec's fields as the face has them, the id the driver opens the face by, and what is synthesised
+   (NHG_FS_SYNTH_*: bits).  */
+enum { NHG_FS_SYNTH_ITALIC = 1, NHG_FS_SYNTH_BOLD = 2, NHG_FS_SYNTH_MONO = 4 };
+
+typedef struct
+{
+  NhgFontSpec spec;
+  uint64_t font_id;
+  uint32_t synth;
+} NhgFontEntity;
+
+/* The id of the name at S (LEN bytes, not NUL-terminated) into *ID; made at the first call and kept.  0 for an empty
+   or non-UTF-8 name.  */
+int32_t nhg_font_id (const char *s, size_t len, uint32_t *id);
+
+/* The name of ID into BUF (CAP bytes, NUL-terminated), its length into *LEN (may be NULL).  NHG_E_TOO_SMALL.  */
+int32_t nhg_font_name (uint32_t id, char *buf, size_t cap, size_t *len);
+
+/* Every font that fits *SPEC into OUT (CAP records), how many into *N; the nearest one for nhg_font_match.
+   NHG_E_UNSUPPORTED without a font source (the Linux shell has none: fontconfig lists its fonts).  */
+int32_t nhg_font_list (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
+int32_t nhg_font_match (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
+
+/* ---- The native font driver's fonts (glue/src/font.rs; macOS) ---------------------------------------------------
+   nhg_font_start installs Core Text as the source nhg_font_list and nhg_font_match list from (NHG_E_UNSUPPORTED
+   elsewhere).  nhg_font_open opens an entity's face at SIZE device pixels; its metrics are rounded as macfont_open
+   rounds them.  Glyph metrics come one glyph at a time, their width rounded as macfont_glyph_extents rounds it (MONO
+   and SPACE_WIDTH are the font's).  NHG_E_STATE: no such face, font or glyph.  */
+
+typedef struct
+{
+  uint64_t handle;
+  int32_t pixel_size, ascent, descent, height, space_width, average_width;
+  int32_t underline_position, underline_thickness;
+  uint32_t mono;
+} NhgFontMetrics;
+
+typedef struct
+{
+  int32_t lbearing, rbearing, width, ascent, descent;
+} NhgGlyphMetrics;
+
+int32_t nhg_font_start (void);
+int32_t nhg_font_open (uint64_t font_id, int32_t size, NhgFontMetrics *out);
+int32_t nhg_font_close (uint64_t handle);
+int32_t nhg_font_glyph (uint64_t handle, uint32_t c, uint32_t *glyph);
+int32_t nhg_font_glyph_metrics (uint64_t handle, uint32_t glyph, uint32_t mono, int32_t space_width,
+                                NhgGlyphMetrics *out);
+
+/* ---- Draw records (glue/src/draw.rs, nhshell's macos/draw.rs; macOS) -------------------------------------------
+   The primitives nhmacdraw.c emits under nhwldraw.c's shared geometry, painted at once into FRAME's backing with Core
+   Graphics (device pixels with the native area's origin, as damage takes them).  Each kind is its Cairo twin in
+   nhwldraw.c.  Colours are ARGB words, not premultiplied.  NHG_DRAW_FILL: R in FG (NHG_DRAW_COPY replaces the
+   pixels, alpha included).  NHG_DRAW_OUTLINE: one-pixel lines through the pixel centres of R's edges.
+   NHG_DRAW_TRAPEZOID: a relief's top (NHG_DRAW_TOP) or bottom edge over R.  NHG_DRAW_WAVE: a wave in R, A pixels per
+   half wave.  NHG_DRAW_DASH: a line R.h thick along R's top, dashes A long from phase B.  NHG_DRAW_BITMAP: R.h rows at
+   BITS, R.w (at most 16) pixels wide, the leftmost in bit R.w - 1; set pixels in FG, the rest in BG unless
+   NHG_DRAW_OVERLAY.  NHG_DRAW_CORNERS: R in FG outside quarter circles of radius A set B pixels outside the corners
+   the flags' low four bits name (bottom right, bottom left, top left, top right).  NCLIP (0-2) clip rectangles
+   apply.  A refused record is skipped and the call returns NHG_E_ARG; NHG_E_UNSUPPORTED where the shell has no
+   painter.  nhg_draw_glyphs paints one NHG_DRAW_GLYPHS record of the open font FONT (nhg_font_open): N glyphs at
+   BITS in FG from x A on the baseline B, placed as macfont_draw places them (NHG_DRAW_PADDING: one pixel each); with
+   NHG_DRAW_BACKGROUND, R is filled with BG first.  NHG_E_STATE for a font that is not open.  nhg_draw_image
+   paints one NHG_DRAW_IMAGE record: the part of the container PIX from (A, B) into R, over BG unless
+   NHG_DRAW_OVERLAY; with a mask its pixels are its colour times the mask's alpha, without one opaque, and an 8-bit
+   container is FG through it (Cairo's conversion).  The container is wrapped once and kept until nhg_image_forget
+   names its data or its mask.  */
+
+#define NHG_DRAW_FILL 1
+#define NHG_DRAW_OUTLINE 2
+#define NHG_DRAW_TRAPEZOID 3
+#define NHG_DRAW_WAVE 4
+#define NHG_DRAW_DASH 5
+#define NHG_DRAW_BITMAP 6
+#define NHG_DRAW_CORNERS 7
+#define NHG_DRAW_GLYPHS 8
+#define NHG_DRAW_IMAGE 9
+
+#define NHG_DRAW_COPY (1u << 0)
+#define NHG_DRAW_TOP (1u << 3)
+#define NHG_DRAW_BACKGROUND (1u << 4)
+#define NHG_DRAW_PADDING (1u << 5)
+#define NHG_DRAW_OVERLAY (1u << 7)
+
+typedef struct
+{
+  uint32_t kind, flags;
+  NhgRect r;
+  uint32_t fg, bg;
+  int32_t a, b;
+  int32_t nclip;
+  NhgRect clip[2];
+  const uint16_t *bits;
+} NhgDrawRec;
+
+int32_t nhg_draw (NhgDisplay *d, uint64_t frame, const NhgDrawRec *recs, size_t n);
+int32_t nhg_draw_glyphs (NhgDisplay *d, uint64_t frame, uint64_t font, const NhgDrawRec *rec, size_t n);
+
+/* An image container as drawing reads it: DATA rows STRIDE bytes apart, BPP 32 or 8; MASK (NULL: none) 8-bit rows
+   MASK_STRIDE bytes apart; MATRIX the image's transform (Cairo's pattern matrix xx, yx, xy, yy, x0, y0, from a drawn
+   pixel to the container's, as nhg_image_transform makes it; all zero: none) and SMOOTH whether drawing smooths.  */
+typedef struct
+{
+  const uint8_t *data, *mask;
+  int32_t width, height, stride, mask_stride, bpp, smooth;
+  double matrix[6];
+} NhgPix;
+
+int32_t nhg_draw_image (NhgDisplay *d, uint64_t frame, const NhgDrawRec *rec, const NhgPix *pix);
+
+/* ---- Images (glue/src/image.rs, nhshell's macos/images.rs; macOS) -----------------------------------------------
+   image.c's native route.  nhg_image_type: NHG_OK when the route takes the type named by NAME (LEN bytes), else
+   NHG_E_UNSUPPORTED.  nhg_image_decode decodes frame INDEX of the image in SRC (LEN bytes; a file name when IS_FILE)
+   through ImageIO (an XPM through the glue's own reader) into *OUT: colours not premultiplied, the alpha in each word's top byte, HAS_ALPHA when some pixel
+   is not opaque, FRAMES in the file and this frame's DELAY in seconds (0: still); NHG_E_STATE when it cannot.
+   nhg_image_take copies the pixels into a 32-bit container's DATA (WIDTH * 4 bytes a row) and, with HAS_ALPHA, the
+   alpha into an 8-bit MASK (WIDTH a row), then frees them; nhg_image_free frees them untaken.  nhg_image_forget: the
+   container bytes at ADDR are being freed.  */
+
+typedef struct
+{
+  int32_t width, height;
+  uint32_t frames, has_alpha;
+  double delay;
+  uint32_t *argb_;
+  size_t len_;
+} NhgImage;
+
+int32_t nhg_image_type (const char *name, size_t len);
+/* An XPM's colours: nhg_xpm_names puts the names it needs resolved, each once and NUL-terminated, one after another,
+   into OUT (CAP bytes; null when CAP is 0), their bytes into *NEED and their number into *COUNT (0 for anything
+   that is not an XPM); NHG_E_TOO_SMALL, OUT untouched, when CAP is below *NEED.  nhg_image_decode takes their
+   0xRRGGBB in COLORS (NCOLORS words, in the same order; null and 0 for anything else).  */
+int32_t nhg_xpm_names (const uint8_t *src, size_t len, uint32_t is_file, uint8_t *out, size_t cap, size_t *need,
+                       uint32_t *count);
+int32_t nhg_image_decode (const uint8_t *src, size_t len, uint32_t is_file, uint32_t index, const uint32_t *colors,
+                          size_t ncolors, NhgImage *out);
+int32_t nhg_image_take (NhgImage *img, uint8_t *data, uint8_t *mask);
+int32_t nhg_image_free (NhgImage *img);
+int32_t nhg_image_forget (const uint8_t *addr);
+
+/* The image worker's stand-ins (glue/src/stand.rs): a pending image IMG (image.c's entry, as a key) drawn with a
+   ready entry's picture scaled into its own box until it lands.  nhg_image_stand_in copies the ready container PIX
+   (FG an 8-bit container's colour), drawn READY_W x READY_H, for IMG's IMG_W x IMG_H box, replacing the one IMG had;
+   NHG_E_ARG, keeping none, when it refuses the container or a box.  nhg_image_stand_drop: IMG landed, is prepared
+   again or is freed.  nhg_draw_stand_in paints REC with IMG's stand-in as nhg_draw_image paints a container;
+   NHG_E_STATE when IMG has none.  */
+int32_t nhg_image_stand_in (const void *img, const NhgPix *pix, uint32_t fg, int32_t ready_w, int32_t ready_h,
+                            int32_t img_w, int32_t img_h);
+int32_t nhg_image_stand_drop (const void *img);
+int32_t nhg_draw_stand_in (NhgDisplay *d, uint64_t frame, const NhgDrawRec *rec, const void *img);
+/* A bitmap's BITS (WIDTH x HEIGHT, least significant bit first, rows padded to bytes) into a 32-bit container's OUT
+   (STRIDE bytes a row): FG for a set bit, BG for a clear one.  NHG_E_ARG for a size under 1 or a short stride.  */
+int32_t nhg_bitmap_to_container (const uint8_t *bits, int32_t width, int32_t height, uint32_t fg, uint32_t bg,
+                                 uint8_t *out, int32_t stride);
+/* SVG through the shell's resvg route (image.c's svg type on Naglfar).  STYLE: the image's :css, the face's font
+   FAMILY and :base-uri (each LEN bytes; NULL or empty: none; without a base, references resolve against the file's
+   directory), the face's FONT_SIZE in pixels, the display's DPI, and the FOREGROUND (currentColor) and BACKGROUND as
+   0xRRGGBB.  nhg_svg_size: the image's own size in pixels (its width and height, or its view box) into *W, *H.
+   nhg_svg_render: the image stretched to WIDTH x HEIGHT over the background into *OUT, opaque (nhg_image_take or
+   nhg_image_free frees it).  NHG_E_STATE when the image cannot be read or parsed, NHG_E_UNSUPPORTED without SVG.  */
+typedef struct
+{
+  const uint8_t *css;
+  size_t css_len;
+  const uint8_t *family;
+  size_t family_len;
+  const uint8_t *base;
+  size_t base_len;
+  double font_size, dpi;
+  uint32_t foreground, background;
+} NhgSvgStyle;
+
+int32_t nhg_svg_size (const uint8_t *src, size_t len, uint32_t is_file, const NhgSvgStyle *style, double *w,
+                      double *h);
+int32_t nhg_svg_render (const uint8_t *src, size_t len, uint32_t is_file, const NhgSvgStyle *style, int32_t width,
+                        int32_t height, NhgImage *out);
+/* image_set_transform's matrix for an image W x H shown at WIDTH x HEIGHT, turned by ROTATION degrees and FLIPped:
+   six numbers into OUT (NhgPix's MATRIX) and the drawn size into *OUT_W, *OUT_H; NHG_E_UNSUPPORTED for a rotation
+   that is not a multiple of 90 degrees (OUT holds the scale alone, the size is left).  */
+int32_t nhg_image_transform (int32_t w, int32_t h, int32_t width, int32_t height, double rotation, bool flip,
+                             double *out, int32_t *out_w, int32_t *out_h);
+
+/* ---- The main wait (glue/src/wait.rs, nhshell's wait.rs; macOS) ------------------------------------------------
+   nhg_wait registers the fds RFDS and WFDS ask for below NFDS, runs the backend's event loop until one is ready, a
+   wake or TIMEOUT_NS (negative: none), and leaves the ready ones in the sets as select does; the count, as select
+   returns it, 0 after a wake or the timeout.  Main thread, global lock held.  NHG_E_UNSUPPORTED: the backend has no
+   wait of its own.  nhg_wake, from any thread and without the display's lock, ends a parked wait, or makes the next
+   one return before it sleeps.  */
+int32_t nhg_wait (NhgDisplay *d, int32_t nfds, fd_set *rfds, fd_set *wfds, int64_t timeout_ns);
+int32_t nhg_wake (void);
+/* The host's count of non-main threads that want its global lock (an _Atomic int, never freed), handed over once:
+   while it is above 0 the main wait does not park, and nhg_wake follows the count's rise.  */
+int32_t nhg_set_lock_waiters (const void *count);
 
 #ifdef __cplusplus
 }

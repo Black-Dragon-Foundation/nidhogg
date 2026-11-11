@@ -77,17 +77,17 @@ transition."
 (defface child-frame-shadow
   '((t :foreground "black"))
   "Face whose foreground is the colour of a child frame's shadow.
-Set it for one frame with `set-face-foreground' to change that frame's."
+Set it for one frame with `set-face-foreground' to change that frame's.
+A theme's colour shows at once; one set outside a theme (with
+`set-face-foreground', `set-face-attribute' or Customize) shows after
+`glitnir-refresh'."
   :version "31.1"
   :group 'frames)
-
-(defvar glitnir--shadow-colors (make-hash-table :test 'eq :weakness 'key)
-  "Frame -> the shadow colour (R G B) last resolved for it.")
 
 (defun glitnir--shadow-color (frame)
   "FRAME's shadow colour as (R G B), 0-255.
 A frame still being made has no faces yet: the colour for new frames
-then (`glitnir--recheck-shadow' catches a later difference)."
+then."
   (let* ((name (face-foreground
                 'child-frame-shadow
                 (if (gethash 'child-frame-shadow (frame--face-hash-table frame)) frame t)
@@ -260,11 +260,17 @@ them off, nil never does."
   :version "31.1"
   :group 'glitnir)
 
+(declare-function nhmac-reduced-motion-p "term/nhmac-win" ())
+
 (defun glitnir--reduced-motion-p ()
-  "Non-nil when transitions are off, by `glitnir-reduced-motion'."
+  "Non-nil when transitions are off, by `glitnir-reduced-motion'.
+`auto' asks the macOS shell (the system's Reduce motion) there, and the
+desktop's settings on Linux."
   (if (eq glitnir-reduced-motion 'auto)
-      (and (fboundp 'nhwl-settings-get)
-           (eql (nhwl-settings-get 'reduced-motion) 1))
+      (if (fboundp 'nhmac-reduced-motion-p)
+          (nhmac-reduced-motion-p)
+        (and (fboundp 'nhwl-settings-get)
+             (eql (nhwl-settings-get 'reduced-motion) 1)))
     glitnir-reduced-motion))
 
 (defun glitnir-reduced-motion-p ()
@@ -300,11 +306,13 @@ clamped; 8-19 from the `transition' option, which the desktop's reduced-motion
 setting turns off; 20 from `backdrop-blur', 0 while the frame's
 `alpha-background' is opaque; 22-23 from `ring' (-1 and 0 without one);
 `beneath-rgb' and `fill-rgb' are -1.  A child
-frame with no chrome has a vector whose first slot is 0.  A root frame's is
+frame with no chrome, or any child frame while `glitnir-enable' is nil, has a vector
+whose first slot is 0 and no blur.  A root frame's is
 `glitnir--toplevel-vector'."
   (if (not (frame-parent frame))
       (glitnir--toplevel-vector frame)
-    (let* ((res (glitnir--resolve frame))
+    (let* ((on (or (not (boundp 'glitnir-enable)) glitnir-enable))
+           (res (and on (glitnir--resolve frame)))
            (tr (glitnir--transition (glitnir--option frame 'transition)))
            (blur (glitnir--option frame 'backdrop-blur))
            (v (make-vector (length glitnir--chrome-slots) 0)))
@@ -315,7 +323,7 @@ frame with no chrome has a vector whose first slot is 0.  A root frame's is
         (setcar (nthcdr 6 tr) 0))
       (dotimes (i 12) (aset v (+ 8 i) (nth i tr)))
       (aset v (alist-get 'backdrop glitnir--chrome-slots)
-            (if (and blur (glitnir--translucent-p frame)) blur 0))
+            (if (and on blur (glitnir--translucent-p frame)) blur 0))
       (aset v (alist-get 'beneath-rgb glitnir--chrome-slots) -1)
       (aset v (alist-get 'ring-rgb glitnir--chrome-slots) -1)
       (aset v (alist-get 'fill-rgb glitnir--chrome-slots) -1)
@@ -495,19 +503,6 @@ theme change does this itself) shows after this call."
     ;; a theme or reduced motion changed: a layout leg jumps to its end
     (glitnir--end-legs)))
 
-(defun glitnir--recheck-shadow (window)
-  "Refresh WINDOW's frame when its `child-frame-shadow' colour changed.
-Only for visible chromed child frames, once per frame per redisplay (at
-its first window)."
-  (let ((f (window-frame window)))
-    (when (and (frame-parent f)
-               (eq window (frame-first-window f))
-               (frame-visible-p f))
-      (let ((cached (gethash f glitnir--shadow-colors)))
-        (when (and cached (not (equal cached (glitnir--shadow-color f))))
-          (glitnir-refresh f))))))
-
-(add-hook 'pre-redisplay-functions #'glitnir--recheck-shadow)
 (defun glitnir--settings-changed (key _value)
   "Resolve every child frame again when the desktop's reduced-motion KEY changed."
   (when (eq key 'reduced-motion) (glitnir-refresh)))

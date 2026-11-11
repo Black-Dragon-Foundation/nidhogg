@@ -39,13 +39,19 @@ WANT=$want ROOT=$root "$bin" --batch -Q --eval '(progn
 # no stale .eln ships (CI's compiled-Lisp cache restores .eln files keyed on Emacs's ABI inputs, nidhogg/eln-guard.el):
 # the installed native-lisp holds this Emacs's directory only, every .eln in it carries this Emacs's ABI hash (the
 # freloc_hash string native-elisp-load compares), and a sample of them loads
-"$bin" --batch -Q --eval '(let* ((sys (car (last native-comp-eln-load-path)))
+# the native-compilation mode the tarball was built in (BUILDINFO's configure line): aot (a release) promises an .eln for
+# every Lisp file; yes (build.sh --native-preloaded, CI's scratch runs) only for the preloaded ones, and no JIT compiles
+info=$root/BUILDINFO; [ -f "$info" ] || info=$root/share/nidhogg/BUILDINFO
+mode=aot; grep -q '^configure=.*--with-native-compilation=yes' "$info" 2>/dev/null && mode=preloaded
+echo "native compilation: $mode"
+NMODE=$mode "$bin" --batch -Q --eval '(let* ((sys (car (last native-comp-eln-load-path)))
        (dir (file-name-as-directory (expand-file-name comp-native-version-dir sys)))
-       (tag (format "\"%s\"" comp-abi-hash)) (bad nil) (n 0) (i 0))
+       (tag (format "\"%s\"" comp-abi-hash)) (bad nil) (n 0) (np 0) (i 0))
   (dolist (d (directory-files sys t "\\`[^.]"))
     (unless (equal (file-name-as-directory d) dir) (push (format "%s is another build'"'"'s" d) bad)))
   (dolist (f (directory-files-recursively dir "\\.eln\\'"'"'"))
     (setq n (1+ n))
+    (when (string-match-p "/preloaded/" f) (setq np (1+ np)))
     (unless (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally f) (search-forward tag nil t))
       (push (format "%s lacks the ABI hash %s" f tag) bad))
     (when (and (= 0 (% (setq i (1+ i)) 97)) (not (string-match-p "/preloaded/" f)))
@@ -53,8 +59,12 @@ WANT=$want ROOT=$root "$bin" --batch -Q --eval '(progn
         ((native-lisp-file-inconsistent native-lisp-load-failed) (push (format "%s: %S" f err) bad))
         (error nil))))
   (when (< n 100) (push (format "only %d .eln files in %s" n dir) bad))
+  (if (equal (getenv "NMODE") "aot")
+      (when (< (- n np) 1000) (push (format "an AOT build with only %d .eln files besides the preloaded ones" (- n np)) bad))
+    (when (< np 100) (push (format "a preloaded-only build with only %d preloaded .eln files" np) bad))
+    (when native-comp-jit-compilation (push "native-comp-jit-compilation is on: the rows would start JIT compiles" bad)))
   (when bad (dolist (b (nreverse bad)) (message "stale .eln: %s" b)) (kill-emacs 1))
-  (princ (format "ELN OK: %d files, all with ABI hash %s\n" n comp-abi-hash)))' ||
+  (princ (format "ELN OK (%s): %d files, %d preloaded, all with ABI hash %s\n" (getenv "NMODE") n np comp-abi-hash)))' ||
   { echo "TARBALL FAIL: a stale .eln in $root (one compiled for another Emacs)"; exit 1; }
 if [ "$(uname -s)" != Darwin ]; then "$root/bin/nidhoggclient" --version >/dev/null || { echo "TARBALL FAIL: nidhoggclient"; exit 1; }; fi
 CHECKS

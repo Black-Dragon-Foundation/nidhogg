@@ -166,7 +166,23 @@ post_acquire_global_lock (struct thread_state *self)
 static void
 acquire_global_lock (struct thread_state *self)
 {
+#ifdef HAVE_NHMAC
+  /* A Lisp thread that wants the lock counts itself, then ends a parked
+     main wait, which holds the lock (nhmacterm.c).  A plain call, not
+     NHG: current_thread is another thread's here, and a Lisp thread
+     takes no signal that could longjmp.  */
+  bool nhmac_counted = self != &main_thread.s;
+  if (nhmac_counted)
+    {
+      atomic_fetch_add (&nhmac_lock_waiters, 1);
+      nhg_wake ();
+    }
+#endif
   sys_mutex_lock (&global_lock);
+#ifdef HAVE_NHMAC
+  if (nhmac_counted)
+    atomic_fetch_sub (&nhmac_lock_waiters, 1);
+#endif
 #ifdef HAVE_NIDHOGG_WORKERS
   /* Its select, if it was in one, is over (process.c): before
      post_acquire_global_lock, which may signal.  */

@@ -985,7 +985,7 @@ mod reconnect {
     }
 
     fn tasks() -> usize {
-        std::fs::read_dir("/proc/self/task").unwrap().count()
+        live_threads()
     }
 
     /// VmRSS in KiB.
@@ -1152,6 +1152,17 @@ mod reconnect {
                 .iter()
                 .any(|c| c.contains("\"buffer\":{"))
         })
+    }
+
+    /// (The buffers window `w` and its content layers hold, the memfds among the descriptors, the other descriptors),
+    /// read while presenting can make or drop none of those buffers: a layer's draws come when presenting decides.
+    fn buffers(shell: &WaylandShell, w: u64) -> (usize, usize, usize) {
+        shell
+            .present_buffers_with(w, |n| {
+                let mem = memfds();
+                (n, mem, fds() - mem)
+            })
+            .unwrap()
     }
 
     /// The memfds among the descriptors.
@@ -1322,7 +1333,10 @@ mod reconnect {
     }
 
     /// Review Focus 5: twenty restarts while presenting on the thread, a window its own output, and a packet queued at
-    /// each loss: the picture comes back each time, and descriptors, memfds and threads equal cycle 5's.
+    /// each loss: the picture comes back each time, the descriptors besides the buffers' memfds and the threads equal
+    /// cycle 5's, and the memfds are the buffers the window and its layer hold.  How many buffers those are is the
+    /// pool's to decide (a third one when both were busy at a draw: when the compositor releases them is its own), so
+    /// they are not cycle 5's.
     #[test]
     fn twenty_cycles_with_the_presenter_free_everything() {
         let _g = SERIAL.write().unwrap_or_else(|e| e.into_inner());
@@ -1350,13 +1364,14 @@ mod reconnect {
                 shows(&rec, &b)
             });
             assert!(shell.presenter_tid().is_some(), "the presenter runs");
+            let (held, mem, others) = buffers(&shell, w);
+            assert_eq!(mem, held, "memfds, cycle {cycle}");
             if cycle == 5 {
-                at5 = Some((fds(), memfds(), tasks()));
+                at5 = Some((others, tasks()));
             }
         }
-        let (fd5, mem5, task5) = at5.unwrap();
-        assert_eq!(fds(), fd5, "descriptors");
-        assert_eq!(memfds(), mem5, "memfds");
+        let (fd5, task5) = at5.unwrap();
+        assert_eq!(buffers(&shell, w).2, fd5, "descriptors");
         assert_eq!(tasks(), task5, "threads");
     }
 }

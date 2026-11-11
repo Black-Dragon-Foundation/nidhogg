@@ -15,6 +15,16 @@
 # tests.  Needs the AOT build: performance runs (Gate A, budgets, A/B) and releases.  A dev build can never be mistaken for a
 # release: --dev refuses --out and --stage pack (no tarball is made), and its compiled-Lisp cache stamp says "dev", so dev and
 # AOT entries never mix (use a fresh --build-dir when switching modes).
+# --native-preloaded (or NIDHOGG_BUILD_NATIVE_PRELOADED=1) is that native-compilation mode alone, for a build that is
+# still packed (CI's scratch runs of the macOS app): the preloaded Lisp is native-compiled, the other files stay byte code,
+# and JIT compilation is off in the image.  It is a tarball for tests, not a release: BUILDINFO's configure line says
+# --with-native-compilation=yes, which tarball-test.sh reads to check what this mode promises.
+# NIDHOGG_BUILD_LISP_CACHE_ELC=1 lets the compiled-Lisp cache give the byte-compiled part (not the .eln files) to a build
+# of another native-compilation mode or window system (the NS app, Naglfar), which the entry's full stamp refuses.
+# --naglfar builds Nidhogg's own macOS shell (--with-nidhogg-macos) instead of the NS app; on macOS only, except with
+# --dry-config, which stops after configure (src/config.h in the build dir) and on Linux configures for a darwin host.
+# --checking configures --enable-checking (dev builds only): Emacs's assertions, and the shell's and glue's test hooks
+# (the macOS rows inject events and read counters through them).
 # Exit: 0 ok, 1 build/check failed or not enough memory, 2 usage.
 # Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN,
 # NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300).
@@ -40,7 +50,7 @@ DISTROS="fedora-45 ubuntu-26.04 debian-13 arch"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--without-nidhogg-history] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--without-nidhogg-history] [--naglfar] [--dry-config] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
@@ -49,10 +59,14 @@ die() { echo "build.sh: $*" >&2; exit 1; }
 
 MODE="" DISTRO="" PREFIX="" JOBS="" MEMORY="" BUILD_DIR="" CHECK="" OUT="" DRY=0 STAGE=all GLITNIR=--with-glitnir
 DEV=0; [ "${NIDHOGG_BUILD_DEV:-}" != 1 ] || DEV=1
+PRELOADED=0; [ "${NIDHOGG_BUILD_NATIVE_PRELOADED:-}" != 1 ] || PRELOADED=1
 NHWL=0       # --nidhogg-wayland was asked for by name
 WATCHDOG=1  # the stall watchdog is built in unless --without-nidhogg-watchdog
 WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
 HISTORY=1    # the edit history's change hook is built in with Glitnir (it holds the rings) unless --without-nidhogg-history
+NAGLFAR=0    # --naglfar: the macOS shell (--with-nidhogg-macos), not the NS app
+DRYCONF=0    # --dry-config: configure only
+CHECKING=0   # --checking: --enable-checking, so the test hooks are built; dev builds only
 CHAOS=0      # --chaos: seeded delays at the workers' sync points (src/nidhogg-chaos.h); dev builds only, so never in a release
 while [ $# -gt 0 ]; do
   case $1 in
@@ -68,11 +82,15 @@ while [ $# -gt 0 ]; do
     --without-glitnir) GLITNIR=""; shift ;;
     --nidhogg-wayland) NHWL=1; shift ;;
     --dev) DEV=1; shift ;;
+    --native-preloaded) PRELOADED=1; shift ;;
     --chaos) CHAOS=1; shift ;;
+    --checking) CHECKING=1; shift ;;
     --without-nidhogg-watchdog) WATCHDOG=0; shift ;;
     --without-nidhogg-workers) WORKERS=0; shift ;;
     --without-nidhogg-history) HISTORY=0; shift ;;
     --dry-run) DRY=1; shift ;;
+    --naglfar) NAGLFAR=1; shift ;;
+    --dry-config) DRYCONF=1; shift ;;
     *) echo "unknown option: $1" >&2; usage ;;
   esac
 done
@@ -81,8 +99,9 @@ if [ "$DEV" = 1 ] && { [ -n "$OUT" ] || [ "$STAGE" = pack ]; }; then
   die "--dev builds are never packed (no --out, no --stage pack): a dev build is not a release; build without --dev"
 fi
 [ "$CHAOS" = 0 ] || [ "$DEV" = 1 ] || die "--chaos is for dev builds only: add --dev"
+[ "$CHECKING" = 0 ] || [ "$DEV" = 1 ] || die "--checking is for dev builds only: add --dev"
 [ "$NHWL" = 0 ] || [ -n "$GLITNIR" ] || die "--nidhogg-wayland needs Glitnir: leave out --without-glitnir"
-NATIVE=aot; [ "$DEV" = 0 ] || NATIVE=yes
+NATIVE=aot; { [ "$DEV" = 0 ] && [ "$PRELOADED" = 0 ]; } || NATIVE=yes
 # NIDHOGG_BUILD_SANITIZE=address,undefined adds -fsanitize=... to CFLAGS and LDFLAGS: dev builds only (the workers-asan CI job)
 SANITIZE=${NIDHOGG_BUILD_SANITIZE:-}
 if [ -n "$SANITIZE" ]; then
@@ -90,6 +109,7 @@ if [ -n "$SANITIZE" ]; then
   [ "$DEV" = 1 ] || die "NIDHOGG_BUILD_SANITIZE is for dev builds only: add --dev"
 fi
 LISP_CACHE=${NIDHOGG_BUILD_LISP_CACHE:-} LC="" LC_RESTORE=1
+LC_ELC=0; [ "${NIDHOGG_BUILD_LISP_CACHE_ELC:-}" != 1 ] || LC_ELC=1
 CONFIG_CACHE=${NIDHOGG_BUILD_CONFIG_CACHE:-} CFC=""
 CARGO_TARGET=${NIDHOGG_BUILD_CARGO_TARGET:-} CT=""
 
@@ -165,7 +185,14 @@ if [ -z "$JOBS" ]; then
   [ "$JOBS" -ge 1 ] || JOBS=1
 fi
 
-if [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
+if [ "$NAGLFAR" = 1 ]; then
+  [ -n "$GLITNIR" ] || die "--naglfar needs Glitnir: leave out --without-glitnir"
+  { [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; } || [ "$DRYCONF" = 1 ] ||
+    die "--naglfar builds on macOS (--host); elsewhere only --dry-config"
+  CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-nidhogg-macos"
+  # configure on Linux as for a darwin host (the result is config.h, never a binary)
+  [ "$UNAME" = Darwin ] || CONF="$CONF --build=aarch64-apple-darwin24.6.0"
+elif [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
   CONF="--with-ns --with-native-compilation=$NATIVE --with-tree-sitter"
 elif [ -n "$GLITNIR" ]; then
   CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-nidhogg-wayland"
@@ -180,6 +207,7 @@ if [ -n "$GLITNIR" ]; then PKGS="$PKGS)"; else PKGS="$PKGS | grep -vxE 'cargo|ru
 [ "$WORKERS" = 0 ] || CONF="$CONF --with-nidhogg-workers"
 [ "$HISTORY" = 0 ] || [ -z "$GLITNIR" ] || CONF="$CONF --with-nidhogg-history"
 [ "$CHAOS" = 0 ] || CONF="$CONF --with-nidhogg-chaos"
+[ "$CHECKING" = 0 ] || CONF="$CONF --enable-checking"
 # the quotes are parsed by the build script, not here
 [ -z "$SANITIZE" ] || CONF="$CONF CFLAGS='-g -O1 -fno-omit-frame-pointer -fsanitize=$SANITIZE' LDFLAGS='-fsanitize=$SANITIZE'"
 
@@ -260,7 +288,7 @@ BODY
 # --- the build script: the same steps in a container and on the host --------------------------------------
 script() {
   printf 'S=%q B=%q P=%q V=%q UPV=%q HB=%q\n' "$S" "$B" "$PREFIX" "$VERSION" "$UPSTREAM_VERSION" "${NIDHOGG_BUILD_HEARTBEAT:-300}"
-  [ -z "$LISP_CACHE" ] || printf 'LC=%q LC_RESTORE=%q\n' "$LC" "$LC_RESTORE"
+  [ -z "$LISP_CACHE" ] || printf 'LC=%q LC_RESTORE=%q LC_ELC=%q\n' "$LC" "$LC_RESTORE" "$LC_ELC"
   [ -z "$CFC" ] || printf 'CFC=%q\n' "$CFC"
   [ -z "$CT" ] || printf 'CT=%q COMMIT=%q\n' "$CT" "$COMMIT"
   printf 'MODE_ID=%q\n' "$NATIVE${SANITIZE:+-$SANITIZE}"
@@ -402,6 +430,15 @@ cc_id() { printf '%s %s %s %s\n' "$(gcc --version | head -n 1)" "$(uname -m)" "$
 # builds of the same key share DIR: a restore holds DIR/.lock shared, a save exclusive (where flock exists)
 lc_lock() { if command -v flock >/dev/null; then exec 9>"$LC/.lock"; flock "$1" 9; fi; }
 lc_unlock() { if command -v flock >/dev/null; then flock -u 9; exec 9>&-; fi; }
+# a stamp without the native-compilation mode and the window system: what the byte-compiled part alone depends on (a
+# full stamp's words, so that entries saved before this existed qualify too)
+elc_norm() {
+  local w o=""
+  for w in $1; do
+    case $w in aot|aot-*|yes|yes-*|--with-native-compilation=*|--with-ns|--with-nidhogg-macos|--enable-checking) ;; *) o="$o $w" ;; esac
+  done
+  printf '%s\n' "$o"
+}
 lc_lock -s
 rm -f "$B/eln-restored.list"
 if [ "$LC_RESTORE" = 1 ] && [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
@@ -414,6 +451,13 @@ if [ "$LC_RESTORE" = 1 ] && [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc
   [ ! -d "$LC/obj" ] || (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
   # the restored .eln files, which the guard checks against the new binary after make
   [ ! -d "$LC/obj/native-lisp" ] || (cd "$LC/obj" && find native-lisp -name '*.eln') > "$B/eln-restored.list"
+elif [ "$LC_RESTORE" = 1 ] && [ "$LC_ELC" = 1 ] && [ -f "$LC/stamp" ] && [ "$(elc_norm "$(cat "$LC/stamp")")" = "$(elc_norm "$(cc_id)")" ]; then
+  # NIDHOGG_BUILD_LISP_CACHE_ELC=1: the byte-compiled part of an entry another mode or window system made (the .eln files,
+  # which depend on both, are not taken)
+  phase restore byte-compiled Lisp
+  tar -C "$LC" -cf - src | tar -C "$B" -xf -
+  touch "$B/.restored"
+  (cd "$LC/src" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/src/$f"; done
 fi
 lc_unlock
 BODY
@@ -423,7 +467,7 @@ phase autogen
 logged "$B/autogen.log" ./autogen.sh
 cd "$B/obj"
 BODY
-  if [ "$DEV" = 1 ]; then
+  if [ "$DEV" = 1 ] || [ "$PRELOADED" = 1 ]; then
     # loadup.el loads lisp/site-init.el when present, and the dump keeps what it sets (the build copy only, never the source tree)
     echo "printf '%s\\n' ';;; dev build (nidhogg/build.sh --dev): no background native compilation' '(setq native-comp-jit-compilation nil)' > \"\$B/src/lisp/site-init.el\""
   fi
@@ -457,6 +501,7 @@ BODY
   cat <<'BODY'
 grep -Eq 'native lisp compiler\? +yes' "$B/configure.log" || { echo "configure found no native compilation (libgccjit); see $B/configure.log" >&2; exit 1; }
 BODY
+  if [ "$DRYCONF" = 1 ]; then echo 'echo "dry config: $B/obj/src/config.h"; exit 0'; fi
   if [ -n "$CT" ]; then cat <<'BODY'
 # Glitnir's cargo target directory from NIDHOGG_BUILD_CARGO_TARGET (a cache): src/glitnir-target is a link to it.  Cargo
 # judges each restored artifact by its sources' times (the caller gives the files their commits' times, and the files

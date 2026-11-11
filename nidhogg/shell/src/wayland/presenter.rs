@@ -19,12 +19,13 @@
 //!
 //! **Waits of the host's thread** are bounded: a tree's mutex (the presenter holds it to decide and to send, never
 //! across a compose or a flush), the mailbox's and the root list's locks (held for a push or a copy), and the join at
-//! close (at most one compose).  The longest of them is `main_wait_max_ns`.
+//! close (at most one compose).  The longest of them is `main_wait_max_ns`, wall-clock time, which a loaded machine
+//! stretches; a compose or a flush begun with a tree's mutex held counts in `locked_work`.
 
 use crate::api::*;
 use crate::wayland::MainState;
 use crate::wayland::conn::{Shared, Wake};
-use crate::wayland::present::{Present, note_presented, present_tree};
+use crate::wayland::present::{Present, note_presented, note_unlocked_work, present_tree};
 use crate::wayland::publish::{HIDE_HOLD_NS, Mailbox, Stage, now_ns};
 use crate::wayland::reader::ReaderState;
 use rustix::event::{PollFd, PollFlags, poll};
@@ -77,6 +78,8 @@ pub struct Counters {
     pub commits: AtomicU64,
     pub bare_commits: AtomicU64,
     pub main_wait_max_ns: AtomicU64,
+    /// Composes and flushes presenting began with a presenter state locked: each one a host's wait could last.
+    pub locked_work: AtomicU64,
     pub publish_copy_max_ns: AtomicU64,
     pub front_trims: AtomicU64,
     /// Root buffers that showed published drawing, those committed more than a refresh period after the tree could
@@ -503,6 +506,7 @@ fn run(link: &Link, mail: &Mailbox, mut stage: Stage) -> Stage {
                 present_tree(&mut stage, &wire, *id, tree, &|| link.compose_hold());
             }
             // EAGAIN is the reader's to retry; any other failure reaches the host through the reader's DISCONNECTED
+            note_unlocked_work(&stage.stats);
             let _ = wire.shared.host_flush(&wire.conn);
             stage.flushed();
             note_presented(&stage, mail, &roots);
@@ -618,5 +622,11 @@ impl crate::wayland::WaylandShell {
     pub fn presenter_tid(&self) -> Option<i32> {
         let tid = self.link.tid.load(Ordering::Acquire);
         (self.presenting.thread.is_some() && tid != 0).then_some(tid)
+    }
+
+    /// Test hook: the composes and flushes presenting began with a presenter state locked (`Counters::locked_work`).
+    #[doc(hidden)]
+    pub fn presenter_locked_work(&self) -> u64 {
+        self.presenting.stats.locked_work.load(Ordering::Relaxed)
     }
 }

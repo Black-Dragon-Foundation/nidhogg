@@ -622,6 +622,9 @@ decode_options (int argc, char **argv)
 #ifndef HAVE_ANDROID
       /* Set these here so we use a default_display only when the user
          didn't give us an explicit display.  */
+#ifdef HAVE_NHMAC
+      alt_display = "ns";
+#endif
 #if defined (NS_IMPL_COCOA)
       alt_display = "ns";
 #elif defined (HAVE_NTGUI)
@@ -630,7 +633,7 @@ decode_options (int argc, char **argv)
       alt_display = "be";
 #endif /* NS_IMPL_COCOA */
 
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 /* Under Nidhogg's Wayland shell the display is the Wayland one, as under pgtk (scoped to this block).  */
 # define HAVE_PGTK 1
 #endif
@@ -640,7 +643,7 @@ decode_options (int argc, char **argv)
 #else /* !HAVE_PGTK */
       display = egetenv ("DISPLAY");
 #endif /* HAVE_PGTK */
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 # undef HAVE_PGTK
 #endif
 #else /* HAVE_ANDROID */

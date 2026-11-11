@@ -133,6 +133,19 @@ typedef Emacs_Pix_Container Emacs_Pixmap;
 typedef Emacs_Pix_Container Emacs_Pix_Context;
 #endif
 
+#ifdef HAVE_NHMAC
+/* Naglfar: the same minimal image, plain ARGB32 memory that Core
+   Graphics wraps when it draws.  */
+typedef struct
+{
+  int width, height;		/* size of image */
+  char *data;			/* pointer to image data */
+  int bytes_per_line;		/* accelerator to next line */
+  int bits_per_pixel;		/* bits per pixel (ZPixmap) */
+} *Emacs_Pix_Container;
+typedef Emacs_Pix_Container Emacs_Pixmap;
+typedef Emacs_Pix_Container Emacs_Pix_Context;
+#endif
 #ifdef HAVE_NTGUI
 #include "w32gui.h"
 typedef struct w32_display_info Display_Info;
@@ -3203,6 +3216,10 @@ struct redisplay_interface
       || defined HAVE_ANDROID)
 #  define HAVE_NATIVE_TRANSFORMS
 # endif
+# ifdef HAVE_NHMAC
+/* Naglfar draws images through a matrix, as Cairo does.  */
+#  define HAVE_NATIVE_TRANSFORMS
+# endif
 
 /* Structure describing an image.  Specific image formats like XBM are
    converted into this form, so that display only has to deal with
@@ -3257,6 +3274,14 @@ struct image
   /* Whether or not bilinear filtering should be used to "smooth" the
      image.  */
   bool use_bilinear_filtering;
+#endif
+#ifdef HAVE_NHMAC
+  /* Naglfar: the matrix from the drawn image's pixels to the
+     container's, as Cairo's pattern matrix (xx, yx, xy, yy, x0, y0),
+     and whether drawing smooths; and whether the glue holds a stand-in
+     for it while its decode is pending.  */
+  double nhmac_transform[6];
+  bool nhmac_smoothing, nhmac_stand;
 #endif
 
   /* Colors allocated for this image, if any.  Allocated via xmalloc.  */
@@ -3753,6 +3778,9 @@ Lisp_Object image_spec_value (Lisp_Object, Lisp_Object, bool *);
 
 #ifdef HAVE_NTGUI
 #define RGB_PIXEL_COLOR COLORREF
+#endif
+#ifdef HAVE_NHMAC
+#define RGB_PIXEL_COLOR unsigned long
 #endif
 
 RGB_PIXEL_COLOR image_background (struct image *, struct frame *,

@@ -24,7 +24,8 @@ use crate::display::Display;
 use crate::guard::GlueError;
 use crate::layers::NhgLayerWindow;
 use glitnir::geom::Rect;
-use glitnir::scene::{Card, Chrome, LayerDesc};
+use glitnir::scene::{Card, Chrome, Kind, LayerDesc, Placed, card_bounds};
+use nhshell::api::CardImage;
 use std::collections::BTreeMap;
 
 /// Glitnir's `GLITNIR_LAYER_WINDOW`.
@@ -119,15 +120,13 @@ pub fn card_id(seq: u64) -> u64 {
     seq | CARD_TAG
 }
 
-/// Frame `key` is published with its windows `windows`: each window with a card gets (or keeps) its card layer, those
-/// of windows without one, or gone, leave the scene, and the card layers go above the frame's other window layers.
-/// Returns the number of cards.  A frame without a scale yet has none.
-pub fn sync_at(b: &mut Backings, key: u64, windows: &[NhgLayerWindow]) -> Result<u32, i32> {
-    let f = b.frame_mut(key)?;
-    let (s120, origin) = (f.scale120(), f.origin());
-    if s120 == 0 {
-        return Ok(0);
-    }
+/// What frame `windows`' cards are at scale `s120` with the layer's origin `origin`: per card (a group's first window
+/// stands for it) its window, what it was given, its chrome and its card, in window order.
+fn plan(
+    windows: &[NhgLayerWindow],
+    s120: u32,
+    origin: (i32, i32),
+) -> Vec<(u64, Applied, Chrome, Card)> {
     let s = f64::from(s120) / 120.0;
     let at = |r: NhgRect| {
         Rect::new(
@@ -180,46 +179,65 @@ pub fn sync_at(b: &mut Backings, key: u64, windows: &[NhgLayerWindow]) -> Result
             units.push((w, at(w.outer), vec![w.seq], Vec::new()));
         }
     }
+    let mut out = Vec::new();
+    for (w, rect, members, fill) in units {
+        if rect.is_empty() {
+            continue;
+        }
+        let keep_out: Vec<Rect> = outers
+            .iter()
+            .filter(|(q, _)| !members.contains(q))
+            .map(|(_, r)| *r)
+            .chain(around.iter().copied())
+            .collect();
+        let Some((chrome, mut card)) = card_of(w, s, &keep_out) else {
+            continue;
+        };
+        if !fill.is_empty() {
+            let rgb = w
+                .card()
+                .ok()
+                .flatten()
+                .and_then(|d| d.fill_rgb)
+                .unwrap_or(0);
+            card.fill = fill.clone().into();
+            card.fill_argb = 0xff00_0000 | rgb;
+        }
+        let now = Applied {
+            outer: w.outer,
+            rect,
+            fill,
+            s120,
+            origin,
+            card: w.card,
+            keep_out,
+        };
+        out.push((w.seq, now, chrome, card));
+    }
+    out
+}
+
+/// Frame `key` is published with its windows `windows`: each window with a card gets (or keeps) its card layer, those
+/// of windows without one, or gone, leave the scene, and the card layers go above the frame's other window layers.
+/// Returns the number of cards.  A frame without a scale yet has none.
+pub fn sync_at(b: &mut Backings, key: u64, windows: &[NhgLayerWindow]) -> Result<u32, i32> {
+    let f = b.frame_mut(key)?;
+    let (s120, origin) = (f.scale120(), f.origin());
+    if s120 == 0 {
+        return Ok(0);
+    }
+    let s = f64::from(s120) / 120.0;
+    let planned = plan(windows, s120, origin);
     let cards = &mut f.cards;
     let mut seen: Vec<u64> = Vec::new();
     glitnir::scene::with(key, |sc| {
-        for (w, rect, members, fill) in units {
-            if rect.is_empty() {
+        for (seq, now, chrome, card) in planned {
+            seen.push(seq);
+            if cards.applied.get(&seq) == Some(&now) {
                 continue;
             }
-            let keep_out: Vec<Rect> = outers
-                .iter()
-                .filter(|(q, _)| !members.contains(q))
-                .map(|(_, r)| *r)
-                .chain(around.iter().copied())
-                .collect();
-            let Some((chrome, mut card)) = card_of(w, s, &keep_out) else {
-                continue;
-            };
-            if !fill.is_empty() {
-                let rgb = w
-                    .card()
-                    .ok()
-                    .flatten()
-                    .and_then(|d| d.fill_rgb)
-                    .unwrap_or(0);
-                card.fill = fill.clone().into();
-                card.fill_argb = 0xff00_0000 | rgb;
-            }
-            seen.push(w.seq);
-            let now = Applied {
-                outer: w.outer,
-                rect,
-                fill,
-                s120,
-                origin,
-                card: w.card,
-                keep_out,
-            };
-            if cards.applied.get(&w.seq) == Some(&now) {
-                continue;
-            }
-            let id = card_id(w.seq);
+            let (w, rect) = (seq, now.rect);
+            let id = card_id(w);
             sc.upsert(&LayerDesc {
                 id,
                 parent: key,
@@ -230,7 +248,7 @@ pub fn sync_at(b: &mut Backings, key: u64, windows: &[NhgLayerWindow]) -> Result
             })?;
             sc.set_chrome(id, Some(chrome))?;
             sc.set_card(id, Some(card))?;
-            cards.applied.insert(w.seq, now);
+            cards.applied.insert(w, now);
         }
         let gone: Vec<u64> = cards
             .applied
@@ -261,9 +279,81 @@ pub fn sync_at(b: &mut Backings, key: u64, windows: &[NhgLayerWindow]) -> Result
     Ok(u32::try_from(seen.len()).unwrap_or(u32::MAX))
 }
 
-/// `nhg_layers_sync`'s card half: [`sync_at`] on the display's backings.
-pub fn sync(state: &mut Display, frame: u64, windows: &[NhgLayerWindow]) -> Result<u32, GlueError> {
-    Ok(sync_at(&mut state.backings, frame, windows)?)
+/// [`sync_at`] for a shell that shows the cards on layers of its own (`cards_on_layers`): no scene; when a card came,
+/// went or changed, every card of the frame drawn alone ([`glitnir::compose::card_overlay`]: a corner shows its
+/// neighbours' chrome, so one change draws them all again), placed in the native area.  `None` when nothing changed.
+pub fn images_at(
+    b: &mut Backings,
+    key: u64,
+    windows: &[NhgLayerWindow],
+) -> Result<Option<Vec<CardImage>>, i32> {
+    let f = b.frame_mut(key)?;
+    let (s120, origin) = (f.scale120(), f.origin());
+    if s120 == 0 {
+        return Ok(None);
+    }
+    let s = f64::from(s120) / 120.0;
+    let planned = plan(windows, s120, origin);
+    let cards = &mut f.cards;
+    if planned.len() == cards.applied.len()
+        && planned
+            .iter()
+            .all(|(q, now, ..)| cards.applied.get(q) == Some(now))
+    {
+        return Ok(None);
+    }
+    cards.applied = planned
+        .iter()
+        .map(|(q, now, ..)| (*q, now.clone()))
+        .collect();
+    let scene: Vec<Placed> = planned
+        .into_iter()
+        .map(|(q, now, chrome, card)| Placed {
+            id: card_id(q),
+            parent: key,
+            kind: Kind::Window,
+            rect: now.rect,
+            scale: s,
+            bounds: card_bounds(now.rect, Some(&chrome), Some(&card)),
+            chrome: Some(chrome),
+            card: Some(card),
+        })
+        .collect();
+    Ok(Some(
+        scene
+            .iter()
+            .filter_map(|p| {
+                let (r, px) = glitnir::compose::card_overlay(&scene, p.id, s)?;
+                Some(CardImage {
+                    id: p.id,
+                    rect: (r.x - origin.0, r.y - origin.1, r.w as u32, r.h as u32),
+                    argb: Some(px.into()),
+                })
+            })
+            .collect(),
+    ))
+}
+
+/// `nhg_layers_sync`'s card half for root `window` (key `frame`): [`sync_at`] on the display's backings, or
+/// [`images_at`] handed to a shell that shows the cards itself.
+pub fn sync(
+    state: &mut Display,
+    window: u64,
+    frame: u64,
+    windows: &[NhgLayerWindow],
+) -> Result<u32, GlueError> {
+    let on_layers =
+        matches!(state.csd_parts(window), Ok((backend, ..)) if backend.cards_on_layers());
+    if !on_layers {
+        return Ok(sync_at(&mut state.backings, frame, windows)?);
+    }
+    if let Some(list) = images_at(&mut state.backings, frame, windows)?
+        && let Ok((backend, ..)) = state.csd_parts(window)
+    {
+        // as for a child's chrome, a refused list is given again with the next change
+        let _ = backend.set_cards(window, &list);
+    }
+    Ok(u32::try_from(count(&mut state.backings, frame)).unwrap_or(u32::MAX))
 }
 
 /// The next sync gives every frame's cards again (a reconnect: the shell's surfaces start over).

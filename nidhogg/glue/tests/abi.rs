@@ -201,6 +201,7 @@ mod abi {
             ("NHG_IN_INPUT_WAITING", NHG_IN_INPUT_WAITING.into()),
             ("NHG_IN_COALESCE_WHEEL", NHG_IN_COALESCE_WHEEL.into()),
             ("NHG_IN_ACKS_ONLY", NHG_IN_ACKS_ONLY.into()),
+            ("NHG_IN_REDISPLAY", NHG_IN_REDISPLAY.into()),
             ("NHG_ACT_KEY", NHG_ACT_KEY.into()),
             ("NHG_ACT_CLICK", NHG_ACT_CLICK.into()),
             ("NHG_ACT_WHEEL", NHG_ACT_WHEEL.into()),
@@ -578,11 +579,13 @@ PROTO (nhg_csd_title_bar, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t, Nhg
 typedef NhgWindowDesc W;
 #define WOFF(m) offsetof (W, m)
 PROTO (nhg_window_new, int32_t (NhgDisplay *, const NhgWindowDesc *, uint64_t *));
+PROTO (nhg_window_reparent, int32_t (NhgDisplay *, uint64_t, const NhgWindowDesc *));
 PROTO (nhg_window_title, int32_t (NhgDisplay *, uint64_t, const char *, size_t));
 PROTO (nhg_window_undecorated, int32_t (NhgDisplay *, uint64_t, int32_t));
 PROTO (nhg_window_alpha, int32_t (NhgDisplay *, uint64_t, double, double, uint32_t *));
 PROTO (nhg_window_size, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
 PROTO (nhg_window_min_size, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
+PROTO (nhg_window_place, int32_t (NhgDisplay *, uint64_t, int32_t, int32_t));
 PROTO (nhg_window_visible, int32_t (NhgDisplay *, uint64_t, int32_t));
 PROTO (nhg_window_iconify, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_window_fullscreen, int32_t (NhgDisplay *, uint64_t, uint32_t));
@@ -594,6 +597,8 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             use nhglue::ffi::*;
             let _: unsafe extern "C" fn(*mut NhgDisplay, *const W, *mut u64) -> i32 =
                 nhg_window_new;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const W) -> i32 =
+                nhg_window_reparent;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const c_char, usize) -> i32 =
                 nhg_window_title;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_window_undecorated;
@@ -602,6 +607,7 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_window_size;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 =
                 nhg_window_min_size;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32, i32) -> i32 = nhg_window_place;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, i32) -> i32 = nhg_window_visible;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_window_iconify;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_window_fullscreen;
@@ -661,6 +667,7 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             ("NHG_WIN_MAXIMIZED", NHSHELL_WIN_MAXIMIZED.into()),
             ("NHG_WIN_GRAB", NHSHELL_WIN_GRAB.into()),
             ("NHG_WIN_RESTORE", NHSHELL_WIN_RESTORE.into()),
+            ("NHG_WIN_PLACED", NHSHELL_WIN_PLACED.into()),
             ("NHG_EDGE_TOP", NHSHELL_EDGE_TOP.into()),
             ("NHG_EDGE_BOTTOM", NHSHELL_EDGE_BOTTOM.into()),
             ("NHG_EDGE_LEFT", NHSHELL_EDGE_LEFT.into()),
@@ -696,6 +703,10 @@ PROTO (nhg_tip_hide, int32_t (NhgDisplay *, uint64_t));";
             ("COFF (xdg_foreign)", offset_of!(C, xdg_foreign) as i64),
             ("COFF (ssd)", offset_of!(C, ssd) as i64),
             ("COFF (force_csd)", offset_of!(C, force_csd) as i64),
+            (
+                "COFF (overhang_panels)",
+                offset_of!(C, overhang_panels) as i64,
+            ),
             // NhgPresenterCounters
             ("sizeof (P)", size_of::<P>() as i64),
             ("_Alignof (P)", align_of::<P>() as i64),
@@ -950,6 +961,418 @@ PROTO (nhg_activation_token, int32_t (NhgDisplay *, uint64_t, uint32_t, char *, 
             usize,
             *mut usize,
         ) -> i32 = nhg_activation_token;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The frame-parameter table's part of the header (its own table).
+    #[test]
+    fn params_header_matches() {
+        use nhglue::ffi::nhg_frame_param;
+        use nhglue::params::*;
+        let rows: &[(&str, i64)] = &[
+            ("sizeof (NhgParamValue)", size_of::<NhgParamValue>() as i64),
+            (
+                "offsetof (NhgParamValue, sym)",
+                offset_of!(NhgParamValue, sym) as i64,
+            ),
+            (
+                "offsetof (NhgParamValue, int_value)",
+                offset_of!(NhgParamValue, int) as i64,
+            ),
+            (
+                "offsetof (NhgParamValue, flt)",
+                offset_of!(NhgParamValue, flt) as i64,
+            ),
+            ("sizeof (NhgParamFrame)", size_of::<NhgParamFrame>() as i64),
+            (
+                "offsetof (NhgParamFrame, current)",
+                offset_of!(NhgParamFrame, current) as i64,
+            ),
+            (
+                "offsetof (NhgParamFrame, bg_pixel)",
+                offset_of!(NhgParamFrame, bg_pixel) as i64,
+            ),
+            (
+                "offsetof (NhgParamFrame, mouse_pixel)",
+                offset_of!(NhgParamFrame, mouse_pixel) as i64,
+            ),
+            (
+                "sizeof (NhgParamAction)",
+                size_of::<NhgParamAction>() as i64,
+            ),
+            (
+                "offsetof (NhgParamAction, flags)",
+                offset_of!(NhgParamAction, flags) as i64,
+            ),
+            (
+                "offsetof (NhgParamAction, y2)",
+                offset_of!(NhgParamAction, y2) as i64,
+            ),
+            (
+                "offsetof (NhgParamAction, alpha)",
+                offset_of!(NhgParamAction, alpha) as i64,
+            ),
+            (
+                "offsetof (NhgParamAction, pixel)",
+                offset_of!(NhgParamAction, pixel) as i64,
+            ),
+            ("NHG_PV_BIGNUM", NHG_PV_BIGNUM.into()),
+            ("NHG_PS_BELOW", NHG_PS_BELOW.into()),
+            ("NHG_PK_CURSOR_COLOR", NHG_PK_CURSOR_COLOR.into()),
+            ("NHG_PE_CALL", NHG_PE_CALL.into()),
+            ("NHG_PA_REDRAW_CURSOR", NHG_PA_REDRAW_CURSOR.into()),
+            ("NHG_PA_REPOSITION", NHG_PA_REPOSITION.into()),
+            (
+                "NHG_PA_CLEAR_BORDER_FIRST",
+                NHG_PA_CLEAR_BORDER_FIRST.into(),
+            ),
+            ("NHG_PA_CLEAR_AREA2", NHG_PA_CLEAR_AREA2.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_frame_param, int32_t (uint32_t, const NhgParamFrame *, const NhgParamValue *, size_t, NhgParamAction *));";
+        let _: unsafe extern "C" fn(
+            u32,
+            *const NhgParamFrame,
+            *const NhgParamValue,
+            usize,
+            *mut NhgParamAction,
+        ) -> i32 = nhg_frame_param;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The font records' part of the header (its own table).
+    #[test]
+    fn fontspec_header_matches() {
+        use nhglue::ffi::{nhg_font_id, nhg_font_list, nhg_font_match, nhg_font_name};
+        use nhglue::fontspec::*;
+        let rows: &[(&str, i64)] = &[
+            ("sizeof (NhgFontSpec)", size_of::<NhgFontSpec>() as i64),
+            (
+                "offsetof (NhgFontSpec, language)",
+                offset_of!(NhgFontSpec, language) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, weight)",
+                offset_of!(NhgFontSpec, weight) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, spacing)",
+                offset_of!(NhgFontSpec, spacing) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, size)",
+                offset_of!(NhgFontSpec, size) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, otf_n)",
+                offset_of!(NhgFontSpec, otf_n) as i64,
+            ),
+            (
+                "offsetof (NhgFontSpec, otf)",
+                offset_of!(NhgFontSpec, otf) as i64,
+            ),
+            ("sizeof (NhgFontEntity)", size_of::<NhgFontEntity>() as i64),
+            (
+                "offsetof (NhgFontEntity, font_id)",
+                offset_of!(NhgFontEntity, font_id) as i64,
+            ),
+            (
+                "offsetof (NhgFontEntity, synth)",
+                offset_of!(NhgFontEntity, synth) as i64,
+            ),
+            ("NHG_FS_OTF_MAX", NHG_FS_OTF_MAX as i64),
+            ("NHG_FS_SYNTH_ITALIC", NHG_FS_SYNTH_ITALIC.into()),
+            ("NHG_FS_SYNTH_BOLD", NHG_FS_SYNTH_BOLD.into()),
+            ("NHG_FS_SYNTH_MONO", NHG_FS_SYNTH_MONO.into()),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_font_id, int32_t (const char *, size_t, uint32_t *));
+PROTO (nhg_font_name, int32_t (uint32_t, char *, size_t, size_t *));
+PROTO (nhg_font_list, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, size_t *));
+PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, size_t *));";
+        let _: unsafe extern "C" fn(*const c_char, usize, *mut u32) -> i32 = nhg_font_id;
+        let _: unsafe extern "C" fn(u32, *mut c_char, usize, *mut usize) -> i32 = nhg_font_name;
+        let _: unsafe extern "C" fn(
+            *const NhgFontSpec,
+            *mut NhgFontEntity,
+            usize,
+            *mut usize,
+        ) -> i32 = nhg_font_list;
+        let _: unsafe extern "C" fn(
+            *const NhgFontSpec,
+            *mut NhgFontEntity,
+            usize,
+            *mut usize,
+        ) -> i32 = nhg_font_match;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// Naglfar's draw records (their own table).
+    #[test]
+    fn draw_header_matches() {
+        use nhglue::draw::*;
+        use nhglue::ffi::{nhg_draw, nhg_draw_glyphs, nhg_draw_image};
+        let rows: &[(&str, i64)] = &[
+            ("NHG_DRAW_FILL", NHG_DRAW_FILL.into()),
+            ("NHG_DRAW_OUTLINE", NHG_DRAW_OUTLINE.into()),
+            ("NHG_DRAW_TRAPEZOID", NHG_DRAW_TRAPEZOID.into()),
+            ("NHG_DRAW_WAVE", NHG_DRAW_WAVE.into()),
+            ("NHG_DRAW_DASH", NHG_DRAW_DASH.into()),
+            ("NHG_DRAW_BITMAP", NHG_DRAW_BITMAP.into()),
+            ("NHG_DRAW_CORNERS", NHG_DRAW_CORNERS.into()),
+            ("NHG_DRAW_GLYPHS", NHG_DRAW_GLYPHS.into()),
+            ("NHG_DRAW_IMAGE", NHG_DRAW_IMAGE.into()),
+            ("NHG_DRAW_BACKGROUND", NHG_DRAW_BACKGROUND.into()),
+            ("NHG_DRAW_PADDING", NHG_DRAW_PADDING.into()),
+            ("NHG_DRAW_COPY", NHG_DRAW_COPY.into()),
+            ("NHG_DRAW_TOP", NHG_DRAW_TOP.into()),
+            ("NHG_DRAW_OVERLAY", NHG_DRAW_OVERLAY.into()),
+            ("sizeof (NhgDrawRec)", size_of::<NhgDrawRec>() as i64),
+            ("offsetof (NhgDrawRec, r)", offset_of!(NhgDrawRec, r) as i64),
+            (
+                "offsetof (NhgDrawRec, fg)",
+                offset_of!(NhgDrawRec, fg) as i64,
+            ),
+            ("offsetof (NhgDrawRec, a)", offset_of!(NhgDrawRec, a) as i64),
+            (
+                "offsetof (NhgDrawRec, nclip)",
+                offset_of!(NhgDrawRec, nclip) as i64,
+            ),
+            (
+                "offsetof (NhgDrawRec, clip)",
+                offset_of!(NhgDrawRec, clip) as i64,
+            ),
+            (
+                "offsetof (NhgDrawRec, bits)",
+                offset_of!(NhgDrawRec, bits) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_draw, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, size_t));
+PROTO (nhg_draw_glyphs, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgDrawRec *, size_t));
+PROTO (nhg_draw_image, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, const NhgPix *));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, *const NhgDrawRec, usize) -> i32 =
+            nhg_draw;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const NhgDrawRec, usize) -> i32 =
+            nhg_draw_glyphs;
+        let _: unsafe extern "C" fn(
+            *mut NhgDisplay,
+            u64,
+            *const NhgDrawRec,
+            *const nhglue::image::NhgPix,
+        ) -> i32 = nhg_draw_image;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The image route's records (its own table).
+    #[test]
+    fn image_header_matches() {
+        use nhglue::ffi::{
+            nhg_bitmap_to_container, nhg_draw_stand_in, nhg_image_decode, nhg_image_forget,
+            nhg_image_free, nhg_image_stand_drop, nhg_image_stand_in, nhg_image_take,
+            nhg_image_transform, nhg_image_type, nhg_svg_render, nhg_svg_size, nhg_xpm_names,
+        };
+        use nhglue::image::{NhgImage, NhgPix, NhgSvgStyle};
+        let rows: &[(&str, i64)] = &[
+            ("sizeof (NhgPix)", size_of::<NhgPix>() as i64),
+            ("offsetof (NhgPix, mask)", offset_of!(NhgPix, mask) as i64),
+            ("offsetof (NhgPix, width)", offset_of!(NhgPix, width) as i64),
+            ("offsetof (NhgPix, bpp)", offset_of!(NhgPix, bpp) as i64),
+            (
+                "offsetof (NhgPix, smooth)",
+                offset_of!(NhgPix, smooth) as i64,
+            ),
+            (
+                "offsetof (NhgPix, matrix)",
+                offset_of!(NhgPix, matrix) as i64,
+            ),
+            ("sizeof (NhgSvgStyle)", size_of::<NhgSvgStyle>() as i64),
+            (
+                "offsetof (NhgSvgStyle, font_size)",
+                offset_of!(NhgSvgStyle, font_size) as i64,
+            ),
+            (
+                "offsetof (NhgSvgStyle, background)",
+                offset_of!(NhgSvgStyle, background) as i64,
+            ),
+            ("sizeof (NhgImage)", size_of::<NhgImage>() as i64),
+            (
+                "offsetof (NhgImage, has_alpha)",
+                offset_of!(NhgImage, has_alpha) as i64,
+            ),
+            (
+                "offsetof (NhgImage, delay)",
+                offset_of!(NhgImage, delay) as i64,
+            ),
+            (
+                "offsetof (NhgImage, argb_)",
+                offset_of!(NhgImage, argb) as i64,
+            ),
+            (
+                "offsetof (NhgImage, len_)",
+                offset_of!(NhgImage, len) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_image_type, int32_t (const char *, size_t));
+PROTO (nhg_xpm_names, int32_t (const uint8_t *, size_t, uint32_t, uint8_t *, size_t, size_t *, uint32_t *));
+PROTO (nhg_image_decode, int32_t (const uint8_t *, size_t, uint32_t, uint32_t, const uint32_t *, size_t, NhgImage *));
+PROTO (nhg_image_take, int32_t (NhgImage *, uint8_t *, uint8_t *));
+PROTO (nhg_image_free, int32_t (NhgImage *));
+PROTO (nhg_image_forget, int32_t (const uint8_t *));
+PROTO (nhg_image_stand_in, int32_t (const void *, const NhgPix *, uint32_t, int32_t, int32_t, int32_t, int32_t));
+PROTO (nhg_image_stand_drop, int32_t (const void *));
+PROTO (nhg_bitmap_to_container, int32_t (const uint8_t *, int32_t, int32_t, uint32_t, uint32_t, uint8_t *, int32_t));
+PROTO (nhg_draw_stand_in, int32_t (NhgDisplay *, uint64_t, const NhgDrawRec *, const void *));
+PROTO (nhg_image_transform, int32_t (int32_t, int32_t, int32_t, int32_t, double, bool, double *, int32_t *, int32_t *));
+PROTO (nhg_svg_size, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgStyle *, double *, double *));
+PROTO (nhg_svg_render, int32_t (const uint8_t *, size_t, uint32_t, const NhgSvgStyle *, int32_t, int32_t, NhgImage *));";
+        let _: unsafe extern "C" fn(*const std::ffi::c_char, usize) -> i32 = nhg_image_type;
+        let _: unsafe extern "C" fn(
+            *const u8,
+            usize,
+            u32,
+            u32,
+            *const u32,
+            usize,
+            *mut NhgImage,
+        ) -> i32 = nhg_image_decode;
+        let _: unsafe extern "C" fn(
+            *const u8,
+            usize,
+            u32,
+            *mut u8,
+            usize,
+            *mut usize,
+            *mut u32,
+        ) -> i32 = nhg_xpm_names;
+        let _: unsafe extern "C" fn(*mut NhgImage, *mut u8, *mut u8) -> i32 = nhg_image_take;
+        let _: unsafe extern "C" fn(*mut NhgImage) -> i32 = nhg_image_free;
+        let _: unsafe extern "C" fn(*const u8) -> i32 = nhg_image_forget;
+        let _: unsafe extern "C" fn(
+            *const std::ffi::c_void,
+            *const NhgPix,
+            u32,
+            i32,
+            i32,
+            i32,
+            i32,
+        ) -> i32 = nhg_image_stand_in;
+        let _: unsafe extern "C" fn(*const std::ffi::c_void) -> i32 = nhg_image_stand_drop;
+        let _: unsafe extern "C" fn(*const u8, i32, i32, u32, u32, *mut u8, i32) -> i32 =
+            nhg_bitmap_to_container;
+        let _: unsafe extern "C" fn(
+            *mut nhglue::ffi::NhgDisplay,
+            u64,
+            *const nhglue::draw::NhgDrawRec,
+            *const std::ffi::c_void,
+        ) -> i32 = nhg_draw_stand_in;
+        let _: unsafe extern "C" fn(
+            i32,
+            i32,
+            i32,
+            i32,
+            f64,
+            bool,
+            *mut f64,
+            *mut i32,
+            *mut i32,
+        ) -> i32 = nhg_image_transform;
+        let _: unsafe extern "C" fn(
+            *const u8,
+            usize,
+            u32,
+            *const NhgSvgStyle,
+            *mut f64,
+            *mut f64,
+        ) -> i32 = nhg_svg_size;
+        let _: unsafe extern "C" fn(
+            *const u8,
+            usize,
+            u32,
+            *const NhgSvgStyle,
+            i32,
+            i32,
+            *mut NhgImage,
+        ) -> i32 = nhg_svg_render;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The native font driver's fonts (its own table).
+    #[test]
+    fn font_header_matches() {
+        use nhglue::ffi::{
+            nhg_font_close, nhg_font_glyph, nhg_font_glyph_metrics, nhg_font_open, nhg_font_start,
+        };
+        use nhglue::font::*;
+        let rows: &[(&str, i64)] = &[
+            (
+                "sizeof (NhgFontMetrics)",
+                size_of::<NhgFontMetrics>() as i64,
+            ),
+            (
+                "offsetof (NhgFontMetrics, pixel_size)",
+                offset_of!(NhgFontMetrics, pixel_size) as i64,
+            ),
+            (
+                "offsetof (NhgFontMetrics, underline_thickness)",
+                offset_of!(NhgFontMetrics, underline_thickness) as i64,
+            ),
+            (
+                "offsetof (NhgFontMetrics, mono)",
+                offset_of!(NhgFontMetrics, mono) as i64,
+            ),
+            (
+                "sizeof (NhgGlyphMetrics)",
+                size_of::<NhgGlyphMetrics>() as i64,
+            ),
+            (
+                "offsetof (NhgGlyphMetrics, descent)",
+                offset_of!(NhgGlyphMetrics, descent) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+PROTO (nhg_font_start, int32_t (void));
+PROTO (nhg_font_open, int32_t (uint64_t, int32_t, NhgFontMetrics *));
+PROTO (nhg_font_close, int32_t (uint64_t));
+PROTO (nhg_font_glyph, int32_t (uint64_t, uint32_t, uint32_t *));
+PROTO (nhg_font_glyph_metrics, int32_t (uint64_t, uint32_t, uint32_t, int32_t, NhgGlyphMetrics *));";
+        let _: unsafe extern "C" fn() -> i32 = nhg_font_start;
+        let _: unsafe extern "C" fn(u64, i32, *mut NhgFontMetrics) -> i32 = nhg_font_open;
+        let _: unsafe extern "C" fn(u64) -> i32 = nhg_font_close;
+        let _: unsafe extern "C" fn(u64, u32, *mut u32) -> i32 = nhg_font_glyph;
+        let _: unsafe extern "C" fn(u64, u32, u32, i32, *mut NhgGlyphMetrics) -> i32 =
+            nhg_font_glyph_metrics;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());

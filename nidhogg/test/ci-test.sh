@@ -86,7 +86,7 @@ job native-crates | grep -qF 'set-mtimes.sh --since "$RUNNER_TEMP/nh-recorder-ta
 job native-crates | grep -qF 'if [ "$BUILT" = true ]; then git rev-parse HEAD > "$RUNNER_TEMP/nh-recorder-target/.nidhogg-source-commit"; fi' || fail "native-crates' cache does not name its commit, or names it after a red check"
 job native-crates | grep -qF "BUILT: \${{ steps.recorder.outcome == 'success' && steps.shell.outcome == 'success' && steps.glue.outcome == 'success' }}" || fail "native-crates names its commit without all three checks green"
 grep -qF 'nidhogg: artifact' "$wf"                              || fail "drgnx's tiers do not run on this run's tarballs"
-grep -qF "'unit no-lisp-writes ui macos'" "$wf"                   || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
+job changes | grep -qF '[ -n "$t" ] || t="unit no-lisp-writes ui macos"' || fail "drgnx's tiers are not unit, gate mode, GUI and macOS"
 # a release only from a pushed v* tag, never from workflow_dispatch or a pull request
 awk '/^  release:/,0' "$wf" | grep -qF "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" || fail "release not restricted to a pushed v* tag"
 # pinned actions, podman only, builds only through build.sh
@@ -94,17 +94,18 @@ awk '/^  release:/,0' "$wf" | grep -qF "if: github.event_name == 'push' && start
 ! grep -qw docker "$wf"                                           || fail "docker in $wf"
 ! grep -qE '\./configure|make -j' "$wf"                           || fail "a build outside build.sh"
 grep -qE '^permissions:' "$wf"                                    || fail "no top-level permissions"
-# every cache step keys on its inputs; the tarball cache is exact (no restore-keys) and never for a release tag
+# every cache step keys on its inputs (a hash of them, or a pinned download's own sha256); the tarball cache is exact
+# (no restore-keys) and never for a release tag
 n=$(grep -c 'uses: actions/cache/restore@' "$wf")
 [ "$n" -ge 7 ]                                                    || fail "expected the cache restore steps, found $n"
 # caches are saved right after the build, not by the job's post step: no plain actions/cache, a save step for each restore
 ! grep -q 'uses: actions/cache@' "$wf"                            || fail "a plain actions/cache step (saves only at the end of a successful job)"
 [ "$(grep -c 'uses: actions/cache/save@' "$wf")" -ge 7 ]          || fail "expected the cache save steps"
-bad=$(grep -A6 'uses: actions/cache/' "$wf" | grep -E '^[ -]*key: ' | grep -vE 'hashFiles|tree\.outputs|lisp\.outputs' || true)
+bad=$(grep -A6 'uses: actions/cache/' "$wf" | grep -E '^[ -]*key: ' | grep -vE 'hashFiles|tree\.outputs|lisp\.outputs|-[0-9a-f]{64}$' || true)
 [ -z "$bad" ]                                                     || fail "a cache key without a hash of its inputs: $bad"
 grep -A8 'id: tb' "$wf" | grep -q "startsWith(github.ref, 'refs/tags/')" || fail "the tarball cache is used for a release tag"
 step() { awk -v l="$1" 'NR>l && /^      - /{exit} NR>=l' "$wf"; }   # the step from line $1 to the next one
-for l in $(grep -nE 'id: (tb|lc)$' "$wf" | cut -d: -f1); do
+for l in $(grep -nE 'id: (tb|lc|ln)$' "$wf" | cut -d: -f1); do
   # the tarball and compiled-Lisp caches are exact-key (no restore-keys: a partly stale set is not rebuilt correctly)
   ! step "$l" | grep -q 'restore-keys'                            || fail "the exact cache at line $l has restore-keys"
 done
@@ -136,7 +137,7 @@ grep -qF 'bash nidhogg/glitnir/check.sh' <<<"$mj"                 || fail "macos
 [ "$(grep -n 'glitnir/check.sh' <<<"$mj" | head -1 | cut -d: -f1)" -lt "$(grep -n 'id: build' <<<"$mj" | head -1 | cut -d: -f1)" ] 2>/dev/null || fail "macos runs the glitnir checks after the build"
 # one Linux path: the shell is build.sh's default, so no job names a toolkit, and nothing else is packed as a tarball
 ! grep -qiE 'pgtk|--nidhogg-wayland' "$wf"                        || fail "a job names pgtk or a window system of its own"
-[ "$(grep -cE '^ +name: tarball-\$\{\{ matrix\.distro \}\}$|^ +name: tarball-macos$' "$wf")" -eq 2 ] || fail "a tarball artifact release would publish by mistake"
+[ "$(awk '/^  macos-naglfar-rows:/{skip=1;next} skip&&/^  [a-z]/{skip=0} !skip' "$wf" | grep -cE '^ +name: tarball-\$\{\{ matrix\.distro \}\}$|^ +name: tarball-macos$')" -eq 2 ] || fail "a tarball artifact release would publish by mistake"
 # the workers' jobs (engine C, PD-4): present, after linux, outside release's needs, never fail-fast, pkg suites on and off
 for j in workers-harness workers-asan workers-pkg; do
   job "$j" | grep -qE '^    needs: \[changes, images, linux\]'     || fail "no job $j (or it does not need linux)"
@@ -262,6 +263,107 @@ for j in linux macos compile-noglitnir; do
   [ "$(job "$j" | grep -cF -- '-${{ steps.tree.outputs.abi }}-')" = 2 ] || fail "$j's compiled-Lisp restore and save keys differ"
   job "$j" | grep -qF "steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31'" || fail "nidhogg-31's $j does not save its cold Lisp"
 done
+# the macOS job's byte-compiled Lisp is an entry of its own, keyed on the Lisp side alone (a C body or header change
+# still finds it), restored and saved under one key; its .eln files keep the ABI key above
+job macos | grep -qF 'elc=$(bash nidhogg/ci/lisp-key.sh --elc)'  || fail "macos does not key its byte-compiled Lisp apart"
+[ "$(job macos | grep -cF -- '-elc-${{ steps.tree.outputs.elc }}-')" = 2 ] || fail "macos's byte-compiled Lisp restore and save keys differ"
+[ "$(job macos | grep -cF -- '-eln-${{ steps.tree.outputs.abi }}-')" = 2 ] || fail "macos's .eln entry is not keyed on the ABI inputs"
+# the macOS job is two jobs that run at once, the NS app and Naglfar: each its own build, neither waiting for the other
+# (the paired timing alone fetches the NS job's tarball), the rows, inputs and artifacts as before
+job macos-naglfar | grep -qF 'build.sh --host --naglfar --dev --checking' || fail "no Naglfar build in the macos-naglfar job"
+! job macos | grep -qF -- '--host --naglfar'                             || fail "the NS job also builds Naglfar"
+for st in "Naglfar's Rust unit tests" "Naglfar's boundary check (nm-check)"; do
+  job macos-naglfar | grep -qF "name: $st" || fail "macos-naglfar lacks the step $st"
+  ! job macos | grep -qF "name: $st"       || fail "macos still has the step $st"
+done
+for st in "Naglfar GUI rows" "Naglfar paired timing (pair)"; do
+  job macos-naglfar-rows | grep -qF "name: $st" || fail "macos-naglfar-rows lacks the step $st"
+  ! job macos-naglfar | grep -qF "name: $st"    || fail "macos-naglfar still has the step $st (it runs where the NS rows' dumps are)"
+done
+for j in macos macos-naglfar; do
+  [ "$(job "$j" | grep -cE '^    needs: changes$')" = 1 ]        || fail "$j needs more than the changes job (the two macOS jobs run at once)"
+done
+job macos | grep -qF 'name: macOS GUI rows (nhmac-gui-tests.el, scales 1 and 2)' || fail "macos lost the NS GUI rows"
+job macos | grep -qF 'ip=--interpose'                              || fail "macos lost the --interpose rule"
+job macos | grep -qF 'name: nhmac-gui-logs'                        || fail "macos lost its nhmac-gui-logs artifact"
+job macos | grep -qF 'name: tarball-macos'                         || fail "macos lost its tarball-macos artifact"
+job macos | grep -qF 'inputs.ns_app_run'                           || fail "macos lost ns_app_run"
+job macos-naglfar-rows | grep -qF 'inputs.pair'                    || fail "macos-naglfar-rows lost pair"
+job macos-naglfar-rows | grep -qF 'inputs.files'                   || fail "macos-naglfar-rows lost files"
+job macos-naglfar-rows | grep -qF 'inputs.checks'                  || fail "macos-naglfar-rows lost checks"
+# the Naglfar rows compare with the NS rows' dumps, which live on the NS runner: the NS job uploads every nhmac-ns-* file,
+# the rows job downloads them into the directory the rows read (nhmac-gui/..), and takes the Naglfar build tree and the
+# tarball as artifacts; a missing artifact fails the download, which names it
+job macos | grep -qF 'name: nhmac-ns-refs'                          || fail "the NS job does not upload the NS reference dumps"
+job macos | grep -qF 'path: ${{ runner.temp }}/nhmac-gui/nhmac-ns-*' || fail "the NS reference dumps are not every nhmac-ns-* file"
+job macos-naglfar | grep -qF 'name: naglfar-build'                  || fail "macos-naglfar does not upload its build tree"
+rj=$(job macos-naglfar-rows)
+grep -qE '^    needs: \[changes, macos, macos-naglfar\]$' <<<"$rj"     || fail "macos-naglfar-rows does not wait for both builds"
+for a in naglfar-build nhmac-ns-refs tarball-macos; do
+  grep -qE "^          name: $a$" <<<"$rj"                          || fail "macos-naglfar-rows does not download $a"
+done
+grep -qF 'path: ${{ runner.temp }}/nhmac-gui' <<<"$rj"              || fail "the NS dumps are not downloaded where the Naglfar rows read them"
+! grep -qE 'continue-on-error|nhmac-ns-refs.*(skip|ignore)' <<<"$rj" || fail "macos-naglfar-rows may skip a missing artifact"
+# the ring and timing rows need a composited window: the Naglfar rows and the paired timing run with the display awake
+for s in nhmac-gui.sh nhmac-pair.sh; do
+  grep -qE "^          caffeinate -d -i -u bash nidhogg/test/$s " <<<"$rj" || fail "macos-naglfar-rows runs $s with the display free to sleep"
+done
+# nm-check reads the Naglfar archive with the Rust toolchain's llvm-nm: the job installs llvm-tools with it
+job macos-naglfar | grep -qE 'rustup toolchain install stable .*--component [a-z,]*llvm-tools' || fail "macos-naglfar does not install llvm-tools for nm-check"
+grep -qF 'lib/rustlib/$host/bin/llvm-nm' nidhogg/glue/nm-check.sh || fail "nm-check does not take the Rust toolchain's llvm-nm"
+# the paired timing still gets the NS tarball when a row before it is red (as its own step runs then)
+grep -A1 'name: The NS tarball for the paired timing' <<<"$rj" | grep -qF '!cancelled()' || fail "the paired timing's tarball is skipped after a red row"
+# the paired timing runs typing and typing under a blurred child, and is red when either is
+grep -qE '^          caffeinate .*nhmac-pair\.sh .*--row nhmac-blur-pair .*\|\| rc=1$' <<<"$rj" || fail "the paired timing does not run the blur pair"
+grep -qE '^          exit \$rc$' <<<"$rj"                          || fail "the paired timing does not fail when one pair is slower"
+job macos-naglfar | grep -qF -- "--exclude=glitnir-target"           || fail "the Naglfar build tree artifact carries the Rust target"
+job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "macos-naglfar does not follow the macOS path filter"
+job gate | grep -qF 'macos-naglfar macos-naglfar-rows " ;; esac'     || fail "the gate lets a filtered macOS run skip macos but not the Naglfar jobs"
+job gate | grep -qF 'macos-naglfar-rows " ;; esac' && job gate | grep -qE '^    needs: .*macos-naglfar-rows' || fail "the gate does not need macos-naglfar-rows"
+# a scratch/* run builds the NS app with only the preloaded Lisp native-compiled (no JIT in the image) and says so; every
+# other run (nidhogg-31, tags, pull requests) keeps full AOT, and the tarball test checks the mode it was built in
+job macos | grep -qF "PRELOADED: \${{ startsWith(github.ref, 'refs/heads/scratch/') }}" || fail "macos does not pick the preloaded-only mode for scratch/* alone"
+[ "$(job macos | grep -cF 'NIDHOGG_BUILD_NATIVE_PRELOADED:')" = 2 ]  || fail "macos's build and pack steps do not both take the native-compilation mode"
+job macos | grep -qF 'NIDHOGG_BUILD_NATIVE_PRELOADED=${{ steps.mode.outputs.preloaded' || fail "macos's check stage does not take the native-compilation mode"
+job macos | grep -qF 'native compilation: preloaded Lisp only' && job macos | grep -qF 'native compilation: all Lisp ahead of time' || fail "macos does not log its native-compilation mode"
+job macos | grep -A1 'id: ln$' | grep -qF "steps.mode.outputs.preloaded != 'true'" || fail "macos restores .eln files into a preloaded-only build"
+grep -qF -- '--native-preloaded' nidhogg/build.sh && grep -qF 'NIDHOGG_BUILD_LISP_CACHE_ELC' nidhogg/build.sh || fail "build.sh has no preloaded-only mode"
+grep -qF 'native-comp-jit-compilation is on' nidhogg/test/tarball-test.sh && grep -qF 'an AOT build with only' nidhogg/test/tarball-test.sh || fail "the tarball test does not check what each native-compilation mode promises"
+# the Naglfar build does not compile the Lisp again: it takes the NS job's byte-compiled entry (the same key) before make,
+# with the file times set, and keeps its configure checks in an entry of its own
+nk="lisp-macos-\${{ runner.arch }}-\${{ steps.tc.outputs.v }}-\${{ runner.temp }}-elc-\${{ steps.tree.outputs.elc }}-\${{ hashFiles('nidhogg/build.sh') }}"
+job macos-naglfar | grep -qF "key: $nk"                            || fail "macos-naglfar does not restore the NS job's byte-compiled Lisp entry"
+job macos | grep -qF "key: $nk"                                    || fail "the byte-compiled Lisp key moved in macos"
+job macos-naglfar | grep -A1 'id: lc$' | grep -qF "github.ref != 'refs/heads/nidhogg-31'" || fail "macos-naglfar restores compiled Lisp for nidhogg-31"
+job macos-naglfar | grep -A1 'id: lc$' | grep -qF "!startsWith(github.ref, 'refs/tags/')" || fail "macos-naglfar restores compiled Lisp for a tag"
+job macos-naglfar | grep -qF "NIDHOGG_BUILD_LISP_CACHE_ELC: '1'"   || fail "macos-naglfar's build does not take the byte-compiled part of the NS entry"
+job macos-naglfar | grep -qF 'NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache' || fail "macos-naglfar's build has no compiled-Lisp cache directory"
+nj2=$(job macos-naglfar)
+ln_of() { grep -n "$1" <<<"$nj2" | head -1 | cut -d: -f1; }
+[ "$(ln_of 'id: lc$')" -lt "$(ln_of 'bash nidhogg/ci/set-mtimes.sh')" ] && [ "$(ln_of 'bash nidhogg/ci/set-mtimes.sh')" -lt "$(ln_of 'id: nbuild')" ] || fail "macos-naglfar does not restore the Lisp, set the file times, then build"
+[ "$(job macos-naglfar | grep -cF -- 'key: configure-macos-naglfar-')" = 2 ] || fail "macos-naglfar's configure checks are not restored and saved under one key"
+job macos-naglfar | grep -qF 'NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache' || fail "macos-naglfar's build keeps no configure cache"
+# the series job keeps the pinned cargo-deny tarball in a cache keyed on its version and sha256, downloads it only when
+# missing, checks the sha256 either way, and saves only after the checks passed
+[ "$(job tree | grep -cF 'key: cargo-deny-0.20.2-9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f')" = 2 ] || fail "the cargo-deny tarball is not restored and saved under its version and sha256"
+job tree | grep -qF '[ -s "$RUNNER_TEMP/cd.tgz" ] ||'             || fail "cargo-deny is downloaded even when restored"
+job tree | grep -qF 'cd.tgz" | sha256sum -c -'                     || fail "the cargo-deny tarball's sha256 is not checked"
+job tree | grep -A1 "name: Save cargo-deny's release" | grep -qF 'success() &&' || fail "a cargo-deny tarball can be saved after failed checks"
+# the NS step inserts the counting interposer exactly when the selector selects a baseline row (nhmac-interposer-*,
+# nhmac-ns-*) or is empty: its decision, run for each selector
+ipd=$(job macos | sed -n '/^ *ip=""$/,/ip=--interpose; fi$/p' | sed 's/^ *//')
+ipfor() { (CHECKS=$1; ip=; eval "$ipd"; echo "${ip:-none}"); }
+[ -n "$ipd" ] || fail "the NS step decides no interposer"
+[ "$(ipfor '')" = --interpose ]                                     || fail "a run with no selector gets no interposer"
+[ "$(ipfor 'nhmac-')" = --interpose ]                               || fail "nhmac- selects a baseline row but gets no interposer"
+[ "$(ipfor 'nhmac-frame-opens|nhmac-ns-menu-dump')" = --interpose ] || fail "a selector naming a baseline row gets no interposer"
+[ "$(ipfor 'nhmac-frame-opens')" = none ]                           || fail "nhmac-frame-opens selects no baseline row but gets the interposer"
+# a row-only run leaves out drgnx's macOS suite and says so; a full run keeps every tier, and the gate accepts the
+# skipped drgnx job only when no tier is left
+job changes | grep -qF 'drgnx macOS suite: skipped, row-only run' || fail "a row-only run does not say it skipped drgnx's macOS suite"
+job changes | grep -qF "''|none|build-only) ;;"                   || fail "the drgnx suite skip is not limited to row selectors"
+job drgnx | grep -qF "needs.changes.outputs.tiers != 'none'"      || fail "the drgnx job runs with no tier"
+job gate | grep -qF '[ "$TIERS" != none ] || allow="$allow drgnx "' || fail "the gate does not accept the drgnx job a row-only run skipped"
 job compile-noglitnir | grep -qF -- '--without-glitnir --dev' || fail "compile-noglitnir is not a dev build"
 grep -qF 'nidhogg-eln-guard-check' nidhogg/build.sh                || fail "build.sh does not guard restored .eln files"
 grep -qF 'if [ "$rc" = 75 ]; then' nidhogg/build.sh                || fail "build.sh does not build cold after the guard's verdict"

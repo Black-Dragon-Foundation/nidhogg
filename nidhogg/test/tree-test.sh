@@ -10,10 +10,10 @@ command -v unifdef >/dev/null || { echo "TREE FAIL: unifdef is not installed (th
 
 # Flag-group rule: for each group G with commits on HEAD (subject 'nidhogg: G:'), with the defines of every group that
 # has commits in G's range undefined, the files G touched equal G's base.  Runs in the current repo.
-# FLAG_GROUPS (overridable) = name:define:feature, space separated.  ${NAME}_BASE (upper case; GLITNIR_BASE keeps
+# FLAG_GROUPS (overridable) = name:define:feature, space separated; define is a comma list (a group's own defines).  ${NAME}_BASE (upper case; GLITNIR_BASE keeps
 # working, overridable) defaults to the parent of the oldest commit on HEAD whose subject starts 'nidhogg: <name>:'.
 # Order-independent: either group may be on top.
-FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers shell:HAVE_NHWL:nidhogg-wayland history:HAVE_NIDHOGG_HISTORY:nidhogg-history'
+FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers shell:HAVE_NHWL,NHWL_WAYLAND:nidhogg-wayland history:HAVE_NIDHOGG_HISTORY:nidhogg-history naglfar:HAVE_NHMAC:naglfar'
 # Commits listed in SERIES_EXCEPTIONS (default nidhogg/test/series-exceptions.txt: "<sha> <reason>" per line) are
 # misfiled commits the release rebuild re-subjects; the rule does not count them.
 series_exception() {
@@ -33,7 +33,7 @@ lisp_group_file_edited_by_others() {
   return 1
 }
 flag_rule() {
-  local g name def ft b var first f sha body i j c n matched feat lowest
+  local g name def ft b var first f sha body i j c n matched feat lowest d
   local -a gname=() gdef=() gfeat=() gbase=() flags=() feats=()
   for g in ${FLAG_GROUPS:-$FLAG_GROUPS_DEFAULT}; do
     IFS=: read -r name def ft <<<"$g"
@@ -50,7 +50,7 @@ flag_rule() {
     flags=(); feats=()
     for j in "${!gname[@]}"; do   # U: the defines of every group with commits in this group's range
       if [ "$i" = "$j" ] || [ -n "$(git rev-list -n 1 --grep="^nidhogg: ${gname[j]}:" "${gbase[i]}..HEAD")" ]; then
-        flags+=("-U${gdef[j]}"); feats+=("${gfeat[j]}")
+        for d in ${gdef[j]//,/ }; do flags+=("-U$d"); done; feats+=("${gfeat[j]}")
       fi
     done
     while IFS= read -r f; do
@@ -67,11 +67,11 @@ flag_rule() {
         # C sources only (src/Makefile.in is not preprocessed).  Both sides go through unifdef: it also folds unrelated
         # always-false conditions such as '#if defined X && 0', which would show as a diff against the raw base.
         src/*.[chm])
-          # A C file a flag group created is the groups' own file, as for Lisp below: a later group may edit it.
-          if [ -z "$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1 | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ] &&
-             [ -z "$(git log --format=%s "${gbase[i]}..HEAD" -- "$f" | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ]; then
-            continue
-          fi
+          # A C file a flag group created is that group's own file (unguarded): the other groups' checks skip it.
+          sub=$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1)
+          for j in "${!gname[@]}"; do
+            case $sub in "nidhogg: ${gname[j]}:"*) [ "$i" != "$j" ] && [ -n "$(git rev-list -n 1 --grep="^nidhogg: ${gname[j]}:" "${gbase[i]}..HEAD")" ] && continue 2 ;; esac
+          done
           cmp -s <(git show "HEAD:$f" | unifdef "${flags[@]}" 2>/dev/null) \
                  <(git show "${gbase[i]}:$f" | unifdef "${flags[@]}" 2>/dev/null) ||
             fail "$f changes code outside ${gdef[i]}" ;;
@@ -107,6 +107,14 @@ flag_rule() {
   done < <(git log --format=%H "$lowest..HEAD")
 }
 
+# Upstream NS files stay as they were at the Naglfar base (NAGLFAR_BASE, default refs/naglfar/base; no base, no check).
+ns_untouched() {
+  local b=${1:-${NAGLFAR_BASE:-refs/naglfar/base}} d
+  git rev-parse --verify --quiet "$b^{commit}" >/dev/null || return 0
+  d=$(git diff --name-only "$b" HEAD -- 'src/ns*' nextstep/ lisp/term/ns-win.el)
+  [ -z "$d" ] || fail "an upstream NS file changed: $(echo "$d" | tr '\n' ' ')"
+}
+
 # Subject rule: every commit on HEAD above BASE starts 'nidhogg: '.  Merge commits (more than one parent) are skipped:
 # a merge on an integration line never enters the final series, which the release rebuilds as linear commits.
 subject_rule() {
@@ -119,7 +127,8 @@ subject_rule() {
   done < <(git log --no-merges --format=%s "$1..HEAD")
 }
 
-# TREE_TEST_SELF=1: the rule on temp repo fixtures.
+# TREE_TEST_SELF=1 (or --self-test): the rule on temp repo fixtures.
+[ "${1:-}" = --self-test ] && { TREE_TEST_SELF=1; shift; }
 if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   command -v unifdef >/dev/null || { echo "tree self-test: unifdef is not installed"; exit 1; }
   self=$(mktemp -d) || exit 1
@@ -217,6 +226,26 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
   putf "nidhogg: pgtk: p" src/nhwl.c 'int s;\nint t;\n'
   expect "another commit editing a C file a group created" "belongs to no flag group; it goes below the groups"
+  fixture; putf "nidhogg: shell: s" src/x.c 'int x;\n'; put "nidhogg: glitnir: g" "$in"; putf "nidhogg: shell: s2" src/x.c 'int x;\nint y;\n'
+  expect "a shell commit editing an unguarded C file the shell group created" ""
+  fixture; putf "nidhogg: shell: s" src/x.c 'int x;\n'; put "nidhogg: glitnir: g" "${in}int out;\n"
+  expect "an upstream C file changed outside its flag, beside a group-created file" "src/a.c changes code outside HAVE_GLITNIR"
+  fixture; put "nidhogg: glitnir: g" "$in"; put "nidhogg: naglfar: n" "${in}#ifdef HAVE_NHMAC\nint n;\n#endif\n"
+  expect "a naglfar HAVE_NHMAC hunk" ""
+  wg='#if defined HAVE_NIDHOGG_WORKERS && defined HAVE_GLITNIR\nvoid f (void)\n{\n'
+  fixture; put "nidhogg: glitnir: g" "int a;\n${wg}  if (!x)\n    return;\n  y ();\n}\n#endif\n"
+  put "nidhogg: naglfar: n" "int a;\n${wg}#ifndef HAVE_NHMAC\n  if (!x)\n    return;\n#endif\n  y ();\n#ifdef HAVE_NHMAC\n  z ();\n#endif\n}\n#endif\n"
+  expect "HAVE_NHMAC blocks inside a workers-and-glitnir function" ""
+  fixture; put "nidhogg: glitnir: g" "int a;\n${wg}  y ();\n}\n#endif\n"
+  put "nidhogg: naglfar: n" "int a;\n${wg}  y ();\n  z ();\n}\n#endif\n"
+  expect "an unguarded line inside a workers-and-glitnir function" "src/a.c changes code outside HAVE_NHMAC"
+  fixture; put "nidhogg: shell: s" 'int a;\n#ifdef HAVE_NHWL\nint s;\n#endif\n'; put "nidhogg: shell: s2" 'int a;\n#ifdef NHWL_WAYLAND\nint s;\n#endif\n'
+  expect "an upstream HAVE_NHWL turned into NHWL_WAYLAND" ""
+  fixture; putf "upstream ns" src/nsterm.m 'a\n'; ns=$(git rev-parse HEAD)
+  putf "nidhogg: naglfar: n" src/nsterm.m 'a\nb\n'
+  fails=0; ns_untouched "$ns" >/dev/null; [ "$fails" = 1 ] || { echo "tree self-test: case 'an NS file changed' failed"; exit 1; }
+  putf "nidhogg: naglfar: n2" src/nsterm.m 'a\n'; fails=0; ns_untouched "$ns"; [ "$fails" = 0 ] ||
+    { echo "tree self-test: case 'an NS file restored' failed"; exit 1; }
   subj() { subject_rule "$(git -C "$self/r" rev-list --max-parents=0 HEAD)"; }
   fixture; git checkout -q -b side; putf "nidhogg: glitnir: g" src/b.c 'int b;\n'; git checkout -q -
   put "nidhogg: pgtk: p" "int a;\n/* p */\n"; git merge -q --no-ff -m "Merge side: not a series subject" side
@@ -224,7 +253,7 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; put "pgtk change without the prefix" "int a;\n/* p */\n"
   RULE=subj expect "a non-merge commit with a non-nidhogg subject" "commit subject does not start with 'nidhogg: '"
   unset RULE
-  echo "tree self-test: 30 cases ok"
+  echo "tree self-test: 38 cases ok"
   exit 0
 fi
 
@@ -278,6 +307,7 @@ hits=$(git ls-files nidhogg .github README.md | while IFS= read -r f; do
 [ -z "$hits" ] || fail "absolute home path in: $(echo "$hits" | tr '\n' ' ')"
 
 flag_rule
+ns_untouched
 
 # the shell API and the glue name no backend: no 'wayland_' identifier in nhshell's source outside src/wayland/, nor
 # in the glue's source

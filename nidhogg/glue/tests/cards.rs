@@ -317,6 +317,43 @@ mod cards {
         assert_eq!(nhglue::cards::count(&mut b, key), 0);
     }
 
+    /// For a shell that shows the cards itself: each card drawn alone, in the native area, once per change.  The
+    /// left window's top-left corner pixel is the colour beneath (opaque), the middle of its text is clear, the gap
+    /// carries its shadow; the same list again gives nothing; a card that goes leaves an empty list.
+    #[test]
+    fn cards_drawn_alone_for_a_shell_once_per_change() {
+        use nhglue::cards::images_at;
+        let mut b = Backings::default();
+        let (key, _) = frame(&mut b, 120);
+        let one = [window(70, left(), Some(card())), window(71, right(), None)];
+        let list = images_at(&mut b, key, &one).unwrap().expect("a change");
+        assert_eq!(list.len(), 1);
+        let c = &list[0];
+        assert_eq!(c.id, card_id(70));
+        let (x, y, w, h) = c.rect;
+        let px = c.argb.as_ref().expect("an image");
+        assert_eq!(px.len(), w as usize * h as usize);
+        let at = |px_x: i32, px_y: i32| px[((px_y - y) * w as i32 + (px_x - x)) as usize];
+        // the window's top-left pixel (native 0,0) shows what lies beneath, opaque
+        assert_eq!(at(0, 0) >> 24, 0xff, "corner {:08x}", at(0, 0));
+        assert_eq!(at(0, 0) & 0xff_ffff, 0x12_3456);
+        // the middle of the text is the window's own
+        assert_eq!(at(47, 40), 0);
+        // the gap beside it, below the top, has the shadow or the ring
+        assert!(x + (w as i32) > 94 && at(95, 40) >> 24 > 0);
+        // nothing changed: nothing to give
+        assert!(images_at(&mut b, key, &one).unwrap().is_none());
+        // the card goes
+        let none = [window(70, left(), None), window(71, right(), None)];
+        assert!(
+            images_at(&mut b, key, &none)
+                .unwrap()
+                .expect("a change")
+                .is_empty()
+        );
+        assert!(images_at(&mut b, key, &none).unwrap().is_none());
+    }
+
     /// A scale change gives the cards again at the new scale: the radius, the shadow and the ring in device px.
     #[test]
     fn scale_change_reapplies() {

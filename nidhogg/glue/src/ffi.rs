@@ -130,12 +130,14 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Run the shell's work that must happen on the host's thread (configure and surface events) and flush.
+    /// Run the shell's work that must happen on the host's thread (configure and surface events) and flush.  At a
+    /// drain's end (after `nhg_next`) it asks the platform for new events only when the drain needs them
+    /// (`drain::closing_pump`).
     ///
     /// # Safety
     /// `d` is null or a live display.
     fn nhg_dispatch_main(d: *mut NhgDisplay) -> i32 |state| {
-        state.backend().dispatch_main()?;
+        crate::drain::dispatch_main(state)?;
         Ok(NHG_OK)
     }
 }
@@ -993,6 +995,23 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// `parent-frame` changed: `window` takes the place `w` describes (`w->kind`, `w->parent`, `w->x`, `w->y`; a
+    /// top-level's title and flags), keeping its id and its picture, and its frame takes `w->role` and `w`'s facts.
+    /// `NHG_E_UNSUPPORTED` where the shell cannot (a Wayland surface keeps its role): C makes the window again.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `w` is null or readable, its title null or holding its length's bytes.
+    fn nhg_window_reparent(d: *mut NhgDisplay, window: u64, w: *const window::NhgWindowDesc) -> i32 |state| {
+        // SAFETY: null or readable (the caller's promise).
+        let desc = unsafe { w.as_ref() }.ok_or(GlueError::Arg)?;
+        // SAFETY: the title is null or holds its length's bytes, valid for the call (the caller's promise).
+        let title = unsafe { window::text(desc.title, desc.title_len)? };
+        window::reparent(state, window, desc, title)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// The window's title, `len` bytes of UTF-8 at `title` (up to a NUL).
     ///
     /// # Safety
@@ -1182,6 +1201,18 @@ nhg_export! {
     /// `d` is null or a live display.
     fn nhg_window_min_size(d: *mut NhgDisplay, window: u64, w: i32, h: i32) -> i32 |state| {
         window::min_size(state, window, w, h)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Place the top-level frame with its top-left at (`x`, `y`) device pixels from the main screen's top-left, as NS
+    /// places a frame.  `NHG_E_ARG` for a child frame, `NHG_E_UNSUPPORTED` where clients have no position (Wayland).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_window_place(d: *mut NhgDisplay, window: u64, x: i32, y: i32) -> i32 |state| {
+        window::place(state, window, x, y)?;
         Ok(NHG_OK)
     }
 }
@@ -1407,6 +1438,504 @@ nhg_export! {
     fn nhg_scroll_window(d: *mut NhgDisplay, window: u64, frame: u64, w_seq: u64, rect: NhgRect, run: NhgRect, to_y: i32, flags: u32) -> i32 |state| {
         let own = crate::layers::scroll(state, window, frame, w_seq, rect, run, to_y, flags)?;
         Ok(i32::from(own))
+    }
+}
+
+nhg_export! {
+    /// Paint the `n` draw records at `recs` (Naglfar's `nhmacdraw.c`) into frame `frame`'s backing, each as it comes
+    /// (device pixels with the native area's origin).  A record the glue refuses is skipped and the call returns
+    /// `NHG_E_ARG` after the rest are painted.  `NHG_E_UNSUPPORTED` where the shell has no painter.  Writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `recs` holds `n` readable records, each `NHG_DRAW_BITMAP` one's `bits` its
+    /// `r.h` readable rows.
+    fn nhg_draw(d: *mut NhgDisplay, frame: u64, recs: *const crate::draw::NhgDrawRec, n: usize) -> i32 |state| {
+        if n == 0 {
+            return Ok(NHG_OK);
+        }
+        if recs.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null, with `n` readable records (the caller's promise).
+        let recs = unsafe { std::slice::from_raw_parts(recs, n) };
+        let f = state.backings.frame_mut(frame)?;
+        let mut bad = false;
+        for r in recs {
+            let bits: &[u16] = if r.kind == crate::draw::NHG_DRAW_BITMAP && !r.bits.is_null() && r.r.h > 0 {
+                // SAFETY: `r.h` readable rows (the caller's promise).
+                unsafe { std::slice::from_raw_parts(r.bits, r.r.h as usize) }
+            } else {
+                &[]
+            };
+            match crate::draw::decode(r, bits) {
+                Ok(mut p) => f.paint(&mut p)?,
+                Err(_) => bad = true,
+            }
+        }
+        if bad { Err(GlueError::Arg) } else { Ok(NHG_OK) }
+    }
+}
+
+nhg_export! {
+    /// Paint the glyph run `rec` (`NHG_DRAW_GLYPHS`; its `bits` holds `n` glyphs) of the open font `font` into frame
+    /// `frame`'s backing, each glyph placed as the font lays it out.  `NHG_E_ARG` for a record the glue refuses,
+    /// `NHG_E_STATE` for a font that is not open, `NHG_E_UNSUPPORTED` where the shell has no painter.  Writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `rec` is readable and its `bits` holds `n` readable glyphs (null when `n` is 0).
+    fn nhg_draw_glyphs(d: *mut NhgDisplay, frame: u64, font: u64, rec: *const crate::draw::NhgDrawRec, n: usize) -> i32 |state| {
+        if rec.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and readable (the caller's promise).
+        let rec = unsafe { &*rec };
+        let glyphs: &[u16] = match (n, rec.bits.is_null()) {
+            (0, _) => &[],
+            (_, true) => return Err(GlueError::Arg),
+            // SAFETY: `n` readable glyphs (the caller's promise).
+            _ => unsafe { std::slice::from_raw_parts(rec.bits, n) },
+        };
+        let padding = rec.flags & crate::draw::NHG_DRAW_PADDING != 0;
+        let (xs, integral) = crate::font::run(font, glyphs, padding).ok_or(GlueError::State)?;
+        let mut p = crate::draw::decode_glyphs(rec, font, glyphs, xs, integral).map_err(|_| GlueError::Arg)?;
+        state.backings.frame_mut(frame)?.paint(&mut p)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Paint the image record `rec` (`NHG_DRAW_IMAGE`) of the container `pix` into frame `frame`'s backing.  The
+    /// container is wrapped as a `CGImage` the first time it is drawn and kept until `nhg_image_forget` names its pixels
+    /// or its mask.  `NHG_E_ARG` for a record or container the glue refuses, `NHG_E_UNSUPPORTED` where the shell has no
+    /// painter.  Writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `rec` and `pix` are readable, and `pix`'s `data` (and `mask` when not null) hold
+    /// its rows.
+    fn nhg_draw_image(d: *mut NhgDisplay, frame: u64, rec: *const crate::draw::NhgDrawRec, pix: *const crate::image::NhgPix) -> i32 |state| {
+        if rec.is_null() || pix.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and readable (the caller's promise).
+        let (rec, pix) = unsafe { (&*rec, *pix) };
+        let bytes = if pix.bpp == 8 { 1 } else { 4 };
+        if pix.data.is_null() || pix.width <= 0 || pix.height <= 0 || pix.stride < pix.width * bytes {
+            return Err(GlueError::Arg);
+        }
+        let (w, h) = (pix.width as usize, pix.height as usize);
+        // SAFETY: the container's rows (the caller's promise).
+        let data = unsafe { std::slice::from_raw_parts(pix.data, pix.stride as usize * (h - 1) + w * bytes as usize) };
+        let mask = (bytes == 4 && !pix.mask.is_null() && pix.mask_stride >= pix.width)
+            // SAFETY: the mask's rows (the caller's promise).
+            .then(|| unsafe { std::slice::from_raw_parts(pix.mask, pix.mask_stride as usize * (h - 1) + w) });
+        let key = (pix.data as usize, pix.width, pix.height);
+        // what the picture is made with: the mask, or an 8-bit container's colour
+        let made_with = if bytes == 1 { !(rec.fg as usize) } else { mask.map_or(0, |m| m.as_ptr() as usize) };
+        // the picture's first word when this draw makes it (the test hooks' image trace)
+        let made = std::cell::Cell::new(None);
+        #[cfg(all(feature = "macos", target_os = "macos"))]
+        nhshell::macos::images::with_picture(
+            key,
+            made_with,
+            || {
+                let words = crate::image::combine(&pix, data, mask, rec.fg).unwrap_or_default();
+                made.set(words.first().copied());
+                words
+            },
+            |_| (),
+        )
+        .ok_or(GlueError::Arg)?;
+        nhshell::trace::image(nhshell::trace::ImageDraw {
+            w: pix.width,
+            h: pix.height,
+            bpp: pix.bpp,
+            mask: mask.is_some(),
+            word: if bytes == 1 { u32::from(data[0]) } else { u32::from_ne_bytes([data[0], data[1], data[2], data[3]]) },
+            made: made.get(),
+            rect: (rec.r.x, rec.r.y, rec.r.w, rec.r.h),
+            clip: (rec.nclip > 0).then(|| (rec.clip[0].x, rec.clip[0].y, rec.clip[0].w, rec.clip[0].h)),
+            src: (rec.a, rec.b),
+            matrix: pix.matrix,
+        });
+        #[cfg(not(all(feature = "macos", target_os = "macos")))]
+        let _ = (data, mask);
+        let mut p = crate::draw::decode_image(rec, key, made_with, &pix.matrix, pix.smooth != 0).map_err(|_| GlueError::Arg)?;
+        state.backings.frame_mut(frame)?.paint(&mut p)?;
+        Ok(NHG_OK)
+    }
+}
+
+// ---- Images (`image.rs`; macOS) ---------------------------------------------------------------------------------
+
+/// An image's bytes: the `len` bytes at `src`, or the file they name when `is_file`.  `State` when it cannot be read.
+///
+/// # Safety
+/// `src` holds `len` readable bytes for `'a`.
+unsafe fn image_source<'a>(
+    src: *const u8,
+    len: usize,
+    is_file: u32,
+) -> Result<std::borrow::Cow<'a, [u8]>, GlueError> {
+    // SAFETY: the caller's promise.
+    let src = unsafe { std::slice::from_raw_parts(src, len) };
+    if is_file == 0 {
+        return Ok(std::borrow::Cow::Borrowed(src));
+    }
+    use std::os::unix::ffi::OsStrExt;
+    std::fs::read(std::ffi::OsStr::from_bytes(src))
+        .map(std::borrow::Cow::Owned)
+        .map_err(|_| GlueError::State)
+}
+
+/// The file an SVG was read from (for its relative references), when `is_file`.
+///
+/// # Safety
+/// `src` holds `len` readable bytes.
+#[cfg(feature = "svg")]
+unsafe fn image_file(src: *const u8, len: usize, is_file: u32) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: the caller's promise.
+    (is_file != 0).then(|| {
+        std::ffi::OsStr::from_bytes(unsafe { std::slice::from_raw_parts(src, len) }).into()
+    })
+}
+
+nhg_export! {
+    /// The SVG in the `len` bytes at `src` (a file name when `is_file`), read with `style`: its own size in pixels into
+    /// `*w`, `*h`.  `NHG_E_STATE` when it cannot be read or parsed, `NHG_E_UNSUPPORTED` in a build without SVG.
+    ///
+    /// # Safety
+    /// `src` holds `len` readable bytes; `style` is readable and its strings hold their lengths; `w` and `h` are
+    /// writable.
+    unlocked fn nhg_svg_size(src: *const u8, len: usize, is_file: u32, style: *const crate::image::NhgSvgStyle, w: *mut f64, h: *mut f64) -> i32 {
+        if src.is_null() || style.is_null() || w.is_null() || h.is_null() {
+            return Err(GlueError::Arg);
+        }
+        #[cfg(feature = "svg")]
+        {
+            // SAFETY: the caller's promises.
+            let (bytes, file) = unsafe { (image_source(src, len, is_file)?, image_file(src, len, is_file)) };
+            // SAFETY: as above.
+            let style = unsafe { crate::image::svg_style(&*style, file.as_deref()) };
+            let (sw, sh) = nhshell::svg::size(&bytes, &style).ok_or(GlueError::State)?;
+            // SAFETY: writable (the caller's promise).
+            unsafe { (w.write(sw), h.write(sh)) };
+            Ok(NHG_OK)
+        }
+        #[cfg(not(feature = "svg"))]
+        {
+            let _ = (len, is_file);
+            Err(GlueError::Code(crate::abi::NHG_E_UNSUPPORTED))
+        }
+    }
+}
+
+nhg_export! {
+    /// The SVG in the `len` bytes at `src` (a file name when `is_file`) drawn with `style` at `width` x `height` over
+    /// its background into `*out` (opaque; `nhg_image_take` or `nhg_image_free` frees it).  `NHG_E_STATE` when it
+    /// cannot be read, parsed or drawn, `NHG_E_UNSUPPORTED` in a build without SVG.
+    ///
+    /// # Safety
+    /// As `nhg_svg_size`; `out` is writable.
+    unlocked fn nhg_svg_render(src: *const u8, len: usize, is_file: u32, style: *const crate::image::NhgSvgStyle, width: i32, height: i32, out: *mut crate::image::NhgImage) -> i32 {
+        if src.is_null() || style.is_null() || out.is_null() || width <= 0 || height <= 0 {
+            return Err(GlueError::Arg);
+        }
+        #[cfg(feature = "svg")]
+        {
+            // SAFETY: the caller's promises.
+            let (bytes, file) = unsafe { (image_source(src, len, is_file)?, image_file(src, len, is_file)) };
+            // SAFETY: as above.
+            let (s, bg) = unsafe { (crate::image::svg_style(&*style, file.as_deref()), (*style).background) };
+            let (w, h) = (width as u32, height as u32);
+            let argb = nhshell::svg::render(&bytes, &s, bg, w, h).ok_or(GlueError::State)?;
+            // SAFETY: writable (the caller's promise).
+            unsafe { out.write(crate::image::opaque(w, h, argb)) };
+            Ok(NHG_OK)
+        }
+        #[cfg(not(feature = "svg"))]
+        {
+            let _ = (len, is_file);
+            Err(GlueError::Code(crate::abi::NHG_E_UNSUPPORTED))
+        }
+    }
+}
+
+nhg_export! {
+    /// `NHG_OK` when `image.c`'s native route takes the image type named by the `len` bytes at `name`, else
+    /// `NHG_E_UNSUPPORTED`.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `name` is null or holds `len` readable bytes.
+    unlocked fn nhg_image_type(name: *const c_char, len: usize) -> i32 {
+        if name.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: `len` readable bytes (the caller's promise).
+        let name = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), len) };
+        match std::str::from_utf8(name) {
+            Ok(n) if cfg!(all(feature = "macos", target_os = "macos")) && crate::image::supported(n) => Ok(NHG_OK),
+            _ => Err(GlueError::Code(crate::abi::NHG_E_UNSUPPORTED)),
+        }
+    }
+}
+
+nhg_export! {
+    /// Decode frame `index` of the image in the `len` bytes at `src` (a file name when `is_file`) into `*out`, whose
+    /// pixels `nhg_image_take` or `nhg_image_free` frees.  An XPM's colours are the `ncolors` words at `colors`
+    /// (`0xRRGGBB`), one for each name `nhg_xpm_names` gives, in its order; anything else takes none.  `NHG_E_STATE`
+    /// when the file cannot be read or decoded or has no such frame, or the colours do not match the names.
+    ///
+    /// # Safety
+    /// `src` holds `len` readable bytes; `colors` is null or holds `ncolors` words; `out` is writable.
+    unlocked fn nhg_image_decode(src: *const u8, len: usize, is_file: u32, index: u32, colors: *const u32, ncolors: usize, out: *mut crate::image::NhgImage) -> i32 {
+        if src.is_null() || out.is_null() || (colors.is_null() && ncolors > 0) {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: `len` readable bytes (the caller's promise).
+        let bytes = unsafe { image_source(src, len, is_file) }?;
+        let colors = if ncolors == 0 {
+            &[][..]
+        } else {
+            // SAFETY: `ncolors` readable words (the caller's promise).
+            unsafe { std::slice::from_raw_parts(colors, ncolors) }
+        };
+        let img = crate::image::decode(&bytes, index, colors).ok_or(GlueError::State)?;
+        // SAFETY: writable (the caller's promise).
+        unsafe { out.write(img) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The colour names an XPM in the `len` bytes at `src` (a file name when `is_file`) needs resolved, each once and
+    /// NUL-terminated, one after another, into `out` (`cap` bytes; may be null when `cap` is 0); `*need` gets their
+    /// bytes and `*count` their number (0 and 0 for anything that is not an XPM).  `NHG_E_TOO_SMALL` when `cap` is
+    /// below `*need`, `out` untouched; `NHG_E_STATE` when the file cannot be read or the XPM does not parse.
+    ///
+    /// # Safety
+    /// `src` holds `len` readable bytes; `out` is null or holds `cap` writable bytes; `need` and `count` are writable.
+    unlocked fn nhg_xpm_names(src: *const u8, len: usize, is_file: u32, out: *mut u8, cap: usize, need: *mut usize, count: *mut u32) -> i32 {
+        if src.is_null() || need.is_null() || count.is_null() || (out.is_null() && cap > 0) {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: `len` readable bytes (the caller's promise).
+        let bytes = unsafe { image_source(src, len, is_file) }?;
+        let names = if crate::xpm::is_xpm(&bytes) {
+            crate::xpm::names(&bytes).ok_or(GlueError::State)?
+        } else {
+            Vec::new()
+        };
+        let mut joined = Vec::new();
+        for n in &names {
+            joined.extend_from_slice(n.as_bytes());
+            joined.push(0);
+        }
+        // SAFETY: writable (the caller's promise).
+        unsafe {
+            need.write(joined.len());
+            count.write(u32::try_from(names.len()).map_err(|_| GlueError::State)?);
+        }
+        if cap < joined.len() {
+            return Err(GlueError::Code(crate::abi::NHG_E_TOO_SMALL));
+        }
+        if !joined.is_empty() {
+            // SAFETY: `cap` writable bytes, at least `joined.len()`.
+            unsafe { std::ptr::copy_nonoverlapping(joined.as_ptr(), out, joined.len()) };
+        }
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Copy `img`'s pixels into the container bytes at `data` (`width * 4` a row) and, when it has alpha, its alpha
+    /// into `mask` (`width` a row; may be null otherwise), then free them.
+    ///
+    /// # Safety
+    /// `img` came from `nhg_image_decode` and is not used after; `data` (and `mask`) hold the rows.
+    unlocked fn nhg_image_take(img: *mut crate::image::NhgImage, data: *mut u8, mask: *mut u8) -> i32 {
+        if img.is_null() || data.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: a live decode (the caller's promise).
+        let img = unsafe { &mut *img };
+        if !img.argb.is_null() {
+            // SAFETY: the decode's pixels, and containers of its size (the caller's promise).
+            let (argb, out, m) = unsafe {
+                (
+                    std::slice::from_raw_parts(img.argb, img.len),
+                    std::slice::from_raw_parts_mut(data, img.len * 4),
+                    (img.has_alpha != 0 && !mask.is_null()).then(|| std::slice::from_raw_parts_mut(mask, img.len)),
+                )
+            };
+            crate::image::store(argb, out, m);
+        }
+        // SAFETY: freed once, here.
+        unsafe { crate::image::free(img) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Free a decode's pixels without taking them.
+    ///
+    /// # Safety
+    /// `img` is null or came from `nhg_image_decode` and is not used after.
+    unlocked fn nhg_image_free(img: *mut crate::image::NhgImage) -> i32 {
+        if !img.is_null() {
+            // SAFETY: a live decode, freed once (the caller's promise).
+            unsafe { crate::image::free(&mut *img) };
+        }
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// `image_set_transform`'s matrix for an image `w` x `h` shown at `width` x `height`, turned by `rotation`
+    /// degrees and flipped: the six numbers into `out` (Cairo's pattern matrix, from a drawn pixel to the container's)
+    /// and the drawn size into `*out_w`, `*out_h`.  `NHG_E_UNSUPPORTED` for a rotation that is not a multiple of 90
+    /// degrees: `out` then holds the scale alone and the size is left as it was.
+    ///
+    /// # Safety
+    /// `out` holds six writable doubles; `out_w` and `out_h` are writable.
+    unlocked fn nhg_image_transform(w: i32, h: i32, width: i32, height: i32, rotation: f64, flip: bool, out: *mut f64, out_w: *mut i32, out_h: *mut i32) -> i32 {
+        if out.is_null() || out_w.is_null() || out_h.is_null() || width <= 0 || height <= 0 {
+            return Err(GlueError::Arg);
+        }
+        let t = crate::image::transform(f64::from(w), f64::from(h), f64::from(width), f64::from(height), rotation, flip);
+        let m = match t {
+            Ok((m, ..)) | Err(m) => m,
+        };
+        // SAFETY: six writable doubles and two ints (the caller's promise).
+        unsafe {
+            std::ptr::copy_nonoverlapping(m.as_ptr(), out, 6);
+            if let Ok((_, dw, dh)) = t {
+                *out_w = dw.round() as i32;
+                *out_h = dh.round() as i32;
+            }
+        }
+        t.map(|_| NHG_OK).map_err(|_| GlueError::Code(crate::abi::NHG_E_UNSUPPORTED))
+    }
+}
+
+nhg_export! {
+    /// The container bytes at `addr` are being freed: forget the pictures made from them (as pixels or as a mask).
+    ///
+    /// # Safety
+    /// None beyond the C ABI: the address is only compared.
+    unlocked fn nhg_image_forget(addr: *const u8) -> i32 {
+        #[cfg(all(feature = "macos", target_os = "macos"))]
+        nhshell::macos::images::forget(addr as usize);
+        #[cfg(not(all(feature = "macos", target_os = "macos")))]
+        let _ = addr;
+        Ok(NHG_OK)
+    }
+}
+
+/// The shell forgets the picture it made from a stand-in that goes.
+fn stand_gone(old: Option<crate::stand::Stand>) {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    if let Some(s) = old {
+        nhshell::macos::images::forget(s.words.as_ptr() as usize);
+    }
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    let _ = old;
+}
+
+nhg_export! {
+    /// Give the pending image `img` (`image.c`'s entry, by address) the picture of the ready container `pix` (`fg` an
+    /// 8-bit container's colour), drawn `ready_w` x `ready_h`, scaled into its own `img_w` x `img_h` box: a copy kept
+    /// until `nhg_image_stand_drop` names `img` or another stand-in replaces it.  `NHG_E_ARG` for a container or box
+    /// the glue refuses (then `img` keeps none).  Neither reads nor writes the backing.
+    ///
+    /// # Safety
+    /// `pix` is readable, and its `data` (and `mask` when not null) hold its rows.
+    unlocked fn nhg_image_stand_in(img: *const std::ffi::c_void, pix: *const crate::image::NhgPix, fg: u32, ready_w: i32, ready_h: i32, img_w: i32, img_h: i32) -> i32 {
+        if img.is_null() || pix.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and readable (the caller's promise).
+        let pix = unsafe { *pix };
+        let bytes = if pix.bpp == 8 { 1 } else { 4 };
+        if pix.data.is_null() || pix.width <= 0 || pix.height <= 0 || pix.stride < pix.width * bytes {
+            stand_gone(crate::stand::take(img as usize));
+            return Err(GlueError::Arg);
+        }
+        let (w, h) = (pix.width as usize, pix.height as usize);
+        // SAFETY: the container's rows (the caller's promise).
+        let data = unsafe { std::slice::from_raw_parts(pix.data, pix.stride as usize * (h - 1) + w * bytes as usize) };
+        let mask = (bytes == 4 && !pix.mask.is_null() && pix.mask_stride >= pix.width)
+            // SAFETY: the mask's rows (the caller's promise).
+            .then(|| unsafe { std::slice::from_raw_parts(pix.mask, pix.mask_stride as usize * (h - 1) + w) });
+        let (made, old) = crate::stand::set(img as usize, &pix, data, mask, fg, (ready_w, ready_h), (img_w, img_h));
+        stand_gone(old);
+        made.map(|()| NHG_OK).ok_or(GlueError::Arg)
+    }
+}
+
+nhg_export! {
+    /// The pending image `img` landed, is prepared again or is freed: its stand-in, if any, goes.
+    ///
+    /// # Safety
+    /// None beyond the C ABI: `img` is only a key.
+    unlocked fn nhg_image_stand_drop(img: *const std::ffi::c_void) -> i32 {
+        stand_gone(crate::stand::take(img as usize));
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// A bitmap's `bits` (`width` x `height`, least significant bit first, rows padded to bytes) into a 32-bit
+    /// container's `out` (`stride` bytes a row): `fg` for a set bit, `bg` for a clear one.  `NHG_E_ARG` for a size
+    /// under 1 or a short stride.  Writes pixels.
+    ///
+    /// # Safety
+    /// `bits` holds `height` padded rows; `out` holds `height` rows of `stride` bytes.
+    unlocked fn nhg_bitmap_to_container(
+        bits: *const u8,
+        width: i32,
+        height: i32,
+        fg: u32,
+        bg: u32,
+        out: *mut u8,
+        stride: i32,
+    ) -> i32 {
+        if bits.is_null() || out.is_null() || width < 1 || height < 1 || stride < 1 {
+            return Err(GlueError::Arg);
+        }
+        let (w, h, s) = (width as usize, height as usize, stride as usize);
+        // SAFETY: non-null, and the caller promises these many bytes of each
+        let src = unsafe { std::slice::from_raw_parts(bits, w.div_ceil(8) * h) };
+        // SAFETY: as above; `out` does not overlap `bits`
+        let dst = unsafe { std::slice::from_raw_parts_mut(out, s * h) };
+        crate::image::bitmap(src, w, h, fg, bg, dst, s).ok_or(GlueError::Arg)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Paint the image record `rec` (`NHG_DRAW_IMAGE`) with the stand-in of the pending image `img` into frame
+    /// `frame`'s backing, as `nhg_draw_image` paints a container.  `NHG_E_STATE` when `img` has none, `NHG_E_ARG` for
+    /// a record the glue refuses.  Writes pixels.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `rec` is readable.
+    fn nhg_draw_stand_in(d: *mut NhgDisplay, frame: u64, rec: *const crate::draw::NhgDrawRec, img: *const std::ffi::c_void) -> i32 |state| {
+        if rec.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and readable (the caller's promise).
+        let rec = unsafe { &*rec };
+        let mut p = crate::stand::with(img as usize, |s| {
+            let key = (s.words.as_ptr() as usize, s.width, s.height);
+            #[cfg(all(feature = "macos", target_os = "macos"))]
+            nhshell::macos::images::with_picture(key, 0, || s.words.clone(), |_| ())?;
+            crate::draw::decode_image(rec, key, 0, &s.matrix, s.smooth).ok()
+        })
+        .ok_or(GlueError::State)?
+        .ok_or(GlueError::Arg)?;
+        state.backings.frame_mut(frame)?.paint(&mut p)?;
+        Ok(NHG_OK)
     }
 }
 
@@ -1765,6 +2294,56 @@ nhg_export! {
     }
 }
 
+/// A NUL-terminated UTF-8 argument (`Arg` for null or invalid UTF-8).
+///
+/// # Safety
+/// `p` is null or NUL-terminated.
+unsafe fn str_arg<'a>(p: *const c_char) -> Result<&'a str, GlueError> {
+    if p.is_null() {
+        return Err(GlueError::Arg);
+    }
+    // SAFETY: non-null and NUL-terminated (the caller's promise).
+    unsafe { std::ffi::CStr::from_ptr(p) }
+        .to_str()
+        .map_err(|_| GlueError::Arg)
+}
+
+nhg_export! {
+    /// A platform call by name (`nhmac--call`): `kind` and `arg` are NUL-terminated UTF-8.  `NHG_E_ARG` for a name the
+    /// shell does not know, `NHG_E_UNSUPPORTED` for a shell with no platform calls.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `kind` and `arg` are null or NUL-terminated.
+    fn nhg_app_call(d: *mut NhgDisplay, kind: *const c_char, arg: *const c_char) -> i32 |state| {
+        // SAFETY: null or NUL-terminated (the caller's promise).
+        let (kind, arg) = unsafe { (str_arg(kind)?, str_arg(arg)?) };
+        state.backend().app_call(kind, arg)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// A platform query by name (`nhmac--query`): its answer, up to `cap` - 1 bytes and a NUL, into `buf`, its full
+    /// length into `*len`.  It may run a modal session.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `kind` and `arg` are null or NUL-terminated; `buf` is null or holds `cap` writable
+    /// bytes; `len` is null or writable.
+    fn nhg_app_query(d: *mut NhgDisplay, kind: *const c_char, arg: *const c_char, buf: *mut c_char, cap: usize,
+                     len: *mut usize) -> i32 |state| {
+        // SAFETY: null or NUL-terminated (the caller's promise).
+        let (kind, arg) = unsafe { (str_arg(kind)?, str_arg(arg)?) };
+        let text = state.backend().app_query(kind, arg)?;
+        // SAFETY: `buf` is null or holds `cap` writable bytes.
+        unsafe { put_text(buf, cap, &text) };
+        if !len.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { len.write(text.len()) };
+        }
+        Ok(NHG_OK)
+    }
+}
+
 // ---- Small pure functions moved from C: colours, a monitor's place, the snapshot's copy ----------------------------
 
 nhg_export! {
@@ -1873,6 +2452,239 @@ nhg_export! {
             dx.write(ox);
             dy.write(oy);
         }
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// What changing frame parameter `key` (`NHG_PK_*`) to the `n` values `v` does on a frame with the facts `f`
+    /// (`params::decide`), into `*out`.  A status in `out` is a signal for C to raise.  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `f` and `out` are null or valid; `v` is null or holds `n` values.
+    unlocked fn nhg_frame_param(
+        key: u32,
+        f: *const crate::params::NhgParamFrame,
+        v: *const crate::params::NhgParamValue,
+        n: usize,
+        out: *mut crate::params::NhgParamAction,
+    ) -> i32 {
+        if f.is_null() || out.is_null() || (v.is_null() && n > 0) {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null, and `v` holds `n` values (the caller's promise); `n` is 0 only when `v` may be null.
+        let (f, v) = unsafe { (&*f, if n == 0 { &[][..] } else { std::slice::from_raw_parts(v, n) }) };
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(crate::params::decide(key, f, v)) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The id of the name at `s` (`len` bytes, not NUL-terminated) into `*id`, made on the first call and kept for the
+    /// life of the process, for the font records.  0 for an empty name or bytes that are not UTF-8.
+    ///
+    /// # Safety
+    /// `s` is null or holds `len` readable bytes; `id` is null or writable.
+    unlocked fn nhg_font_id(s: *const c_char, len: usize, id: *mut u32) -> i32 {
+        if s.is_null() || id.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { id.write(crate::fontspec::intern_raw(s, len)) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The name of font record id `id` into `buf` (`cap` bytes, NUL-terminated); its length into `*len` (may be NULL).
+    /// `NHG_E_TOO_SMALL` when `cap` is not above the length.
+    ///
+    /// # Safety
+    /// `buf` is null or holds `cap` writable bytes; `len` is null or writable.
+    unlocked fn nhg_font_name(id: u32, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 {
+        if crate::fontspec::name_raw(id, buf, cap, len) { Ok(NHG_OK) } else { Err(GlueError::Code(crate::abi::NHG_E_TOO_SMALL)) }
+    }
+}
+
+nhg_export! {
+    /// Every font that fits `spec` into `out` (`cap` records), the number written into `*n` (`macfont_list`'s
+    /// matching, `fontspec.rs`).  `NHG_E_UNSUPPORTED` when no font source is installed (the Linux shell has none: it
+    /// lists fonts with fontconfig).  Neither reads nor writes pixels.
+    ///
+    /// # Safety
+    /// `spec` is null or valid; `out` is null or holds `cap` writable records; `n` is null or writable.
+    unlocked fn nhg_font_list(spec: *const crate::fontspec::NhgFontSpec, out: *mut crate::fontspec::NhgFontEntity, cap: usize, n: *mut usize) -> i32 {
+        font_query(spec, out, cap, n, true)
+    }
+}
+
+nhg_export! {
+    /// The font nearest to `spec` into `out[0]`, 1 or 0 into `*n` (`macfont_match`).  Same errors as `nhg_font_list`.
+    ///
+    /// # Safety
+    /// As `nhg_font_list`, with `cap` at least 1.
+    unlocked fn nhg_font_match(spec: *const crate::fontspec::NhgFontSpec, out: *mut crate::fontspec::NhgFontEntity, cap: usize, n: *mut usize) -> i32 {
+        font_query(spec, out, cap, n, false)
+    }
+}
+
+nhg_export! {
+    /// Install the platform's font source for `nhg_font_list` and `nhg_font_match` (Core Text on macOS).
+    /// `NHG_E_UNSUPPORTED` where there is none (Linux lists its fonts with fontconfig).
+    ///
+    /// # Safety
+    /// None beyond the C ABI: it takes no pointers.
+    unlocked fn nhg_font_start() -> i32 {
+        if crate::font::start() { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
+    }
+}
+
+nhg_export! {
+    /// Open the face `font_id` (an entity's) at `size` device pixels: its handle and metrics into `*out`, rounded as
+    /// `macfont_open` rounds them.  `NHG_E_STATE` when the face does not open, `NHG_E_UNSUPPORTED` without Core Text.
+    ///
+    /// # Safety
+    /// `out` is null or writable.
+    unlocked fn nhg_font_open(font_id: u64, size: i32, out: *mut crate::font::NhgFontMetrics) -> i32 {
+        if out.is_null() || size <= 0 {
+            return Err(GlueError::Arg);
+        }
+        if !cfg!(all(feature = "macos", target_os = "macos")) {
+            return Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED));
+        }
+        let m = crate::font::open(font_id, size).ok_or(GlueError::State)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(m) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Close a font `nhg_font_open` opened.
+    ///
+    /// # Safety
+    /// None beyond the C ABI: it takes no pointers.
+    unlocked fn nhg_font_close(handle: u64) -> i32 {
+        crate::font::close(handle);
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Character `c`'s glyph in font `handle` into `*glyph`; `NHG_E_STATE` when the font has none.
+    ///
+    /// # Safety
+    /// `glyph` is null or writable.
+    unlocked fn nhg_font_glyph(handle: u64, c: u32, glyph: *mut u32) -> i32 {
+        if glyph.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let g = crate::font::glyph(handle, c).ok_or(GlueError::State)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { glyph.write(g) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Glyph `glyph`'s metrics in font `handle` into `*out`, its width rounded as `macfont_glyph_extents` rounds it:
+    /// `mono` and `space_width` are the font's, from `nhg_font_open`.  `NHG_E_STATE` for an unknown font or glyph.
+    ///
+    /// # Safety
+    /// `out` is null or writable.
+    unlocked fn nhg_font_glyph_metrics(handle: u64, glyph: u32, mono: u32, space_width: i32, out: *mut crate::font::NhgGlyphMetrics) -> i32 {
+        if out.is_null() {
+            return Err(GlueError::Arg);
+        }
+        let m = crate::font::glyph_extents(handle, glyph, mono != 0, space_width).ok_or(GlueError::State)?;
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { out.write(m) };
+        Ok(NHG_OK)
+    }
+}
+
+/// The body of `nhg_font_list` and `nhg_font_match`.
+fn font_query(
+    spec: *const crate::fontspec::NhgFontSpec,
+    out: *mut crate::fontspec::NhgFontEntity,
+    cap: usize,
+    n: *mut usize,
+    all: bool,
+) -> Result<i32, GlueError> {
+    if spec.is_null() || n.is_null() || (out.is_null() && cap > 0) {
+        return Err(GlueError::Arg);
+    }
+    // SAFETY: non-null and valid, and `out` holds `cap` records (the caller's promise).
+    let (spec, out) = unsafe {
+        (
+            &*spec,
+            if cap == 0 {
+                &mut [][..]
+            } else {
+                std::slice::from_raw_parts_mut(out, cap)
+            },
+        )
+    };
+    let mut found = 0;
+    let have = crate::fontspec::run(spec, all, out, &mut found);
+    // SAFETY: non-null and writable (the caller's promise).
+    unsafe { n.write(found) };
+    if have {
+        Ok(NHG_OK)
+    } else {
+        Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED))
+    }
+}
+
+nhg_export! {
+    /// The main wait (Naglfar): register the fds `rfds` and `wfds` ask for below `nfds`, run the backend's event loop
+    /// until one is ready, a wake (`nhg_wake`), or `timeout_ns` (negative: none), and leave the ready ones in the sets
+    /// as `select` does.  The count, as `select` returns it (0 after a wake or the timeout); `NHG_E_UNSUPPORTED` for a
+    /// backend whose host waits in its own select.  The caller holds Emacs's global lock and is the main thread.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; each set is null or a valid, writable `fd_set`.
+    fn nhg_wait(
+        d: *mut NhgDisplay,
+        nfds: i32,
+        rfds: *mut libc::fd_set,
+        wfds: *mut libc::fd_set,
+        timeout_ns: i64,
+    ) -> i32 |state| {
+        // SAFETY: valid sets or null (the caller's promise).
+        let want = unsafe { crate::wait::want(nfds, rfds, wfds) };
+        let timeout = u64::try_from(timeout_ns).ok().map(std::time::Duration::from_nanos);
+        let mut ready = Vec::new();
+        state.backend().wait(&want, timeout, &mut ready)?;
+        // SAFETY: as above.
+        Ok(unsafe { crate::wait::fill(&ready, rfds, wfds) })
+    }
+}
+
+nhg_export! {
+    /// Any thread, no lock: end the main wait if it is parked, or make the next one return before it sleeps.
+    ///
+    /// # Safety
+    /// None beyond the C ABI: it takes no pointers.
+    unlocked fn nhg_wake() -> i32 {
+        nhshell::wait::wake();
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// Hand the wait the host's lock-waiter count, an `_Atomic int` that lives as long as the process: while it is
+    /// above 0 the main wait does not park.  Once, at the first wait.
+    ///
+    /// # Safety
+    /// `count` is null or points at a 4-byte-aligned `_Atomic int` (an `AtomicI32`) that is never freed.
+    unlocked fn nhg_set_lock_waiters(count: *const std::ffi::c_void) -> i32 {
+        if count.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: a live, never-freed atomic int (the caller's promise), which has AtomicI32's layout.
+        nhshell::wait::PARK.set_waiters(unsafe { &*count.cast::<std::sync::atomic::AtomicI32>() });
         Ok(NHG_OK)
     }
 }

@@ -15,22 +15,33 @@ pub mod bench;
 pub mod configure;
 pub mod display;
 pub mod drain;
+pub mod draw;
 pub mod ffi;
 pub mod focus;
+pub mod font;
+pub mod fontspec;
 pub mod frame;
+pub mod image;
 pub mod ime;
 pub mod keys;
 pub mod monitors;
+pub mod params;
 pub mod pointer;
 pub mod present;
 pub mod query;
 pub mod scroll;
 pub mod select;
+pub mod stand;
+pub mod wait;
+pub mod xpm;
 // window operations and tips
 pub mod tip;
 pub mod window;
 // menu popups
 pub mod popup;
+
+// the flat menu records (menu bar and popups)
+pub mod menu;
 
 pub mod csd;
 

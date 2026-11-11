@@ -14,8 +14,12 @@ crate-type = ["staticlib", "rlib"]
 default = ["wayland"]
 # the shell's Wayland backend (Linux); `check.sh --android` builds without it
 wayland = ["nhshell/wayland"]
+# the shell's AppKit backend (macOS, Naglfar); configure builds --no-default-features --features macos there
+macos = ["nhshell/macos", "svg"]
+# SVG through the shell's resvg route (on with macos)
+svg = ["nhshell/svg"]
 # entry points that exist only for tests; configure turns this on under --enable-checking (GLITNIR_CARGO_FLAGS)
-test-hooks = ["glitnir/sja-test-hooks"]
+test-hooks = ["nhshell/test-hooks", "glitnir/sja-test-hooks"]
 
 [dependencies]
 nhshell = { path = "../shell", version = "0.1.0", default-features = false }
