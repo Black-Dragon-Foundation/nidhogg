@@ -1261,6 +1261,7 @@ a debugger's breakpoint column can show a faint dot under the pointer.
 - A mouse face changes the face only: an image glyph keeps its picture, so the lit thing is text (drgnx draws the
   hover dot as a character).
 - Terminals are unchanged: a margin there lights nothing.
+- The feature `glitnir-margin-mouse-face` says a build has it (drgnx lays out its hover dots only then).
 - Naglfar draws through the same `draw_glyphs` with the area, so it needs nothing beyond reporting pointer motion.
 - Tests: `test/src/nidhogg-tests/margin-mouse-face-gui-tests.el`.
 

@@ -38715,6 +38715,9 @@ syms_of_xdisp (void)
   DEFSYM (Qmouse_sensor_functions, "mouse-sensor-functions");
   DEFSYM (Qleave, "leave");
   defsubr (&Snidhogg__note_mouse);
+  /* A margin string's `mouse-face' lights (note_line_or_margin_highlight):
+     drgnx's breakpoint column puts its hover dots out only where it does.  */
+  Fprovide (intern_c_string ("glitnir-margin-mouse-face"), Qnil);
   staticpro (&mouse_sensor_value);
   mouse_sensor_value = Qnil;
   staticpro (&mouse_sensor_window);
