@@ -419,6 +419,16 @@ mod tests {
         });
         let k = key("e", "\u{e9}", NS_OPTION, false).unwrap();
         assert_eq!(&k.utf8[..2], "\u{e9}".as_bytes());
+        // the key is the composed character too (the glue reads a printable keysym as the character)
+        assert_eq!(k.keysym, 0x0100_00e9);
+        // a right Option that is none while the left is meta composes as well
+        set_modmap(ModMap {
+            right_alternate: Some(Choice::None),
+            ..ModMap::default()
+        });
+        let k = key("e", "\u{e9}", NS_OPTION | NS_RIGHT_OPTION, false).unwrap();
+        assert_eq!(k.keysym, 0x0100_00e9);
+        assert_eq!(&k.utf8[..2], "\u{e9}".as_bytes());
         set_modmap(ModMap::default());
         let k = key("e", "\u{e9}", NS_OPTION, false).unwrap();
         assert_eq!(k.utf8[0], 0);
