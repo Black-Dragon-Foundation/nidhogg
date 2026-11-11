@@ -4567,7 +4567,6 @@ kbd_buffer_get_event (KBOARD **kbp,
 		Vnidhogg_last_key_repeat
 		  = EQ (event->ie.arg, Qnidhogg_key_repeat) ? Qt : Qnil;
 #endif
-
 	      obj = make_lispy_event (&event->ie);
 
 #ifdef HAVE_EXT_MENU_BAR
