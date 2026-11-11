@@ -2007,12 +2007,14 @@ a child again, and the child moves to another root."
           (setq c (nhmac-gui--child))
           (dotimes (_ 3) (nhmac-gui--settle))
           (setq windows (length (nhmac--test-windows)))
-          (let ((before (nhmac-stats)))
+          (let ((before (progn (nhmac--pump-trace) (nhmac-stats))))
             (set-frame-parameter c 'parent-frame nil)
             (nhmac-gui--settle)
-            (nhmac-gui--say "nhmac-parent-frame-changes: to a top-level: %d draws; scale %s, %S px at %S"
+            ;; the pump decisions and paints name what drew, when something did
+            (nhmac-gui--say "nhmac-parent-frame-changes: to a top-level: %d draws; scale %s, %S px at %S; pumps %S"
                             (nhmac-gui--delta before :draws) (frame-scale-factor c)
-                            (list (frame-pixel-width c) (frame-pixel-height c)) (frame-position c))
+                            (list (frame-pixel-width c) (frame-pixel-height c)) (frame-position c)
+                            (and (> (nhmac-gui--delta before :draws) 0) (nhmac--pump-trace)))
             (should-not (frame-parent c))
             (should (nhmac-gui--windows-become (1+ windows)))
             (should (eq (plist-get (nhmac--window-info c) :visible) t))
