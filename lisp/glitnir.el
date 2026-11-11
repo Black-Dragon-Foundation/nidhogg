@@ -496,12 +496,17 @@ Bound by `glitnir--recheck-frame-cards' around its walk.")
 (defun glitnir--recheck-blocks (window)
   "Resolve WINDOW's blocks when its `glitnir-blocks' or the theme changed.
 The vector of block vectors goes into the window parameter
-`glitnir--blocks', which C reads when the frame publishes."
+`glitnir--blocks', which C reads when the frame publishes.  A window
+that never had blocks gets no parameter of them (its key neither): the
+theme's generation would change it on every theme change."
   (let ((spec (window-parameter window 'glitnir-blocks))
         (key (window-parameter window 'glitnir--blocks-key)))
-    (unless (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
-      ;; the key first: a parameter that signals does so once
-      (set-window-parameter window 'glitnir--blocks-key (cons spec glitnir--card-generation))
+    (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
+                (and (null spec) (null key)))
+      ;; the key first: a parameter that signals does so once; blocks gone,
+      ;; no key (nil is an absent parameter)
+      (set-window-parameter window 'glitnir--blocks-key
+                            (and spec (cons spec glitnir--card-generation)))
       (let* ((frame (window-frame window))
              (v (and spec (vconcat (mapcar (lambda (b) (glitnir--block-vector b frame)) spec)))))
         (unless (equal v (window-parameter window 'glitnir--blocks))
