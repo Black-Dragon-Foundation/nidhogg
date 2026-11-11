@@ -37,29 +37,35 @@ pub fn run(mtm: MainThreadMarker, req: &DialogReq) -> Option<String> {
     auto::enter(panel);
     let response = panel.runModal();
     #[cfg(feature = "test-hooks")]
-    auto::leave();
+    if let Some(answered) = auto::leave() {
+        return Some(answered);
+    }
     if response != NSModalResponseOK {
         return None;
     }
     panel.URL().and_then(|u| u.path()).map(|p| p.to_string())
 }
 
-/// The test hook that answers the panel from inside the modal loop: a timer in every run loop mode sets the panel's
-/// directory (and name) and presses OK.
+/// The test hook that answers the panel from inside the modal loop: a timer in every run loop mode ends the modal
+/// session with `abortModal`, and the panel's answer is the path the hook was given.  Not the panel's OK button: the
+/// panel runs out of process, and `ok:` (as `stopModal`) from a timer ends the session only at the next event, which
+/// a lane with no input never sends, so the row hung.  The panel's own reading of its choice is not tested here.
 #[cfg(feature = "test-hooks")]
 mod auto {
     use objc2::Message;
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, NSObject};
     use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-    use objc2_app_kit::NSSavePanel;
-    use objc2_foundation::{NSArray, NSObjectProtocol, NSString, NSURL};
+    use objc2_app_kit::{NSApplication, NSSavePanel};
+    use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
     use std::cell::RefCell;
 
     thread_local! {
         static PANEL: RefCell<Option<Retained<NSSavePanel>>> = const { RefCell::new(None) };
-        /// What the next panel is answered with: a directory, or a file for a save panel.
-        static ANSWER: RefCell<Option<String>> = const { RefCell::new(None) };
+        /// What the next panel is answered with (a directory, or a file for a save panel), and after how many seconds.
+        static ANSWER: RefCell<Option<(String, f64)>> = const { RefCell::new(None) };
+        /// The answer the hook gave the panel that ran: its result.
+        static ANSWERED: RefCell<Option<String>> = const { RefCell::new(None) };
     }
 
     define_class!(
@@ -73,44 +79,25 @@ mod auto {
         impl Answer {
             #[unsafe(method(answer:))]
             fn answer(&self, _sender: Option<&AnyObject>) {
-                let Some(panel) = PANEL.with(|p| p.borrow().clone()) else {
+                if PANEL.with(|p| p.borrow().is_none()) {
                     return;
-                };
-                if let Some(path) = ANSWER.with(|a| a.borrow_mut().take()) {
-                    let url = NSURL::fileURLWithPath(&NSString::from_str(&path));
-                    let is_file = std::path::Path::new(&path).file_name().is_some()
-                        && !std::path::Path::new(&path).is_dir();
-                    if is_file {
-                        if let Some(dir) = std::path::Path::new(&path).parent() {
-                            let d = NSURL::fileURLWithPath_isDirectory(
-                                &NSString::from_str(&dir.to_string_lossy()),
-                                true,
-                            );
-                            panel.setDirectoryURL(Some(&d));
-                        }
-                        let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned());
-                        panel.setNameFieldStringValue(&NSString::from_str(&name.unwrap_or_default()));
-                    } else {
-                        panel.setDirectoryURL(Some(&url));
-                    }
                 }
-                // SAFETY: `ok:` on a live panel, from inside its own modal loop.
-                unsafe { panel.ok(None) };
+                let path = ANSWER.with(|a| a.borrow_mut().take()).map(|(p, _)| p);
+                ANSWERED.with(|a| *a.borrow_mut() = path);
+                let mtm = MainThreadMarker::from(self);
+                // ends the modal session now, from a timer, with no event needed
+                NSApplication::sharedApplication(mtm).abortModal();
             }
         }
     );
 
+    /// A panel opens: its answer's timer starts now, so it fires inside the panel's modal loop, never before it.
     pub fn enter(panel: &NSSavePanel) {
         PANEL.with(|p| *p.borrow_mut() = Some(panel.retain()));
-    }
-
-    pub fn leave() {
-        PANEL.with(|p| *p.borrow_mut() = None);
-    }
-
-    /// Answer the next panel with `path` after `secs`.
-    pub fn schedule_ok(mtm: MainThreadMarker, secs: f64, path: &str) {
-        ANSWER.with(|a| *a.borrow_mut() = Some(path.to_string()));
+        let Some(secs) = ANSWER.with(|a| a.borrow().as_ref().map(|(_, s)| *s)) else {
+            return;
+        };
+        let mtm = MainThreadMarker::from(panel);
         let this: Retained<Answer> = {
             let t = Answer::alloc(mtm).set_ivars(());
             // SAFETY: NSObject's designated initialiser on a fresh allocation.
@@ -121,5 +108,16 @@ mod auto {
         unsafe {
             let _: () = msg_send![&this, performSelector: sel!(answer:), withObject: std::ptr::null::<AnyObject>(), afterDelay: secs, inModes: &*modes];
         }
+    }
+
+    /// The panel's session ended: the hook's answer, when it gave one.
+    pub fn leave() -> Option<String> {
+        PANEL.with(|p| *p.borrow_mut() = None);
+        ANSWERED.with(|a| a.borrow_mut().take())
+    }
+
+    /// Answer the next panel with `path`, `secs` after it opens.
+    pub fn schedule_ok(_mtm: MainThreadMarker, secs: f64, path: &str) {
+        ANSWER.with(|a| *a.borrow_mut() = Some((path.to_string(), secs)));
     }
 }
