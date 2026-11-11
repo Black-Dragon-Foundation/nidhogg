@@ -37164,15 +37164,50 @@ note_mouse_sensor_leave (struct frame *f)
 DEFUN ("nidhogg--note-mouse", Fnidhogg__note_mouse, Snidhogg__note_mouse,
        3, 3, 0,
        doc: /* For tests: note the pointer at X, Y (pixels) on FRAME, or its
-leaving FRAME when X is `leave', as a shell would.  */)
+leaving FRAME when X is `leave', as a shell would.  The value is the
+mouse face's run then, (BEG-ROW BEG-COL END-ROW END-COL) in glyphs of
+its window, or nil when nothing is lit.  */)
   (Lisp_Object frame, Lisp_Object x, Lisp_Object y)
 {
   struct frame *f = decode_live_frame (frame);
+  Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
   if (EQ (x, Qleave))
     note_mouse_sensor_leave (f);
   else
     note_mouse_highlight (f, check_integer_range (x, INT_MIN, INT_MAX),
 			  check_integer_range (y, INT_MIN, INT_MAX));
+  if (!WINDOWP (hlinfo->mouse_face_window)
+      || hlinfo->mouse_face_beg_row < 0)
+    return Qnil;
+  return list4i (hlinfo->mouse_face_beg_row, hlinfo->mouse_face_beg_col,
+		 hlinfo->mouse_face_end_row, hlinfo->mouse_face_end_col);
+}
+
+#endif /* HAVE_GLITNIR */
+#ifdef HAVE_GLITNIR
+/* The overlay on row VPOS of W whose before- or after-string is STRING
+   and whose mouse face is `equal' to MOUSE_FACE (the string's), or nil.
+   Then the pointer on the string lights the overlay's whole run, its
+   text and its strings, as the pointer on its text does: a row and the
+   tail an after-string draws are one run.  The current buffer is W's.  */
+
+static Lisp_Object
+mouse_face_string_owner (struct window *w, int vpos, Lisp_Object string,
+			 Lisp_Object mouse_face)
+{
+  struct glyph_row *r = MATRIX_ROW (w->current_matrix, vpos);
+  ptrdiff_t start = MATRIX_ROW_START_CHARPOS (r);
+  ptrdiff_t end = max (MATRIX_ROW_END_CHARPOS (r), start + 1);
+  for (Lisp_Object l = Foverlays_in (make_fixnum (start),
+				     make_fixnum (min (end, ZV)));
+       CONSP (l); l = XCDR (l))
+    {
+      Lisp_Object ov = XCAR (l);
+      if ((EQ (Foverlay_get (ov, Qafter_string), string)
+	   || EQ (Foverlay_get (ov, Qbefore_string), string))
+	  && !NILP (Fequal (Foverlay_get (ov, Qmouse_face), mouse_face)))
+	return ov;
+    }
   return Qnil;
 }
 
@@ -37619,6 +37654,28 @@ note_mouse_highlight (struct frame *f, int x, int y)
 
 	  /* Next, compute the bounds of the mouse highlighting and
 	     display it.  */
+#ifdef HAVE_GLITNIR
+	  Lisp_Object owner = (!NILP (mouse_face) && STRINGP (object)
+			       ? mouse_face_string_owner (w, vpos, object,
+							   mouse_face)
+			       : Qnil);
+	  if (!NILP (owner))
+	    {
+	      /* An overlay's own string lit with the overlay's mouse
+		 face: the overlay's whole run, as from its text.  */
+	      Lisp_Object bs = Foverlay_get (owner, Qbefore_string);
+	      Lisp_Object as = Foverlay_get (owner, Qafter_string);
+	      hlinfo->mouse_face_overlay = owner;
+	      mouse_face_from_buffer_pos (window, hlinfo,
+					  OVERLAY_START (owner),
+					  OVERLAY_START (owner),
+					  OVERLAY_END (owner),
+					  STRINGP (bs) ? bs : Qnil,
+					  STRINGP (as) ? as : Qnil, Qnil);
+	      cursor = No_Cursor;
+	    }
+	  else
+#endif
 	  if (!NILP (mouse_face) && STRINGP (object))
 	    {
 	      /* The mouse-highlighting comes from a display string
