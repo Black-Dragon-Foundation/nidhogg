@@ -797,6 +797,166 @@ mod coretext {
         tables().remove(&handle);
         ct::close(handle);
     }
+
+    /// The NS font oracle (the architecture review's A4): NS's own answers for the fonts, glyphs and shaping runs of
+    /// `tests/fixtures/ns-font-oracle.tsv` (written by the NS lane's `nhmac-ns-font-oracle-dump` at scale 1), asked
+    /// of this driver on the same Mac, every difference listed at once.  The fallback lines need the fontset (C) and
+    /// are the GUI rows'.
+    #[cfg(test)]
+    mod oracle {
+        use super::*;
+        use std::collections::BTreeMap;
+
+        const ORACLE: &str = include_str!("../tests/fixtures/ns-font-oracle.tsv");
+
+        /// The face NS's `find-font` opens for FAMILY: the family's upright regular face (Core Text's order).
+        fn face_of(family: &str) -> Option<u64> {
+            let faces = text::faces();
+            faces
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.family == family)
+                .min_by(|(_, a), (_, b)| {
+                    let key = |f: &text::Face| {
+                        (
+                            f.symbolic & (text::TRAIT_BOLD | text::TRAIT_ITALIC) != 0,
+                            (f.weight.abs() * 1000.0) as i64,
+                        )
+                    };
+                    key(a).cmp(&key(b))
+                })
+                .map(|(i, _)| i as u64 + 1)
+        }
+
+        fn nums(s: &str) -> Vec<i64> {
+            s.split(',').filter_map(|x| x.parse().ok()).collect()
+        }
+
+        #[test]
+        fn font_oracle() {
+            let mut open_fonts: BTreeMap<(String, i32), Option<NhgFontMetrics>> = BTreeMap::new();
+            let mut opened = |family: &str, px: i32| {
+                *open_fonts
+                    .entry((family.to_owned(), px))
+                    .or_insert_with(|| face_of(family).and_then(|id| open(id, px, 0)))
+            };
+            let (mut gaps, mut checked) = (Vec::new(), 0);
+            for line in ORACLE
+                .lines()
+                .filter(|l| !l.starts_with('#') && !l.starts_with(' '))
+            {
+                let f: Vec<&str> = line.split('\t').collect();
+                match f.as_slice() {
+                    ["font", family, px, asc, desc, space, avg, _max, _] => {
+                        let px: i32 = px.parse().unwrap();
+                        let Some(m) = opened(family, px) else {
+                            gaps.push(format!("{family} {px}: not opened"));
+                            continue;
+                        };
+                        let ns: Vec<i32> = [asc, desc, space, avg]
+                            .iter()
+                            .map(|v| v.parse().unwrap())
+                            .collect();
+                        let ours = vec![m.ascent, m.descent, m.space_width, m.average_width];
+                        checked += 1;
+                        if ns != ours {
+                            gaps.push(format!(
+                                "{family} {px}: ascent descent space average NS {ns:?}, Naglfar {ours:?}"
+                            ));
+                        }
+                    }
+                    ["glyph", family, px, c, code, w, lb, rb, a, d] => {
+                        let px: i32 = px.parse().unwrap();
+                        let Some(m) = opened(family, px) else {
+                            continue;
+                        };
+                        let c: u32 = c.parse().unwrap();
+                        let mut t = tables();
+                        let Some(t) = t.get_mut(&m.handle) else {
+                            continue;
+                        };
+                        let src = Source(m.handle);
+                        t.fill(c / NHG_FONT_PAGE as u32, &src);
+                        let g = t.char_glyph(c).flatten();
+                        let gm = g.map(|g| {
+                            t.fill(NHG_FONT_FILL_GLYPHS | (g / NHG_FONT_PAGE as u32), &src);
+                            t.metrics(g).unwrap_or_default()
+                        });
+                        let ns: Vec<i64> = [code, w, lb, rb, a, d]
+                            .iter()
+                            .map(|v| v.parse().unwrap())
+                            .collect();
+                        let ours: Vec<i64> = match (g, gm) {
+                            (Some(g), Some(m)) => vec![
+                                i64::from(g),
+                                i64::from(m.width),
+                                i64::from(m.lbearing),
+                                i64::from(m.rbearing),
+                                i64::from(m.ascent),
+                                i64::from(m.descent),
+                            ],
+                            _ => Vec::new(),
+                        };
+                        checked += 1;
+                        if ns != ours {
+                            gaps.push(format!(
+                                "{family} {px} U+{c:04X}: code width lbearing rbearing ascent descent NS {ns:?}, \
+                                 Naglfar {ours:?}"
+                            ));
+                        }
+                    }
+                    ["shape", family, px, _dir, chars, glyphs] => {
+                        let px: i32 = px.parse().unwrap();
+                        let Some(m) = opened(family, px) else {
+                            continue;
+                        };
+                        let chars: Vec<u32> = nums(chars).iter().map(|&c| c as u32).collect();
+                        let ns: Vec<Vec<i64>> = if *glyphs == "nil" {
+                            Vec::new()
+                        } else {
+                            glyphs.split(';').map(nums).collect()
+                        };
+                        let ours: Vec<Vec<i64>> = shape(m.handle, &chars)
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|s| {
+                                let adj = s.adjust != 0;
+                                vec![
+                                    i64::from(s.from),
+                                    i64::from(s.to),
+                                    i64::from(s.c),
+                                    i64::from(s.code),
+                                    i64::from(s.m.width),
+                                    i64::from(s.m.lbearing),
+                                    i64::from(s.m.rbearing),
+                                    i64::from(s.m.ascent),
+                                    i64::from(s.m.descent),
+                                    if adj { i64::from(s.xoff) } else { 0 },
+                                    if adj { i64::from(s.yoff) } else { 0 },
+                                    if adj { i64::from(s.wadjust) } else { 0 },
+                                ]
+                            })
+                            .collect();
+                        checked += 1;
+                        if ns != ours {
+                            gaps.push(format!("{family} {px} shaping {chars:?}:\n  NS      {ns:?}\n  Naglfar {ours:?}"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for m in open_fonts.values().flatten() {
+                close(m.handle);
+            }
+            assert!(checked > 0, "the oracle has no lines");
+            assert!(
+                gaps.is_empty(),
+                "{} of {checked} answers differ from NS's:\n{}",
+                gaps.len(),
+                gaps.join("\n")
+            );
+        }
+    }
 }
 
 /// Install the Core Text font source (macOS) with the scripts of `scripts` (`nhg_font_start`'s flat table, `parse_scripts`);
