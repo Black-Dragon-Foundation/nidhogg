@@ -53,17 +53,18 @@ on a shell frame, whatever `visible-bell' says."
 (defun nhwl-toplevel-chrome-p (&optional frame)
   "Return non-nil when an undecorated FRAME keeps its own window border.
 That holds for a top-level frame of Nidhogg's own shell, built with
-Glitnir, on a compositor that offers no server-side decorations (GNOME's
-mutter): there an `undecorated' frame has no title bar but keeps resize
-margins, and its `toplevel-chrome' parameter gives it rounded corners and
-a shadow in them (none while it is maximized, fullscreen or tiled).  Where
-the compositor offers server-side decorations (sway, KWin) an undecorated
-frame has none of this.  FRAME defaults to the selected frame."
+Glitnir, on every compositor: an `undecorated' frame has no title bar but
+keeps invisible resize margins, and its `toplevel-chrome' parameter gives
+it rounded corners and a shadow in them (none while it is maximized,
+fullscreen or tiled).  A compositor that offers server-side decorations
+(KWin) draws none around a frame that asked for none, so the margins are
+its only outer edge to resize from, as on GNOME's mutter; one that
+decorates it anyway draws its own border instead.  FRAME defaults to the
+selected frame."
   (let ((frame (or frame (selected-frame))))
     (and (featurep 'glitnir)
          (eq (framep frame) 'pgtk)
-         (not (frame-parent frame))
-         (not (nhwl--offers-p 'server-decorations frame)))))
+         (not (frame-parent frame)))))
 
 (defun nhwl-win--frame (start-event)
   "The top-level shell frame START-EVENT started on, or nil."

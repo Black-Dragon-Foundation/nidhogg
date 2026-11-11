@@ -9,12 +9,13 @@
 //! frame has no border, a maximized one only the strip, and a tiled side no margin.  Everything is device pixels
 //! except the protocol (the strip's 32 and the margin's 8 are logical).
 //!
-//! An undecorated top-level where the compositor offers no server-side decorations at all (GNOME's mutter has no
-//! `xdg-decoration`) is "framed": no strip, the same resize margins, and, while it floats, room in them for the
-//! shadow of its chrome (`toplevel-chrome`, which `child.rs` keeps): its Glitnir layer is the native area, with the
-//! corners and the shadow, so the margins show the shadow over nothing.  The input region is then the window and the
-//! resize margins around it.  Where the compositor offers server-side decorations (sway, KWin) an undecorated frame
-//! draws none of this.
+//! An undecorated top-level is "framed" on every compositor: no strip, the same resize margins, and, while it floats,
+//! room in them for the shadow of its chrome (`toplevel-chrome`, which `child.rs` keeps): its Glitnir layer is the
+//! native area, with the corners and the shadow, so the margins show the shadow over nothing.  The input region is
+//! then the window and the resize margins around it.  A compositor that offers server-side decorations (KWin) draws
+//! none around a window that asked for none, so the invisible margins are its only outer edge to resize from, as on
+//! GNOME's mutter, which offers none at all; one that decorates the window anyway (its answer is server-side) draws
+//! its own border, and the frame keeps none.
 //!
 //! The facts it reads: the scale and `undecorated` are pulled (arguments of `nhg_csd_layout`), the title
 //! and what else C paints from is pulled as one hash (`nhg_csd_paint`), the native size is pulled at each paint, and
@@ -128,7 +129,7 @@ struct Look {
 pub struct Csd {
     /// The compositor offers no server decorations, and the frame is decorated.
     pub on: bool,
-    /// An undecorated top-level where the compositor offers no server decorations: margins without a strip.
+    /// An undecorated top-level (whatever the compositor offers): margins without a strip.
     framed: bool,
     /// The margins in logical pixels (L, T without the strip, R, B): the window geometry's and the input region's.
     logical: [i32; 4],
@@ -457,10 +458,8 @@ pub fn layout(
         return crate::child::layout(state, window, s120);
     }
     // the window's own answer: the compositor may grant one window server decorations and refuse another; an
-    // undecorated window asks for none, so whether the compositor offers them at all is its caps'
+    // undecorated window asks for none, and keeps its own margins whether or not the compositor offers them
     let ssd = state.backend().window_ssd(window);
-    let caps = state.backend().caps();
-    let offered = caps.xdg_decoration != 0 && !caps.force_csd;
     let undecorated = flags & NHG_CSD_UNDECORATED != 0;
     let f = state.frame_mut(window)?;
     let states = f.cfg.states;
@@ -469,7 +468,7 @@ pub fn layout(
     let c = &mut f.csd;
     c.s120 = s120;
     c.on = matches!(ssd, Ok(false)) && !undecorated;
-    c.framed = matches!(ssd, Ok(false)) && undecorated && !offered;
+    c.framed = matches!(ssd, Ok(false)) && undecorated;
     if c.on {
         f.facts.flags |= NHG_FACT_CSD;
     } else {
@@ -931,8 +930,7 @@ impl Csd {
         (self.hover, self.down)
     }
 
-    /// Whether the frame is an undecorated top-level that keeps its margins (no server decorations offered), as of
-    /// its last layout.
+    /// Whether the frame is an undecorated top-level that keeps its margins, as of its last layout.
     pub fn framed(&self) -> bool {
         self.framed
     }
