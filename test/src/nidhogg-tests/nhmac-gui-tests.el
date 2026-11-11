@@ -1213,23 +1213,26 @@ within its width, so the title bar, a tool bar and scroll bars (each build has i
   (concat (propertize " " 'display '(space :align-to right) 'face `(:background ,nhmac-gui--crop-marker)) "\n"))
 
 (defmacro nhmac-gui--bare-frame (&rest body)
-  "Run BODY with the selected frame 80 by 24 characters, showing one window, no tool bar and an empty echo area; put
-them back after.  drgnx never shows Emacs's tool bar, and an earlier window (a *Compile-Log* of the test files'
+  "Run BODY with the selected frame in Menlo 12, 80 by 24 characters, showing one window, no tool bar and an empty
+echo area; put them back after.  The builds' default fonts differ, and the size in characters follows the font.  drgnx never shows Emacs's tool bar, and an earlier window (a *Compile-Log* of the test files'
 loading) or message differs between the builds' captures; without its tool bar NS keeps the frame's outer size and
 Naglfar its text size, so the size is set after."
   (declare (indent 0))
   `(let ((conf (current-window-configuration))
          (tb (frame-parameter nil 'tool-bar-lines))
+         (font (frame-parameter nil 'font))
          (cols (frame-width)) (lines (frame-height)))
      (unwind-protect
          (progn
            (set-frame-parameter nil 'tool-bar-lines 0)
+           (set-frame-font "Menlo-12" nil (list (selected-frame)))
            (set-frame-size nil 80 24)
            (delete-other-windows)
            (message nil)
            ,@body)
        (set-window-configuration conf)
        (set-frame-parameter nil 'tool-bar-lines tb)
+       (set-frame-font font nil (list (selected-frame)))
        (set-frame-size nil cols lines))))
 
 (defmacro nhmac-gui--with-font-scene (&rest body)
@@ -1334,8 +1337,8 @@ environment (`nhmac-gui--capture-env')."
   "The text in IMG (from `nhmac-gui--bmp-read'): inside the box of the pixels near the frame's background, the box
 of the pixels away from it.  Where IMG shows the crop marker (`nhmac-gui--marker-line'), the background is
 `nhmac-gui--font-bg' (a small window shows less of it than of the desktop) and that inside is below the marker and
-within its width widened by PAD pixels on each side (a fringe), down to 16 pixels above the background box's bottom
-\(the window's rounded corners); elsewhere the background is the commonest colour and the inside is the box less 16
+within its width widened by PAD pixels on each side (a fringe), inside the background box less the window's rim (2
+pixels a point) on the sides and its rounded corners (16 pixels a point) at the bottom; elsewhere the background is the commonest colour and the inside is the box less 16
 pixels on each side.  Returns (W H PIXELS) of that box."
   (pcase-let* ((`(,w ,h ,px) img)
                (counts (make-hash-table))
@@ -1359,7 +1362,11 @@ pixels on each side.  Returns (W H PIXELS) of that box."
             (setq x0 (min x0 x) y0 (min y0 y) x1 (max x1 x) y1 (max y1 y)))))
     (pcase-let ((`(,cx0 ,cy0 ,cx1 ,cy1)
                  (if (>= mx1 0)
-                     (list (max x0 (- mx0 (or pad 0))) (1+ my1) (min x1 (+ mx1 (or pad 0))) (- y1 16))
+                     ;; the window's edges are the window server's rim (2 pixels a point) and its rounded bottom corners
+                     ;; (16 a point)
+                     (let ((sc (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
+                       (list (max (+ x0 (* 2 sc)) (- mx0 (or pad 0))) (1+ my1)
+                             (min (- x1 (* 2 sc)) (+ mx1 (or pad 0))) (- y1 (* 16 sc))))
                    (list (+ x0 16) (+ y0 16) (- x1 16) (- y1 16))))
                 (tx0 w) (ty0 h) (tx1 -1) (ty1 -1))
       (cl-loop for y from cy0 to cy1 do
@@ -1552,7 +1559,10 @@ on screen of each that NS decoded are within 2/255 of NS's in the same run (NS p
               (should (<= worst 2))))))))
   ;; an animated GIF's frames, count and delay
   (let ((img (create-image nhmac-gui--gif2 'gif t :index 1 :scale 1)))
-    (should (equal (image-metadata img) '(count 2 delay 0.1)))
+    ;; Naglfar reads GIFs with giflib (gif_load, as every other port), whose metadata also carries the file's
+    ;; extension blocks (`extension-data'); NS's ImageIO gives count and delay alone
+    (should (equal (plist-get (image-metadata img) 'count) 2))
+    (should (equal (plist-get (image-metadata img) 'delay) 0.1))
     (switch-to-buffer (generate-new-buffer " *nhmac-gif*"))
     (setq-local cursor-type nil)
     (insert-image img)
@@ -1981,6 +1991,33 @@ settle (no configure took it back), and the content size times the scale is the 
          (equal now kept)
          (<= (abs (- (* scale (nth 0 points)) (plist-get s :w))) 1)
          (<= (abs (- (* scale (nth 1 points)) (plist-get s :h))) 1))))
+
+(ert-deftest nhmac-tool-bar-off-and-on-window-follows ()
+  "The tool bar turned off and on again: the window shows the frame's surface at the surface's size (its points times
+the scale), and a later `set-frame-size' is followed in both directions."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((f (selected-frame)) (tb (frame-parameter f 'tool-bar-lines))
+         (fits (lambda (what)
+                 (nhmac-gui--settle)
+                 (let* ((s (nhmac--test-surface 0 0)) (k (plist-get s :scale)) (p (plist-get s :points)))
+                   (nhmac-gui--say "nhmac-tool-bar-off-and-on-window-follows: %s: frame %dx%d, %S" what
+                                   (frame-pixel-width f) (frame-pixel-height f) s)
+                   (and (<= (abs (- (* k (nth 0 p)) (plist-get s :w))) 1)
+                        (<= (abs (- (* k (nth 1 p)) (plist-get s :h))) 1))))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter f 'tool-bar-lines 1)
+          (should (funcall fits "on"))
+          (set-frame-parameter f 'tool-bar-lines 0)
+          (should (funcall fits "off"))
+          (set-frame-parameter f 'tool-bar-lines 1)
+          (should (funcall fits "on again"))
+          (let ((before (cons (frame-pixel-width f) (frame-pixel-height f))))
+            (set-frame-size f (+ (frame-text-width f) 32) (+ (frame-text-height f) 32) t)
+            (should (nhmac-gui--window-follows "set-frame-size after the tool bar" before))))
+      (set-frame-parameter f 'tool-bar-lines tb)
+      (nhmac-gui--settle))))
 
 (ert-deftest nhmac-set-frame-size ()
   "`set-frame-size', `set-frame-width' and `set-frame-height' on a top-level frame: its window takes the size of
