@@ -238,6 +238,11 @@ pub trait FontSource {
     fn has_char(&self, _id: u64, _c: u32) -> Option<bool> {
         None
     }
+    /// The family the platform draws `chars` in for `language` (empty: none) when no font is named: a registry's
+    /// preferred family, as `preferred` is a script's; none by default.
+    fn preferred_chars(&self, _chars: &[u32], _language: &str) -> Option<String> {
+        None
+    }
 }
 
 /// A listed font: the spec's fields as the face has them.
@@ -639,6 +644,7 @@ mod tests {
         bitmap.bitmap_only = true;
         let mut koi = face(12, "Koi", 80, 100, 0, latin);
         koi.registries = vec!["koi8-r".into()];
+        koi.languages = vec!["ru".into()];
         Fixture {
             faces: vec![
                 face(1, "Menlo", 80, 100, 100, latin),
@@ -954,6 +960,68 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    /// A source with CJK faces that answers coverage by character and a preferred family per registry.
+    struct Cjk(Vec<FontFace>);
+    impl FontSource for Cjk {
+        fn faces(&self) -> Vec<FontFace> {
+            self.0.clone()
+        }
+        fn has_char(&self, id: u64, c: u32) -> Option<bool> {
+            let f = self.0.iter().find(|f| f.id == id)?;
+            Some(
+                (covers(&f.scripts, "han") && (0x4e00..0xa000).contains(&c))
+                    || (covers(&f.scripts, "hangul") && (0xac00..0xd7a4).contains(&c)),
+            )
+        }
+        fn preferred_chars(&self, chars: &[u32], language: &str) -> Option<String> {
+            match (chars, language) {
+                ([0x4E13], "zh-Hans") => Some("PingFang SC".into()),
+                ([0xAC00], "ko") => Some("Gothic".into()),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn a_registry_is_its_characters_and_language_and_has_a_preferred_family() {
+        let mut fx = fixture().faces;
+        let mut song = face(15, "Song", 80, 100, 0, &["han"]);
+        song.languages = vec!["zh".into()];
+        let mut pingfang = face(13, "PingFang SC", 80, 100, 0, &["han"]);
+        pingfang.languages = vec!["zh".into()];
+        let mut gothic = face(14, "Gothic", 80, 100, 0, &["han", "hangul"]);
+        gothic.languages = vec!["ko".into()];
+        fx.extend([song, pingfang, gothic]);
+        let src = Cjk(fx);
+        let ids = |r: &str| {
+            let mut v: Vec<u64> = list(
+                &src,
+                &FontSpec {
+                    registry: r.into(),
+                    ..spec()
+                },
+            )
+            .iter()
+            .map(|e| e.face.id)
+            .collect();
+            v.dedup();
+            v
+        };
+        // Chinese faces only (Hiragino is Japanese, Gothic Korean), the preferred one first
+        assert_eq!(ids("gb2312.1980-0"), [13, 15]);
+        assert_eq!(ids("GB2312.1980-*"), [13, 15]);
+        assert_eq!(ids("ksc5601.1987-0"), [14]);
+        // the registry's language makes a CJK face monospace as well
+        let ko = list(
+            &src,
+            &FontSpec {
+                registry: "ksc5601.1987-0".into(),
+                ..spec()
+            },
+        );
+        assert!(ko.iter().any(|e| e.synth & NHG_FS_SYNTH_MONO != 0));
     }
 
     #[test]
