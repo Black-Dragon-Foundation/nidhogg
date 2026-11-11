@@ -1158,10 +1158,13 @@ int32_t nhg_font_id (const char *s, size_t len, uint32_t *id);
 /* The name of ID into BUF (CAP bytes, NUL-terminated), its length into *LEN (may be NULL).  NHG_E_TOO_SMALL.  */
 int32_t nhg_font_name (uint32_t id, char *buf, size_t cap, size_t *len);
 
-/* Every font that fits *SPEC into OUT (CAP records), how many into *N; the nearest one for nhg_font_match.
-   NHG_E_UNSUPPORTED without a font source (the Linux shell has none: fontconfig lists its fonts).  */
+/* Every font that fits *SPEC into OUT (CAP records), how many there are into *N (more than CAP: ask again with room
+   for them all); the nearest one for nhg_font_match.  NHG_E_UNSUPPORTED without a font source (the Linux shell has
+   none: fontconfig lists its fonts).  nhg_font_has_char: whether face FONT_ID (an entity's) has character C, without
+   opening it: 1 or 0 into *HAS, -1 when the source cannot tell.  */
 int32_t nhg_font_list (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
 int32_t nhg_font_match (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
+int32_t nhg_font_has_char (uint64_t font_id, uint32_t c, int32_t *has);
 
 /* ---- The native font driver's fonts (glue/src/font.rs; macOS) ---------------------------------------------------
    nhg_font_start installs Core Text as the source nhg_font_list and nhg_font_match list from (NHG_E_UNSUPPORTED

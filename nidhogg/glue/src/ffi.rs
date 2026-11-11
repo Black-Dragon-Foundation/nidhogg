@@ -2524,8 +2524,8 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Every font that fits `spec` into `out` (`cap` records), the number written into `*n` (`macfont_list`'s
-    /// matching, `fontspec.rs`).  `NHG_E_UNSUPPORTED` when no font source is installed (the Linux shell has none: it
+    /// Every font that fits `spec` into `out` (`cap` records), how many there are into `*n`, more than `cap` when
+    /// `out` is too small (ask again with room for them all) (`macfont_list`'s matching, `fontspec.rs`).  `NHG_E_UNSUPPORTED` when no font source is installed (the Linux shell has none: it
     /// lists fonts with fontconfig).  Neither reads nor writes pixels.
     ///
     /// # Safety
@@ -2533,6 +2533,23 @@ nhg_export! {
     unlocked fn nhg_font_list(spec: *const crate::fontspec::NhgFontSpec, out: *mut crate::fontspec::NhgFontEntity, cap: usize, n: *mut usize) -> i32 {
         crate::font::note_call();
         font_query(spec, out, cap, n, true)
+    }
+}
+
+nhg_export! {
+    /// Whether face `font_id` (an entity's `font_id`) has character `c`, without opening it (`macfont_has_char` on an
+    /// entity): 1 or 0 into `*has`, -1 when the source cannot tell (or none is installed).
+    ///
+    /// # Safety
+    /// `has` is writable.
+    unlocked fn nhg_font_has_char(font_id: u64, c: u32, has: *mut i32) -> i32 {
+        crate::font::note_call();
+        if has.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { has.write(crate::fontspec::has_char(font_id, c)) };
+        Ok(NHG_OK)
     }
 }
 
