@@ -655,7 +655,14 @@ The rows without the tag (locks, fds, threads) still run."
            (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))
            ;; the `ert-info' lines, innermost first
            (dolist (info (ert-test-result-with-condition-infos result))
-             (glitnir-gui--say "  %s%s" (car info) (cdr info)))))))))
+             (glitnir-gui--say "  %s%s" (car info) (cdr info)))))
+       ;; logged: the result keeps no row's values (a capture's pixels in a `should' form, a backtrace's
+       ;; arguments), which would stay live to the end and make every later row's GC mark them
+       (setf (ert-test-result-should-forms result) nil)
+       (when (ert-test-result-with-condition-p result)
+         (setf (ert-test-result-with-condition-condition result) nil
+               (ert-test-result-with-condition-backtrace result) nil
+               (ert-test-result-with-condition-infos result) nil))))))
 
 (defun glitnir-gui--selector ()
   "The ERT selector: GLITNIR_GUI_SELECT (an Emacs regexp, default every test), and with GLITNIR_GUI_TAG set
@@ -673,6 +680,8 @@ The rows without the tag (locks, fds, threads) still run."
   (glitnir-gui--wait-for-first-paint)
   (glitnir-gui--say-frame "first paint")
   (glitnir-gui--say-startup)
+  ;; the heap before any row, against which a timing row's heap is read
+  (glitnir-gui--say "gui-runner: heap at start %S" (garbage-collect))
   (glitnir-gui--load-tests)
   (glitnir-gui--apply-known-differences)
   (let* ((tests (ert-select-tests (glitnir-gui--selector) t))
