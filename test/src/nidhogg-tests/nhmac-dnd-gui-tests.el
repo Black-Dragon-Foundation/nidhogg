@@ -21,6 +21,8 @@
       (when (and (eq (car-safe ev) 'drag-n-drop) (eq (car-safe (nth 2 ev)) 'quote))
         (setq drop ev)))
     (should drop)
+    (message "nhmac-dnd--drop: %S; frame %S, window edges %S" drop
+             (list (frame-pixel-width) (frame-pixel-height)) (window-pixel-edges))
     (funcall (key-binding [drag-n-drop]) drop)))
 
 (ert-deftest nhmac-dnd-drop-file ()

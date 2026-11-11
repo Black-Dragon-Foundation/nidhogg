@@ -43,6 +43,8 @@
   "Marked text shows as NS's working text, and a commit replaces it with the text inserted."
   (skip-unless (nhmac-ime--naglfar-p))
   (nhmac-ime--in-buffer ""
+    ;; C pushes what the view answers only for the focused frame
+    (message "nhmac-ime-marked-and-commit: focus %S" (frame-focus-state))
     (nhmac--call 'test-ime (selected-frame) 0 "か")
     (nhmac-ime--events 1)
     (should (equal (buffer-string) "か"))

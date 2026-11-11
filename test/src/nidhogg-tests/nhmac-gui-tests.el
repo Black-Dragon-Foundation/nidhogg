@@ -834,25 +834,43 @@ free after %.3f s)"
     (should (= (plist-get d :held-timeouts) 0)))
   (kill-buffer))
 
+(defvar nhmac-gui--taken nil "Events `nhmac-gui--read-shell' took off the queue, oldest first.")
+
+(defun nhmac-gui--read-shell ()
+  "Read the shell's events as Emacs reads them where it reads keys (`input-pending-p', without a redisplay that would
+publish anyway).  `input-pending-p' reads them only while no event is pending (keyboard.c's `get_input_pending'), so
+a pending event is taken off first, into `nhmac-gui--taken'; `nhmac-gui--put-back' returns them."
+  (let (e)
+    (while (and (input-pending-p) (setq e (read-event nil nil 0)))
+      (setq nhmac-gui--taken (nconc nhmac-gui--taken (list e))))))
+
+(defun nhmac-gui--put-back ()
+  "Return the events `nhmac-gui--read-shell' took, in their order, ahead of any unread ones."
+  (setq unread-command-events (append nhmac-gui--taken unread-command-events)
+        nhmac-gui--taken nil))
+
 (defun nhmac-gui--wait-unheld (secs)
   "Wait as Emacs waits for input until the commit pacer holds no commit of the selected frame, at most SECS; whether
-it does not.  The pacer's request for the publish comes as a shell event, which Emacs reads where it reads keys (here
-`input-pending-p', without a redisplay that would publish anyway)."
+it does not.  The pacer's request for the publish comes as a shell event (`nhmac-gui--read-shell')."
   (let ((end (+ (float-time) secs)))
     ;; one wait first: it commits what the last redisplay published (the commit is off the redisplay path)
     (accept-process-output nil 0.001)
-    (while (and (plist-get (nhmac-gui--surface) :held) (< (float-time) end))
-      (input-pending-p)
-      (accept-process-output nil 0.01))
+    (unwind-protect
+        (while (and (plist-get (nhmac-gui--surface) :held) (< (float-time) end))
+          (nhmac-gui--read-shell)
+          (accept-process-output nil 0.01))
+      (nhmac-gui--put-back))
     (not (plist-get (nhmac-gui--surface) :held))))
 
 (defun nhmac-gui--wait-free (secs)
   "Wait as Emacs waits for input until the selected frame's next commit would find a surface the window server does
 not hold, at most SECS; how many seconds that took, or nil if it never did."
   (let ((start (float-time)))
-    (while (and (not (plist-get (nhmac-gui--surface) :free)) (< (- (float-time) start) secs))
-      (input-pending-p)
-      (accept-process-output nil 0.01))
+    (unwind-protect
+        (while (and (not (plist-get (nhmac-gui--surface) :free)) (< (- (float-time) start) secs))
+          (nhmac-gui--read-shell)
+          (accept-process-output nil 0.01))
+      (nhmac-gui--put-back))
     (and (plist-get (nhmac-gui--surface) :free) (- (float-time) start))))
 
 (ert-deftest nhmac-surface-busy-burst ()
@@ -1009,7 +1027,9 @@ with no run-loop turn: the commit's deadline commits it."
     (let ((end (+ (float-time) 0.02)))
       (while (< (float-time) end)))
     (let ((s (nhmac-gui--surface)))
-      (nhmac-gui--say "nhmac-commit-shows-without-spin: %S" s)
+      (nhmac-gui--say "nhmac-commit-shows-without-spin: %S; %d commits, %d deadline commits, %d pumps" s
+                      (nhmac-gui--delta before :commits) (nhmac-gui--delta before :deadline-flushes)
+                      (nhmac-gui--delta before :pumps))
       (should (eq (plist-get s :contents-is-newest) t))
       (should (equal (plist-get s :gravity) "topLeft"))
       (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
@@ -1791,23 +1811,27 @@ on screen of each that NS decoded are within 2/255 of NS's in the same run (NS p
         (nhmac-gui--say "nhmac-images-native: %s NS %S Naglfar %S file %S" name (cdr (assoc name ns)) size pixels)
         (should (equal size pixels))
         (when (and ns-decoded (equal (getenv "GLITNIR_GUI_SCALE") "1"))
-          (nhmac-gui--with-image-scene f
-            (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop
-                                          (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t))))
-                         (`(,mw ,mh ,mpx) (nhmac-gui--text-crop
-                                          (nhmac-gui--bmp-read
-                                           (nhmac-gui--capture (nhmac-gui--font-file (concat name ".bmp"))))))
-                         (worst 0))
-              ;; an empty crop is a capture that missed the frame, never a size to compare
-              (should (> nw 0))
-              (should (> mw 0))
-              (should (equal (list mw mh) (list nw nh)))
-              (dotimes (i (length npx))
-                (let ((a (aref npx i)) (b (aref mpx i)))
-                  (dolist (sh '(16 8 0))
-                    (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
-              (nhmac-gui--say "nhmac-images-native: %s %dx%d, worst channel difference %d" name mw mh worst)
-              (should (<= worst 2))))))))
+          ;; decoded inline, as NS does: a deferred image draws its empty box until the worker lands it
+          ;; (nhmac-images-worker compares the worker's)
+          (let ((nidhogg-workers-images nil) (nidhogg-image-defer nil))
+            (clear-image-cache t)
+            (nhmac-gui--with-image-scene f
+              (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop
+                                            (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t))))
+                           (`(,mw ,mh ,mpx) (nhmac-gui--text-crop
+                                            (nhmac-gui--bmp-read
+                                             (nhmac-gui--capture (nhmac-gui--font-file (concat name ".bmp"))))))
+                           (worst 0))
+                ;; an empty crop is a capture that missed the frame, never a size to compare
+                (should (> nw 0))
+                (should (> mw 0))
+                (should (equal (list mw mh) (list nw nh)))
+                (dotimes (i (length npx))
+                  (let ((a (aref npx i)) (b (aref mpx i)))
+                    (dolist (sh '(16 8 0))
+                      (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
+                (nhmac-gui--say "nhmac-images-native: %s %dx%d, worst channel difference %d" name mw mh worst)
+                (should (<= worst 2)))))))))
   ;; an animated GIF's frames, count and delay
   (let ((img (create-image nhmac-gui--gif2 'gif t :index 1 :scale 1)))
     ;; Naglfar reads GIFs with giflib (gif_load, as every other port), whose metadata also carries the file's
