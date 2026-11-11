@@ -113,6 +113,11 @@ AC_ARG_WITH([nidhogg-watchdog-signal],
   [AS_HELP_STRING([--with-nidhogg-watchdog-signal=NAME],
     [the signal the watchdog's monitor sends the main thread (default SIGURG)])],
   [], [with_nidhogg_watchdog_signal=SIGURG])
+dnl Nidhogg: the shell glue's test hooks without Emacs's checking, for timing builds compared with a release build.
+AC_ARG_ENABLE([nidhogg-test-hooks],
+  [AS_HELP_STRING([--enable-nidhogg-test-hooks],
+    [build the shell glue's test hooks without --enable-checking (a timing build)])],
+  [], [enable_nidhogg_test_hooks=no])
 dnl Nidhogg: worker threads (see README.md, "Work off the main thread").
 AC_ARG_WITH([nidhogg-workers],
   [AS_HELP_STRING([--with-nidhogg-workers],
@@ -4110,11 +4115,14 @@ if test "${with_glitnir}" = yes; then
   glitnir_home=`pwd`/src/glitnir-cargo-home
   glitnir_target=`pwd`/src/glitnir-target
   test -z "$MACOSX_DEPLOYMENT_TARGET" || GLITNIR_ENV="MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
-  dnl Under --enable-checking the glue gets its test hooks and Rust's debug assertions.  Cargo has no environment
-  dnl variable that turns on a feature, hence GLITNIR_CARGO_FLAGS; the profile setting does have one.
+  dnl Under --enable-checking the glue gets its test hooks and Rust's debug assertions; under
+  dnl --enable-nidhogg-test-hooks the hooks alone.  Cargo has no environment variable that turns on a feature, hence
+  dnl GLITNIR_CARGO_FLAGS; the profile setting does have one.
   if test "$HAVE_NHWL" = yes && test "x$ac_enable_checking" != x; then
     GLITNIR_CARGO_FLAGS="$GLITNIR_CARGO_FLAGS --features test-hooks"
     GLITNIR_ENV="$GLITNIR_ENV CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true"
+  elif test "$HAVE_NHWL" = yes && test "$enable_nidhogg_test_hooks" = yes; then
+    GLITNIR_CARGO_FLAGS="$GLITNIR_CARGO_FLAGS --features test-hooks"
   fi
   AC_MSG_CHECKING([the native libraries Glitnir links])
   rm -rf "$glitnir_target"

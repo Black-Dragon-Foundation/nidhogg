@@ -17,7 +17,7 @@
 #                    percent (G1's main-thread CPU per key: --within 10)
 #   --out DIR        where the logs and times go (default $TMPDIR/nhmac-pair)
 #
-# Exit 0 not slower (every row), 1 slower or a round that wrote no times, 2 usage.
+# Exit 0 not slower (every row), 1 slower or a round that wrote no times, 2 usage or a build with --enable-checking.
 set -u
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -40,6 +40,14 @@ case $within in ''|[0-9]|[0-9][0-9]|[0-9][0-9][0-9]) ;; *) echo "nhmac-pair.sh: 
 [ -n "$out" ] || out=${TMPDIR:-/tmp}/nhmac-pair
 mkdir -p "$out" || exit 1
 [ ${#rows[@]} -gt 0 ] || rows=(nhmac-paired-key-to-commit)
+# like with like: the NS build is a release build, so a Naglfar with Emacs's assertions (--enable-checking, whose GC
+# checks alone tripled a GC's time) is not timed against it; a timing build has the test hooks alone (build.sh --test-hooks)
+for e in "$ns" "$naglfar"; do
+  if "$e" -Q --batch --eval '(princ system-configuration-options)' 2>/dev/null | grep -q -- '--enable-checking'; then
+    echo "nhmac-pair.sh: $e is a build with --enable-checking: time a build without assertions (build.sh --test-hooks)" >&2
+    exit 2
+  fi
+done
 
 status=0
 for row in "${rows[@]}"; do

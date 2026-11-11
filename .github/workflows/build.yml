@@ -809,11 +809,11 @@ jobs:
           (cd "$RUNNER_TEMP/nhmac-gui" && { ls nhmac-ns-* 2>/dev/null || true; } > nhmac-ns-refs.txt && cat nhmac-ns-refs.txt)
       # saved only from a full run whose lane passed: never a partial or a red baseline
       - name: Save the NS reference dumps
-        if: ${{ success() && steps.nsrefs.outcome == 'success' && steps.nsrefs.outputs.cache-hit != 'true' }}
+        if: ${{ success() && env.CACHE_SAVE == 'true' && steps.nsrefs.outcome == 'success' && steps.nsrefs.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/nhmac-gui/nhmac-ns-*
-          key: ${{ steps.nsrefs.outputs.cache-primary-key }}
+          key: nhmac-ns-refs-${{ runner.arch }}-${{ steps.img.outputs.image }}-${{ hashFiles('src/ns*.m', 'src/ns*.h', 'src/macfont.*', 'src/xdisp.c', 'src/font.c', 'src/dispextern.h', 'src/image.c', 'nidhogg/test/nhmac-gui.sh', 'nidhogg/test/nhmac-lane.txt', 'nidhogg/test/mac-display.m', 'test/src/nidhogg-tests/gui-runner.el', 'test/src/nidhogg-tests/nhmac-gui-tests.el') }}
       - name: Upload the NS reference dumps
         if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -935,6 +935,17 @@ jobs:
           NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
           NIDHOGG_BUILD_LISP_CACHE_ELC: '1'
         run: /bin/bash nidhogg/build.sh --host --naglfar --dev --checking --stage build --jobs 3 --build-dir "$RUNNER_TEMP/nbuild"
+      # The paired timing's Naglfar (`pair`): the NS tarball is a release build, so the Naglfar it is timed against has
+      # the test hooks and none of --enable-checking's assertions (their GC checks tripled a GC's time, batch 3)
+      - name: Naglfar timing build (the test hooks, no assertions)
+        id: tbuild
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && inputs.pair != '' }}
+        env:
+          NIDHOGG_BUILD_CCACHE: ${{ steps.ccb.outcome == 'success' && format('{0}/ccache', runner.temp) || '' }}
+          NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache-timing
+          NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
+          NIDHOGG_BUILD_LISP_CACHE_ELC: '1'
+        run: /bin/bash nidhogg/build.sh --host --naglfar --dev --test-hooks --stage build --jobs 3 --build-dir "$RUNNER_TEMP/tbuild"
       - name: Save configure's checks
         if: ${{ always() && env.CACHE_SAVE == 'true' && steps.nbuild.outcome == 'success' && steps.cf.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -964,7 +975,7 @@ jobs:
         if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && ((inputs.checks != 'none' && inputs.checks != 'build-only') || inputs.pair != '') }}
         run: |
           mkdir -p "$RUNNER_TEMP/naglfar-build"
-          tar -C "$RUNNER_TEMP" --exclude='*.o' --exclude=glitnir-target --exclude=glitnir-cargo-home --exclude='nbuild/*.log' -czf "$RUNNER_TEMP/naglfar-build/nbuild.tar.gz" nbuild
+          tar -C "$RUNNER_TEMP" --exclude='*.o' --exclude=glitnir-target --exclude=glitnir-cargo-home --exclude='nbuild/*.log' --exclude='tbuild/*.log' -czf "$RUNNER_TEMP/naglfar-build/nbuild.tar.gz" nbuild $([ -d "$RUNNER_TEMP/tbuild/obj" ] && echo tbuild)
           ls -l "$RUNNER_TEMP/naglfar-build"
       - name: Upload the build tree
         if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && ((inputs.checks != 'none' && inputs.checks != 'build-only') || inputs.pair != '') }}
@@ -1072,10 +1083,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ns-app" && tar -C "$RUNNER_TEMP/ns-app" -xJf "$(ls dist/*.tar.xz | head -n 1)"
           ns="$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs"
           rc=0
-          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --row nhmac-paired-key-to-commit --row nhmac-paired-cjk-emoji-scroll --out "$RUNNER_TEMP/nhmac-gui/pair" || rc=1
-          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --row nhmac-blur-pair --out "$RUNNER_TEMP/nhmac-gui/pair-blur" || rc=1
+          # the timing build (no assertions), as the NS tarball is a release build
+          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/tbuild/obj/src/emacs" --row nhmac-paired-key-to-commit --row nhmac-paired-cjk-emoji-scroll --out "$RUNNER_TEMP/nhmac-gui/pair" || rc=1
+          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/tbuild/obj/src/emacs" --row nhmac-blur-pair --out "$RUNNER_TEMP/nhmac-gui/pair-blur" || rc=1
           # G1's measure: the main thread's CPU per key, within 10% of NS's
-          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --row nhmac-paired-cpu-per-key --within 10 --out "$RUNNER_TEMP/nhmac-gui/pair-cpu" || rc=1
+          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/tbuild/obj/src/emacs" --row nhmac-paired-cpu-per-key --within 10 --out "$RUNNER_TEMP/nhmac-gui/pair-cpu" || rc=1
           exit $rc
       - name: macOS GUI logs
         if: always()

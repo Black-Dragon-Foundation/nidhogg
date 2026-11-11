@@ -271,6 +271,11 @@ job macos | grep -qF 'elc=$(bash nidhogg/ci/lisp-key.sh --elc)'  || fail "macos 
 # the macOS job is two jobs that run at once, the NS app and Naglfar: each its own build, neither waiting for the other
 # (the paired timing alone fetches the NS job's tarball), the rows, inputs and artifacts as before
 job macos-naglfar | grep -qF 'build.sh --host --naglfar --dev --checking' || fail "no Naglfar build in the macos-naglfar job"
+# the paired timing compares Naglfar with the NS release build: its Naglfar has the test hooks and no assertions
+# (--enable-checking's GC checks tripled a GC's time), built when a pair is asked for and run by the pair step
+job macos-naglfar | grep -qF 'build.sh --host --naglfar --dev --test-hooks' || fail "no Naglfar timing build in the macos-naglfar job"
+job macos-naglfar-rows | grep -F 'nhmac-pair.sh' | grep -qF 'nbuild/' && fail "the paired timing runs the checking build"
+job macos-naglfar-rows | grep -F 'nhmac-pair.sh' | grep -qF 'tbuild/obj/src/emacs' || fail "the paired timing does not run the timing build"
 ! job macos | grep -qF -- '--host --naglfar'                             || fail "the NS job also builds Naglfar"
 for st in "Naglfar's Rust unit tests" "Naglfar's boundary check (nm-check)"; do
   job macos-naglfar | grep -qF "name: $st" || fail "macos-naglfar lacks the step $st"
