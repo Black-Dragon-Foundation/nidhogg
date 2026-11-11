@@ -2200,7 +2200,11 @@ the size on the screen (points) it was made with: the text follows.  (Each re-op
         (progn
           (setq frame-size-history '(300))
           (setq f (make-frame '((width . 40) (height . 10))))
-          ;; its size in points as made, at the selected frame's scale
+          ;; its size in points as first drawn, at the selected frame's scale.  Not as `make-frame' returns it: the
+          ;; tool bar's first measure (`tool-bar-height' in `x-create-frame', when the window is sized) comes out
+          ;; 2 px a row shorter than redisplay's, which grows the window before anything is drawn (the text keeps
+          ;; its lines; `nhmac-new-frame-laid-out-once' holds the first draw to its size)
+          (nhmac-gui--settle)
           (setq made (list (/ (frame-pixel-width f) (frame-scale-factor root))
                            (/ (frame-pixel-height f) (frame-scale-factor root))))
           (dotimes (_ 3) (nhmac-gui--settle))
