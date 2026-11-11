@@ -1009,6 +1009,49 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
     (should (>= (nhmac-gui--delta before :commits) 1)))
   (kill-buffer))
 
+(ert-deftest nhmac-redisplay-has-no-flush ()
+  "The commit is off the redisplay path (as NS's, Core Animation's at the run loop's turn): a redisplay that drew
+commits nothing and flushes nothing inside it; the next wait commits it."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "no-flush")
+  (redisplay t)
+  (sit-for 0.05)
+  (dotimes (i 5)
+    (let ((before (nhmac-stats)))
+      (insert "z")
+      (redisplay)
+      (let ((inside (nhmac-gui--delta before :commits)) (ns (nhmac-gui--delta before :commit-ns)))
+        (sit-for 0.02)
+        (nhmac-gui--say "nhmac-redisplay-has-no-flush: key %d: %d commits (%d ns) inside, %d after a wait"
+                        i inside ns (nhmac-gui--delta before :commits))
+        (should (= inside 0))
+        (should (= ns 0))
+        (should (>= (nhmac-gui--delta before :commits) 1)))))
+  (kill-buffer))
+
+(ert-deftest nhmac-redisplay-then-busy-shows ()
+  "Lisp that keeps running after a redisplay, waiting for nothing, still has its frame shown: the commit's deadline
+flushes it within a few milliseconds, without a pump."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (nhmac-gui--typing-buffer "busy-shows")
+  (redisplay t)
+  (sit-for 0.05)
+  (dotimes (i 5)
+    (let ((before (nhmac-stats)))
+      (insert "q")
+      (redisplay)
+      (let ((end (+ (float-time) 0.05)))
+        (while (< (float-time) end)))
+      (let ((s (nhmac-gui--surface)))
+        (nhmac-gui--say "nhmac-redisplay-then-busy-shows: key %d: %d commits, %d pumps in 50 ms of Lisp, newest %S"
+                        i (nhmac-gui--delta before :commits) (nhmac-gui--delta before :pumps)
+                        (plist-get s :contents-is-newest))
+        (should (>= (nhmac-gui--delta before :commits) 1))
+        (should (eq (plist-get s :contents-is-newest) t)))))
+  (kill-buffer))
+
 (ert-deftest nhmac-colour-tagged ()
   "The surfaces' colour space follows `ns-use-srgb-colorspace': sRGB, else Generic RGB."
   :tags '(draws)
