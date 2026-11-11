@@ -2659,7 +2659,8 @@ its fallback fonts for nhmac-font-fallback-same; its shaping for nhmac-font-shap
 
 (defun nhmac-gui--oracle-lines ()
   "The font oracle's lines (tab-separated):
-  font FAMILY PX ASCENT DESCENT SPACE AVERAGE MAX OPENED-FAMILY  (or: missing FAMILY)
+  font FAMILY PX ASCENT DESCENT SPACE AVERAGE MAX OPENED-FAMILY WEIGHT  (or: missing FAMILY; WEIGHT numeric, of
+       the face `find-font' gave: the first the driver lists)
   glyph FAMILY PX CHAR CODE WIDTH LBEARING RBEARING ASCENT DESCENT
   shape FAMILY PX DIRECTION TEXT GLYPHS, GLYPHS each FROM,TO,CHAR,CODE,WIDTH,LBEARING,RBEARING,ASCENT,DESCENT,XOFF,
         YOFF,WADJUST joined by ;
@@ -2671,8 +2672,12 @@ its fallback fonts for nhmac-font-fallback-same; its shaping for nhmac-font-shap
             (push (format "missing\t%s" (car f)) out)
           (dolist (px nhmac-gui--oracle-sizes)
             (let* ((fo (open-font ent px)) (q (query-font fo)) (text (cdr f)))
-              (push (format "font\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s" (car f) px (aref q 4) (aref q 5) (aref q 6)
-                            (aref q 7) (aref q 3) (font-get fo :family))
+              (push (format "font\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s" (car f) px (aref q 4) (aref q 5) (aref q 6)
+                            (aref q 7) (aref q 3) (font-get fo :family)
+                            (let ((w (font-get fo :weight)))
+                              (or (seq-some (lambda (v) (and (memq w (append v nil)) (aref v 0)))
+                                            font-weight-table)
+                                  w)))
                     out)
               (dotimes (i (length text))
                 (let ((g (aref (font-get-glyphs fo i (1+ i) text) 0)))

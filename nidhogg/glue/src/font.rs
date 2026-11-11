@@ -809,13 +809,17 @@ mod coretext {
 
         const ORACLE: &str = include_str!("../tests/fixtures/ns-font-oracle.tsv");
 
-        /// The face NS's `find-font` opens for FAMILY: the family's upright regular face (Core Text's order).
-        fn face_of(family: &str) -> Option<u64> {
+        /// The face NS's `find-font` opened for FAMILY: of WEIGHT (Emacs's numeric weight) when the oracle says, else
+        /// the family's upright regular face (Core Text's order).
+        fn face_of(family: &str, weight: Option<i32>) -> Option<u64> {
             let faces = text::faces();
             faces
                 .iter()
                 .enumerate()
                 .filter(|(_, f)| f.family == family)
+                .filter(|(_, f)| {
+                    weight.is_none_or(|w| crate::fontspec::weight_from_trait(f.weight) == w)
+                })
                 .min_by(|(_, a), (_, b)| {
                     let key = |f: &text::Face| {
                         (
@@ -828,6 +832,19 @@ mod coretext {
                 .map(|(i, _)| i as u64 + 1)
         }
 
+        /// The families Core Text lists (this driver's faces) whose names hold `family`'s first word: what a family
+        /// the driver does not have is listed as instead.
+        fn near(family: &str) -> Vec<String> {
+            let word = family.split(' ').next().unwrap_or(family).to_lowercase();
+            let mut v: Vec<String> = text::faces()
+                .iter()
+                .filter(|f| f.family.to_lowercase().contains(&word))
+                .map(|f| format!("{} ({})", f.family, f.postscript))
+                .collect();
+            v.dedup();
+            v
+        }
+
         fn nums(s: &str) -> Vec<i64> {
             s.split(',').filter_map(|x| x.parse().ok()).collect()
         }
@@ -835,10 +852,21 @@ mod coretext {
         #[test]
         fn font_oracle() {
             let mut open_fonts: BTreeMap<(String, i32), Option<NhgFontMetrics>> = BTreeMap::new();
+            let mut weights: BTreeMap<String, i32> = BTreeMap::new();
+            for line in ORACLE.lines() {
+                let f: Vec<&str> = line.split('\t').collect();
+                if let ["font", family, _, _, _, _, _, _, _, w] = f.as_slice()
+                    && let Ok(w) = w.parse()
+                {
+                    weights.insert((*family).to_owned(), w);
+                }
+            }
             let mut opened = |family: &str, px: i32| {
                 *open_fonts
                     .entry((family.to_owned(), px))
-                    .or_insert_with(|| face_of(family).and_then(|id| open(id, px, 0)))
+                    .or_insert_with(|| {
+                        face_of(family, weights.get(family).copied()).and_then(|id| open(id, px, 0))
+                    })
             };
             let (mut gaps, mut checked) = (Vec::new(), 0);
             for line in ORACLE
@@ -847,10 +875,13 @@ mod coretext {
             {
                 let f: Vec<&str> = line.split('\t').collect();
                 match f.as_slice() {
-                    ["font", family, px, asc, desc, space, avg, _max, _] => {
+                    ["font", family, px, asc, desc, space, avg, _max, _, ..] => {
                         let px: i32 = px.parse().unwrap();
                         let Some(m) = opened(family, px) else {
-                            gaps.push(format!("{family} {px}: not opened"));
+                            gaps.push(format!(
+                                "{family} {px}: not opened; listed near it: {:?}",
+                                near(family)
+                            ));
                             continue;
                         };
                         let ns: Vec<i32> = [asc, desc, space, avg]
