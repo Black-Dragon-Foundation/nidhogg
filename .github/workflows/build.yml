@@ -964,7 +964,7 @@ jobs:
   # either job ended without uploading it.
   macos-naglfar-rows:
     name: macOS (Naglfar rows)
-    needs: [changes, macos, macos-naglfar]
+    needs: [changes, pin, macos, macos-naglfar]
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' && inputs.ns_app_run == '' && needs.macos-naglfar.result != 'skipped' && ((inputs.checks != 'none' && inputs.checks != 'build-only') || inputs.pair != '') }}
     runs-on: xcode-27
     timeout-minutes: 120
@@ -1002,6 +1002,28 @@ jobs:
           # the display on and awake for the whole run (-u wakes it, -d keeps it from idle sleep): the window is
           # composited, not occluded, as the ring and timing rows need
           caffeinate -d -i -u bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
+      # drgnx's fit-check row (its test/ui/rows-fit-gui-test.el) on Naglfar at scale 2, drgnx at the commit the pin job
+      # names (nhmac-gui.sh --drgnx builds its hub here, with the image's rustup): the hub's fit against Core Text's
+      # advances.  It runs when `checks` is empty or names it (`fit`).  Until the pinned commit has the row it is
+      # reported skipped, with that reason; a push or pull request (the gate) is red then (--drgnx-strict), a dispatch
+      # is not.
+      - name: drgnx at the pinned commit (the fit-check row)
+        id: dfit
+        if: ${{ !cancelled() && (inputs.checks == '' || contains(inputs.checks, 'fit')) }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Black-Dragon-Foundation/drgnx
+          ref: ${{ inputs.drgnx_ref || needs.pin.outputs.ref }}
+          path: drgnx-pin
+          persist-credentials: false
+      - name: drgnx's fit-check row on Naglfar (scale 2)
+        if: ${{ !cancelled() && steps.dfit.outcome == 'success' }}
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
+          STRICT: ${{ github.event_name != 'workflow_dispatch' && '--drgnx-strict' || '' }}
+        run: |
+          if command -v rustup >/dev/null; then rustup toolchain install stable --profile minimal --no-self-update && rustup default stable; else brew install rust; fi
+          caffeinate -d -i -u bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --drgnx "$GITHUB_WORKSPACE/drgnx-pin" $STRICT --out "$RUNNER_TEMP/nhmac-gui/drgnx-fit"
       - name: The NS tarball for the paired timing (artifact tarball-macos)
         if: ${{ !cancelled() && inputs.pair != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1009,14 +1031,15 @@ jobs:
           name: tarball-macos
           path: dist
       # Paired timing (`pair`): the NS build of the tarball and Naglfar run each timed row in turn, ABAB
-      # (nidhogg/test/nhmac-pair.sh): typing, and typing under a blurred child; red when Naglfar is slower in either.
+      # (nidhogg/test/nhmac-pair.sh, each row judged on its own): typing, scrolling CJK and emoji text, and typing under
+      # a blurred child; red when Naglfar is slower in any.
       - name: Naglfar paired timing (pair)
         if: ${{ !cancelled() && inputs.pair != '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/ns-app" && tar -C "$RUNNER_TEMP/ns-app" -xJf "$(ls dist/*.tar.xz | head -n 1)"
           ns="$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs"
           rc=0
-          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/pair" || rc=1
+          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --row nhmac-paired-key-to-commit --row nhmac-paired-cjk-emoji-scroll --out "$RUNNER_TEMP/nhmac-gui/pair" || rc=1
           caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --row nhmac-blur-pair --out "$RUNNER_TEMP/nhmac-gui/pair-blur" || rc=1
           exit $rc
       - name: macOS GUI logs
