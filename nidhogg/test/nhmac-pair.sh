@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Naglfar's paired timing (design §7): the stock NS build (A) and Naglfar (B) run a timed row (nhmac-paired-*; by
-# default nhmac-paired-key-to-commit) in turn, ABAB, on the same virtual display, each round writing its times (µs, one
+# Naglfar's paired timing (design §7): the stock NS build (A) and Naglfar (B) run a timed row (by default
+# nhmac-paired-key-to-commit) in turn, ABAB, on the same virtual display, each round writing its times (µs, one
 # per line); then the
 # i-th time of each B round is paired with the i-th of the A round before it.  Naglfar passes when it is not slower:
 # the median of the differences B - A is at most 0, B's p95 is at most A's, and a one-sided sign test does not find
@@ -10,7 +10,8 @@
 #
 #   --ns FILE        the NS build's Emacs (Nidhogg.app/Contents/MacOS/Emacs of the release tarball)
 #   --naglfar FILE   Naglfar's Emacs (a build tree's src/emacs)
-#   --row NAME       a timed row, judged on its own; repeatable (default nhmac-paired-key-to-commit)
+#   --row NAME       a timed row, judged on its own; repeatable (default nhmac-paired-key-to-commit; any of the
+#                    *nhmac-gui-tests.el files); it writes GLITNIR_GUI_OUT/pair-BUILD.txt
 #   --rounds N       A/B rounds (default 3)
 #   --out DIR        where the logs and times go (default $TMPDIR/nhmac-pair)
 #
@@ -38,7 +39,6 @@ mkdir -p "$out" || exit 1
 
 status=0
 for row in "${rows[@]}"; do
-case $row in nhmac-paired-*) ;; *) echo "nhmac-pair.sh: --row $row is not a timed row (nhmac-paired-*)" >&2; exit 2 ;; esac
 o=$out/$row
 mkdir -p "$o" || exit 1
 for i in $(seq 1 "$rounds"); do
