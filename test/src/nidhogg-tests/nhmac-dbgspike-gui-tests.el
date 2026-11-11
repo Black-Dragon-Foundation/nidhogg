@@ -8,7 +8,10 @@
 (defconst nhmac-dbgspike--dir (file-name-directory (or load-file-name buffer-file-name)))
 
 (ert-deftest nhmac-dbgspike/adapters-under-seatbelt ()
-  (let ((out (with-temp-buffer
+  ;; The GUI rows' interposer (DYLD_INSERT_LIBRARIES) aborts platform binaries such as mkdir: keep it out.
+  (let* ((process-environment
+          (seq-remove (lambda (e) (string-prefix-p "DYLD_" e)) process-environment))
+         (out (with-temp-buffer
                (call-process "/bin/bash" nil t nil (expand-file-name "dbgspike/run-mac.sh" nhmac-dbgspike--dir))
                (buffer-string))))
     (dolist (line (split-string out "\n" t))
