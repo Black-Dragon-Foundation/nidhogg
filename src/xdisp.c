@@ -35547,7 +35547,13 @@ draw_row_with_mouse_face (struct window *w, int start_x, struct glyph_row *row,
 #ifdef HAVE_WINDOW_SYSTEM
   if (FRAME_WINDOW_P (XFRAME (w->frame)))
     {
+#ifdef HAVE_GLITNIR
+      draw_glyphs (w, start_x, row,
+		   MOUSE_HL_INFO (XFRAME (w->frame))->mouse_face_area,
+		   start_hpos, end_hpos, draw, 0);
+#else
       draw_glyphs (w, start_x, row, TEXT_AREA, start_hpos, end_hpos, draw, 0);
+#endif
       return;
     }
 #endif
@@ -35663,12 +35669,20 @@ show_mouse_face (Mouse_HLInfo *hlinfo, enum draw_glyphs_face draw,
 	    }
 #ifdef HAVE_WINDOW_SYSTEM
 	  /* Compute the cursor offset due to mouse-highlight.  */
+#ifdef HAVE_GLITNIR
+	  if ((MATRIX_ROW_VPOS (row, w->current_matrix) == w->phys_cursor.vpos)
+	      && !w->pseudo_window_p
+	      && draw == DRAW_MOUSE_FACE
+	      && hlinfo->mouse_face_area == TEXT_AREA)
+	    get_cursor_offset_for_mouse_face (w, row, &mouse_off);
+#else
 	  if ((MATRIX_ROW_VPOS (row, w->current_matrix) == w->phys_cursor.vpos)
 	      /* But not when highlighting a pseudo window, such as
 		 the toolbar, which can't have a cursor anyway.  */
 	      && !w->pseudo_window_p
 	      && draw == DRAW_MOUSE_FACE)
 	    get_cursor_offset_for_mouse_face (w, row, &mouse_off);
+#endif
 #endif
 	}
 
@@ -35735,6 +35749,9 @@ clear_mouse_face (Mouse_HLInfo *hlinfo)
   hlinfo->mouse_face_end_row = hlinfo->mouse_face_end_col = -1;
   hlinfo->mouse_face_window = Qnil;
   hlinfo->mouse_face_overlay = Qnil;
+#ifdef HAVE_GLITNIR
+  hlinfo->mouse_face_area = TEXT_AREA;
+#endif
   return cleared;
 }
 
@@ -35749,6 +35766,10 @@ coords_in_mouse_face_p (struct window *w, int hpos, int vpos)
   if (!(WINDOWP (hlinfo->mouse_face_window)
 	&& XWINDOW (hlinfo->mouse_face_window) == w))
     return false;
+#ifdef HAVE_GLITNIR
+  if (hlinfo->mouse_face_area != TEXT_AREA)
+    return false;
+#endif
   if (vpos < hlinfo->mouse_face_beg_row
       || vpos > hlinfo->mouse_face_end_row)
     return false;
@@ -36712,6 +36733,11 @@ note_line_or_margin_highlight (Lisp_Object window, int x, int y,
   int original_x_pixel = x;
   struct glyph * glyph = NULL, * row_start_glyph = NULL;
   struct glyph_row *row UNINIT;
+#ifdef HAVE_GLITNIR
+  /* The glyph area GLYPH is in: a margin's when the pointer is on a
+     margin string (graphical frames only).  */
+  enum glyph_row_area garea = TEXT_AREA;
+#endif
 
   if (area == ON_MODE_LINE || area == ON_HEADER_LINE || area == ON_TAB_LINE)
     {
@@ -36751,6 +36777,25 @@ note_line_or_margin_highlight (Lisp_Object window, int x, int y,
 	 returns them in row/column units!  */
       string = marginal_area_string (w, area, &x, &y, &charpos,
 				     &object, &dx, &dy, &width, &height);
+#ifdef HAVE_GLITNIR
+      /* Y came back as a text row, X as a glyph of the margin.  */
+      if (STRINGP (string) && FRAME_WINDOW_P (f)
+	  && y >= 0
+	  && (MATRIX_ROW_VPOS (MATRIX_FIRST_TEXT_ROW (w->current_matrix), w->current_matrix) + y
+	      < w->current_matrix->nrows))
+	{
+	  enum glyph_row_area a
+	    = area == ON_LEFT_MARGIN ? LEFT_MARGIN_AREA : RIGHT_MARGIN_AREA;
+	  struct glyph_row *r = MATRIX_FIRST_TEXT_ROW (w->current_matrix) + y;
+	  if (r->enabled_p && x >= 0 && x < r->used[a])
+	    {
+	      garea = a;
+	      row = r;
+	      row_start_glyph = r->glyphs[a];
+	      glyph = row_start_glyph + x;
+	    }
+	}
+#endif
     }
 
   Lisp_Object help = Qnil;
@@ -36890,10 +36935,17 @@ note_line_or_margin_highlight (Lisp_Object window, int x, int y,
   if (STRINGP (string))
     {
       mouse_face = Fget_text_property (pos, Qmouse_face, string);
+#ifdef HAVE_GLITNIR
+      if (!NILP (Vmouse_highlight) && !NILP (mouse_face)
+	  && ((area == ON_MODE_LINE) || (area == ON_HEADER_LINE)
+	      || (area == ON_TAB_LINE) || garea != TEXT_AREA)
+	  && glyph)
+#else
       if (!NILP (Vmouse_highlight) && !NILP (mouse_face)
 	  && ((area == ON_MODE_LINE) || (area == ON_HEADER_LINE)
 	      || (area == ON_TAB_LINE))
 	  && glyph)
+#endif
 	{
 	  Lisp_Object b, e;
 
@@ -36942,7 +36994,11 @@ note_line_or_margin_highlight (Lisp_Object window, int x, int y,
 	     GLYPH belongs.  Note: GSEQ_LENGTH is different from
 	     SCHARS (STRING), because the latter returns the length of
 	     the internal string.  */
+#ifdef HAVE_GLITNIR
+	  for (tmp_glyph = row->glyphs[garea] + row->used[garea] - 1;
+#else
 	  for (tmp_glyph = row->glyphs[TEXT_AREA] + row->used[TEXT_AREA] - 1;
+#endif
 	       tmp_glyph > glyph
 		 && (!(EQ (tmp_glyph->object, glyph->object)
 		       && begpos <= tmp_glyph->charpos
@@ -36968,6 +37024,13 @@ note_line_or_margin_highlight (Lisp_Object window, int x, int y,
 		     : (w->current_matrix->tab_line_p
 			? 1
 			: 0)));
+#ifdef HAVE_GLITNIR
+	  if (garea != TEXT_AREA)
+	    vpos = MATRIX_ROW_VPOS (row, w->current_matrix);
+	  /* A run lit in another area of the same columns is not this one.  */
+	  if (garea != hlinfo->mouse_face_area && clear_mouse_face (hlinfo))
+	    cursor = No_Cursor;
+#endif
 
 	  /* If GLYPH's position is included in the region that is
 	     already drawn in mouse face, we have nothing to do.  */
@@ -37007,6 +37070,21 @@ note_line_or_margin_highlight (Lisp_Object window, int x, int y,
 	  hlinfo->mouse_face_end_row  = hlinfo->mouse_face_beg_row;
 	  hlinfo->mouse_face_past_end = false;
 	  hlinfo->mouse_face_window   = window;
+#ifdef HAVE_GLITNIR
+	  hlinfo->mouse_face_area = garea;
+	  if (garea != TEXT_AREA)
+	    {
+	      /* X is relative to the margin: the glyphs before the run.  */
+	      int x0 = 0;
+	      for (tmp_glyph = row->glyphs[garea]; tmp_glyph < glyph - gpos;
+		   tmp_glyph++)
+		x0 += tmp_glyph->pixel_width;
+	      hlinfo->mouse_face_beg_x = x0;
+	      hlinfo->mouse_face_end_x = 0;
+	      hlinfo->mouse_face_beg_col = hpos;
+	      hlinfo->mouse_face_end_col = hpos + gseq_length;
+	    }
+#endif
 
 	  hlinfo->mouse_face_face_id =
 	    face_at_string_position (w, string, charpos, 0, &ignore,
@@ -37025,6 +37103,13 @@ note_line_or_margin_highlight (Lisp_Object window, int x, int y,
   if ((area == ON_MODE_LINE || area == ON_HEADER_LINE
        || area == ON_TAB_LINE) && !mouse_face_shown)
     clear_mouse_face (hlinfo);
+#ifdef HAVE_GLITNIR
+  /* Off a margin's lit run: its glyphs go back to their own face.  */
+  else if ((area == ON_LEFT_MARGIN || area == ON_RIGHT_MARGIN)
+	   && !mouse_face_shown
+	   && hlinfo->mouse_face_area != TEXT_AREA)
+    clear_mouse_face (hlinfo);
+#endif
 
   define_frame_cursor1 (f, cursor, pointer);
 }
@@ -37164,15 +37249,50 @@ note_mouse_sensor_leave (struct frame *f)
 DEFUN ("nidhogg--note-mouse", Fnidhogg__note_mouse, Snidhogg__note_mouse,
        3, 3, 0,
        doc: /* For tests: note the pointer at X, Y (pixels) on FRAME, or its
-leaving FRAME when X is `leave', as a shell would.  */)
+leaving FRAME when X is `leave', as a shell would.  The value is the
+mouse face's run then, (BEG-ROW BEG-COL END-ROW END-COL) in glyphs of
+its window, or nil when nothing is lit.  */)
   (Lisp_Object frame, Lisp_Object x, Lisp_Object y)
 {
   struct frame *f = decode_live_frame (frame);
+  Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
   if (EQ (x, Qleave))
     note_mouse_sensor_leave (f);
   else
     note_mouse_highlight (f, check_integer_range (x, INT_MIN, INT_MAX),
 			  check_integer_range (y, INT_MIN, INT_MAX));
+  if (!WINDOWP (hlinfo->mouse_face_window)
+      || hlinfo->mouse_face_beg_row < 0)
+    return Qnil;
+  return list4i (hlinfo->mouse_face_beg_row, hlinfo->mouse_face_beg_col,
+		 hlinfo->mouse_face_end_row, hlinfo->mouse_face_end_col);
+}
+
+#endif /* HAVE_GLITNIR */
+#ifdef HAVE_GLITNIR
+/* The overlay on row VPOS of W whose before- or after-string is STRING
+   and whose mouse face is `equal' to MOUSE_FACE (the string's), or nil.
+   Then the pointer on the string lights the overlay's whole run, its
+   text and its strings, as the pointer on its text does: a row and the
+   tail an after-string draws are one run.  The current buffer is W's.  */
+
+static Lisp_Object
+mouse_face_string_owner (struct window *w, int vpos, Lisp_Object string,
+			 Lisp_Object mouse_face)
+{
+  struct glyph_row *r = MATRIX_ROW (w->current_matrix, vpos);
+  ptrdiff_t start = MATRIX_ROW_START_CHARPOS (r);
+  ptrdiff_t end = max (MATRIX_ROW_END_CHARPOS (r), start + 1);
+  for (Lisp_Object l = Foverlays_in (make_fixnum (start),
+				     make_fixnum (min (end, ZV)));
+       CONSP (l); l = XCDR (l))
+    {
+      Lisp_Object ov = XCAR (l);
+      if ((EQ (Foverlay_get (ov, Qafter_string), string)
+	   || EQ (Foverlay_get (ov, Qbefore_string), string))
+	  && !NILP (Fequal (Foverlay_get (ov, Qmouse_face), mouse_face)))
+	return ov;
+    }
   return Qnil;
 }
 
@@ -37619,6 +37739,28 @@ note_mouse_highlight (struct frame *f, int x, int y)
 
 	  /* Next, compute the bounds of the mouse highlighting and
 	     display it.  */
+#ifdef HAVE_GLITNIR
+	  Lisp_Object owner = (!NILP (mouse_face) && STRINGP (object)
+			       ? mouse_face_string_owner (w, vpos, object,
+							   mouse_face)
+			       : Qnil);
+	  if (!NILP (owner))
+	    {
+	      /* An overlay's own string lit with the overlay's mouse
+		 face: the overlay's whole run, as from its text.  */
+	      Lisp_Object bs = Foverlay_get (owner, Qbefore_string);
+	      Lisp_Object as = Foverlay_get (owner, Qafter_string);
+	      hlinfo->mouse_face_overlay = owner;
+	      mouse_face_from_buffer_pos (window, hlinfo,
+					  OVERLAY_START (owner),
+					  OVERLAY_START (owner),
+					  OVERLAY_END (owner),
+					  STRINGP (bs) ? bs : Qnil,
+					  STRINGP (as) ? as : Qnil, Qnil);
+	      cursor = No_Cursor;
+	    }
+	  else
+#endif
 	  if (!NILP (mouse_face) && STRINGP (object))
 	    {
 	      /* The mouse-highlighting comes from a display string
@@ -38573,6 +38715,9 @@ syms_of_xdisp (void)
   DEFSYM (Qmouse_sensor_functions, "mouse-sensor-functions");
   DEFSYM (Qleave, "leave");
   defsubr (&Snidhogg__note_mouse);
+  /* A margin string's `mouse-face' lights (note_line_or_margin_highlight):
+     drgnx's breakpoint column puts its hover dots out only where it does.  */
+  Fprovide (intern_c_string ("glitnir-margin-mouse-face"), Qnil);
   staticpro (&mouse_sensor_value);
   mouse_sensor_value = Qnil;
   staticpro (&mouse_sensor_window);

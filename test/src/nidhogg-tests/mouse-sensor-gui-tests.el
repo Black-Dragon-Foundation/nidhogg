@@ -116,6 +116,40 @@ are pending (a read with no timeout left returns before it looks).  At most 20 r
     (should (string-match-p "Error in mouse-sensor-functions: (error \"Sensor broke\")"
                             (with-current-buffer "*Messages*" (buffer-string))))))
 
+(ert-deftest mouse-sensor-gui/an-overlay-string-with-the-overlay-mouse-face-lights-the-whole-run ()
+  "A row \"name\" whose overlay has a mouse face and an after-string \"  x\" with an equal one (drgnx's rows and their
+tails): the pointer on the string lights the row from its start, as the pointer on the text does.  A string with a
+mouse face of its own lights only itself."
+  (let ((buf (generate-new-buffer "*mouse-face-string*")))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (insert "name\nother\n")
+          (let ((o (make-overlay 1 5)))
+            (overlay-put o 'mouse-face (list :inherit 'highlight))
+            (overlay-put o 'after-string (propertize "  x" 'mouse-face (list :inherit 'highlight))))
+          (let ((o (make-overlay 6 11)))
+            (overlay-put o 'mouse-face 'highlight)
+            (overlay-put o 'after-string (propertize "  y" 'mouse-face 'region)))
+          (redisplay t)
+          ;; each note from nothing lit: inside a lit run a motion keeps the run it has
+          (let* ((off (mouse-sensor-gui--xy (point-max)))
+                 (cw (frame-char-width))
+                 (note (lambda (pos cols)
+                         (should-not (nidhogg--note-mouse nil (car off) (cdr off)))
+                         (let ((xy (mouse-sensor-gui--xy pos)))
+                           (nidhogg--note-mouse nil (+ (car xy) (* cols cw)) (cdr xy)))))
+                 (on-string (funcall note 2 5))
+                 (on-text (funcall note 2 0)))
+            ;; (BEG-ROW BEG-COL END-ROW END-COL): the same run from either place
+            (should on-text)
+            (should (equal on-string on-text))
+            (should (= 0 (nth 1 on-string)))
+            ;; the string's own mouse face: the string alone
+            (should (= 5 (nth 1 (funcall note 7 6))))))
+      (nidhogg--note-mouse nil 'leave nil)
+      (kill-buffer buf))))
+
 (ert-deftest mouse-sensor-gui/motion-cost ()
   "The pointer's cost in note_mouse_highlight: sensors off (no lookup), on over text with none, on across two runs."
   :tags '(:timing)
