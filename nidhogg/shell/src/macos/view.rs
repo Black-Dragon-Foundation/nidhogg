@@ -16,11 +16,13 @@ use crate::outputs::Magnify;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{
-    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
+    AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class,
+    msg_send, sel,
 };
 use objc2_app_kit::{
     NSAccessibilityTextAreaRole, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent,
-    NSEventModifierFlags, NSEventPhase, NSResponder, NSTextInputClient, NSView,
+    NSEventModifierFlags, NSEventPhase, NSResponder, NSTextInputClient, NSTrackingArea,
+    NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSNotFound, NSObjectProtocol, NSRange, NSString,
@@ -160,6 +162,21 @@ define_class!(
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, e: &NSEvent) {
             self.motion(e);
+        }
+
+        /// The pointer left the view (its tracking area): the backend gives the window it was over a leave unless it
+        /// went onto another view of the same root (an overhang panel), whose motion moves it there.  The record's
+        /// `x`, `y` are where it went, in screen points.
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, e: &NSEvent) {
+            let at = self
+                .window()
+                .map_or_else(NSEvent::mouseLocation, |w| w.convertPointToScreen(e.locationInWindow()));
+            self.send(ShellEvent::PointerLeave(PointerEv {
+                x: at.x,
+                y: at.y,
+                ..PointerEv::default()
+            }));
         }
 
         #[unsafe(method(rightMouseDragged:))]
@@ -396,5 +413,21 @@ pub fn layer_hosting(
     view.setLayer(Some(&layer));
     view.setWantsLayer(true);
     dnd::register(&view);
+    // `mouseExited:` whenever the pointer leaves the view, key or not, the area following the view's size
+    let opts = NSTrackingAreaOptions::MouseEnteredAndExited
+        | NSTrackingAreaOptions::ActiveAlways
+        | NSTrackingAreaOptions::InVisibleRect;
+    // SAFETY: NSTrackingArea's initialiser on a fresh allocation; the view owns the area, and the area does not retain
+    // its owner.
+    let area = unsafe {
+        NSTrackingArea::initWithRect_options_owner_userInfo(
+            NSTrackingArea::alloc(),
+            NSRect::ZERO,
+            opts,
+            Some(&view),
+            None,
+        )
+    };
+    view.addTrackingArea(&area);
     (view, layer)
 }
