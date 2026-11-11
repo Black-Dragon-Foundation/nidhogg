@@ -180,6 +180,7 @@ jobs:
       - run: bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/ci-test.sh
       - run: bash nidhogg/test/check-rerun-test.sh
+      - run: bash nidhogg/test/nhmac-gui-test.sh
       - run: bash nidhogg/test/check-image-test.sh
       - run: bash nidhogg/test/preflight-test.sh
       - run: bash nidhogg/test/timing-lane.sh --self-test
@@ -769,8 +770,24 @@ jobs:
       # The macOS GUI lane (nidhogg/test/nhmac-gui.sh) on the app of the tarball, on a virtual display at scale 1 and at
       # scale 2: the rows of test/src/nidhogg-tests/nhmac-gui-tests.el that `checks` selects (empty: every row; `none` and
       # `build-only`: no rows).  A cached tarball is run as it is.
+      # The NS port is frozen: its reference dumps (and the NS rows, which compare nothing) are cached by what they depend
+      # on, the NS port's sources, the shared draw and font C, the lane and its rows, and the runner image (its fonts).  A
+      # full run on a hit restores them and does not run the NS lane; a narrowed run (checks or files) always runs it.
+      # The parity rows that read the dumps are judged by stated tolerances, so a shared-C change the key leaves out is
+      # absorbed or shows as a parity red, never a functional one.
+      - name: The runner image
+        id: img
+        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks == '' && inputs.files == '' }}
+        run: echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - name: The NS reference dumps' cache
+        id: nsrefs
+        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks == '' && inputs.files == '' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nhmac-gui/nhmac-ns-*
+          key: nhmac-ns-refs-${{ runner.arch }}-${{ steps.img.outputs.image }}-${{ hashFiles('src/ns*.m', 'src/ns*.h', 'src/macfont.*', 'src/xdisp.c', 'src/font.c', 'src/dispextern.h', 'src/image.c', 'nidhogg/test/nhmac-gui.sh', 'nidhogg/test/nhmac-lane.txt', 'nidhogg/test/mac-display.m', 'test/src/nidhogg-tests/gui-runner.el', 'test/src/nidhogg-tests/nhmac-gui-tests.el') }}
       - name: macOS GUI rows (nhmac-gui-tests.el, scales 1 and 2)
-        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks != 'none' && inputs.checks != 'build-only' && steps.nsrefs.outputs.cache-hit != 'true' }}
         env:
           CHECKS: ${{ inputs.checks }}
           FILES: ${{ inputs.files }}
@@ -790,6 +807,13 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/nhmac-gui"
           (cd "$RUNNER_TEMP/nhmac-gui" && { ls nhmac-ns-* 2>/dev/null || true; } > nhmac-ns-refs.txt && cat nhmac-ns-refs.txt)
+      # saved only from a full run whose lane passed: never a partial or a red baseline
+      - name: Save the NS reference dumps
+        if: ${{ success() && steps.nsrefs.outcome == 'success' && steps.nsrefs.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/nhmac-gui/nhmac-ns-*
+          key: ${{ steps.nsrefs.outputs.cache-primary-key }}
       - name: Upload the NS reference dumps
         if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
