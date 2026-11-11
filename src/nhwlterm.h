@@ -219,6 +219,13 @@ struct nhwl_display_info
   bool reconnecting, reconnect_settling;
   struct atimer *reconnect_timer;
   uint32_t reconnect_timeout_ms;
+
+#ifdef HAVE_NHMAC
+  /* The commit's deadline after a publish (nhwl_publish): the shell
+     commits at its next pump or wait, and this timer commits for Lisp
+     that runs on without waiting.  */
+  struct atimer *present_deadline;
+#endif
 };
 
 /* This is a chain of structures for all the displays currently in use.  */

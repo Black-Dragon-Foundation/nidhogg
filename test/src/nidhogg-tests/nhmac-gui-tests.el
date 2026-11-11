@@ -663,9 +663,11 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
   (plist-get (nhmac-gui--surface) :slots))
 
 (defun nhmac-gui--redisplay ()
-  "Redisplay, then wait (bounded) until the commit pacer holds none of the selected frame's commits: what the
-redisplay drew is on the layer, and counted."
+  "Redisplay, then wait as Emacs waits (its wait commits what the redisplay published: the commit is off the
+redisplay path), bounded, until the commit pacer holds none of the selected frame's commits: what the redisplay drew
+is on the layer, and counted."
   (redisplay)
+  (accept-process-output nil 0.001)
   (nhmac-gui--wait-unheld 1))
 
 (defun nhmac-gui--fill-ring ()
@@ -801,11 +803,12 @@ a key posted while it still composites the last commits is held by the pacer, wh
               (let ((ev (read-event nil nil 2)))
                 (should (eq ev ?k))
                 (insert ev))
-              ;; a commit the pacer held is published by its release, without a pump
-              (nhmac-gui--redisplay)
+              (redisplay)
+              ;; the key's pump and waits, then its commit: the next wait's (off the redisplay path); a commit the
+              ;; pacer held is published by its release, without a pump
               (let ((pumps (nhmac-gui--delta before :pumps))
-                    (commits (nhmac-gui--delta before :commits))
-                    (sleeps (nhmac-gui--delta before :sleeps)))
+                    (sleeps (nhmac-gui--delta before :sleeps))
+                    (commits (progn (nhmac-gui--redisplay) (nhmac-gui--delta before :commits))))
                 (nhmac-gui--say "nhmac-key-to-commit-counts: key %d: pumps %d commits %d fd waits %d (a surface \
 free after %.3f s)"
                                 i pumps commits sleeps free)
@@ -988,13 +991,16 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
   (kill-buffer))
 
 (ert-deftest nhmac-commit-shows-without-spin ()
-  "After `redisplay' the layer shows the newest surface, read back in the process, with no run-loop turn."
+  "After `redisplay' and Lisp that runs on for 20 ms the layer shows the newest surface, read back in the process,
+with no run-loop turn: the commit's deadline commits it."
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "shows")
   (let ((before (nhmac-stats)))
     (insert "y")
     (redisplay)
+    (let ((end (+ (float-time) 0.02)))
+      (while (< (float-time) end)))
     (let ((s (nhmac-gui--surface)))
       (nhmac-gui--say "nhmac-commit-shows-without-spin: %S" s)
       (should (eq (plist-get s :contents-is-newest) t))
@@ -1493,6 +1499,8 @@ environment (`nhmac-gui--capture-env')."
          (args (list "-x" "-t" "bmp" "-R" r file))
          (rc nil) (output nil))
     (when (file-exists-p file) (delete-file file))
+    ;; a wait first, as Emacs waits: it commits what the last redisplay published (off the redisplay path)
+    (accept-process-output nil 0.02)
     (with-temp-buffer
       (setq rc (let ((process-environment (nhmac-gui--capture-env)))
                  (apply #'call-process "screencapture" nil t nil args))

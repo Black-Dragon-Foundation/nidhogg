@@ -676,6 +676,12 @@ impl ShellBackend for MacShell {
         if self.kq.is_none() {
             return Err(ShellError::Unsupported);
         }
+        // what the last redisplay published shows before the main thread sleeps
+        if MainThreadMarker::new().is_some() && (!self.deferred.is_empty() || !self.owed.is_empty())
+        {
+            let ids = std::mem::take(&mut self.deferred);
+            self.commit(&ids);
+        }
         let mut regs = std::mem::take(&mut self.regs);
         wait::run(
             self,
@@ -1242,8 +1248,36 @@ impl ShellBackend for MacShell {
             wait::wake();
             return Ok(true);
         }
-        self.commit(&ids);
+        // the commit leaves the redisplay (as NS's, which Core Animation commits when the run loop turns): the next
+        // pump, the wait before it sleeps, or the host's deadline (`flush_presents`) commits it.  A window in a resize
+        // commits now, so the drag's frame and its picture change together.
+        let resizing = ids.iter().any(|id| {
+            self.windows
+                .get(id)
+                .is_some_and(|w| w.resize.inflight.is_some() || w.window.inLiveResize())
+        });
+        if resizing {
+            self.commit(&ids);
+            return Ok(true);
+        }
+        for id in ids {
+            if !self.deferred.contains(&id) {
+                self.deferred.push(id);
+            }
+        }
         Ok(true)
+    }
+
+    fn flush_presents(&mut self) -> ShellResult {
+        if MainThreadMarker::new().is_some() && (!self.deferred.is_empty() || !self.owed.is_empty())
+        {
+            surface::STATS
+                .deadline_flushes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let ids = std::mem::take(&mut self.deferred);
+            self.commit(&ids);
+        }
+        Ok(())
     }
 
     fn present_tree(&mut self, root: WindowId) -> ShellResult<bool> {
