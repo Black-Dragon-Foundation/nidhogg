@@ -37,7 +37,8 @@ pub struct Win {
 
 impl Win {
     /// A `w` x `h` point window titled `title`, decorated unless `undecorated`, shown at once and key; its delegate
-    /// reports as window `id`.
+    /// reports as window `id`.  The test hooks' windows (`window_new_placed` makes and shows its own).
+    #[cfg(feature = "test-hooks")]
     pub fn open(
         mtm: MainThreadMarker,
         id: WindowId,
@@ -51,7 +52,8 @@ impl Win {
         win
     }
 
-    /// As [`Win::open`], not shown yet.
+    /// A `w` x `h` point window titled `title`, decorated unless `undecorated`, not shown yet; its delegate reports as
+    /// window `id`.
     pub fn make(
         mtm: MainThreadMarker,
         id: WindowId,
