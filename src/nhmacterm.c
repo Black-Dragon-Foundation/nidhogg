@@ -23,6 +23,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <config.h>
 
 #include "lisp.h"
+#include "atimer.h"
 #include "nhwlterm.h"
 #include "frame.h"
 #include "keyboard.h"
@@ -197,6 +198,13 @@ nhmac_select (int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds,
 	goto nothing;
       if (left.tv_sec < INT64_MAX / 1000000000 - 1)
 	ns = left.tv_sec * (int64_t) 1000000000 + left.tv_nsec;
+    }
+  /* The main thread's wait commits what the last redisplay published:
+     the deadline would only wake it again for an extra pump.  */
+  if (main_thread_p (current_thread) && dpyinfo->present_deadline)
+    {
+      cancel_atimer (dpyinfo->present_deadline);
+      dpyinfo->present_deadline = NULL;
     }
   bool waiting = waiting_for_input;
   waiting_for_input = false;

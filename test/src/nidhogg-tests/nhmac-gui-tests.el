@@ -839,6 +839,8 @@ free after %.3f s)"
 it does not.  The pacer's request for the publish comes as a shell event, which Emacs reads where it reads keys (here
 `input-pending-p', without a redisplay that would publish anyway)."
   (let ((end (+ (float-time) secs)))
+    ;; one wait first: it commits what the last redisplay published (the commit is off the redisplay path)
+    (accept-process-output nil 0.001)
     (while (and (plist-get (nhmac-gui--surface) :held) (< (float-time) end))
       (input-pending-p)
       (accept-process-output nil 0.01))
@@ -926,6 +928,8 @@ anyway, counted as a held timeout and a busy surface, so a stuck window server n
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "bound")
+  ;; the buffer's own commit first (the commit is off the redisplay path): the row's commit is the one held
+  (nhmac-gui--redisplay)
   (let ((before (nhmac-stats)) (t0 (float-time)) shown)
     (nhmac--test-force-in-use t)
     (unwind-protect
@@ -935,9 +939,12 @@ anyway, counted as a held timeout and a busy surface, so a stuck window server n
           (should (plist-get (nhmac-gui--surface) :held))
           (setq shown (nhmac-gui--wait-unheld 1)))
       (nhmac--test-force-in-use nil))
-    (nhmac-gui--say "nhmac-held-commit-bound: unheld %S after %.3f s, %d held, %d held timeouts, %d busy" shown
+    (nhmac-gui--say "nhmac-held-commit-bound: unheld %S after %.3f s, %d held, %d held timeouts, %d busy; %d pumps, \
+%d pacer fires, %d commits, %d deadline commits" shown
                     (- (float-time) t0) (nhmac-gui--delta before :held) (nhmac-gui--delta before :held-timeouts)
-                    (nhmac-gui--delta before :surface-busy))
+                    (nhmac-gui--delta before :surface-busy) (nhmac-gui--delta before :pumps)
+                    (nhmac-gui--delta before :pacer-fires) (nhmac-gui--delta before :commits)
+                    (nhmac-gui--delta before :deadline-flushes))
     (should shown)
     (should (>= (- (float-time) t0) 0.05))
     (should (= (nhmac-gui--delta before :held-timeouts) 1))
@@ -1121,12 +1128,13 @@ median within 10% of NS's).  Both builds are measured the same way, whatever thr
          (build (if naglfar "naglfar" "ns"))
          (file (expand-file-name (format "pair-%s.txt" build)
                                  (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
-         samples)
+         samples gcs)
     (switch-to-buffer (generate-new-buffer " *nhmac-cpu*"))
     (insert "cpu per key")
     (redisplay t)
     (dotimes (_ 10) (execute-kbd-macro "w") (redisplay) (accept-process-output nil 0.001))
     (should (nhmac-gui--main-thread-cpu))
+    (setq gcs (cons gcs-done gc-elapsed))
     (dotimes (_ 20)
       (let ((c0 (nhmac-gui--main-thread-cpu)))
         (dotimes (_ 10)
@@ -1135,7 +1143,9 @@ median within 10% of NS's).  Both builds are measured the same way, whatever thr
           (accept-process-output nil 0.001))
         (push (round (/ (* 1e6 (- (nhmac-gui--main-thread-cpu) c0)) 10)) samples)))
     (setq samples (nreverse samples))
-    (nhmac-gui--say "nhmac-paired-cpu-per-key: %s: %S us per key" build samples)
+    (nhmac-gui--say "nhmac-paired-cpu-per-key: %s: %S us per key; %d GCs in %.3f s; %s" build samples
+                    (- gcs-done (car gcs)) (- gc-elapsed (cdr gcs))
+                    (if (string-match-p "--enable-checking" system-configuration-options) "assertions" "no assertions"))
     (with-temp-file file
       (dolist (v samples) (insert (number-to-string v) "\n")))
     (kill-buffer)))

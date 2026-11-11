@@ -328,6 +328,8 @@ it), and no animation outlives it."
           (progn
             (make-frame-visible c)
             (redisplay t)
+            ;; the wait that commits what the redisplay published (the commit is off the redisplay path)
+            (accept-process-output nil 0.001)
             (let ((before (nhmac-stats)))
               ;; idle through the leg, the wait turning the run loop as Emacs's does
               (nhmac-gui--idle-until #'ignore 0.5)
@@ -805,13 +807,15 @@ The line count is the default line height times 3 (no line spacing in the rows).
                                     :beneath ,(glitnir-nhmac--hex glitnir-nhmac--gap))))
       (* 3 (frame-char-height (window-frame w))))))
 
-(defun glitnir-nhmac--ring-check (row img box height)
-  "Assert that IMG shows the block ring inside BOX (X0 Y0 X1 Y1), HEIGHT device pixels tall within 3; ROW names it."
-  (let ((r (glitnir-nhmac--box img glitnir-nhmac--block-ring)))
+(defun glitnir-nhmac--ring-check (row img bg height)
+  "Assert that IMG shows the block ring inside the box of background BG (the window's, as IMG shows it), as wide as
+it within 3 pixels, below its first line, HEIGHT device pixels tall within 3; ROW names it."
+  (let ((r (glitnir-nhmac--box img glitnir-nhmac--block-ring))
+        (box (glitnir-nhmac--box img bg)))
     (nhmac-gui--say "%s: ring %S in %S, rows %d px" row r box height)
-    (should r)
-    (should (>= (nth 0 r) (nth 0 box)))
-    (should (<= (nth 2 r) (nth 2 box)))
+    (should (and r box))
+    (should (<= (abs (- (nth 0 r) (nth 0 box))) 3))
+    (should (<= (abs (- (nth 2 r) (nth 2 box))) 3))
     (should (> (nth 1 r) (nth 1 box)))
     (should (<= (nth 3 r) (nth 3 box)))
     (should (<= (abs (- (1+ (- (nth 3 r) (nth 1 r))) height)) 3))))
@@ -828,7 +832,7 @@ cards; a child frame's window's ring shows the same way, on the child; each goes
      (let ((h (glitnir-nhmac--ring-on left)))
        (should (= (length (plist-get (glitnir-nhmac--cards t) :cards)) 1))
        (glitnir-nhmac--ring-check 'nhmac-blocks-drawn-like-cards (glitnir-nhmac--grab "block-ring")
-                                  (glitnir-nhmac--wbox left) h)
+                                  glitnir-nhmac--card-bg h)
        (set-window-parameter left 'glitnir-blocks nil)
        (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
        (should-not (glitnir-nhmac--box (glitnir-nhmac--grab "block-ring-gone") glitnir-nhmac--block-ring))))))
@@ -849,15 +853,13 @@ the root has no block image."
             (force-window-update)
             (redisplay t)
             (nhmac-gui--settle)
-            (let* ((cards (nhmac--test-cards child))
-                   (x0 80) (y0 200)
-                   (box (list x0 y0 (+ x0 (frame-pixel-width child) -1) (+ y0 (frame-pixel-height child) -1))))
+            (let ((cards (nhmac--test-cards child)))
               (nhmac-gui--say "nhmac-blocks-drawn-on-a-child-frame: child cards %S, root cards %S"
                               cards (nhmac--test-cards))
               (should (= (length (plist-get cards :cards)) 1))
               (should (null (plist-get (nhmac--test-cards) :cards)))
               (glitnir-nhmac--ring-check 'nhmac-blocks-drawn-on-a-child-frame
-                                         (glitnir-nhmac--grab "block-ring-child") box h)))
+                                         (glitnir-nhmac--grab "block-ring-child") #xff00ff h)))
           (set-window-parameter w 'glitnir-blocks nil)
           (force-window-update)
           (redisplay t)
