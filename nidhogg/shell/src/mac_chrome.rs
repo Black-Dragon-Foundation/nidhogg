@@ -157,6 +157,8 @@ mod tests {
             shadow_argb: 0xff00_0000,
             border_px: 0.0,
             border_argb: 0,
+            ring_px: 0.0,
+            ring_argb: 0,
         }
     }
 
