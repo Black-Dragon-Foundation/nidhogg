@@ -555,6 +555,19 @@ fn compose_layers(
         for l in labels.iter().filter(|l| l.layer == p.id) {
             draw_label(k, t, &pieces, l, sprites);
         }
+        // a window's blocks go over its frame's pixels and the labels, inside the window, when that frame is drawn here
+        if !p.blocks.is_empty()
+            && p.kind == Kind::Window
+            && sources.iter().any(|s| s.layer == p.parent)
+            && let Some(frame) = scene.iter().find(|q| q.id == p.parent).map(|q| q.rect)
+        {
+            let area = p.rect.intersect(&frame);
+            for b in p.blocks.iter() {
+                for c in &pieces {
+                    draw_block(k, t, b, c.intersect(&area));
+                }
+            }
+        }
         // a window card goes over its frame's pixels and the labels, when that frame is drawn here
         if let Some(card) = &p.card
             && p.kind == Kind::Window
@@ -731,6 +744,74 @@ impl CardRing {
             k.solid_over(&mut d, self.colour, &mask, p.w as usize, p.h as usize);
         }
     }
+}
+
+/// Block B within CLIP (root px, inside the target and the window): a rule's bottom line; a ring's corners outside its
+/// rounded path in the colour beneath, then the ring just inside the rectangle.  An open side lies past the rectangle
+/// (by the radius), so its corners and its line fall outside it and are not drawn.
+fn draw_block(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Rect) {
+    let rect = b.rect;
+    let clip = clip.intersect(&rect);
+    let w = b.ring_px.min(1 << 12) as i32;
+    if clip.is_empty() || b.ring_argb == 0 || w == 0 {
+        return;
+    }
+    let solid = |k: &Kernels, t: &mut TargetView, q: Rect, argb: u32| {
+        if q.is_empty() {
+            return;
+        }
+        let full = vec![255u8; q.w as usize];
+        let mask = Mask {
+            data: &full,
+            stride: 0,
+        };
+        k.solid_over(&mut t.at(q), argb, &mask, q.w as usize, q.h as usize);
+    };
+    if b.kind == crate::scene::BlockKind::Rule {
+        let line = Rect::new(rect.x, rect.y + rect.h - w, rect.w, w);
+        solid(k, t, line.intersect(&clip), b.ring_argb);
+        return;
+    }
+    let wu = w as u32;
+    let r0 = b.radius_px.max(wu);
+    let (top, bottom) = (
+        if b.open_top { r0 as i32 + w } else { 0 },
+        if b.open_bottom { r0 as i32 + w } else { 0 },
+    );
+    let ext = Rect::new(rect.x, rect.y - top, rect.w, rect.h + top + bottom);
+    if ext.w < 2 * w || ext.h < 2 * w {
+        return;
+    }
+    let r = clamp_radius(ext.w as usize, ext.h as usize, r0).max(wu);
+    let ri = r as i32;
+    // the corners: the colour beneath, outside the rounded path only
+    let outside = outside_coverage(r);
+    let (n, ru) = (2 * r as usize, r as usize);
+    let squares = [
+        Rect::new(ext.x, ext.y, ri, ri),
+        Rect::new(ext.x + ext.w - ri, ext.y, ri, ri),
+        Rect::new(ext.x, ext.y + ext.h - ri, ri, ri),
+        Rect::new(ext.x + ext.w - ri, ext.y + ext.h - ri, ri, ri),
+    ];
+    for (i, sq) in squares.iter().enumerate() {
+        let q = sq.intersect(&clip);
+        if q.is_empty() {
+            continue;
+        }
+        let mask = quadrant(&outside, n, ((i % 2) * ru, (i / 2) * ru), *sq, q);
+        k.solid_over(
+            &mut t.at(q),
+            b.beneath_argb,
+            &mask,
+            q.w as usize,
+            q.h as usize,
+        );
+    }
+    // the ring: a card's ring around the rectangle w px in, so its outer edge is the rectangle's, radius r
+    let inner = Rect::new(ext.x + w, ext.y + w, ext.w - 2 * w, ext.h - 2 * w);
+    let ring = CardRing::around(inner, r - wu, wu, b.ring_argb);
+    let mut dst = t.at(clip);
+    ring.draw(k, &mut dst, clip);
 }
 
 /// A window card, ready to draw within any rectangle.
@@ -3050,6 +3131,242 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Blocks: a ring inside a block of a window's rows (the corners outside its rounded path in the colour beneath),
+    /// a rule along a block's bottom, over the frame's pixels; nothing else of the window changes.
+    mod block {
+        use super::*;
+        use crate::scene::{Block, BlockKind};
+
+        const WIN: u64 = (1 << 61) | 7;
+        const FRONT: u32 = 0xffaa_bbcc;
+        const BENEATH: u32 = 0xff11_2233;
+        const RING: u32 = 0xff33_4455;
+        const TINT: u32 = 0xff22_8844;
+
+        fn ring(rect: Rect, r: u32, w: u32) -> Block {
+            Block {
+                rect,
+                radius_px: r,
+                ring_px: w,
+                ring_argb: RING,
+                beneath_argb: BENEATH,
+                ..Block::default()
+            }
+        }
+
+        /// A 120 x 80 root at SCALE with window layer WIN at WINDOW holding BLOCKS, committed.
+        fn blocked(window: Rect, blocks: &[Block], scale: f64) -> Scene {
+            let (mut s, mut f) = (Scene::default(), Frames::new());
+            s.upsert(&desc(ROOT, 0, 1, Rect::new(0, 0, 120, 80), scale, true))
+                .unwrap();
+            s.upsert(&desc(WIN, ROOT, 2, window, scale, true)).unwrap();
+            s.set_blocks(WIN, blocks.into()).unwrap();
+            s.commit(ROOT, &mut f);
+            s
+        }
+
+        fn compose_all(s: &Scene, front: &Buf, scale: f64) -> Buf {
+            let mut out = Buf::new(front.w, front.h, 0x5a5a_5a5a);
+            let mut src = BTreeMap::new();
+            src.insert(ROOT, front.clone());
+            run(
+                s,
+                &mut out,
+                scale,
+                &[Rect::new(0, 0, front.w, front.h)],
+                &src,
+                &mut ShadowCache::new(),
+            );
+            out
+        }
+
+        const ALL: Rect = Rect {
+            x: 0,
+            y: 0,
+            w: 120,
+            h: 80,
+        };
+
+        /// Red row 1: a radius-6 block inside a window: the ring on the rectangle's inner edge, the corners carved in
+        /// the colour beneath, the frame's pixels everywhere else.
+        #[test]
+        fn ring_inside_with_carved_corners() {
+            for scale in [1.0, 2.0] {
+                let b = Rect::new(20, 10, 60, 40);
+                let s = blocked(ALL, &[ring(b, 6, 1)], scale);
+                let out = compose_all(&s, &Buf::new(120, 80, FRONT), scale);
+                for (x, y) in [(50, 10), (50, 49), (20, 30), (79, 30)] {
+                    assert_eq!(out.at(x, y), RING, "scale {scale}: the ring at {x},{y}");
+                }
+                for (x, y) in [(20, 10), (79, 10), (20, 49), (79, 49)] {
+                    assert_eq!(
+                        out.at(x, y),
+                        BENEATH,
+                        "scale {scale}: the corner at {x},{y}"
+                    );
+                }
+                for (x, y) in [
+                    (50, 30),
+                    (21, 30),
+                    (50, 11),
+                    (19, 30),
+                    (50, 9),
+                    (80, 30),
+                    (50, 50),
+                    (0, 0),
+                ] {
+                    assert_eq!(
+                        out.at(x, y),
+                        FRONT,
+                        "scale {scale}: the frame's own pixel at {x},{y}"
+                    );
+                }
+            }
+        }
+
+        /// A block whose top was scrolled out: no top line and no top corners; the sides run to its top.
+        #[test]
+        fn open_top_has_no_top_side() {
+            let b = Rect::new(20, 10, 60, 40);
+            let s = blocked(
+                ALL,
+                &[Block {
+                    open_top: true,
+                    ..ring(b, 6, 1)
+                }],
+                1.0,
+            );
+            let out = compose_all(&s, &Buf::new(120, 80, FRONT), 1.0);
+            assert_eq!(out.at(50, 10), FRONT, "no top side");
+            assert_eq!(out.at(20, 10), RING, "the left side runs to the top");
+            assert_eq!(out.at(79, 10), RING, "the right side runs to the top");
+            assert_eq!(out.at(20, 49), BENEATH, "the bottom corners stay");
+            assert_eq!(out.at(50, 49), RING, "the bottom side stays");
+        }
+
+        /// Rules: a hairline on each block's last pixel row, its full width, nothing else; two on adjacent rows and a
+        /// ring below them.
+        #[test]
+        fn rules_are_bottom_lines() {
+            let r1 = Block {
+                kind: BlockKind::Rule,
+                ..ring(Rect::new(20, 10, 60, 10), 6, 1)
+            };
+            let r2 = Block {
+                kind: BlockKind::Rule,
+                ..ring(Rect::new(20, 20, 60, 10), 6, 1)
+            };
+            let c = ring(Rect::new(20, 40, 60, 30), 6, 1);
+            let s = blocked(ALL, &[r1, r2, c], 1.0);
+            let out = compose_all(&s, &Buf::new(120, 80, FRONT), 1.0);
+            for x in 20..80 {
+                assert_eq!(out.at(x, 19), RING, "the first rule at {x}");
+                assert_eq!(out.at(x, 29), RING, "the second rule at {x}");
+                for y in [10, 18, 20, 28, 30] {
+                    assert_eq!(out.at(x, y), FRONT, "no other line of a rule at {x},{y}");
+                }
+            }
+            for (x, y) in [(19, 19), (80, 19), (20, 15), (79, 25)] {
+                assert_eq!(
+                    out.at(x, y),
+                    FRONT,
+                    "no side or corner of a rule at {x},{y}"
+                );
+            }
+            assert_eq!(out.at(50, 40), RING, "the ring below is whole");
+            assert_eq!(out.at(20, 40), BENEATH, "with its corners");
+        }
+
+        /// Nothing outside the window's rectangle: a block reaching above it is cut there.
+        #[test]
+        fn clipped_to_the_window() {
+            let s = blocked(
+                Rect::new(0, 20, 120, 60),
+                &[ring(Rect::new(20, 10, 60, 40), 6, 1)],
+                1.0,
+            );
+            let out = compose_all(&s, &Buf::new(120, 80, FRONT), 1.0);
+            for x in 0..120 {
+                for y in 0..20 {
+                    assert_eq!(out.at(x, y), FRONT, "above the window at {x},{y}");
+                }
+            }
+            assert_eq!(out.at(20, 30), RING);
+        }
+
+        /// Red row 3: tints with their own rounded corners touching the ring's inner edge keep every pixel; only the
+        /// ring and what lies outside the rounded path change.
+        #[test]
+        fn carve_only_outside_the_path() {
+            for scale in [1.0, 2.0] {
+                let (r, w) = (6 * scale as i32, scale as i32);
+                let b = Rect::new(20, 10, 60, 40);
+                let mut front = Buf::new(120, 80, FRONT);
+                // a tint row across the inside, from the ring's inner edge, and a chip at the inner top-left
+                for y in 10 + w..10 + w + 8 {
+                    for x in 20 + w..80 - w {
+                        front.px[(y * 120 + x) as usize] = TINT;
+                    }
+                }
+                let s = blocked(ALL, &[ring(b, r as u32, w as u32)], scale);
+                let out = compose_all(&s, &front, scale);
+                let rf = r as f64;
+                for y in b.y..b.y + b.h {
+                    for x in b.x..b.x + b.w {
+                        // distance past the inner rounded edge's corner centre, for pixels in a corner square
+                        let cx = if x < b.x + r {
+                            (b.x + r) as f64
+                        } else if x >= b.x + b.w - r {
+                            (b.x + b.w - r) as f64
+                        } else {
+                            x as f64 + 0.5
+                        };
+                        let cy = if y < b.y + r {
+                            (b.y + r) as f64
+                        } else if y >= b.y + b.h - r {
+                            (b.y + b.h - r) as f64
+                        } else {
+                            y as f64 + 0.5
+                        };
+                        let d =
+                            ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
+                        let inside =
+                            x >= b.x + w && x < b.x + b.w - w && y >= b.y + w && y < b.y + b.h - w;
+                        if inside && d <= rf - f64::from(w) - 1.0 {
+                            assert_eq!(
+                                out.at(x, y),
+                                front.at(x, y),
+                                "scale {scale}: inside the path at {x},{y}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// A change of the blocks only damages where they draw, old and new, not the window.
+        #[test]
+        fn a_block_change_damages_the_blocks() {
+            let (mut s, mut f) = (Scene::default(), Frames::new());
+            s.upsert(&desc(ROOT, 0, 1, ALL, 1.0, true)).unwrap();
+            s.upsert(&desc(WIN, ROOT, 2, ALL, 1.0, true)).unwrap();
+            s.set_blocks(WIN, [ring(Rect::new(20, 10, 60, 20), 6, 1)].into())
+                .unwrap();
+            s.commit(ROOT, &mut f);
+            s.set_blocks(WIN, [ring(Rect::new(20, 30, 60, 20), 6, 1)].into())
+                .unwrap();
+            let d = s.commit(ROOT, &mut f).to_vec();
+            let area: u64 = d.iter().map(Rect::area).sum();
+            assert!(area <= 2 * 60 * 20, "damage {d:?}");
+            for p in [(20, 10), (79, 29), (20, 30), (79, 49)] {
+                assert!(
+                    d.iter().any(|r| r.contains(p.0, p.1)),
+                    "{p:?} damaged: {d:?}"
+                );
             }
         }
     }

@@ -317,6 +317,7 @@ pub fn images_at(
             bounds: card_bounds(now.rect, Some(&chrome), Some(&card)),
             chrome: Some(chrome),
             card: Some(card),
+            blocks: std::sync::Arc::from([]),
         })
         .collect();
     Ok(Some(

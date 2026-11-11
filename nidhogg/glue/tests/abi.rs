@@ -1728,6 +1728,49 @@ PROTO (nhg_layers_count, int32_t (NhgDisplay *, uint64_t));";
         }
     }
 
+    /// The blocks' part of the header: the flags, the entry's layout and the entry points.
+    #[test]
+    fn blocks_header_matches() {
+        use nhglue::blocks::*;
+        use nhglue::ffi::{nhg_blocks_count, nhg_blocks_sync};
+        type B = NhgBlock;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_BLOCK_RULE", NHG_BLOCK_RULE.into()),
+            ("NHG_BLOCK_OPEN_TOP", NHG_BLOCK_OPEN_TOP.into()),
+            ("NHG_BLOCK_OPEN_BOTTOM", NHG_BLOCK_OPEN_BOTTOM.into()),
+            ("sizeof (B)", size_of::<B>() as i64),
+            ("_Alignof (B)", align_of::<B>() as i64),
+            ("offsetof (B, seq)", offset_of!(B, seq) as i64),
+            ("offsetof (B, clip)", offset_of!(B, clip) as i64),
+            ("offsetof (B, rect)", offset_of!(B, rect) as i64),
+            ("offsetof (B, flags)", offset_of!(B, flags) as i64),
+            ("offsetof (B, radius)", offset_of!(B, radius) as i64),
+            ("offsetof (B, ring_rgb)", offset_of!(B, ring_rgb) as i64),
+            (
+                "offsetof (B, ring_opacity)",
+                offset_of!(B, ring_opacity) as i64,
+            ),
+            (
+                "offsetof (B, beneath_rgb)",
+                offset_of!(B, beneath_rgb) as i64,
+            ),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+typedef NhgBlock B;
+PROTO (nhg_blocks_sync, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgBlock *, size_t));
+PROTO (nhg_blocks_count, int32_t (NhgDisplay *, uint64_t));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const B, usize) -> i32 =
+            nhg_blocks_sync;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_blocks_count;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     /// The window list's entry: the window box, the outer rectangle and the card's slots, laid out as C has them.
     #[test]
     fn layer_window_layout() {

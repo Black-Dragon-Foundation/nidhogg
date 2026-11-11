@@ -454,6 +454,66 @@ with the window when the frame publishes."
     (dolist (w (window-list f t))
       (glitnir--recheck-cards w))))
 
+;; Blocks: a window parameter `glitnir-blocks' draws rings (rounded, with
+;; their corners outside the rounded path in the colour beneath) or rules
+;; (a bottom hairline) around runs of the window's rows, over its text.
+;; The rows give their own fill.  It is resolved into `glitnir--blocks'
+;; only when it, or the theme, changed; C resolves each block's rows
+;; against the window's matrix when the frame publishes.
+
+(defun glitnir--block-vector (spec frame)
+  "Return block SPEC as the vector C reads, for FRAME.
+SPEC is (KIND START END . PLIST): KIND `ring' or `rule'; START and END
+markers (or positions) of the window's buffer, END exclusive; PLIST
+`:x0' and `:x1' (pixels from the text area's left edge, default 0 and
+its width), `:radius' (pixels, a ring's outer corners), `:ring' (a face,
+whose foreground is the line's colour, or (FACE-OR-COLOUR . OPACITY))
+and `:beneath' (a colour name or a face, whose background is used: what
+a ring's corners show outside its rounded path, the colour under the
+block).  The vector is [KIND START END X0 X1 RADIUS RING-RGB
+RING-OPACITY BENEATH-RGB], KIND 0 a ring and 1 a rule, RING-RGB -1 for
+no line.  Signal `wrong-type-argument' for another shape."
+  (unless (and (consp spec) (memq (car spec) '(ring rule)) (consp (cdr spec)) (consp (cddr spec)))
+    (signal 'wrong-type-argument (list 'glitnir-block spec)))
+  (let* ((plist (nthcdr 3 spec))
+         (ring-spec (plist-get plist :ring))
+         (ring (cond ((null ring-spec) nil)
+                     ((consp ring-spec) (glitnir--ring ring-spec frame))
+                     (t (glitnir--ring (cons ring-spec 1) frame))))
+         (beneath (plist-get plist :beneath)))
+    (vector (if (eq (car spec) 'rule) 1 0) (nth 1 spec) (nth 2 spec)
+            (or (plist-get plist :x0) 0) (or (plist-get plist :x1) most-positive-fixnum)
+            (or (plist-get plist :radius) 0)
+            (if ring (car ring) -1) (if ring (cdr ring) 0)
+            (or (glitnir--color-rgb (if (facep beneath) (face-background beneath frame t) beneath) frame)
+                (glitnir--color-rgb (frame-parameter frame 'background-color) frame)
+                0))))
+
+(defvar glitnir--blocks-any nil
+  "Whether a window of the frame has blocks.
+Bound by `glitnir--recheck-frame-cards' around its walk.")
+
+(defun glitnir--recheck-blocks (window)
+  "Resolve WINDOW's blocks when its `glitnir-blocks' or the theme changed.
+The vector of block vectors goes into the window parameter
+`glitnir--blocks', which C reads when the frame publishes."
+  (let ((spec (window-parameter window 'glitnir-blocks))
+        (key (window-parameter window 'glitnir--blocks-key)))
+    (unless (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
+      ;; the key first: a parameter that signals does so once
+      (set-window-parameter window 'glitnir--blocks-key (cons spec glitnir--card-generation))
+      (let* ((frame (window-frame window))
+             (v (and spec (vconcat (mapcar (lambda (b) (glitnir--block-vector b frame)) spec)))))
+        (unless (equal v (window-parameter window 'glitnir--blocks))
+          (set-window-parameter window 'glitnir--blocks v)
+          (force-window-update window))))
+    (when (window-parameter window 'glitnir--blocks)
+      (setq glitnir--blocks-any t))))
+
+(defvar glitnir--blocks-seen (make-hash-table :test 'eq :weakness 'key)
+  "Per frame, the last value of its `glitnir--blocks' parameter.
+As `glitnir--recheck-frame-cards' gave it.")
+
 (defvar glitnir--cards-seen (make-hash-table :test 'eq :weakness 'key)
   "Per frame, the value `glitnir--recheck-frame-cards' last gave its `glitnir--cards' parameter.")
 
@@ -465,6 +525,7 @@ This runs on every redisplay, so it walks the tree rather than building a window
       (if (window-child window)
           (when (glitnir--recheck-tree (window-child window)) (setq any t))
         (glitnir--recheck-cards window)
+        (glitnir--recheck-blocks window)
         (when (window-parameter window 'glitnir--card) (setq any t)))
       (setq window (window-next-sibling window)))
     any))
@@ -478,12 +539,18 @@ flag `glitnir--cards' follows the windows, also when the last card window was
 deleted."
   (let ((f (window-frame window)))
     (when (or (eq window (frame-first-window f)) (eq window (selected-window)))
-      (let ((any (glitnir--recheck-tree (frame-root-window f))))
+      (let* ((glitnir--blocks-any nil)
+             (any (glitnir--recheck-tree (frame-root-window f))))
         ;; `frame-parameter' conses the frame's whole parameter list, so the last value is kept beside it
         (unless (eq any (gethash f glitnir--cards-seen))
           (puthash f any glitnir--cards-seen)
           (unless (eq any (frame-parameter f 'glitnir--cards))
-            (set-frame-parameter f 'glitnir--cards any)))))))
+            (set-frame-parameter f 'glitnir--cards any)))
+        ;; the same for blocks: C lists a frame's blocks while its `glitnir--blocks' is set
+        (unless (eq glitnir--blocks-any (gethash f glitnir--blocks-seen))
+          (puthash f glitnir--blocks-any glitnir--blocks-seen)
+          (unless (eq glitnir--blocks-any (frame-parameter f 'glitnir--blocks))
+            (set-frame-parameter f 'glitnir--blocks glitnir--blocks-any)))))))
 
 (add-hook 'pre-redisplay-functions #'glitnir--recheck-frame-cards)
 
