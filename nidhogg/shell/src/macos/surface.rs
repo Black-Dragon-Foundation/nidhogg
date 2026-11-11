@@ -392,8 +392,12 @@ impl Surfaces {
         if fill == Fill::All {
             st.full_copies.fetch_add(1, Ordering::Relaxed);
             let (slots, age) = (self.slots.len(), self.ring.age(slot));
+            let owed: Option<u64> = self.ring.owed(slot).map(|o| o.iter().map(Rect::area).sum());
+            let own: u64 = damage.iter().map(Rect::area).sum();
             crate::trace::note(|| {
-                format!("full copy: slot {slot} of {slots}, age {age}, busy {busy}, {w}x{h}")
+                format!(
+                    "full copy: slot {slot} of {slots}, age {age}, busy {busy}, {w}x{h}, owed {owed:?} px, own {own} px"
+                )
             });
         }
         if busy {
