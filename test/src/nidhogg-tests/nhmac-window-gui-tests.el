@@ -20,6 +20,8 @@
     (while (and (progn (setq st (nhmac-win-gui--state)) (not (eq (plist-get st key) want)))
                 (< (float-time) deadline))
       (sit-for 0.2))
+    (unless (eq (plist-get st key) want)
+      (message "nhmac-win-gui--wait: %S never %S: %S" key want st))
     st))
 
 ;; Task 32: window behaviours, full screen, Spaces, appearance
