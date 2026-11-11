@@ -40,10 +40,13 @@ Used when `glitnir-debug' is `damage'."
 (defcustom child-frame-chrome nil
   "Chrome (rounded corners, a shadow, motion) for child frames.
 Nil, an alist, or a function of the frame returning an alist.  The
-alist may hold `corner-radius' (a number of pixels) and `shadow' (a
+alist may hold `corner-radius' (a number of pixels), `shadow' (a
 plist of :blur, :offset (X . Y), :spread and :opacity, or nil for no
-shadow).  A frame's own `corner-radius' and `shadow' parameters win
-over it; `(corner-radius . 0)' and `(shadow . nil)' opt a frame out.
+shadow) and `ring' ((COLOR . OPACITY), COLOR a face, whose foreground
+is used, or a colour name: a line 1 pixel wide just outside the frame,
+as a window card's).  A frame's own `corner-radius', `shadow' and
+`ring' parameters win over it; `(corner-radius . 0)', `(shadow . nil)'
+and `(ring . nil)' opt a frame out.
 Decorated (not `undecorated') child frames get no chrome, and root
 frames none from this option: an undecorated root frame takes its
 corners and shadow from its own `toplevel-chrome' parameter, an alist
@@ -64,7 +67,7 @@ plist's defaults show over 0.12 s with `ease-out' and hide over 0.08 s
 with `ease-in'.  When the desktop asks for reduced motion there is no
 transition."
   :type '(choice (const :tag "None" nil)
-                 (alist :key-type (choice (const corner-radius) (const shadow)
+                 (alist :key-type (choice (const corner-radius) (const shadow) (const ring)
                                           (const transition) (const backdrop-blur))
                         :value-type sexp)
                  function)
@@ -115,7 +118,8 @@ then (`glitnir--recheck-shadow' catches a later difference)."
 (defun glitnir--resolve (frame)
   "Return FRAME's chrome, or nil.
 The value is (:radius R :shadow (:blur B :offset (X . Y) :spread S
-:opacity O :color (R G B))) in logical pixels, from FRAME's parameters
+:opacity O :color (R G B)) :ring (RGB . OPACITY)) in logical pixels,
+the ring as `glitnir--ring' gives it, from FRAME's parameters
 and `child-frame-chrome'.  Root frames and decorated (not
 `undecorated') child frames have none."
   (when (frame-parent frame)
@@ -127,16 +131,18 @@ and `child-frame-chrome'.  Root frames and decorated (not
                        child-frame-chrome)))
            (r (and chromed (or (assq 'corner-radius params) (assq 'corner-radius opt))))
            (s (and chromed (or (assq 'shadow params) (assq 'shadow opt))))
+           (g (and chromed (or (assq 'ring params) (assq 'ring opt))))
            (radius (cdr r))
-           (shadow (and (cdr s) (glitnir--shadow (cdr s) frame))))
+           (shadow (and (cdr s) (glitnir--shadow (cdr s) frame)))
+           (ring (and (cdr g) (glitnir--ring (cdr g) frame))))
       (when radius
         (unless (and (numberp radius) (>= radius 0))
           (signal 'wrong-type-argument (list 'natnump radius))))
       (if shadow
           (puthash frame (plist-get shadow :color) glitnir--shadow-colors)
         (remhash frame glitnir--shadow-colors))
-      (when (or shadow (and radius (> radius 0)))
-        (list :radius (or radius 0) :shadow shadow)))))
+      (when (or shadow ring (and radius (> radius 0)))
+        (list :radius (or radius 0) :shadow shadow :ring ring)))))
 
 (defconst glitnir--chrome-slots
   '((on . 0) (radius . 1) (blur . 2) (ox . 3) (oy . 4) (spread . 5) (opacity . 6) (rgb . 7)
@@ -292,7 +298,8 @@ a child frame's; no motion, no backdrop, `beneath-rgb' and `ring-rgb' -1."
 The slots are `glitnir--chrome-slots'.  Slots 0-7 come from `glitnir--resolve',
 clamped; 8-19 from the `transition' option, which the desktop's reduced-motion
 setting turns off; 20 from `backdrop-blur', 0 while the frame's
-`alpha-background' is opaque; `beneath-rgb', `ring-rgb' and `fill-rgb' are -1.  A child
+`alpha-background' is opaque; 22-23 from `ring' (-1 and 0 without one);
+`beneath-rgb' and `fill-rgb' are -1.  A child
 frame with no chrome has a vector whose first slot is 0.  A root frame's is
 `glitnir--toplevel-vector'."
   (if (not (frame-parent frame))
@@ -313,7 +320,10 @@ frame with no chrome has a vector whose first slot is 0.  A root frame's is
       (aset v (alist-get 'ring-rgb glitnir--chrome-slots) -1)
       (aset v (alist-get 'fill-rgb glitnir--chrome-slots) -1)
       (when res
-        (glitnir--fill-shadow v (plist-get res :radius) (plist-get res :shadow)))
+        (glitnir--fill-shadow v (plist-get res :radius) (plist-get res :shadow))
+        (when-let* ((ring (plist-get res :ring)))
+          (aset v (alist-get 'ring-rgb glitnir--chrome-slots) (car ring))
+          (aset v (alist-get 'ring-opacity glitnir--chrome-slots) (cdr ring))))
       v)))
 
 ;; Window cards: a window with the parameters `corner-radius', `shadow'

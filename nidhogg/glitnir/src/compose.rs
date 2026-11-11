@@ -305,6 +305,8 @@ struct Plan {
     side: usize,
     corners: Corners,
     shadow: Option<Shadow>,
+    /// The chrome's edge ring, just outside the layer's rounded rectangle.
+    ring: Option<CardRing>,
 }
 
 impl Plan {
@@ -346,6 +348,9 @@ impl Plan {
             );
             Shadow { tiles, size, image }
         });
+        let rw = c.ring().min(1 << 12);
+        let ring = (rw > 0 && !p.rect.is_empty())
+            .then(|| CardRing::around(p.rect, r.max(0) as u32, rw, c.ring_argb));
         Plan {
             origin: (x, y),
             copied: [
@@ -362,6 +367,7 @@ impl Plan {
             side: 2 * ru,
             corners,
             shadow,
+            ring,
         }
     }
 
@@ -383,6 +389,16 @@ impl Plan {
                 let from = ((q.x - s.image.x) as u32, (q.y - s.image.y) as u32);
                 let span = (q.w as usize, q.h as usize);
                 s.tiles.composite(k, &mut t.at(q), s.size, from, span);
+            }
+        }
+        // the ring outside the rounded rectangle, over the shadow; the corners below keep their outside as it is
+        if let Some(ring) = &self.ring {
+            let mut parts = vec![clip];
+            for cut in &self.copied {
+                parts = parts.iter().flat_map(|a| subtract(*a, *cut)).collect();
+            }
+            for q in parts.into_iter().filter(|q| !q.is_empty()) {
+                ring.draw(k, &mut t.at(q), q);
             }
         }
         for cut in &self.copied {
@@ -652,6 +668,30 @@ struct CardRing {
 }
 
 impl CardRing {
+    /// The ring `w` px wide just outside RECT (root px) with corners of radius `r`, in COLOUR.
+    fn around(rect: Rect, r: u32, w: u32, colour: u32) -> CardRing {
+        let (ri, wi) = (r as i32, w as i32);
+        let s = ri + wi;
+        let Rect { x, y, w: rw, h: rh } = rect;
+        CardRing {
+            colour,
+            cov: ring_coverage(r + w, w),
+            side: s as usize,
+            squares: [
+                Rect::new(x - wi, y - wi, s, s),
+                Rect::new(x + rw - ri, y - wi, s, s),
+                Rect::new(x - wi, y + rh - ri, s, s),
+                Rect::new(x + rw - ri, y + rh - ri, s, s),
+            ],
+            strips: [
+                Rect::new(x + ri, y - wi, rw - 2 * ri, wi),
+                Rect::new(x + ri, y + rh, rw - 2 * ri, wi),
+                Rect::new(x - wi, y + ri, wi, rh - 2 * ri),
+                Rect::new(x + rw, y + ri, wi, rh - 2 * ri),
+            ],
+        }
+    }
+
     /// Draw the ring within Q into DST, whose first pixel is root px Q's top-left.
     fn draw(&self, k: &Kernels, dst: &mut PixelsMut, q: Rect) {
         for s in &self.strips {
@@ -737,28 +777,8 @@ impl CardPlan {
             Shadow { tiles, size, image }
         });
         let w = card.ring().min(1 << 12);
-        let ring = (w > 0 && !rect.is_empty()).then(|| {
-            let (ri, wi) = (r as i32, w as i32);
-            let s = ri + wi;
-            let Rect { x, y, w: rw, h: rh } = rect;
-            CardRing {
-                colour: card.ring_argb,
-                cov: ring_coverage(r + w, w),
-                side: s as usize,
-                squares: [
-                    Rect::new(x - wi, y - wi, s, s),
-                    Rect::new(x + rw - ri, y - wi, s, s),
-                    Rect::new(x - wi, y + rh - ri, s, s),
-                    Rect::new(x + rw - ri, y + rh - ri, s, s),
-                ],
-                strips: [
-                    Rect::new(x + ri, y - wi, rw - 2 * ri, wi),
-                    Rect::new(x + ri, y + rh, rw - 2 * ri, wi),
-                    Rect::new(x - wi, y + ri, wi, rh - 2 * ri),
-                    Rect::new(x + rw, y + ri, wi, rh - 2 * ri),
-                ],
-            }
-        });
+        let ring =
+            (w > 0 && !rect.is_empty()).then(|| CardRing::around(rect, r, w, card.ring_argb));
         CardPlan {
             rect,
             corners,
@@ -1240,6 +1260,8 @@ mod tests {
                 (1 + g.below(3)) as f32
             },
             border_argb: pixel(g),
+            ring_px: 0.0,
+            ring_argb: 0,
         }
     }
 
@@ -1447,6 +1469,8 @@ mod tests {
                 shadow_argb: 0xff00_0000,
                 border_px: 2.0,
                 border_argb: 0xff40_80c0,
+                ring_px: 0.0,
+                ring_argb: 0,
                 ..Chrome::default()
             }),
         )
@@ -1488,6 +1512,65 @@ mod tests {
         let mut want = Buf::new(w, h, 0);
         run(&s, &mut want, scale, &[all], &src, &mut shadows);
         assert_eq!(first_difference(&out, &want), None);
+    }
+
+    /// A layer's chrome ring (a child frame's `ring'): a line just outside its rounded rectangle, over what lies
+    /// beneath; the layer's own pixels are a plain copy and nothing lies past the ring.
+    #[test]
+    fn a_chrome_ring_lies_just_outside_the_layer() {
+        let (w, h, scale) = (64, 48, 1.0);
+        let all = Rect::new(0, 0, w, h);
+        let mut g = XorShift::new(31);
+        let (mut s, mut f) = (Scene::default(), Frames::new());
+        let b = Rect::new(12, 10, 36, 26);
+        s.upsert(&desc(ROOT, 0, 1, all, scale, true)).unwrap();
+        s.upsert(&desc(20, ROOT, 3, b, scale, true)).unwrap();
+        let ring = Chrome {
+            radius_px: 6.0,
+            ring_px: 1.0,
+            ring_argb: 0x7300_0000,
+            ..Chrome::default()
+        };
+        s.set_chrome(20, Some(ring)).unwrap();
+        s.commit(ROOT, &mut f);
+        assert_eq!(
+            crate::scene::bounds(b, Some(&ring)),
+            Rect::new(11, 9, 38, 28)
+        );
+        let mut src: BTreeMap<u64, Buf> = BTreeMap::new();
+        src.insert(ROOT, Buf::random(&mut g, w, h));
+        src.insert(20, Buf::random(&mut g, b.w, b.h));
+        let mut out = Buf::new(w, h, 0);
+        run(&s, &mut out, scale, &[all], &src, &mut ShadowCache::new());
+        // the straight sides, one pixel out: darker than what lies beneath
+        for (x, y) in [(30, 9), (30, 36), (11, 22), (48, 22)] {
+            assert_ne!(out.at(x, y), src[&ROOT].at(x, y), "ring pixel {x},{y}");
+        }
+        // two pixels out: what lies beneath
+        for (x, y) in [(30, 8), (30, 37), (10, 22), (49, 22)] {
+            assert_eq!(out.at(x, y), src[&ROOT].at(x, y), "beneath pixel {x},{y}");
+        }
+        // inside, away from the corners: the layer's own pixels
+        for (x, y) in [(30, 10), (30, 35), (12, 22), (47, 22)] {
+            assert_eq!(
+                out.at(x, y),
+                src[&20].at(x - b.x, y - b.y),
+                "layer pixel {x},{y}"
+            );
+        }
+        // no ring: nothing outside the layer
+        s.set_chrome(
+            20,
+            Some(Chrome {
+                ring_argb: 0,
+                ..ring
+            }),
+        )
+        .unwrap();
+        s.commit(ROOT, &mut f);
+        let mut out = Buf::new(w, h, 0);
+        run(&s, &mut out, scale, &[all], &src, &mut ShadowCache::new());
+        assert_eq!(out.at(30, 9), src[&ROOT].at(30, 9));
     }
 
     #[test]
@@ -2060,6 +2143,8 @@ mod tests {
                 shadow_argb: 0xff00_0000,
                 border_px: 2.0,
                 border_argb: 0xff60_6060,
+                ring_px: 0.0,
+                ring_argb: 0,
             }),
         )
         .unwrap();

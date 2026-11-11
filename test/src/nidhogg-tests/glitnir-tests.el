@@ -236,6 +236,27 @@
         (should (= (aref v 6) 1))
         (should (= (aref v 2) 0))))))
 
+(ert-deftest glitnir-chrome-vector-ring ()
+  ;; a ring alone is chrome: slots 22-23 hold its colour and opacity (the batch terminal maps
+  ;; colours to its own, so they are read from the spec)
+  (cl-letf (((symbol-function 'color-values)
+             (lambda (c &optional _f) (and (stringp c) (color-values-from-color-spec c)))))
+    (let ((child-frame-chrome '((ring . ("#102030" . 0.45)))))
+      (glitnir-test--as-child nil
+        (let ((v (glitnir--chrome-vector (selected-frame))))
+          (should (= (aref v 0) 1))
+          (should (equal (list (aref v 22) (aref v 23)) (list #x102030 0.45)))))
+      ;; the frame's parameter wins, and (ring . nil) opts out
+      (glitnir-test--as-child '((ring . ("#ffffff" . 2)))
+        (let ((v (glitnir--chrome-vector (selected-frame))))
+          (should (equal (list (aref v 22) (aref v 23)) (list #xffffff 1)))))
+      (glitnir-test--as-child '((ring . nil))
+        (let ((v (glitnir--chrome-vector (selected-frame))))
+          (should (= (aref v 0) 0))
+          (should (equal (list (aref v 22) (aref v 23)) '(-1 0)))))))
+  (glitnir-test--as-child '((ring . (3 . 0.5)))
+    (should-error (glitnir--chrome-vector (selected-frame)) :type 'wrong-type-argument)))
+
 ;; Task 3: transition, backdrop-blur and reduced motion fill slots 8-20.
 
 (defconst glitnir-test--ease-out '(0 0 0.58 1))

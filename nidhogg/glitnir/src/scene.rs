@@ -99,6 +99,9 @@ pub struct Chrome {
     pub shadow_argb: u32,
     pub border_px: f32,
     pub border_argb: u32,
+    /// The edge ring just outside the rounded rectangle, `ring_px` wide (0, or a 0 colour: none), as a card's.
+    pub ring_px: f32,
+    pub ring_argb: u32,
 }
 
 /// Clamp to i32 for a pixel coordinate.
@@ -109,6 +112,15 @@ fn px(v: f64) -> i64 {
 impl Chrome {
     pub fn has_shadow(&self) -> bool {
         self.shadow_opacity > 0.0
+    }
+
+    /// The ring's width in whole device px, 0 without a ring.
+    pub fn ring(&self) -> u32 {
+        if self.ring_argb == 0 {
+            0
+        } else {
+            crate::compose::whole(self.ring_px)
+        }
     }
 
     /// The shadow image of a layer at RECT: the layer grown by the spread and the blur's reach, then offset, rounded
@@ -261,10 +273,21 @@ fn scrolled_corners(
     here.into_iter().chain(moved).collect()
 }
 
-/// The pixels a layer at RECT with CHROME can touch: its rectangle and its shadow image.
+/// The pixels a layer at RECT with CHROME can touch: its rectangle, its shadow image and its ring.
 pub fn bounds(rect: Rect, chrome: Option<&Chrome>) -> Rect {
     match chrome {
-        Some(c) if !rect.is_empty() => rect.bounds(&c.shadow_rect(rect)),
+        Some(c) if !rect.is_empty() => {
+            let b = rect.bounds(&c.shadow_rect(rect));
+            match c.ring().min(i32::MAX as u32 / 4) as i32 {
+                0 => b,
+                w => b.bounds(&Rect::new(
+                    rect.x - w,
+                    rect.y - w,
+                    rect.w + 2 * w,
+                    rect.h + 2 * w,
+                )),
+            }
+        }
         _ => rect,
     }
 }
@@ -943,6 +966,8 @@ mod tests {
             shadow_argb: 0xff00_0000,
             border_px: 2.0,
             border_argb: 0xff80_8080,
+            ring_px: 0.0,
+            ring_argb: 0,
         }
     }
 

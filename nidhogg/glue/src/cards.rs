@@ -60,7 +60,7 @@ impl Cards {
 }
 
 /// A colour 0xRRGGBB at OPACITY, premultiplied ARGB (pixman's x·a/255, rounded).
-fn premultiplied(rgb: u32, opacity: f32) -> u32 {
+pub(crate) fn premultiplied(rgb: u32, opacity: f32) -> u32 {
     let a = (opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
     let mul = |x: u32| {
         let t = x * a + 0x80;

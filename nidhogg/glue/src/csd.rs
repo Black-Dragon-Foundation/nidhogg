@@ -465,7 +465,7 @@ pub fn layout(
     let f = state.frame_mut(window)?;
     let states = f.cfg.states;
     // the room the chrome's shadow needs, logical (`child::margins` at scale 1)
-    let room = crate::child::margins(&f.child.chrome, 120);
+    let room = crate::child::margins(&f.child.chrome, false, 120);
     let c = &mut f.csd;
     c.s120 = s120;
     c.on = matches!(ssd, Ok(false)) && !undecorated;
