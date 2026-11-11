@@ -82,7 +82,11 @@ mod auto {
                 if PANEL.with(|p| p.borrow().is_none()) {
                     return;
                 }
-                let path = ANSWER.with(|a| a.borrow_mut().take()).map(|(p, _)| p);
+                // as the panel's URL's `path` gives it: no trailing slash (but for the root)
+                let path = ANSWER.with(|a| a.borrow_mut().take()).map(|(p, _)| {
+                    let t = p.trim_end_matches('/');
+                    if t.is_empty() { "/".to_owned() } else { t.to_owned() }
+                });
                 ANSWERED.with(|a| *a.borrow_mut() = path);
                 let mtm = MainThreadMarker::from(self);
                 // ends the modal session now, from a timer, with no event needed

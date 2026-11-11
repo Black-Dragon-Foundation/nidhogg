@@ -105,7 +105,22 @@ usage: (nhmac--query WHAT &rest ARGS)  */)
   if (nhwl_glue_rc (dpyinfo, rc) < 0)
     error ("nhmac--query %s: %d", SSDATA (SYMBOL_NAME (args[0])), rc);
   if (len >= sizeof buf)
-    error ("nhmac--query %s: the answer is too long", SSDATA (SYMBOL_NAME (args[0])));
+    {
+      /* A long answer (a menu tree's dump): asked again into a buffer
+	 that holds it (the glue gave its length).  */
+      USE_SAFE_ALLOCA;
+      size_t cap = len + 1;
+      char *big = SAFE_ALLOCA (cap);
+      rc = NHG (nhg_app_query (dpyinfo->glue, SSDATA (SYMBOL_NAME (args[0])),
+			       SSDATA (text), big, cap, &len));
+      if (nhwl_glue_rc (dpyinfo, rc) < 0 || len >= cap)
+	error ("nhmac--query %s: the answer is too long",
+	       SSDATA (SYMBOL_NAME (args[0])));
+      Lisp_Object v = Fcar (Fread_from_string (make_string (big, len),
+					       Qnil, Qnil));
+      SAFE_FREE ();
+      return v;
+    }
   return Fcar (Fread_from_string (make_string (buf, len), Qnil, Qnil));
 }
 
