@@ -451,7 +451,7 @@ impl MacShell {
         self.push(ShellEvent::EnterOutput(o), id);
     }
 
-    fn configure(&mut self, id: WindowId, w: i32, h: i32) {
+    pub(super) fn configure(&mut self, id: WindowId, w: i32, h: i32) {
         self.serial = self.serial.wrapping_add(1);
         let serial = self.serial;
         if let Some(win) = self.windows.get_mut(&id) {
