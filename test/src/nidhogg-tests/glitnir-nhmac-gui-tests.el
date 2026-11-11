@@ -710,9 +710,12 @@ the window's; without the card the corner is the window's."
                        (and b (mapcar (lambda (c) (format "%06x" (glitnir-nhmac--px img (car c) (cdr c))))
                                       (list (cons (nth 0 b) (nth 1 b)) (cons (nth 2 b) (nth 1 b))))))
        (should b)
-       ;; the card's bounding box is the window's: its corner pixels are outside the rounded shape, the gap's
-       (dolist (c (list (cons (nth 0 b) (nth 1 b)) (cons (nth 2 b) (nth 1 b))
-                        (cons (nth 0 b) (nth 3 b)) (cons (nth 2 b) (nth 3 b))))
+       ;; the card's bounding box is the window's: its corner pixels are outside the rounded shape, the gap's.  Each
+       ;; is read two device pixels in (still outside the arc, radius 10 points): the left window's left edge is the
+       ;; frame's, and the window server tints a window's outermost device pixel (its rim: the gap #20a040 shows as
+       ;; #36a953 there at either scale) and, near the window's own rounded bottom corners, the one inside it too
+       (dolist (c (list (cons (+ (nth 0 b) 2) (+ (nth 1 b) 2)) (cons (- (nth 2 b) 2) (+ (nth 1 b) 2))
+                        (cons (+ (nth 0 b) 2) (- (nth 3 b) 2)) (cons (- (nth 2 b) 2) (- (nth 3 b) 2))))
          (should (equal (list c (nhmac-gui--far (glitnir-nhmac--px img (car c) (cdr c)) glitnir-nhmac--gap 8))
                         (list c nil))))
        (should-not (nhmac-gui--far (glitnir-nhmac--px img (+ (nth 0 b) r) (nth 1 b)) glitnir-nhmac--card-bg 8))
