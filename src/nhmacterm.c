@@ -300,11 +300,23 @@ set_frame_menubar (struct frame *f, bool deep_p)
 {
 }
 
+/* Adapted from nsmenu.m: `window-system' reads `ns', so tooltip.el asks
+   it before showing a tip.  Naglfar's menus are tracked by AppKit with
+   Lisp waiting, so none is active while Lisp asks.  */
+DEFUN ("menu-or-popup-active-p", Fmenu_or_popup_active_p,
+       Smenu_or_popup_active_p, 0, 0, 0,
+       doc: /* SKIP: real doc in xmenu.c.  */)
+  (void)
+{
+  return popup_activated () ? Qt : Qnil;
+}
+
 void
 syms_of_nhmacterm (void)
 {
   defsubr (&Snhmac__call);
   defsubr (&Snhmac__query);
+  defsubr (&Smenu_or_popup_active_p);
   syms_of_nhmacfont ();
 
   /* `window-system' reads `ns', so ns-win.el and packages take their
