@@ -238,6 +238,10 @@ mod reader {
         ("window_new_named", |s, _| {
             s.window_new_named(&desc(), Some("n")).map(drop)
         }),
+        ("window_new_placed", |s, _| {
+            s.window_new_placed(&desc(), Some("n"), Place::Shell)
+                .map(drop)
+        }),
         ("scale_start", |s, w| s.scale_start(w, 240)),
         ("set_title", |s, w| s.set_title(w, "x")),
         ("set_app_id", |s, w| s.set_app_id(w, "x")),
