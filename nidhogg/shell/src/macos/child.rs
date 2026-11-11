@@ -59,6 +59,8 @@ struct Shown {
 struct Layers {
     container: Retained<CALayer>,
     shadow: Retained<CALayer>,
+    /// The chrome's ring, just outside the content (over the shadow).
+    ring: Retained<CALayer>,
     content: Retained<CALayer>,
 }
 
@@ -67,14 +69,18 @@ impl Layers {
         let container = origin_layer();
         let shadow = origin_layer();
         shadow.setHidden(true);
+        let ring = origin_layer();
+        ring.setHidden(true);
         let content = origin_layer();
         container.addSublayer(&shadow);
+        container.addSublayer(&ring);
         container.addSublayer(&content);
         // nothing shows before the first picture
         container.setHidden(true);
         Layers {
             container,
             shadow,
+            ring,
             content,
         }
     }
@@ -763,6 +769,7 @@ impl MacShell {
                     &mut k.chrome_shown,
                     k.chrome.as_ref(),
                     &l.content,
+                    &l.ring,
                     &l.shadow,
                     (k.w, k.h),
                     scale,
