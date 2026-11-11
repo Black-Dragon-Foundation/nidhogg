@@ -1186,12 +1186,14 @@ does.  The frame is decorated again after."
   "The undecorated toplevel's checks at the frame's scale.
 With the look's chrome: the shadow band below the window is darker than the desktop behind (transparent there), and
 the input region is the window with its resize margins.  With corners alone: the corner's cut is transparent, the
-window's own pixel past it opaque, the margin transparent.  Where the compositor decorates: a square, opaque corner.
+window's own pixel past it opaque, the margin transparent.  Where the compositor decorates the window anyway (the
+recorder's server profile answers server-side to a window that asked for none): a square, opaque corner.
 The probes are placed from the window geometry the recorder applied (logical), not from the frame's size before the
 switch: going windowed and undecorated may change it."
   (let* ((framed (not (equal (nhwl-gui--decoration) "server"))))
     (glitnir-fx--log-size "before")
-    (should (eq (and (nhwl-toplevel-chrome-p) t) framed))
+    ;; the shell keeps the margins on every compositor that leaves the window undecorated
+    (should (nhwl-toplevel-chrome-p))
     (glitnir-fx--with-undecorated
      glitnir-fx--window-chrome (if framed '(25 19) '(0 0))
      (lambda (node)
@@ -1220,7 +1222,7 @@ switch: going windowed and undecorated may change it."
            (should (= (glitnir-fx--alpha grab (/ m 2) (glitnir-fx--dev (+ (nth 1 g) (/ (nth 3 g) 2)))) 0))))))))
 
 (ert-deftest glitnir-undecorated-corners-and-shadow ()
-  "An undecorated toplevel's corners are cut and its shadow lies in the margins, where the compositor decorates not."
+  "An undecorated toplevel's corners are cut and its shadow lies in the margins, unless the compositor decorates it."
   (skip-unless (glitnir-fx--recorder-p))
   (nhwl-gui--with-blink nil #'glitnir-fx--undecorated-rows))
 

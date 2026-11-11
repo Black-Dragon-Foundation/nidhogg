@@ -2188,7 +2188,7 @@ characters go, the mark stays."
 
 (defun nhwl-gui--undecorated-origin ()
   "Where the newest toplevel's native area starts in its surface when it is undecorated, (X Y) logical: its window
-geometry's origin, past the resize margins it keeps where the compositor offers no server-side decorations."
+geometry's origin, past the resize margins it keeps on every compositor."
   (let ((g (nhwl-gui--get (car (last (nhwl-gui--toplevel-commits))) :geometry)))
     (if g (list (nth 0 g) (nth 1 g)) (list 0 0))))
 
