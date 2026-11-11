@@ -44,8 +44,10 @@ EOF
 }
 spec '"shared"' > spec-shared.json
 spec '{"isolated": {"relay": [], "mac_tcp_ports": []}}' > spec-iso.json
-prof/target/release/prof spec-shared.json "$dev" shared.sb || say "profile (shared) refused"
-prof/target/release/prof spec-iso.json "$dev" iso.sb || say "profile (isolated) refused"
+for n in shared iso; do
+  out=$(prof/target/release/prof spec-$n.json "$dev" $n.sb 2>&1) || say "profile ($n) refused: $(echo "$out" | tr '\n' ' ' | head -c 600)"
+done
+[ -x prof/target/release/prof ] || say "no prof binary: $(tail -c 600 cargo.log | tr '\n' ' ')"
 { cat iso.sb; printf '\n; candidate Q17 rule: loopback bind, inbound and outbound\n(allow network-bind (local ip "localhost:*"))\n(allow network-inbound (local ip "localhost:*"))\n(allow network-outbound (remote ip "localhost:*"))\n'; } > iso-loop.sb
 summ() { "$B/venv/bin/python" -c 'import json,sys
 r=json.load(open(sys.argv[1]))
@@ -59,9 +61,9 @@ for a in debugpy jsdebug delve lldb; do
       [ -n "$shim" ] && [ "$a" != jsdebug ] && continue
       rm -f "$B/w/r.json"
       if [ "$mode" = bare ]; then
-        (cd fix && timeout 120 python3 dapspike.py run "$a" "$B/fix" "$B/w/r.json" $shim > /dev/null 2>&1)
+        (cd fix && perl -e 'alarm shift; exec @ARGV' 120 python3 dapspike.py run "$a" "$B/fix" "$B/w/r.json" $shim > /dev/null 2>&1)
       else
-        (cd fix && timeout 120 /usr/bin/sandbox-exec -f "$B/$mode.sb" "$B/venv/bin/python" dapspike.py run "$a" "$B/fix" "$B/w/r.json" $shim > /dev/null 2>"$B/w/se.txt")
+        (cd fix && perl -e 'alarm shift; exec @ARGV' 120 /usr/bin/sandbox-exec -f "$B/$mode.sb" "$B/venv/bin/python" dapspike.py run "$a" "$B/fix" "$B/w/r.json" $shim > /dev/null 2>"$B/w/se.txt")
       fi
       echo "dbgspike-result $a${shim:+-shim} $mode rc=$? $(summ "$B/w/r.json") $(head -c 300 "$B/w/se.txt" 2>/dev/null)"
       rm -f "$B/w/se.txt"
