@@ -4,7 +4,7 @@
 //! Selections live apart from the model, by id: a resync, a reset or a dropped model leaves them, and the next model
 //! re-resolves them.  An instance in a group shares the group's selection (the map and its lenses).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::model::Model;
 use crate::names::Id;
@@ -13,6 +13,9 @@ use crate::wire::Scheme;
 
 /// The name of a tree's visible list, which each instance computes (`View::visible`).
 pub const VISIBLE: &str = "visible";
+
+/// How many moves each of an instance's history rings keeps (the reserved links `back` and `forward`).
+pub const HISTORY: usize = 50;
 
 /// What an apply answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,7 +59,25 @@ pub struct Inst {
     pub last: HashMap<Id, u8>,
     pub(crate) chain: Option<(u64, Id, HashSet<Id>)>,
     pub(crate) matches: Option<(u64, String, HashSet<Id>)>,
+    /// Where the selection was before each move, newest last, and the moves `back` undid, newest last: each at most
+    /// [`HISTORY`].
+    pub back: VecDeque<Id>,
+    pub forward: VecDeque<Id>,
+    /// The last move was a step (an arrow, a walk, type-to-navigate): the next step continues its run.
+    stepping: bool,
 }
+
+/// What a move is to the history: a jump (a link that is no direction, a select) is one move; a run of steps (the
+/// directions, a walk, type-to-navigate) is one move too, recorded where the run began.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Move {
+    Jump,
+    Step,
+}
+
+/// The links the history answers, before any of the model's.
+const BACK: &str = "back";
+const FORWARD: &str = "forward";
 
 /// A step's answer: the selection, and a direction when a windowed list needs its next window first.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,6 +116,9 @@ impl View {
                 last: HashMap::new(),
                 chain: None,
                 matches: None,
+                back: VecDeque::new(),
+                forward: VecDeque::new(),
+                stepping: false,
             },
         );
     }
@@ -184,6 +208,64 @@ impl View {
         self.queue.lose();
     }
 
+    // ---- the history ----
+
+    /// After a move of `h` (`how`) from `before`: a jump, or the first step of a run, records `before` and drops what
+    /// was ahead.  No move, or none from a selection, records nothing.
+    fn record(&mut self, h: u32, before: Option<Id>, how: Move) {
+        let after = self.selection(h);
+        let Some(i) = self.insts.get_mut(&h) else {
+            return;
+        };
+        let Some(before) = before.filter(|b| after.as_ref() != Some(b)) else {
+            return;
+        };
+        if how == Move::Jump || !i.stepping {
+            i.back.push_back(before);
+            if i.back.len() > HISTORY {
+                i.back.pop_front();
+            }
+            i.forward.clear();
+        }
+        i.stepping = how == Move::Step;
+    }
+
+    /// `back` (`fwd` false) or `forward`: the newest entry of that ring the model still holds and that is not the
+    /// selection; the selection goes to the other ring.  None left: the selection stays.
+    fn travel(&mut self, h: u32, fwd: bool) -> Option<Id> {
+        let cur = self.selection(h);
+        let i = self.insts.get_mut(&h)?;
+        i.stepping = false;
+        let m = self.model.as_ref()?;
+        let (from, to) = if fwd {
+            (&mut i.forward, &mut i.back)
+        } else {
+            (&mut i.back, &mut i.forward)
+        };
+        let target = loop {
+            match from.pop_back() {
+                None => return cur,
+                Some(t) if m.nodes.contains_key(&t) && Some(&t) != cur.as_ref() => break t,
+                Some(_) => {}
+            }
+        };
+        if let Some(c) = cur {
+            to.push_back(c);
+            if to.len() > HISTORY {
+                to.pop_front();
+            }
+        }
+        self.put(h, Some(target))
+    }
+
+    /// Whether `link` names a direction (`up`, `down`, `left`, `right`, any with `:KIND`): a step, not a jump.
+    fn direction(link: &str) -> bool {
+        matches!(
+            link.split_once(':').map_or(link, |(d, _)| d),
+            "up" | "down" | "left" | "right"
+        )
+    }
+
     // ---- verbs ----
 
     /// Follow `link` from `h`'s selection: in a list form `up` and `down` step along the form's list; otherwise the
@@ -197,8 +279,20 @@ impl View {
     /// with `:KIND`; `left` and `right` too in the links scheme) and the primary list is a window that goes on that
     /// way: the next row may be in the next window.
     pub fn follow_step(&mut self, h: u32, link: &str) -> Step {
+        if link == BACK || link == FORWARD {
+            return Step {
+                id: self.travel(h, link == FORWARD),
+                more: None,
+            };
+        }
         let cur = self.selection(h);
         let id = self.follow_inner(h, link);
+        let how = if Self::direction(link) {
+            Move::Step
+        } else {
+            Move::Jump
+        };
+        self.record(h, cur.clone(), how);
         let more = match (&cur, &id) {
             (Some(c), Some(i)) if c == i => self.model.as_ref().and_then(|m| {
                 let dir = link.split_once(':').map_or(link, |(d, _)| d);
@@ -263,7 +357,10 @@ impl View {
     /// Step `step` entries along `list` from `h`'s selection, wrapping (a windowed list stops at its window's edge and
     /// answers `more`).  From no selection or one not in the list: the first entry (the last for a negative step).
     pub fn walk(&mut self, h: u32, list: &str, step: i64) -> Step {
-        self.walk_inner(h, list, step, true)
+        let before = self.selection(h);
+        let s = self.walk_inner(h, list, step, true);
+        self.record(h, before, Move::Step);
+        s
     }
 
     fn walk_inner(&mut self, h: u32, list: &str, step: i64, wrap: bool) -> Step {
@@ -332,6 +429,13 @@ impl View {
     /// Jump to position `n` (0-based, in the whole list) of `list`.  Outside a window: `more` toward it, no move;
     /// outside the list: nil, no move.
     pub fn walk_to(&mut self, h: u32, list: &str, n: usize) -> Step {
+        let before = self.selection(h);
+        let s = self.walk_to_inner(h, list, n);
+        self.record(h, before, Move::Step);
+        s
+    }
+
+    fn walk_to_inner(&mut self, h: u32, list: &str, n: usize) -> Step {
         let cur = self.selection(h);
         let Some(l) = self.model.as_ref().and_then(|m| m.lists.get(list)) else {
             return Step {
@@ -481,6 +585,13 @@ impl View {
     /// (case folded), searching from the one after the selection, wrapping; a longer `text` (the user typed on) from
     /// the selection itself.  No match leaves the selection.  The answer is the selection.
     pub fn prefix(&mut self, h: u32, text: &str) -> Option<Id> {
+        let before = self.selection(h);
+        let id = self.prefix_inner(h, text);
+        self.record(h, before, Move::Step);
+        id
+    }
+
+    fn prefix_inner(&mut self, h: u32, text: &str) -> Option<Id> {
         let m = self.model.as_ref()?;
         let cur = self.selection(h);
         let parent = cur
@@ -519,6 +630,13 @@ impl View {
 
     /// Select `id` (nil clears); an id the model doesn't hold leaves the selection.  The answer is the selection.
     pub fn select(&mut self, h: u32, id: Option<&str>) -> Option<Id> {
+        let before = self.selection(h);
+        let to = self.select_inner(h, id);
+        self.record(h, before, Move::Jump);
+        to
+    }
+
+    fn select_inner(&mut self, h: u32, id: Option<&str>) -> Option<Id> {
         match id {
             None => {
                 self.insts.get(&h)?;
