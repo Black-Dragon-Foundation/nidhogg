@@ -10,6 +10,7 @@
 (require 'ert)
 (require 'json)
 (require 'seq)
+(require 'cl-lib)
 
 (defun nhwl-gui--live-p ()
   "Non-nil on Nidhogg's own Wayland shell."
@@ -3020,5 +3021,108 @@ re-opened for a scale never resizes the window the compositor sized."
     (should (<= (abs (- (nth 0 (nth 0 mid)) (nth 0 before))) 1))
     (should (<= (abs (- (nth 1 (nth 0 mid)) (nth 1 before))) 1))
     (should (= (nth 1 mid) (nth 2 mid)))))
+
+;; The frame rows that came over from the pgtk runner: what any shell must do on any compositor.
+
+(defun nhwl-gui--socket-owner (path)
+  "The process name (`/proc/PID/comm') of the process listening on the Unix socket PATH, or nil."
+  (let (inode)
+    (with-temp-buffer
+      (insert-file-contents "/proc/net/unix")
+      (goto-char (point-min))
+      (when (re-search-forward (concat " \\([0-9]+\\) " (regexp-quote path) "$") nil t)
+        (setq inode (match-string 1))))
+    (when inode
+      (cl-loop for pid in (directory-files "/proc" nil "\\`[0-9]+\\'")
+               for found = (ignore-errors
+                             (cl-loop for fd in (directory-files (format "/proc/%s/fd" pid) t "[0-9]")
+                                      thereis (equal (file-symlink-p fd) (format "socket:[%s]" inode))))
+               when found
+               return (string-trim (with-temp-buffer
+                                     (insert-file-contents (format "/proc/%s/comm" pid))
+                                     (buffer-string)))))))
+
+(ert-deftest nhwl-gui/compositor-is-the-asked-one ()
+  "The process listening on WAYLAND_DISPLAY's socket is the compositor gui.sh was asked for."
+  :tags '(gnome-smoke)
+  (let* ((asked (getenv "GLITNIR_GUI_COMPOSITOR"))
+         (sock (expand-file-name (getenv "WAYLAND_DISPLAY") (getenv "XDG_RUNTIME_DIR"))))
+    (skip-unless (and (nhwl-gui--live-p) asked))
+    (should (equal (nhwl-gui--socket-owner sock)
+                   (pcase asked ("sway" "sway") ("mutter" "mutter") ("kwin" "kwin_wayland") ("labwc" "labwc") ("recorder" "nh-recorder"))))))
+
+(ert-deftest nhwl-gui/show-then-hide-stays-hidden ()
+  "A child shown and at once hidden stays hidden once the compositor has answered."
+  :tags '(gnome-smoke)
+  (skip-unless (nhwl-gui--live-p))
+  (let ((child (make-frame `((parent-frame . ,(selected-frame)) (width . 20) (height . 5)
+                             (visibility . nil)))))
+    (unwind-protect
+        (progn
+          (make-frame-visible child)
+          (make-frame-invisible child)
+          (gui-runner-wait-settled)
+          (should-not (frame-visible-p child)))
+      (delete-frame child))))
+
+(ert-deftest nhwl-gui/hiding-a-root-frame-still-works ()
+  (skip-unless (nhwl-gui--live-p))
+  (let ((root (make-frame '((width . 40) (height . 10) (visibility . t)))))
+    (unwind-protect
+        (progn
+          (redisplay t)
+          (gui-runner-wait-settled)
+          (make-frame-invisible root)
+          (gui-runner-wait-settled)
+          (should-not (frame-visible-p root)))
+      (delete-frame root))))
+
+(ert-deftest nhwl-gui/windowed-frame-maps-on-gnome ()
+  "A 600x400 frame that is not fullscreen maps and is visible on mutter (it checks no decoration)."
+  :tags '(gnome-smoke)
+  (skip-unless (and (nhwl-gui--live-p) (equal (getenv "GLITNIR_GUI_COMPOSITOR") "mutter")))
+  (let ((f (make-frame '((width . 75) (height . 25) (visibility . t) (fullscreen . nil)))))
+    (unwind-protect
+        (progn
+          (redisplay t)
+          (gui-runner-wait-settled)
+          (should (frame-live-p f))
+          (should (frame-visible-p f))
+          (should (> (frame-pixel-width f) 0))
+          (should (> (frame-pixel-height f) 0))
+          (should-not (frame-parameter f 'fullscreen)))
+      (when (frame-live-p f) (delete-frame f t)))))
+
+;; The Wayland display reaches emacsclient and subprocesses the Wayland way
+
+(ert-deftest nhwl-gui/subprocess-display-is-never-the-wayland-one ()
+  "A subprocess's DISPLAY is never the frame's `display' (a Wayland display name): it is the initial environment's."
+  (skip-unless (nhwl-gui--live-p))
+  (let ((shown (with-temp-buffer
+                 (call-process "sh" nil t nil "-c" "printf %s \"${DISPLAY-unset}\"")
+                 (buffer-string))))
+    (should-not (equal shown (frame-parameter nil 'display)))
+    (should (equal shown (or (getenv-internal "DISPLAY" initial-environment) "unset")))))
+
+(ert-deftest nhwl-gui/emacsclient-opens-a-frame-on-the-wayland-display ()
+  "emacsclient -c with WAYLAND_DISPLAY set and no DISPLAY opens a frame of this shell on the same display."
+  (skip-unless (nhwl-gui--live-p))
+  (require 'server)
+  (let* ((server-name (format "nhwl-gui-%d" (emacs-pid)))
+         (client (expand-file-name "emacsclient" invocation-directory))
+         (before (frame-list))
+         (process-environment (cons "DISPLAY" process-environment))
+         new)
+    (server-start)
+    (unwind-protect
+        (progn
+          (make-process :name "nhwl-client" :command (list client "-s" server-name "-c" "-n")
+                        :buffer nil :noquery t)
+          (setq new (gui-runner-wait (lambda () (seq-find (lambda (f) (not (memq f before))) (frame-list))) 20))
+          (should new)
+          (should (eq (framep new) 'pgtk))
+          (should (eq (frame-terminal new) (frame-terminal (selected-frame)))))
+      (when (frame-live-p new) (delete-frame new t))
+      (server-force-delete))))
 
 (provide 'nhwl-gui-tests)

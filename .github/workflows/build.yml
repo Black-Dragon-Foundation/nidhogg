@@ -30,6 +30,20 @@ on:
       lanes:
         description: "Narrowed: the GUI lanes to run, space-separated (empty: every lane)"
         default: ""
+      # The macOS job's fast rerun of the macOS GUI rows (README.md, "Narrowed runs"): no build, the tarball of an earlier
+      # run (its tarball-macos artifact), and this checkout's test files on it.  A change to the app is not in it.
+      ns_app_run:
+        description: "macOS: the run id whose tarball-macos the macOS GUI rows run on, instead of a build (empty: build)"
+        default: ""
+      # The macOS GUI lane (nidhogg/test/nhmac-gui.sh): `checks` is an ERT selector over the rows of nhmac-gui-tests.el
+      # (alternation as `a|b`), `none` (build, no rows) or `build-only` (configure and build, no lane); files and pair
+      # are for the lane.
+      files:
+        description: "macOS: the lane's test files, a glob in test/src/nidhogg-tests (empty: nhmac-gui-tests.el)"
+        default: ""
+      pair:
+        description: "macOS: both builds in one job, ABAB (needs the Naglfar build)"
+        default: ""
 
 # packages: the prebuilt CI images (the images job)
 permissions:
@@ -98,19 +112,35 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           GATE: Nidhogg gate
           REQUEST: ${{ inputs.jobs || (inputs.scope == 'macos' && 'macos drgnx' || '') }}
-          SELECTOR: ${{ inputs.checks }}${{ inputs.lanes && ' lanes:' || '' }}${{ inputs.lanes }}
+          SELECTOR: ${{ inputs.checks }}${{ inputs.lanes && ' lanes:' || '' }}${{ inputs.lanes }}${{ inputs.ns_app_run && ' macOS app of run ' || '' }}${{ inputs.ns_app_run }}
         run: bash nidhogg/ci/changes.sh nidhogg/ci/paths.txt | tee -a "$GITHUB_OUTPUT"
-      # drgnx's tiers on the tarballs this run builds, and the GUI lanes (every lane of native-gui.sh with a floor, or
-      # the narrowed run's)
+      # drgnx's tiers on the tarballs this run builds (scope macos: the macOS tier; none built: every tier), and the GUI
+      # lanes (every lane of native-gui.sh with a floor, or the narrowed run's).  A row-only run (a `checks` selector of
+      # Nidhogg rows) leaves out drgnx's macOS suite, which tests drgnx, not the rows, and holds one of the plan's five
+      # macOS runners: it says so here, and `none` (no tier left) skips the drgnx job.  A full run and a tag run it.
       - id: t
         env:
           LINUX: ${{ steps.c.outputs.run_linux }}
           MACOS: ${{ steps.c.outputs.run_macos }}
+          SCOPE: ${{ inputs.scope }}
+          CHECKS: ${{ inputs.checks }}
           LANES: ${{ inputs.lanes }}
         run: |
           t=""
           [ "$LINUX" = false ] || t="unit no-lisp-writes ui"
           [ "$MACOS" = false ] || t="${t:+$t }macos"
+          [ "$SCOPE" != macos ] || t=macos
+          [ -n "$t" ] || t="unit no-lisp-writes ui macos"
+          case $CHECKS in
+            ''|none|build-only) ;;
+            *) case " $t " in
+                 *" macos "*)
+                   t=$(printf ' %s ' "$t" | sed 's/ macos / /; s/^ *//; s/ *$//')
+                   echo "drgnx macOS suite: skipped, row-only run (checks: $CHECKS)"
+                   echo "::notice title=drgnx macOS suite::skipped, row-only run (checks: $CHECKS)" ;;
+               esac
+               [ -n "$t" ] || t=none ;;
+          esac
           echo "tiers=$t" | tee -a "$GITHUB_OUTPUT"
           all=$(sed -nE 's/^  ([a-z0-9-]+)\) +min=[1-9][0-9]*;.*/\1/p' nidhogg/test/native-gui.sh)
           want=$all
@@ -163,6 +193,14 @@ jobs:
             ${{ runner.temp }}/glitnir-cargo/registry/index
             ${{ runner.temp }}/glitnir-cargo/registry/cache
           key: glitnir-crates-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}
+      # the pinned cargo-deny release tarball, keyed on its version and sha256 (checked after the restore as after a
+      # download), so a release download hiccup does not turn this job red once an entry is saved
+      - name: cargo-deny's release (pinned)
+        id: cdeny
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cd.tgz
+          key: cargo-deny-0.20.2-9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
       # Glitnir (the compositor): the crate's checks (fmt, clippy, tests, licences; the crates are fetched, locked) and the advisories.
       - name: Glitnir's checks
         env:
@@ -170,12 +208,20 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y libpixman-1-dev
           d="cargo-deny-0.20.2-x86_64-unknown-linux-musl"
-          curl -sSfL -o "$RUNNER_TEMP/cd.tgz" "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$d.tar.gz"
+          [ -s "$RUNNER_TEMP/cd.tgz" ] ||
+            curl -sSfL -o "$RUNNER_TEMP/cd.tgz" "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/$d.tar.gz"
           echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $RUNNER_TEMP/cd.tgz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/bin" && tar -xzf "$RUNNER_TEMP/cd.tgz" -C "$RUNNER_TEMP/bin" --strip-components=1 "$d/cargo-deny"
           export PATH="$RUNNER_TEMP/bin:$PATH"
           bash nidhogg/glitnir/check.sh
           cd nidhogg/glitnir && cargo deny check advisories
+      # only after the checks passed: the tarball's sha256 was checked, so no bad download is kept
+      - name: Save cargo-deny's release
+        if: ${{ success() && env.CACHE_SAVE == 'true' && steps.cdeny.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cd.tgz
+          key: cargo-deny-0.20.2-9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
       - name: Save Glitnir's crates
         if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.gcrates.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -479,6 +525,12 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
     runs-on: xcode-27
     timeout-minutes: 180
+    # actions: read for an earlier run's artifact (ns_app_run)
+    permissions:
+      contents: read
+      actions: read
+    env:
+      BUILD_APP: ${{ inputs.ns_app_run == '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -490,21 +542,37 @@ jobs:
         run: |
           echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
           echo "abi=$(bash nidhogg/ci/lisp-key.sh --abi)" >> "$GITHUB_OUTPUT"
+          echo "elc=$(bash nidhogg/ci/lisp-key.sh --elc)" >> "$GITHUB_OUTPUT"
+      # ns_app_run: that run's tarball, and no build (BUILD_APP false skips every step of the build)
+      - name: The tarball of run ns_app_run
+        if: ${{ env.BUILD_APP != 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          # a pattern, not a name: the workflow names the tarball artifacts only where they are uploaded
+          pattern: tarball-macos
+          merge-multiple: true
+          path: dist
+          run-id: ${{ inputs.ns_app_run }}
+          github-token: ${{ github.token }}
       - name: Built tarball (same tree, same build.sh)
         id: tb
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.BUILD_APP == 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: dist
           key: tarball-macos-${{ runner.arch }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: The cached tarball is intact
-        if: ${{ steps.tb.outputs.cache-hit == 'true' }}
-        run: shasum -a 256 -c dist/*.sha256
+        if: ${{ steps.tb.outputs.cache-hit == 'true' || env.BUILD_APP != 'true' }}
+        run: cd dist && shasum -a 256 -c -- *.sha256
+      # a tarball not built here links Homebrew's libraries, which only the build's step below would install
+      - name: Run-time dependencies (Homebrew)
+        if: ${{ steps.tb.outputs.cache-hit == 'true' || env.BUILD_APP != 'true' }}
+        run: sed 's/#.*//' nidhogg/deps/macos.runtime | xargs brew install
       # Homebrew's packages, downloaded each run (a 775 MB cache of the bottles saved under a minute); Rust from the
       # image's rustup instead of Homebrew's when the image has it (Homebrew's otherwise)
       - name: Build dependencies (Homebrew; Rust by rustup)
         id: brew
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         run: |
           if command -v rustup >/dev/null; then
             sed 's/#.*//' nidhogg/deps/macos.build | grep -vx 'rust' | xargs brew install
@@ -528,7 +596,7 @@ jobs:
             ${{ runner.temp }}/cargo-home/registry/cache
           key: glitnir-crates-macos-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}
       - name: Glitnir's checks
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo-home
         run: bash nidhogg/glitnir/check.sh
@@ -544,24 +612,54 @@ jobs:
       # (the image's version too: the C compiler is Xcode's clang, which ccache checks by its -v output)
       - name: Toolchain versions
         id: tc
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         run: |
           echo "v=$(brew list --versions gcc libgccjit | tr ' \n' '--')" >> "$GITHUB_OUTPUT"
           echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
           # what configure's checks find: every installed build package's version, and the image (Xcode)
           echo "deps=$(sed 's/#.*//' nidhogg/deps/macos.build | { xargs brew list --versions 2>/dev/null || true; } | { cat; echo "$ImageOS-$ImageVersion"; } | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "rust=$(rustc -V | tr ' ()' '-__')" >> "$GITHUB_OUTPUT"
-      # keyed as the Linux jobs' (--abi; the guard after make), never restored for nidhogg-31 or a tag
-      - name: Compiled Lisp (same Lisp side and ABI)
+      # Native compilation: nidhogg-31, tags, pull requests and by-hand runs on other branches build the release way
+      # (every Lisp file compiled ahead of time, 1,600 .eln files, the better part of 20 minutes); a scratch/* dispatch,
+      # which exists to run the rows, compiles only the preloaded Lisp natively and leaves the rest byte-compiled
+      # (build.sh --native-preloaded: no JIT in the image either, so no compile starts under a timing row).  The .eln
+      # entry is neither restored nor saved there, and the byte-compiled entry below is taken from a full build's.
+      - name: Native-compilation mode
+        id: mode
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
+        env:
+          PRELOADED: ${{ startsWith(github.ref, 'refs/heads/scratch/') }}
+        run: |
+          echo "preloaded=$PRELOADED" >> "$GITHUB_OUTPUT"
+          if [ "$PRELOADED" = true ]; then
+            echo "::notice::native compilation: preloaded Lisp only (scratch run, build.sh --native-preloaded); the rest is byte code and JIT is off"
+          else
+            echo "::notice::native compilation: all Lisp ahead of time (full AOT)"
+          fi
+      # Two entries, as the workers lanes': the byte-compiled part keyed on the Lisp side and the C side's names
+      # (lisp-key.sh --elc), so a change in a C body still finds it, and the .eln files keyed as the Linux jobs' (--abi;
+      # the guard after make).  build.sh takes either only with its own stamp (compiler, architecture, mode, configure
+      # line) and discards .eln files the guard refuses.  Never restored for nidhogg-31 or a tag: a release builds its
+      # Lisp cold (byte code that folds a C function's result keeps the old body's result until the Lisp side changes)
+      - name: Byte-compiled Lisp (same Lisp sources)
         id: lc
-        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' && env.BUILD_APP == 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/lisp-cache
-          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-elc-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Native-compiled Lisp (same Lisp side and ABI)
+        id: ln
+        if: ${{ steps.lc.outcome == 'success' && steps.mode.outputs.preloaded != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache/obj
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-eln-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: ccache (Homebrew)
         id: ccb
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         run: brew install ccache
       - name: ccache (C objects)
         id: cc
@@ -579,30 +677,32 @@ jobs:
       # and on the Cargo.lock files and rustc)
       - name: Configure's checks (same configure inputs, same packages)
         id: cf
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/config-cache
           key: configure-macos-${{ runner.arch }}-${{ steps.tc.outputs.deps }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
       - name: Glitnir's cargo target (same Cargo.lock, same rustc)
         id: ct
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/glitnir-target
           key: glitnir-target-macos-${{ runner.arch }}-${{ steps.tc.outputs.rust }}-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: glitnir-target-macos-${{ runner.arch }}-${{ steps.tc.outputs.rust }}-${{ hashFiles('nidhogg/glitnir/Cargo.lock') }}-
       - name: File times (each file's last commit; what changed since the cargo target, now)
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         run: bash nidhogg/ci/set-mtimes.sh --since "$RUNNER_TEMP/glitnir-target/.nidhogg-source-commit"
       - name: Build
         id: build
-        if: ${{ steps.tb.outputs.cache-hit != 'true' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && env.BUILD_APP == 'true' }}
         env:
           NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache
           NIDHOGG_BUILD_CARGO_TARGET: ${{ runner.temp }}/glitnir-target
           NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
           NIDHOGG_BUILD_CCACHE: ${{ steps.ccb.outcome == 'success' && format('{0}/ccache', runner.temp) || '' }}
+          NIDHOGG_BUILD_NATIVE_PRELOADED: ${{ steps.mode.outputs.preloaded == 'true' && '1' || '' }}
+          NIDHOGG_BUILD_LISP_CACHE_ELC: ${{ steps.mode.outputs.preloaded == 'true' && '1' || '' }}
         run: /bin/bash nidhogg/build.sh --host --stage build --jobs 3 --build-dir "$RUNNER_TEMP/build"
       - name: Save ccache
         if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.cc.outcome == 'success' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
@@ -610,12 +710,20 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-macos-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Save compiled Lisp
+      - name: Save byte-compiled Lisp
         if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/lisp-cache
-          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-elc-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: Save native-compiled Lisp
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && ((steps.ln.outcome == 'success' && steps.ln.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/lisp-cache/obj
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-eln-${{ steps.tree.outputs.abi }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: Save configure's checks
         if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && steps.cf.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -634,6 +742,8 @@ jobs:
       - name: Write the tarball
         id: pack
         if: ${{ steps.build.outcome == 'success' }}
+        env:
+          NIDHOGG_BUILD_NATIVE_PRELOADED: ${{ steps.mode.outputs.preloaded == 'true' && '1' || '' }}
         run: |
           V=$(head -n 1 nidhogg/version)
           /bin/bash nidhogg/build.sh --host --stage pack --jobs 3 --build-dir "$RUNNER_TEMP/build" --out "dist/nidhogg-$V-macos-$(uname -m).tar.xz"
@@ -644,6 +754,7 @@ jobs:
           path: dist
           key: tarball-macos-${{ runner.arch }}-${{ steps.tree.outputs.tree }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: The tarball runs unpacked
+        if: ${{ inputs.checks != 'build-only' }}
         run: bash nidhogg/test/tarball-test.sh dist/*.tar.xz macos
       # the workers batch files of nidhogg/check-subset.txt (or of a narrowed run's targets); a cached tarball has no
       # build tree to check
@@ -654,8 +765,49 @@ jobs:
         run: |
           if [ -n "$CHECKS" ]; then echo "$CHECKS" | tr ' ' '\n'; else cat nidhogg/check-subset.txt; fi | grep 'nidhogg-tests/workers-' > "$RUNNER_TEMP/macos-subset.txt" || true
           [ -s "$RUNNER_TEMP/macos-subset.txt" ] || { echo "no workers files among the checks"; exit 0; }
-          /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          NIDHOGG_BUILD_NATIVE_PRELOADED=${{ steps.mode.outputs.preloaded == 'true' && '1' || '' }} /bin/bash nidhogg/build.sh --host --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
+      # The macOS GUI lane (nidhogg/test/nhmac-gui.sh) on the app of the tarball, on a virtual display at scale 1 and at
+      # scale 2: the rows of test/src/nidhogg-tests/nhmac-gui-tests.el that `checks` selects (empty: every row; `none` and
+      # `build-only`: no rows).  A cached tarball is run as it is.
+      - name: macOS GUI rows (nhmac-gui-tests.el, scales 1 and 2)
+        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        env:
+          CHECKS: ${{ inputs.checks }}
+          FILES: ${{ inputs.files }}
+        run: |
+          sel=${CHECKS//|/\\|}
+          # the NS baseline rows (nhmac-interposer-*, nhmac-ns-*) run with the counting interposer inserted: whenever the
+          # selector (a flat a|b regexp) selects one of them, as `nhmac-' does, or is empty
+          ip=""
+          rows=$(sed -nE 's/^\(ert-deftest (nhmac-(interposer|ns)-[^ ]+).*/\1/p' test/src/nidhogg-tests/nhmac-gui-tests.el)
+          if [ -z "$CHECKS" ] || grep -Eq -- "$CHECKS" <<<"$rows"; then ip=--interpose; fi
+          bash nidhogg/test/nhmac-gui.sh --tarball "$(ls dist/*.tar.xz | head -n 1)" --out "$RUNNER_TEMP/nhmac-gui" $ip ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
+      # The NS rows' output the Naglfar rows compare with (nhmac-ns-font-scaleS.*, the images and menu dumps): the Naglfar
+      # rows job downloads them into its own nhmac-gui directory.  nhmac-ns-refs.txt lists them, so the artifact exists
+      # whenever the rows ran, even for a selector with no dump row.
+      - name: The NS rows' reference dumps (nhmac-ns-*)
+        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/nhmac-gui"
+          (cd "$RUNNER_TEMP/nhmac-gui" && { ls nhmac-ns-* 2>/dev/null || true; } > nhmac-ns-refs.txt && cat nhmac-ns-refs.txt)
+      - name: Upload the NS reference dumps
+        if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' && inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nhmac-ns-refs
+          path: ${{ runner.temp }}/nhmac-gui/nhmac-ns-*
+          retention-days: 1
+          if-no-files-found: error
+      - name: macOS GUI logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nhmac-gui-logs
+          path: ${{ runner.temp }}/nhmac-gui/
+          if-no-files-found: ignore
+      # also after red GUI rows: a later run's ns_app_run reruns them on this tarball
+      - if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarball-macos
           path: dist/
@@ -666,6 +818,213 @@ jobs:
         with:
           name: build-logs-macos
           path: ${{ runner.temp }}/build/*.log
+          if-no-files-found: ignore
+
+  # The Naglfar lane, a job of its own beside "macOS (NS app)": the two share nothing but the tree, so they run at the
+  # same time on two runners (the org's free plan has five macOS slots, README.md "CI and releases").  The tree built
+  # as Nidhogg's own macOS shell (build.sh --naglfar, a dev build in its own build directory; no bundle yet, so the
+  # build tree's src/emacs runs), the glue's and the shell's unit tests with the AppKit backend (the integration tests
+  # drive the Wayland recorder), the glue's boundary check on the Mach-O objects, then the rows.  It builds, so it does
+  # not run for ns_app_run (a rerun of the NS rows on an earlier run's tarball).  Only the paired timing needs the NS
+  # job's tarball, which it waits for.
+  macos-naglfar:
+    name: macOS (Naglfar)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' && inputs.ns_app_run == '' }}
+    runs-on: xcode-27
+    timeout-minutes: 180
+    # actions: read for the NS job's tarball artifact (pair)
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Source tree hash, compiled-Lisp inputs
+        id: tree
+        run: echo "elc=$(bash nidhogg/ci/lisp-key.sh --elc)" >> "$GITHUB_OUTPUT"
+      # Homebrew's packages, downloaded each run (a 775 MB cache of the bottles saved under a minute); Rust from the
+      # image's rustup instead of Homebrew's when the image has it (Homebrew's otherwise)
+      - name: Build dependencies (Homebrew; Rust by rustup)
+        id: brew
+        run: |
+          if command -v rustup >/dev/null; then
+            sed 's/#.*//' nidhogg/deps/macos.build | grep -vx 'rust' | xargs brew install
+            # llvm-tools: nm-check reads the archive with the nm of the LLVM that wrote it (Xcode's may be older)
+            rustup toolchain install stable --profile minimal --component clippy,rustfmt,llvm-tools --no-self-update
+            rustup default stable
+          else
+            sed 's/#.*//' nidhogg/deps/macos.build | xargs brew install
+          fi
+          rustc -V
+      - name: Toolchain versions
+        id: tc
+        run: |
+          echo "v=$(brew list --versions gcc libgccjit | tr ' \n' '--')" >> "$GITHUB_OUTPUT"
+          echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "deps=$(sed 's/#.*//' nidhogg/deps/macos.build | { xargs brew list --versions 2>/dev/null || true; } | { cat; echo "$ImageOS-$ImageVersion"; } | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      # The byte-compiled Lisp is the NS job's entry (the same key, saved by nidhogg-31's NS build): the dumped Lisp is
+      # the same whichever window system it is built for.  build.sh takes it for this build's different stamp
+      # (NIDHOGG_BUILD_LISP_CACHE_ELC: the compiler and architecture must agree, the .eln files are not taken), and
+      # make then finds the .elc current (the restored files are newer than every source).  Not restored for
+      # nidhogg-31 or a tag, as the NS job's.  The .eln files are this build's own: the preloaded ones.
+      - name: Byte-compiled Lisp (the NS job's entry)
+        id: lc
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-elc-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: ccache (Homebrew)
+        id: ccb
+        run: brew install ccache
+      # its own entry: the NS job's objects are compiled with other flags, and the entry is saved after this build
+      - name: ccache (C objects)
+        id: cc
+        if: ${{ steps.ccb.outcome == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-
+            ccache-macos-naglfar-${{ runner.arch }}-
+      # configure's checks, as the NS job's, under a key of their own (this configure line and this shell's checks)
+      - name: Configure's checks (same configure inputs, same packages)
+        id: cf
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/config-cache
+          key: configure-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.deps }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
+      - name: File times (each file's last commit, so the restored Lisp is newer than every source)
+        run: bash nidhogg/ci/set-mtimes.sh
+      - name: Naglfar build
+        id: nbuild
+        if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
+        env:
+          NIDHOGG_BUILD_CCACHE: ${{ steps.ccb.outcome == 'success' && format('{0}/ccache', runner.temp) || '' }}
+          NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache
+          NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
+          NIDHOGG_BUILD_LISP_CACHE_ELC: '1'
+        run: /bin/bash nidhogg/build.sh --host --naglfar --dev --checking --stage build --jobs 3 --build-dir "$RUNNER_TEMP/nbuild"
+      - name: Save configure's checks
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.nbuild.outcome == 'success' && steps.cf.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/config-cache
+          key: configure-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.deps }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
+      - name: Naglfar's Rust unit tests (glue and shell, --features macos)
+        if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
+        run: |
+          (cd nidhogg/shell && cargo test --locked --lib --no-default-features --features macos)
+          (cd nidhogg/glue && cargo test --locked --lib --no-default-features --features macos,test-hooks)
+      - name: Naglfar's boundary check (nm-check)
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' }}
+        run: bash nidhogg/glue/nm-check.sh "$RUNNER_TEMP/nbuild"
+      # What the rows job runs on (nhmac-gui.sh --emacs reads the build tree's obj/src/emacs; the tree is tarred so the
+      # file modes survive the artifact, and extracted at the same path on the other runner): without the object files
+      # and the Rust targets
+      - name: The build tree for the rows (naglfar-build)
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && ((inputs.checks != 'none' && inputs.checks != 'build-only') || inputs.pair != '') }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/naglfar-build"
+          tar -C "$RUNNER_TEMP" --exclude='*.o' --exclude=glitnir-target --exclude=glitnir-cargo-home --exclude='nbuild/*.log' -czf "$RUNNER_TEMP/naglfar-build/nbuild.tar.gz" nbuild
+          ls -l "$RUNNER_TEMP/naglfar-build"
+      - name: Upload the build tree
+        if: ${{ !cancelled() && steps.nbuild.outcome == 'success' && ((inputs.checks != 'none' && inputs.checks != 'build-only') || inputs.pair != '') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: naglfar-build
+          path: ${{ runner.temp }}/naglfar-build/nbuild.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+      - name: Save ccache
+        if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && steps.cc.outcome == 'success' && (steps.nbuild.outcome == 'success' || steps.nbuild.outcome == 'failure') }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-macos-naglfar
+          path: ${{ runner.temp }}/nbuild/*.log
+          if-no-files-found: ignore
+
+  # The Naglfar rows, once both builds are done: they compare Naglfar's text and images with the NS rows' dumps (the
+  # nhmac-ns-* files, the NS job's artifact nhmac-ns-refs) and the paired timing runs both builds, so this job takes the
+  # Naglfar build tree (naglfar-build) and the NS job's output instead of building.  It fails, naming the artifact, when
+  # either job ended without uploading it.
+  macos-naglfar-rows:
+    name: macOS (Naglfar rows)
+    needs: [changes, macos, macos-naglfar]
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' && inputs.ns_app_run == '' && needs.macos-naglfar.result != 'skipped' && ((inputs.checks != 'none' && inputs.checks != 'build-only') || inputs.pair != '') }}
+    runs-on: xcode-27
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      # the libraries the Naglfar emacs links (the build job installed the build packages; these are the run-time ones)
+      - name: Run-time dependencies (Homebrew)
+        run: sed 's/#.*//' nidhogg/deps/macos.runtime | xargs brew install
+      - name: The Naglfar build tree (artifact naglfar-build)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: naglfar-build
+          path: ${{ runner.temp }}/naglfar-build
+      - name: Unpack the build tree
+        run: tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/naglfar-build/nbuild.tar.gz" && test -x "$RUNNER_TEMP/nbuild/obj/src/emacs"
+      - name: The NS rows' reference dumps (artifact nhmac-ns-refs)
+        if: ${{ inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nhmac-ns-refs
+          path: ${{ runner.temp }}/nhmac-gui
+      - name: Naglfar GUI rows (nhmac-gui-tests.el, scales 1 and 2)
+        if: ${{ !cancelled() && inputs.checks != 'none' && inputs.checks != 'build-only' }}
+        env:
+          CHECKS: ${{ inputs.checks }}
+          FILES: ${{ inputs.files }}
+        run: |
+          sel=${CHECKS//|/\\|}
+          # the display on and awake for the whole run (-u wakes it, -d keeps it from idle sleep): the window is
+          # composited, not occluded, as the ring and timing rows need
+          caffeinate -d -i -u bash nidhogg/test/nhmac-gui.sh --emacs "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/naglfar" ${sel:+--select "$sel"} ${FILES:+--files "$FILES"}
+      - name: The NS tarball for the paired timing (artifact tarball-macos)
+        if: ${{ !cancelled() && inputs.pair != '' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tarball-macos
+          path: dist
+      # Paired timing (`pair`): the NS build of the tarball and Naglfar run each timed row in turn, ABAB
+      # (nidhogg/test/nhmac-pair.sh): typing, and typing under a blurred child; red when Naglfar is slower in either.
+      - name: Naglfar paired timing (pair)
+        if: ${{ !cancelled() && inputs.pair != '' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/ns-app" && tar -C "$RUNNER_TEMP/ns-app" -xJf "$(ls dist/*.tar.xz | head -n 1)"
+          ns="$(echo "$RUNNER_TEMP"/ns-app/nidhogg-*)/Nidhogg.app/Contents/MacOS/Emacs"
+          rc=0
+          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --out "$RUNNER_TEMP/nhmac-gui/pair" || rc=1
+          caffeinate -d -i -u bash nidhogg/test/nhmac-pair.sh --ns "$ns" --naglfar "$RUNNER_TEMP/nbuild/obj/src/emacs" --row nhmac-blur-pair --out "$RUNNER_TEMP/nhmac-gui/pair-blur" || rc=1
+          exit $rc
+      - name: macOS GUI logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nhmac-gui-logs-naglfar
+          path: ${{ runner.temp }}/nhmac-gui/
           if-no-files-found: ignore
 
   # drgnx's Emacs-side tiers on the tarballs this run built, through drgnx's own definition of them
@@ -709,11 +1068,11 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
   # The tiers are those whose tarball this run builds (the changes job's tiers: a run that builds only on macOS runs
-  # only the macOS tier).
+  # only the macOS tier, a row-only run none of drgnx's macOS suite).
   drgnx:
     name: drgnx tiers
     needs: [changes, pin, linux, macos]
-    if: ${{ !cancelled() && needs.changes.outputs.drgnx != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.drgnx != 'false' && needs.changes.outputs.tiers != 'none' }}
     permissions:
       contents: read
       packages: read
@@ -721,7 +1080,7 @@ jobs:
     with:
       drgnx_ref: ${{ inputs.drgnx_ref || needs.pin.outputs.ref }}
       nidhogg: artifact
-      tiers: ${{ inputs.scope == 'macos' && 'macos' || needs.changes.outputs.tiers || 'unit no-lisp-writes ui macos' }}
+      tiers: ${{ needs.changes.outputs.tiers }}
 
   # The native Wayland shell's own checks, both in release's needs and both run for a tag.  native-crates: the recorder,
   # then the crates' checks, which need it: their T1 tests run against it, and nothing else in this workflow runs them
@@ -1283,7 +1642,7 @@ jobs:
   gate:
     name: ${{ needs.changes.outputs.partial == 'true' && 'Nidhogg gate (partial)' || 'Nidhogg gate' }}
     if: always()
-    needs: [changes, tree, vendor, fast-forward, linux, compile-noglitnir, macos, pin, drgnx, native-crates, native-gui, workers-harness, workers-asan, workers-chaos, workers-pkg, workers-pkg-compare]
+    needs: [changes, tree, vendor, fast-forward, linux, compile-noglitnir, macos, macos-naglfar, macos-naglfar-rows, pin, drgnx, native-crates, native-gui, workers-harness, workers-asan, workers-chaos, workers-pkg, workers-pkg-compare]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1294,10 +1653,21 @@ jobs:
           TAG: ${{ github.ref_type == 'tag' }}
           PR: ${{ github.event_name == 'pull_request' }}
           PARTIAL: ${{ needs.changes.outputs.partial }}
+          TIERS: ${{ needs.changes.outputs.tiers }}
+          NS_APP_RUN: ${{ inputs.ns_app_run }}
+          CHECKS: ${{ inputs.checks }}
+          PAIR: ${{ inputs.pair }}
         run: |
           allow=" $SKIP "
+          # a row-only run with no drgnx tier left (the changes job said so)
+          [ "$TIERS" != none ] || allow="$allow drgnx "
           [ "$TAG" != true ] || allow="$allow compile-noglitnir workers-harness workers-asan workers-chaos workers-pkg workers-pkg-compare "
           [ "$PR" = true ] || allow="$allow fast-forward "
+          # the Naglfar job follows the macOS job's filter, and does not run for a rerun of the NS rows (ns_app_run)
+          case "$allow" in *" macos "*) allow="$allow macos-naglfar macos-naglfar-rows " ;; esac
+          [ -z "$NS_APP_RUN" ] || allow="$allow macos-naglfar macos-naglfar-rows "
+          # no rows asked for (none, build-only) and no paired timing: the rows job has nothing to do
+          case "$CHECKS" in none|build-only) [ -n "$PAIR" ] || allow="$allow macos-naglfar-rows " ;; esac
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
           [ "$PARTIAL" != true ] || echo "::notice::a narrowed run: its gate stands only for the jobs it ran"
           jq -e --arg allow "$allow" \

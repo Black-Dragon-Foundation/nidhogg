@@ -592,6 +592,8 @@ dnl Nidhogg: Glitnir (the compositor), a Rust static library (nidhogg/glitnir)
 OPTION_DEFAULT_OFF([glitnir],[build Glitnir (the compositor, Rust); needs cargo and rustc 1.93 or newer])
 dnl Nidhogg: the native Wayland shell (nidhogg/shell, Rust, with Glitnir inside) and the C glue src/nhwl*.c
 OPTION_DEFAULT_OFF([nidhogg-wayland],[use Nidhogg's own Wayland shell (no GTK); implies --with-glitnir; Linux only])
+dnl Nidhogg: the native macOS shell (Naglfar: nidhogg/shell's AppKit backend, Rust) over the same shared C
+OPTION_DEFAULT_OFF([nidhogg-macos],[use Nidhogg's own macOS shell (AppKit, Rust; no NS port); implies --with-glitnir; macOS only])
 OPTION_DEFAULT_ON([xml2],[don't compile with XML parsing support])
 OPTION_DEFAULT_OFF([imagemagick],[compile with ImageMagick image support])
 OPTION_DEFAULT_ON([native-image-api], [don't use native image APIs (GDI+ on Windows)])
@@ -2664,6 +2666,17 @@ if test "${with_nidhogg_wayland}" = yes; then
   with_glitnir=yes
   with_ns=no
 fi
+dnl Nidhogg: --with-nidhogg-macos is the macOS window system, the same way: it replaces the NS port.
+if test "${with_nidhogg_macos}" = yes; then
+  test "${with_x}" != yes && test "${with_ns}" != yes && test "${with_nidhogg_wayland}" != yes ||
+    AC_MSG_ERROR([--with-nidhogg-macos cannot be combined with --with-x, --with-ns or --with-nidhogg-wayland])
+  case "${host_os}" in
+    darwin*) ;;
+    *) AC_MSG_ERROR([--with-nidhogg-macos is macOS only]) ;;
+  esac
+  with_glitnir=yes
+  with_ns=no
+fi
 
 ## We leave window_system equal to none if
 ## we end up building without one.  Any new window system should
@@ -2774,6 +2787,9 @@ fi
 
 if test "${with_nidhogg_wayland}" = "yes"; then
   window_system=nhwl
+fi
+if test "${with_nidhogg_macos}" = "yes"; then
+  window_system=nhmac
 fi
 
 LD_SWITCH_X_SITE_RPATH=
@@ -3230,6 +3246,7 @@ HAVE_X11=no
 USE_X_TOOLKIT=none
 HAVE_PGTK=no
 HAVE_NHWL=no
+HAVE_NHMAC=no
 
 case "${window_system}" in
   x11 )
@@ -3273,7 +3290,22 @@ dnl use the toolkit if we have gtk, or X11R5 or newer.
     term_header=nhwlterm.h
     USE_X_TOOLKIT=none
     HAVE_NHWL=yes
-    AC_DEFINE([HAVE_NHWL], [1], [Define to 1 if you have Nidhogg's own Wayland shell.])
+    AC_DEFINE([HAVE_NHWL], [1], [Define to 1 if you have one of Nidhogg's own shells (their shared C).])
+    AC_DEFINE([NHWL_WAYLAND], [1], [Define to 1 if Nidhogg's own shell is the Wayland one.])
+  ;;
+  nhmac )
+    dnl The shared C of nhwl*.c, with the AppKit backend: no Wayland, Cairo, fontconfig, FreeType, HarfBuzz or
+    dnl image libraries (Core Text draws, ImageIO decodes); the menu bar is the system's, and a daemon re-execs.
+    term_header=nhwlterm.h
+    USE_X_TOOLKIT=none
+    HAVE_NHWL=yes
+    HAVE_NHMAC=yes
+    AC_DEFINE([HAVE_NHWL], [1], [Define to 1 if you have one of Nidhogg's own shells (their shared C).])
+    AC_DEFINE([HAVE_NHMAC], [1], [Define to 1 if Nidhogg's own shell is the macOS one.])
+    AC_DEFINE([DAEMON_MUST_EXEC], [1], [Define to 1 if a daemon must exec itself after forking.])
+    test "${with_native_image_api}" != yes || {
+      AC_DEFINE([HAVE_NATIVE_IMAGE_API], [1], [Define to use native OS APIs for images.])
+      NATIVE_IMAGE_API="yes (nhmac)"; }
   ;;
   haiku )
     term_header=haikuterm.h
@@ -3285,6 +3317,7 @@ esac
 
 AC_SUBST([HAVE_PGTK])
 AC_SUBST([HAVE_NHWL])
+AC_SUBST([HAVE_NHMAC])
 
 if test "$window_system" = none && test "X$with_x" != "Xno"; then
    AC_CHECK_PROG([HAVE_XSERVER], [X], [true], [false])
@@ -3669,7 +3702,7 @@ if test "${with_webp}" != "no"; then
    if test "${HAVE_X11}" = "yes" || test "${opsys}" = "mingw32" \
    || test "${HAVE_W32}" = "yes" || test "${HAVE_NS}" = "yes" \
    || test "${HAVE_BE_APP}" = "yes" || test "${HAVE_PGTK}" = "yes" \
-   || test "${HAVE_NHWL}" = "yes" \
+   || test "${window_system}" = "nhwl" \
    || test "${REALLY_ANDROID}" = "yes"; then
       WEBP_REQUIRED=0.6.0
       # Definitions from webp/decode.h are in libwebp, and those from
@@ -4021,12 +4054,14 @@ if test "${with_glitnir}" = yes; then
   dnl glitnir_* symbol; two Rust static libraries in one binary would collide on std's symbols).  GLITNIR_CRATE_DEPS
   dnl lists the crates whose sources rebuild it.
   if test "$HAVE_NHWL" = yes; then
+    if test "$window_system" = nhwl; then
     dnl Debian 13's, the oldest we build on.  The binary imports nothing newer than xkbcommon's V_1.0.0 symbols, and no
     dnl libwayland call of the last several releases; the floors say what has been run, not what links.
     EMACS_CHECK_MODULES([NHWL_WAYLAND], [wayland-client >= 1.23])
     EMACS_CHECK_MODULES([NHWL_XKBCOMMON], [xkbcommon >= 1.7])
     test "$HAVE_NHWL_WAYLAND" = yes && test "$HAVE_NHWL_XKBCOMMON" = yes ||
       AC_MSG_ERROR([--with-nidhogg-wayland needs wayland-client >= 1.23 and xkbcommon >= 1.7 (packages: nidhogg/deps/*.build)])
+    fi
     glitnir_lib=libnhglue.a
     nhwl_shell_dir=`cd "$srcdir/nidhogg/shell" && pwd` ||
       AC_MSG_ERROR([nidhogg/shell is missing])
@@ -4035,6 +4070,12 @@ if test "${with_glitnir}" = yes; then
     GLITNIR_CRATE_DEPS="$GLITNIR_SRCDIR $nhwl_shell_dir `cd "$srcdir/nidhogg/glitnir" && pwd` $sja_dir"
     GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include -I$sja_dir/include"
     NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o glitnir-decor.o"
+    dnl macOS: the glue with the AppKit backend instead of the Wayland one (its frameworks come back in
+    dnl native-static-libs); Glitnir's chrome is Core Animation layers, not Cairo tiles
+    if test "$HAVE_NHMAC" = yes; then
+      GLITNIR_CARGO_FLAGS="--no-default-features --features macos"
+      NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o nhmacterm.o nhmacdraw.o nhmacfont.o"
+    fi
   fi
   GLITNIR_LIBNAME=$glitnir_lib
   glitnir_home=`pwd`/src/glitnir-cargo-home
@@ -4043,7 +4084,7 @@ if test "${with_glitnir}" = yes; then
   dnl Under --enable-checking the glue gets its test hooks and Rust's debug assertions.  Cargo has no environment
   dnl variable that turns on a feature, hence GLITNIR_CARGO_FLAGS; the profile setting does have one.
   if test "$HAVE_NHWL" = yes && test "x$ac_enable_checking" != x; then
-    GLITNIR_CARGO_FLAGS="--features test-hooks"
+    GLITNIR_CARGO_FLAGS="$GLITNIR_CARGO_FLAGS --features test-hooks"
     GLITNIR_ENV="$GLITNIR_ENV CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true"
   fi
   AC_MSG_CHECKING([the native libraries Glitnir links])

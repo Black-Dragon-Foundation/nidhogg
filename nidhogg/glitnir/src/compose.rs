@@ -265,8 +265,9 @@ pub(crate) fn whole(v: f32) -> u32 {
     }
 }
 
-/// A premultiplied colour times an opacity (pixman's x·a/255, rounded).
-fn with_opacity(argb: u32, opacity: f32) -> u32 {
+/// A premultiplied colour times an opacity (pixman's x·a/255, rounded).  The macOS shell colours its shadow image
+/// with it too.
+pub fn with_opacity(argb: u32, opacity: f32) -> u32 {
     let a = (opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
     let mul = |x: u32| {
         let t = x * a + 0x80;
@@ -922,6 +923,32 @@ impl CardPlan {
             card_drew(q);
         }
     }
+}
+
+/// Window card `id` of `scene` (one root's committed scene) drawn alone, for a shell that shows each card on a layer
+/// of its own over the frame's pixels: what the compositor draws over them (the shadow and ring in the gap, a group's
+/// fill, the corners showing the gap through what the disc leaves), on a transparent image instead, so the image put
+/// over the frame is the composed card.  Returns the card's bounds (root px) and its premultiplied ARGB pixels, row by
+/// row; `None` when `id` is no window card or its bounds are empty.
+pub fn card_overlay(scene: &[Placed], id: u64, scale: f64) -> Option<(Rect, Vec<u32>)> {
+    let p = scene.iter().find(|q| q.id == id)?;
+    let card = p.card.as_ref().filter(|_| p.kind == Kind::Window)?;
+    let b = p.bounds;
+    if b.is_empty() {
+        return None;
+    }
+    let mut data = vec![0u32; b.w as usize * b.h as usize];
+    let mut t = TargetView {
+        data: &mut data,
+        stride: b.w as usize,
+        rect: b,
+        scale,
+    };
+    let mut shadows = ShadowCache::new();
+    let plan = CardPlan::new(p, card, scale, &mut shadows);
+    let (below, above) = neighbours(scene, p, &[b], scale, &mut shadows);
+    plan.draw(crate::kernels::kernels(), &mut t, card, b, (&below, &above));
+    Some((b, data))
 }
 
 /// A root's composes since its last frame-time record.
@@ -2476,6 +2503,63 @@ mod tests {
                 }
             }
             out
+        }
+
+        /// A card drawn alone over a transparent image ([`card_overlay`]), then put over the frame's pixels, is what the
+        /// compositor draws over them: the shadow and ring in the gap, a group's fill and the corners, within a step of
+        /// rounding; inside the window, away from the corners, the overlay is transparent.
+        #[test]
+        fn a_card_overlay_over_the_frame_is_the_composed_card() {
+            const FILL: u32 = 0xff20_3040;
+            for scale in [1.0, 2.0] {
+                let mut g = XorShift::new(47);
+                let rect = Rect::new(16, 14, 40, 50);
+                let mut front = Buf::random(&mut g, 80, 84);
+                for v in front.px.iter_mut() {
+                    *v |= 0xff00_0000;
+                }
+                let chrome = Chrome {
+                    radius_px: 8.0,
+                    blur_px: 6.0,
+                    offset_y: 3.0,
+                    shadow_opacity: 0.4,
+                    shadow_argb: 0xff00_0000,
+                    ..Chrome::default()
+                };
+                let card = Card {
+                    fill_argb: FILL,
+                    fill: vec![Rect::new(16, 34, 40, 6)].into(),
+                    ..rich(1, &[Rect::new(60, 0, 20, 84)])
+                };
+                let (s, _) = with_card(80, 84, scale, rect, chrome, card);
+                let out = compose_all(&s, &front, scale);
+                let (b, img) = card_overlay(s.committed(), WIN, scale).expect("a card");
+                assert!(!b.is_empty());
+                let over = |o: u32, d: u32| {
+                    let a = 255 - (o >> 24);
+                    let ch = |sh: u32| ((o >> sh) & 0xff) + (((d >> sh) & 0xff) * a + 127) / 255;
+                    (ch(24).min(255) << 24)
+                        | (ch(16).min(255) << 16)
+                        | (ch(8).min(255) << 8)
+                        | ch(0).min(255)
+                };
+                for y in b.y.max(0)..(b.y + b.h).min(front.h) {
+                    for x in b.x.max(0)..(b.x + b.w).min(front.w) {
+                        let o = img[((y - b.y) * b.w + (x - b.x)) as usize];
+                        let (want, got) = (out.at(x, y), over(o, front.at(x, y)));
+                        let near = (0..4).all(|i| {
+                            let (a, c) = ((want >> (8 * i)) & 0xff, (got >> (8 * i)) & 0xff);
+                            a.abs_diff(c) <= 2
+                        });
+                        assert!(
+                            near,
+                            "{x},{y} at {scale}: composed {want:08x}, overlay over frame {got:08x}"
+                        );
+                    }
+                }
+                // the window's middle, away from the corners and the divider, is the frame's own
+                assert_eq!(img[((20 - b.y) * b.w + (30 - b.x)) as usize], 0);
+            }
         }
 
         /// A card group (two windows in a column, one card around both): the divider between them is the group's

@@ -4,7 +4,8 @@
 ;;
 ;;   (TEST-NAME COMPOSITOR REASON . OPTIONS)
 ;;
-;; COMPOSITOR is GLITNIR_GUI_COMPOSITOR: "sway", "mutter", "kwin", "labwc" or "recorder".  The test fails there for REASON (a string),
+;; COMPOSITOR is GLITNIR_GUI_COMPOSITOR: "sway", "mutter", "kwin", "labwc", "recorder" or
+;; "windowserver" (macOS, nhmac-gui.sh).  The test fails there for REASON (a string),
 ;; which is the compositor's, not Nidhogg's: it gets an expected result of "a failed assertion", so a run is green
 ;; while the difference stands and red (an unexpected pass) the day it goes away.  An error in the row is not the
 ;; known failure.  OPTIONS is a plist: `:either t' also accepts a pass (a row that lands on both sides there).  drgnx's test/ui-compositor-known.eld has the same
@@ -16,4 +17,9 @@ it and overwrites them (view_update_size, transaction_commit_dirty_client), so n
 sent.  Any client that answers after the burst's later requests came loses them; the trace shows the first size's
 configure answered in 9 ms and none after it.  A race, so either side: with client-side decorations (gui.sh
 --force-csd) the row passes, the frame and sway's rectangle at the last size"
+  :either t)
+ ("nhmac-new-frame-keeps-its-columns" "windowserver"
+  "Naglfar: a frame moved to a screen of another scale keeps its points and its font follows, but its fringes and
+other one-pixel constants are device pixels that do not scale, so it shows fewer columns (38 for 40 from 2x to 1x).
+Nidhogg's own gap, DEFERRED NG-SCALE2-PIXEL-1 (class A); a pass where the frame stays at its scale"
   :either t))

@@ -220,7 +220,7 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 
 `bash nidhogg/test/gui.sh --prefix DIR [--scale S] [--size WxH] [--monitors N] [--select REGEXP] [--tests DIR]
 [--daemon] [--container DISTRO] [--wayland-debug FILE] [--env K=V]... [--timeout SEC]` runs the `*-gui-tests.el` and
-`*-gui-NAME-tests.el` files of `test/src/nidhogg-tests/` (ERT tests named `glitnir-gui/…`, `nidhogg-gui/…`, `nhwl-gui/…`)
+`*-gui-NAME-tests.el` files of `test/src/nidhogg-tests/` (ERT tests named `glitnir-gui/…`, `nhwl-gui/…`)
 on a Nidhogg frame of the native shell, under a headless sway, or the compositor
 `--compositor` names (mutter, for one). `DIR` is a Nidhogg prefix (an unpacked tarball or an install).
 
@@ -319,6 +319,10 @@ delays at the workers' sync points (`src/nidhogg-chaos.h`), nh-io's hand-off of 
 seed is `NIDHOGG_TEST_SEED` (decimal, default 0); `build.sh` passes it into its check container, child Emacs processes
 inherit it, and with `NIDHOGG_TEST_CHAOS_BANNER` set the first point prints `chaos seed N` to stderr. It makes an ordering bug likely on a
 machine whose timing never shows it, not certain.
+
+A checking build (`build.sh --dev --checking`; it refuses without `--dev`) configures `--enable-checking`: Emacs's
+assertions, and the glue's and the shell's `test-hooks` feature. The macOS lane builds Naglfar this way, since its rows
+post AppKit events and read the shell's counters through those hooks.
 
 - Test classes: a test file in `test/src/nidhogg-tests/` states its class in one header line within its first 15 lines,
   exactly `;; test-class: det` (deterministic: no real time), `;; test-class: cond` (waits on conditions, no fixed
@@ -467,8 +471,10 @@ machine whose timing never shows it, not certain.
     `compile-noglitnir` (`ccache-fedora-45-noglitnir-...`), `workers-asan` (`ccache-fedora-45-asan-...`) and
     `workers-chaos` (`ccache-fedora-45-chaos-...`, and its compiled Lisp `lisp-fedora-45-chaos-...`) have their
     own. No job caches downloaded packages any more: the images have them.
-  - macOS: the tarball (`tarball-macos-<arch>-...`), compiled Lisp (`lisp-macos-<arch>-<gcc and libgccjit
-    versions>-<runner temp>-<lisp-key.sh --abi>-...`, guarded as above), configure's checks and Glitnir's cargo target
+  - macOS: the tarball (`tarball-macos-<arch>-...`), compiled Lisp in two entries as the workers lanes' (the
+    byte-compiled part `lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-elc-<lisp-key.sh --elc>-...`,
+    which a change in a C body or header still finds, and the `.eln` files `...-eln-<lisp-key.sh --abi>-...`, guarded
+    as above; `build.sh` takes either only with its own stamp; never restored for `nidhogg-31` or a tag), configure's checks and Glitnir's cargo target
     (above), and ccache (`ccache-macos-<arch>-<runner image and version>-<hash of deps/macos.build>-...`, the compiler
     checked by `cc -v`, since `/usr/bin/cc` is a shim; `build.sh --host` uses ccache when `NIDHOGG_BUILD_CCACHE` is
     set). A new runner image restores the previous image's entry (`ccache-macos-<arch>-`): an unchanged clang still
@@ -511,7 +517,27 @@ machine whose timing never shows it, not certain.
   named jobs (plus what they need) and, in `linux` and the workers jobs, only the named check targets (space-separated,
   as in `check-subset.txt`) instead of
   `check-subset.txt`; `-f lanes='gui-1 gui-2'` picks `native-gui` lanes (`scope=macos` is narrowed the same way). Such
-  a run's gate is named `Nidhogg gate (partial)`, so it never reads as the full gate.
+  a run's gate is named `Nidhogg gate (partial)`, so it never reads as the full gate. A row-only run (`checks` names
+  Nidhogg rows, not `none` or `build-only`) leaves out drgnx's macOS suite: the changes job logs `drgnx macOS suite:
+  skipped, row-only run` (and a notice), and with no drgnx tier left the drgnx job is skipped. A full run and a tag run it.
+- The macOS lanes are two jobs that run at once (the org has five macOS slots): `macOS (NS app)` (build, tarball, tarball
+  test, NS rows, the `tarball-macos` artifact) and `macOS (Naglfar)` (its dev build, Rust tests, boundary check, rows,
+  logs in `nhmac-gui-logs-naglfar`).
+  Naglfar does not run for `ns_app_run`. The Naglfar rows compare with the NS rows' dumps (`nhmac-ns-*`, written on the NS
+  runner), so they run in a third job, `macOS (Naglfar rows)`, after both: the NS job uploads `nhmac-ns-refs`, the Naglfar
+  job its build tree as `naglfar-build` (object files and Rust targets left out), and the rows job (and the `pair` timing,
+  which also takes `tarball-macos`) fails naming the artifact if one is missing.
+- Native compilation in the macOS NS job: a `scratch/*` dispatch builds with `build.sh --native-preloaded` (only the
+  preloaded Lisp native-compiled, the rest byte code, JIT off in the image, so no compile starts under a timing row;
+  the byte-compiled cache entry is taken from a full build's through `NIDHOGG_BUILD_LISP_CACHE_ELC=1`, the `.eln` entry
+  is not used) and logs `native compilation: preloaded Lisp only`. `nidhogg-31`, tags and pull requests keep full AOT.
+  `tarball-test.sh` reads the mode from BUILDINFO: AOT needs the full `.eln` set, the preloaded-only mode the preloaded
+  ones and `native-comp-jit-compilation` nil.
+- The Naglfar job does not compile the Lisp again either: it restores the NS job's byte-compiled entry (the same key,
+  saved by `nidhogg-31`'s NS build; not for `nidhogg-31` or a tag), `build.sh` takes it for its different stamp
+  (`NIDHOGG_BUILD_LISP_CACHE_ELC=1`, same compiler, architecture and configure line apart from the native-compilation
+  mode, the window system and `--enable-checking`) and make finds the `.elc` files current. Its configure checks are an
+  entry of their own (`configure-macos-naglfar-…`).
 - `timing` (fedora-45 and macOS, after `linux` and `macos`; `continue-on-error: true`; not in `release`'s needs, so it can
   never fail a run or a release): the timing test files in a lane of their own, report-only
   (`nidhogg/test/timing-lane.sh`, rows and budget ratios in `nidhogg/test/timing-rows.txt`). It runs nothing else. A fixed

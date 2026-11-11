@@ -195,11 +195,13 @@ impl Tree {
         self.sync();
     }
 
-    /// The frame callback reached the pacer.
+    /// The frame callback reached the pacer, and every event sent with it is read (its feedback: a leg's clock starts
+    /// from the newest answer it has).
     fn idle(&mut self) {
         self.until("an idle pacer", |t| {
             !t.shell.present_pacer(t.root).unwrap().0
         });
+        common::sync(&self.shell);
     }
 
     fn ticking(&self) -> bool {

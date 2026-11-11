@@ -11,6 +11,10 @@
 //!    `NHG_E_PANIC`.  The backtrace is resolved when the report is read; C writes the whole report to stderr when it
 //!    drops the display.
 //!
+//! On macOS the body runs in an autorelease pool (`nhshell::with_pool`, outside `catch_unwind`), and an
+//! Objective-C exception it raises becomes a panic (`nhshell::catch_objc`, inside `catch_unwind`, which would abort
+//! on the foreign exception itself), so it poisons the display the same way.
+//!
 //! A poisoned display answers every later call with `NHG_E_PANIC` without touching its state.  Nothing here aborts.
 
 use crate::abi::{NHG_E_NOMEM, NHG_E_PANIC};
@@ -19,6 +23,7 @@ use std::backtrace::Backtrace;
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Once, TryLockError};
+use std::time::Instant;
 
 /// No glue call starts with less stack than this left.
 pub const HEADROOM: usize = 256 * 1024;
@@ -110,7 +115,21 @@ fn read_stack_low() -> Option<usize> {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+/// The lowest address of the calling thread's stack: macOS gives its top and size (`pthread_get_stackaddr_np`).
+#[cfg(target_os = "macos")]
+fn read_stack_low() -> Option<usize> {
+    // SAFETY: both read the calling thread's own attributes.
+    let (top, size) = unsafe {
+        let me = libc::pthread_self();
+        (
+            libc::pthread_get_stackaddr_np(me) as usize,
+            libc::pthread_get_stacksize_np(me),
+        )
+    };
+    (top != 0 && size != 0).then(|| top.saturating_sub(size))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 fn read_stack_low() -> Option<usize> {
     None
 }
@@ -191,7 +210,8 @@ fn install_hook() {
 pub(crate) fn catching<R>(body: impl FnOnce() -> R) -> Result<R, PanicReport> {
     install_hook();
     IN_GUARD.set(IN_GUARD.get() + 1);
-    let caught = catch_unwind(AssertUnwindSafe(body));
+    let caught =
+        nhshell::with_pool(|| catch_unwind(AssertUnwindSafe(|| nhshell::catch_objc(body))));
     IN_GUARD.set(IN_GUARD.get() - 1);
     caught.map_err(|payload| {
         let report = REPORT.take().unwrap_or_else(|| {
@@ -210,12 +230,12 @@ pub(crate) fn catching<R>(body: impl FnOnce() -> R) -> Result<R, PanicReport> {
 
 /// The guard of an entry point on a display: headroom, `try_lock`, `catch_unwind` (see the module comment).
 ///
-/// `name` is the entry point's, for the report.
+/// `name` is the entry point's, for the report and the shell's entry table (`nhshell::trace::entries_text`).
 ///
 /// # Safety
 /// `d` is null or a live display from `nhg_open`.
 pub unsafe fn guard<R: Ret>(
-    name: &str,
+    name: &'static str,
     d: *mut NhgDisplay,
     body: impl FnOnce(&mut Display) -> Result<R, GlueError>,
 ) -> R {
@@ -245,6 +265,7 @@ pub unsafe fn guard<R: Ret>(
             return R::err(NHG_E_PANIC);
         }
     };
+    let timed = nhshell::trace::entries_on().then(Instant::now);
     let ran = catching(|| {
         debug_assert!(
             !glitnir::is_compose_thread() && !nhshell::is_reader_thread(),
@@ -253,6 +274,9 @@ pub unsafe fn guard<R: Ret>(
         body(&mut state)
     });
     drop(state);
+    if let Some(t0) = timed {
+        nhshell::trace::entry(name, t0.elapsed().as_nanos() as u64);
+    }
     match ran {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => R::err(e.code()),
@@ -316,6 +340,16 @@ macro_rules! nhg_export {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// macOS reads the stack's bounds, so the headroom check is real there: the low end lies below this frame.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn headroom_reads_on_macos() {
+        let low = read_stack_low().expect("the stack's bounds");
+        let here = 0u8;
+        assert!(low < std::hint::black_box(&here) as *const u8 as usize);
+        assert!(headroom_ok());
+    }
 
     /// A panic caught by `catching` (as `nhg_open`'s backend open is) gives its report to the caller, which prints
     /// it, and leaves none behind for the next panic's.

@@ -102,6 +102,19 @@ pub const NHSHELL_WIN_MAXIMIZED: u32 = 1 << 2;
 pub const NHSHELL_WIN_GRAB: u32 = 1 << 3;
 /// With a session name: ask the session to restore the window (before its first commit) instead of just adding it.
 pub const NHSHELL_WIN_RESTORE: u32 = 1 << 4;
+/// A top-level window opens with its top-left at the descriptor's `x`, `y` (`window_new_placed`'s `Place::At`).
+pub const NHSHELL_WIN_PLACED: u32 = 1 << 5;
+
+/// Where a new top-level window opens (`window_new_placed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// Where the shell puts new windows.
+    Shell,
+    /// Beside the window (on its screen): a new frame made from the selected one.
+    Near(WindowId),
+    /// With its top-left at (x, y) logical pixels from the main screen's top-left, as `move_to` takes it.
+    At(i32, i32),
+}
 
 /// Why a session is opened (`session_open`): a fresh launch, a recovery after the compositor restarted, a restore of
 /// a saved session.
@@ -225,6 +238,12 @@ pub trait ShellBackend {
     fn next_event(&mut self) -> ShellResult<Option<Record>>;
     /// Run the work that must happen on the host's thread (configure and surface events).
     fn dispatch_main(&mut self) -> ShellResult;
+    /// The end of a drain that needs no new events (it took some, or the one before did, or it runs inside
+    /// redisplay): the host-thread work without asking the platform for more.  A backend whose `dispatch_main` only
+    /// flushes does that.
+    fn flush_main(&mut self) -> ShellResult {
+        self.dispatch_main()
+    }
     /// Why the connection ended: a protocol error's text, `INTERFACE@ID: error CODE: MESSAGE`; empty while it lives
     /// or after a plain hangup.
     fn last_error(&self) -> String {
@@ -262,6 +281,17 @@ pub trait ShellBackend {
         desc: &WindowDesc,
         session_name: Option<&str>,
     ) -> ShellResult<WindowId>;
+    /// `window_new_named` opening the window at `place` where the shell places windows itself (macOS), so it shows
+    /// first on the screen whose scale its frame was made for.  Elsewhere the compositor places it: `place` is ignored.
+    fn window_new_placed(
+        &mut self,
+        desc: &WindowDesc,
+        session_name: Option<&str>,
+        place: Place,
+    ) -> ShellResult<WindowId> {
+        let _ = place;
+        self.window_new_named(desc, session_name)
+    }
     /// The window and its dependents go, and the id with them.  A child whose hide leg runs (`set_motion`) finishes its
     /// fade first as a surface the host no longer sees, unless its parent goes or the connection does.
     fn window_destroy(&mut self, window: WindowId) -> ShellResult;
@@ -272,6 +302,12 @@ pub trait ShellBackend {
     fn set_title(&mut self, window: WindowId, title: &str) -> ShellResult;
     fn set_app_id(&mut self, window: WindowId, app_id: &str) -> ShellResult;
     fn set_min_size(&mut self, window: WindowId, w: i32, h: i32) -> ShellResult;
+    /// Place the top-level `window` with its frame's top-left at (`x`, `y`) logical pixels from the main screen's
+    /// top-left, as NS places a frame (`set-frame-position`).  `Unsupported` where clients have no position (Wayland).
+    fn move_to(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult {
+        let _ = (window, x, y);
+        Err(ShellError::Unsupported)
+    }
     fn set_fullscreen(&mut self, window: WindowId, on: bool) -> ShellResult;
     fn set_maximized(&mut self, window: WindowId, on: bool) -> ShellResult;
     fn minimize(&mut self, window: WindowId) -> ShellResult;
@@ -327,6 +363,15 @@ pub trait ShellBackend {
 
     /// Create a child (`NHSHELL_KIND_CHILD`) or popup (`NHSHELL_KIND_POPUP`) window.
     fn child_new(&mut self, desc: &ChildDesc) -> ShellResult<WindowId>;
+    /// `window`, a top-level or a child, takes another place among the trees, keeping its id and its surfaces with
+    /// their picture (`parent-frame` changed): `desc.kind` `NHSHELL_KIND_TOPLEVEL` makes it a top-level titled
+    /// `title` (`desc.flags` as a new one's), `NHSHELL_KIND_CHILD` a child of `desc.parent` at (`desc.x`, `desc.y`).
+    /// Its children come along.  `Unsupported` where a window keeps its role (a Wayland surface): the host makes the
+    /// window again.
+    fn reparent(&mut self, window: WindowId, desc: &ChildDesc, title: &str) -> ShellResult {
+        let _ = (window, desc, title);
+        Err(ShellError::Unsupported)
+    }
     /// Move a child (applied with its parent's next commit) or a popup (its anchor rectangle's origin).
     /// `true` when the whole window must be redrawn (a popup that was made again).
     fn set_position(&mut self, window: WindowId, x: i32, y: i32) -> ShellResult<bool>;
@@ -359,6 +404,33 @@ pub trait ShellBackend {
     /// (0: none).  Whoever presents its tree recomputes it from the parent's damage alone, and shows it in the tree
     /// commit that shows the change.  `State` for any other window, `Arg` for a negative or non-finite σ.
     fn set_backdrop(&mut self, _window: WindowId, _blur_px: f32) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
+    /// Whether the shell shows a root's window cards on layers of its own over the root's pixels (`set_cards`), so
+    /// the host composes none into the root's surface.
+    fn cards_on_layers(&self) -> bool {
+        false
+    }
+    /// Root `window`'s window cards, each an image put over the root's pixels at its place, from the tree's next
+    /// commit.  The list replaces the last: a card left out goes; one given without an image keeps the one it has.
+    /// `Unsupported` where `cards_on_layers` is false; `State` for any other window, `Arg` for an image whose length
+    /// is not its size or a card new to the window without one.
+    fn set_cards(&mut self, _window: WindowId, _cards: &[CardImage]) -> ShellResult {
+        Err(ShellError::Unsupported)
+    }
+    /// Whether the shell draws a child's chrome on the window's own layers (`set_chrome`): its surface is then the
+    /// native area alone, with no shadow margin, and the host composes no chrome into it.
+    fn chrome_on_layers(&self) -> bool {
+        false
+    }
+    /// Child `window`'s chrome (corners, border, shadow; device pixels at the window's scale), drawn by the shell on
+    /// the window's layers from the tree's next commit (`None`: none).  `Unsupported` where `chrome_on_layers` is
+    /// false; `State` for any other window.
+    fn set_chrome(
+        &mut self,
+        _window: WindowId,
+        _chrome: Option<&glitnir::scene::Chrome>,
+    ) -> ShellResult {
         Err(ShellError::Unsupported)
     }
     /// Capture `serial` of the window the host calls `key` in root `root`: its rectangle `rect` (root device px) of
@@ -501,6 +573,32 @@ pub trait ShellBackend {
     fn abandon(&self) -> Abandon;
     /// The presenter's own timing since open (Rust only): which frames it committed late.
     fn presenter_timing(&self) -> ShellResult<PresenterTiming>;
+
+    /// A platform call by name with one text argument (`nhmac--call`): what Lisp asks of a platform that has no
+    /// shared call for it.  `Arg` for a name the backend does not know; `Unsupported` for a backend with none.
+    fn app_call(&mut self, kind: &str, arg: &str) -> ShellResult {
+        let _ = (kind, arg);
+        Err(ShellError::Unsupported)
+    }
+    /// A platform query by name (`nhmac--query`); the answer is text (a Lisp reader's form, by the kind's contract).
+    /// It may run a modal session.
+    fn app_query(&mut self, kind: &str, arg: &str) -> ShellResult<String> {
+        let _ = (kind, arg);
+        Err(ShellError::Unsupported)
+    }
+
+    /// The main wait (`nhg_wait`, `crate::wait::run`): register `want`, then put the ready registrations in `out`,
+    /// running the backend's event loop meanwhile; empty after a wake or `timeout`.  `Unsupported` for a backend whose
+    /// host waits in its own select.
+    fn wait(
+        &mut self,
+        want: &std::collections::BTreeSet<crate::wait::Reg>,
+        timeout: Option<std::time::Duration>,
+        out: &mut Vec<crate::wait::Reg>,
+    ) -> ShellResult {
+        let _ = (want, timeout, out);
+        Err(ShellError::Unsupported)
+    }
 }
 
 /// A backend's connection and threads, as a host that abandons the backend sees them (`ShellBackend::abandon`).  The
@@ -656,4 +754,13 @@ mod tests {
             }
         }
     }
+}
+
+/// One window card for [`ShellBackend::set_cards`]: its id, its place in the root's surface (device pixels: x, y, width,
+/// height) and its image there (premultiplied ARGB, row by row), or `None` to keep the image it has.
+#[derive(Debug, Clone)]
+pub struct CardImage {
+    pub id: u64,
+    pub rect: (i32, i32, u32, u32),
+    pub argb: Option<std::sync::Arc<[u32]>>,
 }

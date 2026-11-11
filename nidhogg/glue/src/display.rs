@@ -45,6 +45,10 @@ pub struct Display {
     pub(crate) actions: Actions,
     /// Windows whose configure ack waits for C to apply the configure (`configure.rs`).
     pub(crate) acks_due: Vec<u64>,
+    /// The drain in progress (`nhg_next` since the last `nhg_dispatch_main`) and whether the one before took events
+    /// (`drain::closing_pump`).
+    pub(crate) drain: Option<crate::drain::Facts>,
+    pub(crate) last_drain_took: bool,
     /// The presenting mode (`present.rs`).
     pub(crate) presenting: Presenting,
     /// The modifier mask and the window with the keyboard (`keys.rs`, `focus.rs`).
@@ -102,6 +106,8 @@ impl NhgDisplay {
                 backings: Backings::default(),
                 actions: Actions::default(),
                 acks_due: Vec::new(),
+                drain: None,
+                last_drain_took: false,
                 presenting: Presenting::default(),
                 keyboard: Keyboard::default(),
                 select: Default::default(),

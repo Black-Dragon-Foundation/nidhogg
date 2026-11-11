@@ -354,3 +354,82 @@ mod guard {
         assert_eq!(unsafe { nhg_close(d) }, NHG_OK);
     }
 }
+
+/// An XPM's colours cross in two calls and no function pointer: the names out, then their colours in.
+#[test]
+fn xpm_names_then_colours() {
+    let xpm = br#"/* XPM */ static char *x[] = { "2 1 2 1", "a c None", "b c red", "ab" };"#;
+    let (mut need, mut count) = (0usize, 0u32);
+    // SAFETY: `xpm` is readable; no buffer; `need` and `count` writable.
+    let rc = unsafe {
+        nhg_xpm_names(
+            xpm.as_ptr(),
+            xpm.len(),
+            0,
+            ptr::null_mut(),
+            0,
+            &mut need,
+            &mut count,
+        )
+    };
+    assert_eq!((rc, need, count), (NHG_E_TOO_SMALL, 4, 1));
+    let mut buf = [0xaau8; 4];
+    // SAFETY: `buf` holds `need` writable bytes.
+    let rc = unsafe {
+        nhg_xpm_names(
+            xpm.as_ptr(),
+            xpm.len(),
+            0,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut need,
+            &mut count,
+        )
+    };
+    assert_eq!((rc, &buf), (NHG_OK, b"red\0"));
+    let mut img = std::mem::MaybeUninit::uninit();
+    // SAFETY: one colour for the one name; `img` writable.
+    let rc = unsafe {
+        nhg_image_decode(
+            xpm.as_ptr(),
+            xpm.len(),
+            0,
+            0,
+            [0xff_0000u32].as_ptr(),
+            1,
+            img.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, NHG_OK);
+    // SAFETY: decoded above, freed once.
+    assert_eq!(unsafe { nhg_image_free(img.as_mut_ptr()) }, NHG_OK);
+    // the wrong number of colours decodes nothing
+    // SAFETY: as above, no colours.
+    let rc = unsafe {
+        nhg_image_decode(
+            xpm.as_ptr(),
+            xpm.len(),
+            0,
+            0,
+            ptr::null(),
+            0,
+            img.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, NHG_E_STATE);
+    // not an XPM: nothing to resolve
+    let png = b"\x89PNG\r\n\x1a\n";
+    // SAFETY: as above.
+    let rc = unsafe {
+        nhg_xpm_names(
+            png.as_ptr(),
+            png.len(),
+            0,
+            ptr::null_mut(),
+            0,
+            &mut need,
+            &mut count,
+        )
+    };
+    assert_eq!((rc, need, count), (NHG_OK, 0, 0));
+}

@@ -7311,7 +7311,14 @@ init_display_interactive (void)
     }
 #endif
 
-#ifdef HAVE_NHWL
+#ifdef HAVE_NHMAC
+  if (!inhibit_window_system && !will_dump_p ())
+    {
+      Vinitial_window_system = Qns;
+      return;
+    }
+#endif
+#ifdef NHWL_WAYLAND
   if (!inhibit_window_system && !will_dump_p ())
     {
       Vinitial_window_system = Qpgtk;

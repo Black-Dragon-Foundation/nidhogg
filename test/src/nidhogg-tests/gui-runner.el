@@ -39,9 +39,11 @@ trace line could land inside a verdict and hide it from the rigs that grep for i
 (defun glitnir-gui--scale-ready-p ()
   "Non-nil once the selected frame sits at the asked scale and the monitor's device size, which the native shell reports."
   (and (< (abs (- (frame-scale-factor) (glitnir-gui--scale))) 0.001)
-       (let ((size (getenv "GLITNIR_GUI_SIZE"))
-             (geo (alist-get 'geometry (car (display-monitor-attributes-list)))))
-         (or (not size) (equal (format "%dx%d" (nth 2 geo) (nth 3 geo)) size)))))
+       ;; the monitors are read only when a size is asked: a shell may not serve them yet
+       (let ((size (getenv "GLITNIR_GUI_SIZE")))
+         (or (not size)
+             (let ((geo (alist-get 'geometry (car (display-monitor-attributes-list)))))
+               (equal (format "%dx%d" (nth 2 geo) (nth 3 geo)) size))))))
 
 (defun glitnir-gui--wait-for-scale ()
   (let ((deadline (+ (float-time) 10)))
@@ -52,13 +54,45 @@ trace line could land inside a verdict and hide it from the rigs that grep for i
                         (glitnir-gui--scale) (frame-scale-factor) (display-monitor-attributes-list))
       (kill-emacs 1))))
 
+(defun glitnir-gui--place-frame ()
+  "On NS, move the selected frame onto the display ns-gui.sh made (GLITNIR_GUI_FRAME is \"LEFT TOP COLS LINES\")."
+  (let ((spec (getenv "GLITNIR_GUI_FRAME")))
+    (when (and spec (not (string-empty-p spec)))
+      (pcase-let ((`(,left ,top ,cols ,lines) (mapcar #'string-to-number (split-string spec))))
+        (set-frame-size nil cols lines)
+        (set-frame-position nil left top)))))
+
+(defun glitnir-gui--say-frame (when)
+  "On Naglfar, log WHEN: the selected frame as Emacs has it (visible, position, size) and as the shell has it
+\(`nhmac--window-info': AppKit's frame, its screen, occlusion), with `nhmac-stats'.  Each fact's error is logged."
+  (when (fboundp 'nhmac--window-info)
+    (let ((fact (lambda (f) (condition-case err (funcall f) (error (list 'error err))))))
+      (glitnir-gui--say "gui-runner: %s: visible %S position %S size %dx%d; window %S; stats %S"
+                        when (frame-visible-p (selected-frame)) (frame-position)
+                        (frame-pixel-width) (frame-pixel-height)
+                        (funcall fact #'nhmac--window-info) (funcall fact #'nhmac-stats)))))
+
+(defun glitnir-gui--say-startup ()
+  "On Naglfar, log the shell's startup trace (`nhmac--startup-log'), one event a line, before the rows start."
+  (when (fboundp 'nhmac--startup-log)
+    (let ((log (condition-case err (funcall 'nhmac--startup-log) (error (list (format "error %S" err))))))
+      (dolist (e log)
+        (glitnir-gui--say "gui-runner: startup: %s" (if (stringp e) e (format "%S" e)))))))
+
 (defun glitnir-gui--wait-for-first-paint ()
-  "Wait (10 s at most) until Glitnir's frame-time record holds a paint of the selected frame."
-  (when (fboundp 'glitnir-stats)
+  "Wait (10 s at most) until Glitnir's frame-time record holds a paint of the selected frame.
+Only the native shell records paints.  On Naglfar, wait (10 s at most) until the frame has drawn: nothing else turns
+the event loop before the rows, so its window's size would otherwise reach Emacs only inside the first row."
+  (cond
+   ((and (fboundp 'glitnir-stats) (featurep 'nidhogg-wayland))
     (let ((deadline (+ (float-time) 10)))
       (while (and (< (or (plist-get (glitnir-stats) :count) 0) 1) (< (float-time) deadline))
         (redisplay t)
-        (sit-for 0.1)))))
+        (sit-for 0.1))))
+   ((fboundp 'nhmac-stats)
+    (let ((deadline (+ (float-time) 10)))
+      (while (and (not (glitnir-gui--frame-drew-p)) (< (float-time) deadline))
+        (sit-for 0.1))))))
 
 ;;; Waiting.  A row waits on what the frame, the presenter or the compositor reports: a deadline bounds a failure and
 ;;; never decides a pass.
@@ -102,7 +136,7 @@ between a row's steps, the quiet the code under test measures.  Never a wait for
 ;;; Grabs from the compositor: (gui-runner-screen-grab) is (W H BYTES), BYTES W*H BGRA pixels, on every compositor
 
 (require 'cl-lib)
-(require 'dbus)
+(require 'dbus nil t)                   ; not in the macOS build
 (require 'json)
 (require 'seq)
 (require 'cl-lib)
@@ -461,7 +495,7 @@ recorder: the frame callbacks are answered and the commit log stands still (a de
                      (while (and (not (setq v (funcall pred))) (< (float-time) deadline))
                        (if read (gui-runner-read-all) (sit-for 0.01)))
                      (unless v (setq ok nil))))))
-    (when (and graphic (not native) (fboundp 'glitnir-snapshot))
+    (when (and graphic (not native) (not (featurep 'ns)) (fboundp 'glitnir-snapshot))
       (ignore-errors (glitnir-snapshot nil 'raw)))
     (pcase compositor
       ("sway" (funcall settle (lambda () (and (gui-runner--sway-window-shown-p) (gui-runner--presented-p)))))
@@ -548,7 +582,9 @@ The recorder keeps its session store.  Signals an error when the script fails or
     (dolist (f (let ((glob (getenv "GLITNIR_GUI_FILES")))
                  (if (and glob (not (string-empty-p glob)))
                      (file-expand-wildcards (expand-file-name glob dir) t)
-                   (directory-files dir t "-gui\\(-[a-z0-9]+\\)?-tests\\.el\\'"))))
+                   (seq-remove (lambda (f)
+                                 (and (not (featurep 'ns)) (string-match-p "\\(-ns\\|nhmac\\)-gui-tests\\.el\\'" f)))
+                               (directory-files dir t "-gui\\(-[a-z0-9]+\\)?-tests\\.el\\'")))))
       (load f nil t))))
 
 ;; The known-differences file holds entries (TEST-NAME COMPOSITOR REASON . OPTIONS): the test is expected to fail on that
@@ -580,14 +616,40 @@ The recorder keeps its session store.  Signals an error when the script fails or
                   '(or :passed :skipped (satisfies glitnir-gui--assertion-failure-p))
                 '(or :skipped (satisfies glitnir-gui--assertion-failure-p))))))))
 
+(defun glitnir-gui--frame-drew-p ()
+  "Non-nil when the selected frame is visible and has drawn (Naglfar's `:draws' at least 1); t off Naglfar."
+  (or (not (fboundp 'nhmac-stats))
+      (progn (redisplay t)
+             (and (frame-visible-p (selected-frame))
+                  (>= (or (plist-get (funcall 'nhmac-stats) :draws) 0) 1)))))
+
+(defun glitnir-gui--fail-drawing-rows (tests)
+  "When the frame never drew, make TESTS tagged `draws' fail at once with the reason, not wait out their timeouts.
+The rows without the tag (locks, fds, threads) still run."
+  (unless (glitnir-gui--frame-drew-p)
+    (let ((why (format "no frame drew at scale %s" (glitnir-gui--scale))))
+      (glitnir-gui--say "gui-runner: %s: the rows tagged `draws' fail without running" why)
+      (glitnir-gui--say "gui-runner: the shell's view: %S"
+                        (condition-case err (funcall 'nhmac--shell-view) (error (list 'error err))))
+      (dolist (test tests)
+        (when (memq 'draws (ert-test-tags test))
+          (setf (ert-test-body test) (lambda () (ert-fail (list why)))))))))
+
+(defvar glitnir-gui--row-start 0 "When the running row started (`float-time').")
+
 (defun glitnir-gui--report (event-type &rest args)
   (pcase event-type
+    ;; a row's start, so a row that ends Emacs is named by the lane (nhmac-gui.sh) as its one red row
+    ('test-started
+     (setq glitnir-gui--row-start (float-time))
+     (glitnir-gui--say "started %s" (ert-test-name (nth 1 args))))
     ('test-ended
      (let* ((test (nth 1 args)) (result (nth 2 args))
             (expected (ert-test-result-expected-p test result)))
-       (glitnir-gui--say "%s %s"
+       ;; with the row's seconds, so a slow lane names its slow rows
+       (glitnir-gui--say "%s %s (%.1f s)"
                          (cond ((not expected) "FAILED") ((ert-test-skipped-p result) "skipped") (t "passed"))
-                         (ert-test-name test))
+                         (ert-test-name test) (- (float-time) glitnir-gui--row-start))
        (unless expected
          (when (ert-test-result-with-condition-p result)
            (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))
@@ -605,11 +667,16 @@ The recorder keeps its session store.  Signals an error when the script fails or
           (t (or re t)))))
 
 (defun glitnir-gui--run ()
+  (glitnir-gui--place-frame)
+  (glitnir-gui--say-frame "placed")
   (glitnir-gui--wait-for-scale)
   (glitnir-gui--wait-for-first-paint)
+  (glitnir-gui--say-frame "first paint")
+  (glitnir-gui--say-startup)
   (glitnir-gui--load-tests)
   (glitnir-gui--apply-known-differences)
   (let* ((tests (ert-select-tests (glitnir-gui--selector) t))
+         (_ (glitnir-gui--fail-drawing-rows tests))
          ;; rows tagged `runs-last' (one that ends the compositor, say) run after every other row
          (last (seq-filter (lambda (test) (memq 'runs-last (ert-test-tags test))) tests))
          (stats (ert-run-tests `(member ,@(seq-difference tests last) ,@last) #'glitnir-gui--report))

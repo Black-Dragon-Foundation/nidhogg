@@ -18,8 +18,8 @@ use crate::display::Display;
 use crate::frame::{Frame, NHG_FACT_CSD, NHG_FACT_ICONIFIED, NHG_FACT_VISIBLE, NHG_FRAME_CHILD};
 use crate::guard::GlueError;
 use nhshell::api::{
-    Anchor, ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_RESTORE, ShellError,
-    WindowDesc,
+    Anchor, ChildDesc, NHSHELL_KIND_CHILD, NHSHELL_KIND_TOPLEVEL, NHSHELL_WIN_PLACED, NHSHELL_WIN_RESTORE, Place,
+    ShellError, WindowDesc,
 };
 use std::ffi::c_char;
 
@@ -61,11 +61,12 @@ pub struct NhgWindowDesc {
     pub flags: u32,
     /// `NHSHELL_KIND_*`.
     pub kind: u32,
-    /// Children and popups: the parent window.
+    /// Children and popups: the parent window.  A top-level: the window it opens beside (0: where the shell puts it).
     pub parent: u64,
     /// Children: where the surface starts in the parent's native area (device pixels: the frame's left and top less
     /// its own margin); the glue adds the parent's border and gives the shell logical pixels at `scale120`
-    /// (`child::new_offset`).
+    /// (`child::new_offset`).  A top-level with `NHSHELL_WIN_PLACED`: its top-left in device pixels at `scale120`
+    /// from the main screen's top-left.
     pub x: i32,
     pub y: i32,
     /// Popups: where to put it.
@@ -158,12 +159,21 @@ pub fn new(
             h: d.h,
             title: title.into(),
             app_id: app_id.into(),
-            flags: restore_flag(d.flags, state.session_saved, session_name),
+            flags: restore_flag(d.flags & !NHSHELL_WIN_PLACED, state.session_saved, session_name),
+        };
+        // where it opens: at its frame's position (device pixels at the scale C made it for), or beside the frame
+        // it was made from, so it shows first on the screen of that scale
+        let place = if d.flags & NHSHELL_WIN_PLACED != 0 {
+            Place::At(to_logical(d.x, d.scale120), to_logical(d.y, d.scale120))
+        } else if d.parent != 0 {
+            Place::Near(d.parent)
+        } else {
+            Place::Shell
         };
         // an empty name is none
         state
             .backend()
-            .window_new_named(&desc, Some(session_name))?
+            .window_new_placed(&desc, Some(session_name), place)?
     } else {
         let (x, y) = if d.kind == NHSHELL_KIND_CHILD {
             crate::child::new_window_offset(state, d)
@@ -193,12 +203,59 @@ pub fn new(
         let _ = state.backend().window_destroy(id);
         return Err(e);
     }
+    nhshell::trace::note(|| format!("window registered: window {id} kind {}", d.kind));
     // the frame was made for this scale (a reparented one shows at it already): its buffers start there, not at 1;
     // a refusal leaves them at 1 until the compositor says, as before
     if d.scale120 > 0 {
         let _ = state.backend().scale_start(id, d.scale120);
     }
     Ok(id)
+}
+
+/// `parent-frame` changed: `window` takes the place `d` describes (a top-level, or a child of `d.parent`) in the
+/// shell, keeping its id and its picture, where the shell can (`NHG_E_UNSUPPORTED` where a window keeps its role: C
+/// makes it again).  The frame takes `d`'s kind and facts; its child state starts over but for the chrome, which
+/// the frame keeps, so C's pushes after it send the new place and an unchanged chrome changes nothing.
+pub fn reparent(
+    state: &mut Display,
+    window: u64,
+    d: &NhgWindowDesc,
+    title: &str,
+) -> Result<(), GlueError> {
+    if d.native_w <= 0
+        || d.native_h <= 0
+        || d.facts & !NHG_WINDOW_FACTS != 0
+        || d.role & !crate::frame::NHG_FRAME_KINDS != 0
+    {
+        return Err(GlueError::Arg);
+    }
+    state.frame(window)?;
+    let (x, y) = if d.kind == NHSHELL_KIND_CHILD {
+        crate::child::new_window_offset(state, d)
+    } else {
+        (d.x, d.y)
+    };
+    let desc = ChildDesc {
+        kind: d.kind,
+        parent: d.parent,
+        x,
+        y,
+        w: d.w,
+        h: d.h,
+        anchor: d.anchor,
+        flags: d.flags,
+    };
+    state.backend().reparent(window, &desc, title)?;
+    let f = state.frame_mut(window)?;
+    f.flags = d.role;
+    f.scale120 = d.scale120;
+    f.facts.native_w = d.native_w;
+    f.facts.native_h = d.native_h;
+    f.facts.flags = d.facts;
+    f.child.reparented();
+    f.floating = None;
+    nhshell::trace::note(|| format!("window reparented: window {window} kind {}", d.kind));
+    Ok(())
 }
 
 pub fn title(state: &mut Display, window: u64, title: &str) -> Result<(), GlueError> {
@@ -273,9 +330,29 @@ pub fn min_size(state: &mut Display, window: u64, w: i32, h: i32) -> Result<(), 
         .set_min_size(window, to_logical(w, s), to_logical(h, s))?)
 }
 
+/// Place the top-level frame with its top-left at (`x`, `y`) device pixels from the main screen's top-left, in the
+/// window's logical pixels.  A child frame is placed by its parent (`NHG_E_ARG`); `NHG_E_UNSUPPORTED` where clients
+/// have no position.
+pub fn place(state: &mut Display, window: u64, x: i32, y: i32) -> Result<(), GlueError> {
+    let f = state.frame(window)?;
+    if f.flags & NHG_FRAME_CHILD != 0 {
+        return Err(GlueError::Arg);
+    }
+    let s = scale(f);
+    Ok(state
+        .backend()
+        .move_to(window, to_logical(x, s), to_logical(y, s))?)
+}
+
 /// Push: Emacs made the frame visible (`on`) or invisible, not iconified.
 pub fn visible(state: &mut Display, window: u64, on: bool) -> Result<(), GlueError> {
     let f = state.frame_mut(window)?;
+    nhshell::trace::note(|| {
+        format!(
+            "visible pushed: window {window} {on}, configured {}",
+            f.cfg.configured
+        )
+    });
     f.facts.flags &= !(NHG_FACT_VISIBLE | NHG_FACT_ICONIFIED);
     if on {
         f.facts.flags |= NHG_FACT_VISIBLE;
@@ -345,7 +422,9 @@ pub fn wait_configured(
     };
     let ms = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
     // SAFETY: one valid pollfd, for the call.
-    match unsafe { libc::poll(&mut p, 1, ms) } {
+    let woke = unsafe { libc::poll(&mut p, 1, ms) };
+    nhshell::trace::wait_round(window, woke == 0);
+    match woke {
         0 => Err(GlueError::Code(NHG_E_TIMEOUT)),
         // something queued, or an interrupted wait: C drains and asks again
         _ => Ok(0),

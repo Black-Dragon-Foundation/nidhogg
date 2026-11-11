@@ -107,6 +107,13 @@ run -- --dry-run --container fedora-45 --dev --chaos
 rcis 0; has "--with-nidhogg-chaos"
 run -- --dry-run --container fedora-45 --chaos
 rcis 1; has "dev builds only"
+# --checking: --enable-checking (the test hooks) in a dev build, never a release
+run -- --dry-run --container fedora-45
+rcis 0; hasnt "--enable-checking"
+run -- --dry-run --container fedora-45 --dev --checking
+rcis 0; has "--enable-checking"
+run -- --dry-run --container fedora-45 --checking
+rcis 1; has "dev builds only"
 # --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
 run -- --dry-run --container fedora-45 --dev
 rcis 0; has "--with-native-compilation=yes"; hasnt "--with-native-compilation=aot"; has "site-init.el"; has "MODE_ID=yes"; has "--with-tree-sitter"
@@ -114,8 +121,26 @@ run NIDHOGG_BUILD_DEV=1 -- --dry-run --container fedora-45
 rcis 0; has "--with-native-compilation=yes"
 run -- --dry-run --container fedora-45 --dev --out dist/x.tar.xz
 rcis 1; has "never packed"
+# --native-preloaded: the same native-compilation mode and no JIT, but a build that is packed
+run -- --dry-run --container fedora-45 --native-preloaded --out dist/x.tar.xz
+rcis 0; has "--with-native-compilation=yes"; has "site-init.el"; has "MODE_ID=yes"; has "phase tarball"
+run NIDHOGG_BUILD_NATIVE_PRELOADED=1 -- --dry-run --container fedora-45
+rcis 0; has "--with-native-compilation=yes"; has "site-init.el"
 run -- --dry-run --container fedora-45 --dev --stage pack
 rcis 1; has "never packed"
+# NIDHOGG_BUILD_LISP_CACHE_ELC=1: the byte-compiled part of an entry made in another native-compilation mode or for another
+# window system is taken (elc_norm, lifted out of the generated script), nothing else is
+run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc NIDHOGG_BUILD_LISP_CACHE_ELC=1 -- --dry-run --container fedora-45
+rcis 0; has "LC_ELC=1"; has "phase restore byte-compiled Lisp"; has "elc_norm"
+sed -n '/^elc_norm()/,/^}/p' <<<"$out" > "${TMPDIR:-/tmp}/nidhogg-elc-norm.$$.sh"
+ns_aot="clang 17 arm64 aot --prefix=/p --with-ns --with-native-compilation=aot --with-tree-sitter --with-glitnir"
+nag_dev="clang 17 arm64 yes --prefix=/p --with-native-compilation=yes --with-tree-sitter --with-nidhogg-macos --with-glitnir --enable-checking"
+ns_yes="clang 17 arm64 yes --prefix=/p --with-ns --with-native-compilation=yes --with-tree-sitter --with-glitnir"
+other="clang 17 arm64 aot --prefix=/p --with-ns --with-native-compilation=aot --with-tree-sitter"
+n() { bash -c '. "$1"; elc_norm "$2"' _ "${TMPDIR:-/tmp}/nidhogg-elc-norm.$$.sh" "$1"; }
+[ "$(n "$ns_aot")" = "$(n "$nag_dev")" ] && [ "$(n "$ns_aot")" = "$(n "$ns_yes")" ] || fail "elc_norm tells the NS and Naglfar stamps apart"
+[ "$(n "$ns_aot")" != "$(n "$other")" ] || fail "elc_norm takes another configure line's stamp"
+rm -f "${TMPDIR:-/tmp}/nidhogg-elc-norm.$$.sh"
 run -- --dry-run --container fedora-45
 rcis 0; hasnt "site-init.el"; has "MODE_ID=aot"; hasnt "fsanitize"
 # NIDHOGG_BUILD_SANITIZE reaches CFLAGS and LDFLAGS; dev builds only
@@ -296,6 +321,45 @@ rcis 0; has "-v /tmp/ct-host:/cargotarget:z"
 run NIDHOGG_BUILD_CARGO_TARGET=/tmp/ct-other -- --dry-run --container ubuntu-26.04 --stage pack --build-dir "$ctb" --out "$ctb/n.tar.xz"
 rcis 0; has "-v /tmp/ct-other:/cargotarget:z"
 rm -r "$ctb"
+# naglfar: --naglfar is the macOS shell (--with-nidhogg-macos, not --with-ns); elsewhere it only configures (--dry-config)
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --naglfar
+rcis 0; has "--with-nidhogg-macos"; hasnt "--with-ns "; hasnt "--with-nidhogg-wayland"; hasnt "--build="
+run -- --dry-run --container fedora-45 --naglfar
+rcis 1; has "elsewhere only --dry-config"
+run -- --dry-run --container fedora-45 --naglfar --dry-config
+rcis 0; has "--with-nidhogg-macos"; has "--build=aarch64-apple-darwin"; has 'dry config: $B/obj/src/config.h'
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --naglfar --without-glitnir
+rcis 1; has "--naglfar needs Glitnir"
+# naglfar-config (build-test.sh --config; real configures in podman, through the heavy slot): the Wayland configure
+# defines NHWL_WAYLAND; the macOS one (configured on Linux for a darwin host) the shared C and HAVE_NHMAC, and none of
+# Wayland, Cairo, fontconfig, FreeType, HarfBuzz or an image library; the workers and Glitnir stay on
+if [ "${1:-}" = --config ]; then
+  def() { grep -Eq "^#define $2( |\$)" "$1"; }
+  for w in wayland naglfar; do
+    cb=$(mktemp -d "${TMPDIR:-/tmp}/nh-config.XXXXXX")
+    if [ $w = wayland ]; then a=--nidhogg-wayland; else a="--naglfar --dry-config"; fi
+    # shellcheck disable=SC2086
+    bash nidhogg/build.sh --container fedora-45 --dev --stage build --dry-config --build-dir "$cb" --prefix /opt/nh-config $a > "$cb.log" 2>&1 ||
+      fail "the $w configure failed: $(tail -n 5 "$cb.log")"
+    h=$cb/obj/src/config.h
+    if [ ! -f "$h" ]; then fail "no config.h from the $w configure"
+    elif [ $w = wayland ]; then
+      for d in HAVE_NHWL NHWL_WAYLAND; do def "$h" $d || fail "wayland config.h lacks $d"; done
+      ! def "$h" HAVE_NHMAC || fail "wayland config.h defines HAVE_NHMAC"
+    else
+      for d in HAVE_NHWL HAVE_NHMAC HAVE_NIDHOGG_WORKERS HAVE_GLITNIR HAVE_WINDOW_SYSTEM HAVE_NATIVE_IMAGE_API DAEMON_MUST_EXEC; do
+        def "$h" $d || fail "naglfar config.h lacks $d"
+      done
+      for d in NHWL_WAYLAND HAVE_NS USE_CAIRO HAVE_FONTCONFIG HAVE_FREETYPE HAVE_HARFBUZZ HAVE_PNG HAVE_JPEG HAVE_GIF \
+               HAVE_TIFF HAVE_WEBP HAVE_RSVG HAVE_XPM HAVE_IMAGEMAGICK HAVE_LIBXML2_IMAGES; do
+        ! def "$h" $d || fail "naglfar config.h defines $d"
+      done
+    fi
+    echo "build-test: $w configure checked ($cb)"
+  done
+else
+  echo "build-test: the configure cases (naglfar-config) run with --config"
+fi
 if grep -nE 'declare -A|mapfile|readarray|\$\{[a-zA-Z_]+(,,|\^\^)\}|;&|\|&' nidhogg/build.sh; then fail "bash 4 construct in build.sh"; fi
 if command -v shellcheck >/dev/null; then shellcheck --severity=warning nidhogg/build.sh nidhogg/test/*.sh || fail shellcheck; fi
 exit "$fails"

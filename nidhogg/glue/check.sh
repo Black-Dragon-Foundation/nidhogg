@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # nhglue's checks: the lock against the shell's, fmt, clippy, tests, licence policy; --full adds the release archive and
 # its exports; --android only checks that the crate builds for Android without the Wayland backend.
-# Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run]
+# Usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run] [--target TRIPLE]
 #        check.sh --c-fields BUILD_DIR | --provenance      (text checks of the C side; no cargo, no container)
 # --no-run compiles the tests without running them (the compile-only author check).
-# Exit 0 ok, 1 "check.sh: FAIL <check>", 2 usage, 3 --android skipped (the target's std is not installed; says why).
+# Exit 0 ok, 1 "check.sh: FAIL <check>", 2 usage, 3 --android skipped (the target's std is not installed; says why)
+# or the --target toolchain is unavailable.
 # Without --container the host's cargo runs (CI, macOS).  With it, podman runs a memory-capped container (2 GiB) from the
 # check image (fedora-45: nidhogg-check:fedora-45-HASH, built once from deps/fedora-45.check by ci/image.sh local; the
 # run prints "image: REF (local|built)" and installs nothing, except --android's std; NIDHOGG_CRATES_IMAGE names
@@ -15,9 +16,9 @@
 # The link check against a built Emacs is nm-check.sh (it needs the build tree).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DISTRO="" TEST="" INNER=0 FULL=0 ANDROID=0 NORUN=0 CFIELDS="" PROVENANCE=0 REPEAT=1
+DISTRO="" TEST="" INNER=0 FULL=0 ANDROID=0 NORUN=0 CFIELDS="" PROVENANCE=0 REPEAT=1 TARGET=""
 ANDROID_TARGET=aarch64-linux-android
-usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run] [--repeat N]" >&2; exit 2; }
+usage() { echo "usage: check.sh [--container DISTRO] [--test NAME] [--full] [--android] [--no-run] [--repeat N] [--target TRIPLE]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case $1 in
     --container) [ $# -ge 2 ] || usage; DISTRO=$2; shift 2 ;;
@@ -26,6 +27,7 @@ while [ $# -gt 0 ]; do
     --no-run) NORUN=1; shift ;;
     --repeat) [ $# -ge 2 ] || usage; REPEAT=$2; shift 2 ;;
     --android) ANDROID=1; shift ;;
+    --target) [ $# -ge 2 ] || usage; TARGET=$2; shift 2 ;;
     --inner) INNER=1; shift ;;
     --c-fields) [ $# -ge 2 ] || usage; CFIELDS=$2; shift 2 ;;
     --provenance) PROVENANCE=1; shift ;;
@@ -109,6 +111,7 @@ if [ -n "$DISTRO" ] && [ "$INNER" = 0 ]; then
   [ "$NORUN" = 1 ] && args="$args --no-run"
   [ "$REPEAT" = 1 ] || args="$args --repeat $REPEAT"
   [ "$ANDROID" = 1 ] && args="$args --android"
+  [ -n "$TARGET" ] && args="$args --target $TARGET"
   # the Android target's std, where the distro packages it (Fedora does not: --android then exits 3): the one install
   # a run may still make, for --android only
   android_std=""
@@ -140,6 +143,24 @@ cd "$HERE" || exit 1
 export CARGO_TARGET_DIR
 [ -n "${CARGO_HOME:-}" ] && PATH="$CARGO_HOME/bin:$PATH"
 fail() { echo "check.sh: FAIL $1" >&2; exit 1; }
+
+# --target TRIPLE: clippy for another platform's backend (aarch64-apple-darwin: --no-default-features --features
+# macos), the library and its unit tests (the integration tests drive the Wayland recorder), with ci/target-std.sh's
+# toolchain; nothing links or runs, so objc2-exception-helper's build script is told to skip its clang step (DOCS_RS).
+# The unit tests run on the target (CI's macOS lane).
+if [ -n "$TARGET" ]; then
+  . ../ci/target-std.sh
+  target_std "$TARGET" || exit 3
+  feats=(--no-default-features)
+  case $TARGET in *-apple-darwin) feats+=(--features macos) ;; esac
+  feats+=(--features test-hooks)
+  for prof in dev test; do
+    DOCS_RS=1 cargo clippy --lib --profile "$prof" --locked --target "$TARGET" "${feats[@]}" -- -D warnings ||
+      fail "clippy ($TARGET, $prof)"
+  done
+  echo "check.sh: $TARGET ok (clippy; its tests run on the target)"
+  exit 0
+fi
 
 if [ "$ANDROID" = 1 ]; then
   # cargo check only (no NDK, no link): the glue and the shell without the Wayland backend

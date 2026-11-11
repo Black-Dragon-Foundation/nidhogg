@@ -14528,6 +14528,9 @@ update_menu_bar (struct frame *f, bool save_match_data, bool hooks_run, struct w
                  the selected frame should be allowed to set it.  */
               if (f == SELECTED_FRAME ())
 #endif
+#ifdef HAVE_NHMAC
+              if (f == SELECTED_FRAME ())
+#endif
 		set_frame_menubar (f, false);
 	    }
 	  else
@@ -14753,6 +14756,10 @@ display_tab_bar (struct window *w)
   if (FRAME_NS_P (f))
     return;
 #endif /* HAVE_NS */
+#ifdef HAVE_NHMAC
+  if (FRAME_WINDOW_P (f))
+    return;
+#endif
 
 #if defined (USE_X_TOOLKIT) || defined (USE_GTK)
   eassert (!FRAME_WINDOW_P (f));
@@ -27940,6 +27947,10 @@ display_menu_bar (struct window *w)
   if (FRAME_NS_P (f))
     return;
 #endif /* HAVE_NS */
+#ifdef HAVE_NHMAC
+  if (FRAME_WINDOW_P (f))
+    return;
+#endif
 
 #ifdef HAVE_HAIKU
   if (FRAME_HAIKU_P (f))
@@ -27950,7 +27961,7 @@ display_menu_bar (struct window *w)
   if (NILP (FRAME_MENU_BAR_ITEMS (f)))
     return;
 
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 /* Nidhogg's Wayland shell draws the menu bar itself, as a build without a
    toolkit does (the branch below; scoped to this function's setup).  */
 # define HAVE_ANDROID 1
@@ -27975,7 +27986,7 @@ display_menu_bar (struct window *w)
     }
   else
 #endif /* not USE_X_TOOLKIT and not USE_GTK */
-#ifdef HAVE_NHWL
+#ifdef NHWL_WAYLAND
 # undef HAVE_ANDROID
 #endif
     {

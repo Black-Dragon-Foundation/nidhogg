@@ -12,7 +12,8 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
   text, pixel pointers into Rust-owned backings) and never calls Emacs. It never sees a `Lisp_Object` or an Emacs
   struct, and C passes it no function pointers.
 - **Threads.** The glue runs on the Lisp thread that holds Emacs's global lock, never on the shell's reader or the
-  presenter thread.
+  presenter thread. The one exception is the image decode (`nhg_image_decode`, `nhg_image_take`, `nhg_image_free`):
+  it is stateless and touches no display, so Naglfar's image worker calls it on its own thread too.
 - **Dependencies:** `nhshell`, `glitnir` and `libc`, built locked, from crates.io or offline
   from the shell's `vendor/` when the release's vendor tarball is unpacked (`.cargo/config.toml`). `Cargo.lock` is the
   shell's plus the `nhglue` package; after the shell relocks, copy its
@@ -20,7 +21,8 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
   view model) and its crates, so all three locks list them; a change to Sjá's dependencies relocks Glitnir, the shell
   and the glue. The archive exports Sjá's `sja_call` through `pub use glitnir::*`; `tests/ffi.rs`
   (`sja_entry_points_come_from_sja_export`) checks that Sjá writes it with `sja_export!`.
-- **Features:** `wayland` (default) turns on the shell's Wayland backend; `test-hooks` adds entry points that exist
+- **Features:** `wayland` (default) turns on the shell's Wayland backend; `macos` the AppKit one (Naglfar; configure
+  builds `--no-default-features --features macos` there); `test-hooks` adds entry points that exist
   only for tests (and Sjá's test panic and breaker clock, through Glitnir's `sja-test-hooks`). Configure passes `--features test-hooks` (through `GLITNIR_CARGO_FLAGS`) and turns on Rust's debug
   assertions (`CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS`) under `--enable-checking`.
 
@@ -29,16 +31,20 @@ the hook tables, `DEFUN`s) and all Cairo drawing, and calls in here through `inc
 - `check.sh [--container DISTRO] [--test NAME]`: the lock against the shell's, fmt, clippy `-D warnings` (also with
   `test-hooks`), tests and cargo-deny. `--no-run` builds the tests without running them. `--full` adds the release archive and checks that it exports every function of
   `nhglue.h` and `glitnir.h`. `--android` runs `cargo check --no-default-features --target
-  aarch64-linux-android` (no NDK, no link) and exits 3 when the toolchain has no std for that target.
+  aarch64-linux-android` (no NDK, no link) and exits 3 when the toolchain has no std for that target. `--target
+  TRIPLE` runs clippy for another platform's backend (`aarch64-apple-darwin`: `--features macos`) with a rustup
+  toolchain of the container's rustc version (`ci/target-std.sh`); the tests run on that platform (CI's macOS lane).
 - `check.sh --c-fields BUILD_DIR`: the members of `struct nhwl_output` (`src/nhwlterm.h`) are exactly the ones the
   comment above it lists (`@fields` for the shared set, `@extra NAME: reason` for each other member). `check.sh
   --provenance`: every file with an "adapted from" note names the upstream commit (`Upstream commit:` line, or a
   40-digit hash on the note). Both are text checks that need neither cargo nor a container.
 - `tests/abi.rs` (`abi::header_matches_records`) compiles `nhglue.h` with `cc` and compares its constants and
   prototypes with the Rust side.
-- `nm-check.sh BUILD_DIR`, on a `--nidhogg-wayland` build: the archive's undefined symbols minus the ones it defines
-  itself must not include any symbol Emacs's own `src/*.o` define (Rust never calls Emacs), and every `nhg_*` call in
-  `src/nhwl*.c` goes through the `NHG (…)` macro. Calls through function pointers are invisible to it; there are none.
+- `nm-check.sh BUILD_DIR`, on a `--nidhogg-wayland` or `--naglfar` build (ELF or Mach-O): the archive's undefined
+  symbols minus the ones it defines itself must not include any symbol Emacs's own `src/*.o` define (Rust never calls
+  Emacs), and every `nhg_*` call in `src/nhwl*.c` and `src/nhmac*.c` goes through the `NHG (…)` macro. Calls through
+  function pointers are invisible to it; the one C hands over, Naglfar's text source, must be registered on exactly
+  one line, in `src/nhmacterm.c`, once `nhg_set_text_source` is in the header.
 
 ## Debugging
 
@@ -65,13 +71,17 @@ Every entry point is written with `nhg_export!` (`src/guard.rs`), which runs its
 the calls that take no display lock); `tests/ffi.rs` (`ffi::every_extern_comes_from_nhg_export`) fails on any
 `extern "C"` function written by hand. The guard, in order:
 
-1. **Stack headroom.** With less than 256 KiB of stack left (`pthread_getattr_np`, read once per thread) the call
+1. **Stack headroom.** With less than 256 KiB of stack left (`pthread_getattr_np` on Linux,
+   `pthread_get_stackaddr_np` on macOS, read once per thread) the call
    returns `NHG_E_NOMEM` and nothing is poisoned: a stack probe near the end of the stack would land in Emacs's
    SIGSEGV handler, which `siglongjmp`s.
 2. **`try_lock`** on the display's state. A held lock means a call re-entered, or a `longjmp` abandoned one: the
    display is poisoned instead of hanging Emacs.
 3. **`catch_unwind`.** A panic poisons the display and keeps its first report; the backtrace is captured at once and
    resolved when the report is read, so the call returns at once.
+4. **On macOS,** the call runs in an autorelease pool (outside `catch_unwind`), and an Objective-C exception it
+   raises becomes a panic inside `catch_unwind` (`nhshell::catch_objc`; the foreign exception itself would abort),
+   so an AppKit exception poisons the display like any panic.
 
 A poisoned display answers `NHG_E_PANIC` to everything but `nhg_panic_message` and `nhg_close`. C sets
 `glue_broken`, and the next `read_socket_hook` drops the display as if the compositor had gone. `nhg_close` then
@@ -148,7 +158,9 @@ Every shell window C makes goes through `nhg_window_new` (`src/window.rs`), whos
 frame starts from (native size, scale, visible, iconified, our own title bar): the glue registers the window seeded
 with them. Tip, popup and child frames get a new window each time they are shown, so each new window starts from
 Emacs's values, and its alpha starts over. `nhg_window_destroy` destroys and forgets (the frame is forgotten even when
-a lost connection makes the shell refuse).
+a lost connection makes the shell refuse). A `parent-frame` change goes through `nhg_window_reparent` where the shell
+can move a window between the trees in place (macOS): the window keeps its id and its picture, its children come
+along, and nothing is drawn again; elsewhere C makes the windows again.
 
 - **Operations:** title, `undecorated` (a child's window has nothing to ask), alpha, the size C sets itself (a push,
   as `nhg_frame_resized`), the smallest size (none for a child), visibility and iconify (checked pushes), fullscreen
@@ -195,6 +207,14 @@ stacking, input region and mapping go out with its tree's commit.
   in one commit; any other move goes at once, with a bare commit of the parent.
 - **Stacking:** C keeps the siblings' order (its tree walk lists children by it) and hands it to `nhg_child_stack` on
   raise and lower; the glue stacks the child against its neighbour. The keyboard focus redirect stays C.
+
+## Flat menu records
+
+`src/menu.rs` is the glue's side of Naglfar's menus (no C caller yet). Lisp walks a menu-bar keymap or a popup's
+`menu_items` into one vector of seven slots per entry (`nhmac-menu--flatten`, `lisp/term/nhmac-win.el`: depth, kind,
+label, key description, enabled, state, `menu_items` index); C copies it into records, and `menu::decode` checks it
+(depths step down by one under a submenu only, a submenu has children, separators carry no text, indexes rise) and builds
+the tree the native menu builder reads. The slot numbers and kinds are the same in both files.
 
 ## Menu popups
 
@@ -272,6 +292,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_frame_resized` / `nhg_frame_scale` / `nhg_frame_units` / `nhg_frame_csd` | - | push the facts a frame's decisions read | same |
 | `nhg_next` | - | take one shell event as actions | same |
 | `nhg_panic_message` / `nhg_test_panic` / `nhg_last_error` / `nhg_give_up` / `nhg_debug_check_frame` | - | panic, error and checking-build helpers | same |
+| `nhg_app_call` / `nhg_app_query` | - | a platform request by kind, its arguments and answer as Lisp text (`nhmac--call`, `nhmac--query`) | the AppKit requests (`app.rs`); a query may run a modal session; on Wayland every kind is `NHG_E_UNSUPPORTED` |
 | `nhg_layer_ensure` | - | make the frame's Glitnir layer match a geometry | same (Glitnir is the compositor-independent scene) |
 | `nhg_backing` | R W | size the frame's backing and describe it | same; CoreAnimation layers could use an IOSurface instead |
 | `nhg_damage` / `nhg_damage_all` | - | damage rectangles of the frame | same |
@@ -289,7 +310,9 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_im_enable` / `nhg_im_cursor` / `nhg_im_surrounding` | - | the input method's requests | `NSTextInputClient` |
 | `nhg_monitors` / `nhg_frame_outputs` / `nhg_frame_monitors` / `nhg_monitor_origin` | - | outputs, the ones a frame is on, a monitor's device origin | `NSScreen` list |
 | `nhg_window_new` / `nhg_window_destroy` | - | make or destroy a frame's shell window | `NSWindow` |
+| `nhg_window_reparent` | - | `NHG_E_UNSUPPORTED` (a surface keeps its role: C makes the window again) | the window keeps its id and picture: a child's container becomes an `NSWindow`, a top-level's window closes and its surfaces become a container, a child's container moves to its new parent |
 | `nhg_window_title` / `nhg_window_undecorated` / `nhg_window_alpha` / `nhg_window_min_size` / `nhg_window_size` | - | title, decoration, alpha, smallest size, pushed size | the matching `NSWindow` properties |
+| `nhg_window_place` | - | `NHG_E_UNSUPPORTED` (Wayland clients have no position) | `setFrameTopLeftPoint`, from the main screen's top-left as NS's `set_offset` places a frame |
 | `nhg_window_move` / `nhg_window_resize` / `nhg_window_show_menu` / `nhg_window_activate` | - | interactive move and resize, window menu, activation | `performWindowDrag`, `NSWindow` resize, no window menu, `makeKeyAndOrderFront` |
 | `nhg_window_visible` / `nhg_window_iconify` / `nhg_window_fullscreen` | - | visibility, minimize, fullscreen | `orderFront`/`orderOut`, `miniaturize`, `toggleFullScreen` |
 | `nhg_window_wait_configured` | - | one round of the wait for the first configure | returns configured at once |
@@ -300,6 +323,8 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_scroll_window` | W | scroll a window's rows; promote or demote its layer | same; a layer is a `CALayer` |
 | `nhg_layers_sync` / `nhg_layers_count` | - | demote layers that are gone, resized or idle; count them | same |
 | `nhg_bell_flash` / `nhg_bell_restore` | W | the visible bell's rows inverted and put back | same |
+| `nhg_frame_param` | - | what changing a frame parameter does (validation, clamps, defaults, what to redo): `params.rs` | same |
+| `nhg_font_id` / `nhg_font_name` / `nhg_font_list` / `nhg_font_match` | - | font-spec records and `macfont_list`/`macfont_match` matching over a font source (`fontspec.rs`; none on Linux) | Core Text source |
 | `nhg_inhibit_idle` | - | hold or release an idle inhibitor | `IOPMAssertion` |
 | `nhg_window_export` / `nhg_activation_token` | - | xdg-foreign handle; activation token | no counterpart (nothing, error) |
 | `nhg_session_open` / `nhg_session_id` / `nhg_session_remove` | - | the compositor's session for frame restore | state restoration, or nothing |
@@ -307,3 +332,21 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_drag_start` / `nhg_drag_cancel` / `nhg_drag_state` | - | drag source | `NSDraggingSource` |
 | `nhg_set_reconnect` / `nhg_reconnect_step` / `nhg_reconnect_settle` | - | reconnect in place after the compositor goes | not used (no compositor to lose) |
 | `nhg_premultiply` | - | a colour as a backing stores it | same |
+| `nhg_stacking` / `nhg_draw_count` | - | tests: a root's child windows as stacked; its commits that showed something | same |
+| `nhg_layout_leg` | - | a window's layout leg vector to the shell, the newest capture's number back | same |
+| `nhg_wait` / `nhg_wake` / `nhg_set_lock_waiters` | - | not used (Emacs's own select) | the main wait on the run loop, its wake from any thread, and the lock waiters' count it watches |
+| `nhg_draw` / `nhg_draw_glyphs` / `nhg_draw_image` | W | not used (Cairo draws) | `image.c`'s and the glyph strings' drawing records painted with Core Graphics (`draw.rs`); an image through its matrix, wrapped once as a `CGImage` |
+| `nhg_font_start` / `nhg_font_open` / `nhg_font_close` / `nhg_font_glyph` / `nhg_font_glyph_metrics` | - | `NHG_E_UNSUPPORTED` (fontconfig and Cairo) | the Core Text font driver: faces opened at a size, glyphs and their metrics rounded as `macfont` rounds them |
+| `nhg_image_type` / `nhg_xpm_names` / `nhg_image_decode` / `nhg_image_take` / `nhg_image_free` / `nhg_image_forget` | - | `NHG_E_UNSUPPORTED` (image.c's own libraries); an XPM decodes on any platform, its colour names resolved by `image.c` first | `image.c`'s native route: ImageIO, an XPM through `xpm.rs`, into the plain containers; a freed container's picture forgotten |
+| `nhg_image_stand_in` / `nhg_image_stand_drop` / `nhg_draw_stand_in` | W | not used (a Cairo pattern shares the ready surface) | the image worker's stand-ins (`stand.rs`): a pending image drawn with a ready one's pixels, copied, through the matrix the Cairo branch composes |
+| `nhg_image_transform` | - | the matrix `image_set_transform` makes for Cairo (platform-free) | the image's matrix, stored for drawing |
+| `nhg_bitmap_to_container` | - | not used (Cairo's branch fills its surface) | an XBM's bits into the plain 32-bit container, a word per bit |
+| `nhg_svg_size` / `nhg_svg_render` | - | `NHG_E_UNSUPPORTED` (librsvg) | SVG through the shell's resvg route (`svg.rs`), with `svg_load_image`'s CSS, colours and size |
+| `nhg_wait` / `nhg_wake` / `nhg_set_lock_waiters` | - | not used (Emacs's `pselect`) | the main wait: the run loop and the fds through kqueue, holding the global lock; a wake from any thread; parked only while no Lisp thread wants the lock |
+| `nhg_draw` / `nhg_draw_glyphs` / `nhg_draw_image` | W | not used (Cairo draws) | draw records (`draw.rs`) painted with Core Graphics: fills, reliefs, lines, glyph runs, images through their matrix |
+| `nhg_font_start` / `nhg_font_open` / `nhg_font_close` / `nhg_font_glyph` / `nhg_font_glyph_metrics` | - | `NHG_E_UNSUPPORTED` (fontconfig and Cairo) | the Core Text font driver's source, faces and glyph metrics, rounded as `macfont.m` rounds them (`font.rs`) |
+| `nhg_image_type` / `nhg_xpm_names` / `nhg_image_decode` / `nhg_image_take` / `nhg_image_free` / `nhg_image_forget` | - | not used (`image.c`'s own decoders) | `image.c`'s native route: ImageIO for PNG, JPEG, GIF, TIFF, WebP and HEIC, the glue's reader for XPM (`image.rs`, `xpm.rs`); the drawn `CGImage` forgotten with its pixels |
+| `nhg_image_stand_in` / `nhg_image_stand_drop` / `nhg_draw_stand_in` | W | not used (Cairo patterns) | the image worker's stand-in for a pending image: a copy of the ready image's pixels, scaled into the pending box through the ready image's matrix (`stand.rs`) |
+| `nhg_image_transform` | - | not used (Cairo's pattern matrix) | `image_set_transform`'s matrix as the Cairo branch makes it, kept in the image and drawn through |
+| `nhg_bitmap_to_container` | - | not used (Cairo's branch fills its surface) | `Create_Pixmap_From_Bitmap_Data`'s fill: the bitmap's bits into the plain container, the foreground for a set bit (`image.rs`) |
+| `nhg_svg_size` / `nhg_svg_render` | - | not used (librsvg) | SVG through resvg with `svg_load_image`'s CSS, colours and size (the shell's `svg.rs`) |

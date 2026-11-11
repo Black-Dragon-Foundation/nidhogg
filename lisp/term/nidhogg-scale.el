@@ -19,8 +19,8 @@
 
 ;;; Commentary:
 
-;; Each frame of the shell opens its fonts at its own resolution: 96 dpi
-;; times its scale (`frame-scale-factor') times its root frame's text
+;; Each frame of the shell opens its fonts at its own resolution: the
+;; shell's (`nidhogg-scale-dpi': 96 on Wayland, 72 on macOS) times its scale (`frame-scale-factor') times its root frame's text
 ;; zoom (`nidhogg-frame-text-zoom').  When the compositor gives a frame a
 ;; new scale, C sends a `config-changed-event' whose type is
 ;; (nidhogg-scale . DPI), DPI the resolution the frame's fonts were opened
@@ -34,6 +34,10 @@
 ;; frames (they share their root's) and re-opens their fonts the same way.
 
 ;;; Code:
+
+(defvar nidhogg-scale-dpi 96.0
+  "The resolution of the shell at scale 1, as C opens fonts at it.
+96 on Wayland; macOS's shell sets 72 (a point is a pixel at scale 1, as on NS).")
 
 (defvar nidhogg-frame-scale-change-functions nil
   "Functions run with a frame after its scale or text zoom changed.
@@ -51,8 +55,8 @@ They run after its fonts were re-opened at the new resolution.")
     (if (numberp z) (float z) 1.0)))
 
 (defun nidhogg-scale--dpi (frame)
-  "The resolution FRAME's fonts open at: 96 dpi times its scale and text zoom."
-  (* 96.0 (frame-scale-factor frame) (nidhogg-frame-text-zoom frame)))
+  "The resolution FRAME's fonts open at: `nidhogg-scale-dpi' times its scale and text zoom."
+  (* nidhogg-scale-dpi (frame-scale-factor frame) (nidhogg-frame-text-zoom frame)))
 
 (defun nidhogg-scale--height (frame was)
   "The height in tenths of a point FRAME's default font is set to.
@@ -100,12 +104,14 @@ frames are re-opened at once."
 (defun nidhogg-scale-handle-config-changed-event (event)
   "Handle a `config-changed-event' EVENT.
 Type (nidhogg-scale . DPI) re-opens the fonts of the frame EVENT names,
-and a re-open never resizes the frame (its window keeps its size on the
-screen); other types go to `dynamic-setting-handle-config-changed-event'."
+when its resolution now differs from DPI (the one they were opened at):
+a scale report that changes nothing re-opens nothing, and a re-open never
+resizes the frame (its window keeps its size on the screen).  Other types go to
+`dynamic-setting-handle-config-changed-event'."
   (interactive "e")
   (let ((type (nth 1 event)) (frame (nth 2 event)))
     (if (eq (car-safe type) 'nidhogg-scale)
-        (when (frame-live-p frame)
+        (when (and (frame-live-p frame) (/= (cdr type) (nidhogg-scale--dpi frame)))
           ;; the window keeps its size on the screen, which the compositor or AppKit
           ;; already gave it at the new scale: the text follows, never the window
           (let ((frame-inhibit-implied-resize t))

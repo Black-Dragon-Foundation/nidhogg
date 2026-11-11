@@ -6,8 +6,13 @@
 #    none, because C passes no callbacks to the glue (a header rule).
 # (1b. Sjá's sja_call is defined in the archive; src/nidhogg-views.c calls it directly, outside NHG: it runs inside a
 #  DEFUN, never while waiting for input, so no signal handler's longjmp can cross it, and Sjá's guard checks headroom.)
-# 2. Every glue call in src/nhwl*.c goes through the NHG (…) macro (it clears waiting_for_input, so no longjmp crosses a
-#    Rust frame): a line with an `nhg_name (` call and no `NHG (` is reported.  A warning until the macro exists.
+# 2. Every glue call in src/nhwl*.c and src/nhmac*.c goes through the NHG (…) macro (it clears waiting_for_input, so no
+#    longjmp crosses a Rust frame): a line with an `nhg_name (` call and no `NHG (` is reported.  A warning until the
+#    macro exists.
+# 3. The one function pointer C hands the glue, Naglfar's text source, is registered from one place: once
+#    nhg_set_text_source is in nhglue.h, src/*.c must call it on exactly one line, in src/nhmacterm.c.  A source rule
+#    beside the symbol rule, since function pointers are invisible to nm.
+# ELF (Linux) and Mach-O (macOS) alike: nm -P on both, with Mach-O's leading underscore stripped.
 # Usage: nm-check.sh BUILD_DIR   (build.sh's --build-dir, which holds obj/src, or a configured tree's top, which holds
 # src).  Prints "nm-check: ok", or the offending names and exits 1; 2 on usage or a missing build.
 set -u
@@ -22,14 +27,31 @@ if [ -d "$B/obj/src" ]; then obj=$B/obj/src; else obj=$B/src; fi
 lib=$obj/glitnir-target/release/libnhglue.a
 [ -f "$lib" ] || { echo "nm-check: no $lib (build with --nidhogg-wayland first)" >&2; exit 2; }
 ls "$obj"/*.o >/dev/null 2>&1 || { echo "nm-check: no objects in $obj" >&2; exit 2; }
-command -v nm >/dev/null 2>&1 || { echo "nm-check: nm not found (binutils)" >&2; exit 2; }
+# the nm of the Rust toolchain that built the archive (rustup's llvm-tools), which reads what its LLVM wrote; the
+# system's (binutils, or Xcode's, whose LLVM may be older than rustc's) otherwise.  NM overrides both.
+if [ -z "${NM:-}" ]; then
+  NM=nm
+  rs=$(rustc --print sysroot 2>/dev/null) && host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p') &&
+    [ -x "$rs/lib/rustlib/$host/bin/llvm-nm" ] && NM=$rs/lib/rustlib/$host/bin/llvm-nm
+fi
+command -v "$NM" >/dev/null 2>&1 || { echo "nm-check: $NM not found (binutils, or rustup component add llvm-tools)" >&2; exit 2; }
 bad=0
 
 # POSIX output: "NAME TYPE [VALUE SIZE]"; the archive's member headers ("lib.a[x.o]:") have no type field
-undef=$(nm -P -g "$lib" 2>/dev/null | awk 'NF >= 2 && ($2 == "U" || $2 == "w" || $2 == "v") {print $1}' | sort -u)
-def=$(nm -P -g --defined-only "$lib" 2>/dev/null | awk 'NF >= 2 {print $1}' | sort -u)
+strip=cat
+[ "$(uname -s)" = Darwin ] && strip="sed s/^_//"
+# nm must read every member: a member it cannot read (an object newer than its LLVM) hides that member's names from
+# both checks, so its complaints fail the check
+nmerr=$("$NM" -P -g "$lib" 2>&1 >/dev/null | grep -v 'no symbols$')
+if [ -n "$nmerr" ]; then
+  echo "nm-check: $NM could not read all of libnhglue.a (on macOS: rustup component add llvm-tools, for the toolchain that built it):"
+  printf '%s\n' "$nmerr" | head -n 5 | sed 's/^/  /'
+  bad=1
+fi
+undef=$("$NM" -P -g "$lib" 2>/dev/null | awk 'NF >= 2 && ($2 == "U" || $2 == "w" || $2 == "v") {print $1}' | $strip | sort -u)
+def=$("$NM" -P -g --defined-only "$lib" 2>/dev/null | awk 'NF >= 2 {print $1}' | $strip | sort -u)
 external=$(comm -23 <(printf '%s\n' "$undef") <(printf '%s\n' "$def"))
-emacs=$(nm -P -g --defined-only "$obj"/*.o 2>/dev/null | awk 'NF >= 2 && $1 !~ /:$/ {print $1}' | sort -u)
+emacs=$("$NM" -P -g --defined-only "$obj"/*.o 2>/dev/null | awk 'NF >= 2 && $1 !~ /:$/ {print $1}' | $strip | sort -u)
 [ -n "$emacs" ] || { echo "nm-check: no symbols defined by $obj/*.o" >&2; exit 2; }
 calls=$(comm -12 <(printf '%s\n' "$external") <(printf '%s\n' "$emacs"))
 if [ -n "$calls" ]; then
@@ -42,17 +64,27 @@ fi
 # of Emacs (the check above covers its members, which are the archive's)
 if ! printf '%s\n' "$def" | grep -qx sja_call; then
   echo "nm-check: libnhglue.a does not define sja_call (Sjá's entry point; glitnir's pub use sja::abi::sja_call)"
+  echo "nm-check: $(printf '%s\n' "$def" | grep -c .) defined names read from $(ar t "$lib" 2>/dev/null | grep -c .) members"
   bad=1
 fi
 
 # the NHG grep (comments are not exempt: write the name without the parenthesis there)
-unwrapped=$(cd "$SRC/.." && grep -n 'nhg_[a-z_]* (' src/nhwl*.c | grep -v 'NHG (')
+unwrapped=$(cd "$SRC/.." && grep -n 'nhg_[a-z_]* (' src/nhwl*.c src/nhmac*.c 2>/dev/null | grep -v 'NHG (')
 if [ -n "$unwrapped" ]; then
   if [ "$NHG_RULE" = fail ]; then
     echo "nm-check: glue calls outside NHG (…):"; printf '%s\n' "$unwrapped" | sed 's/^/  /'; bad=1
   else
     echo "nm-check: warning: glue calls outside NHG (…) (the macro is not there yet):"
     printf '%s\n' "$unwrapped" | sed 's/^/  /'
+  fi
+fi
+
+# the text source's one registration
+if grep -q 'nhg_set_text_source' "$SRC/../nidhogg/glue/include/nhglue.h"; then
+  sites=$(cd "$SRC/.." && grep -n 'nhg_set_text_source (' src/*.c)
+  if [ "$(printf '%s\n' "$sites" | grep -c .)" != 1 ] || [ "${sites%%:*}" != src/nhmacterm.c ]; then
+    echo "nm-check: nhg_set_text_source must be called on exactly one line, in src/nhmacterm.c; found:"
+    printf '%s\n' "${sites:-  (none)}" | sed 's/^/  /'; bad=1
   fi
 fi
 
