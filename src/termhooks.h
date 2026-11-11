@@ -363,6 +363,13 @@ enum event_kind
   /* In a TOOLKIT_THEME_CHANGED_EVENT, .arg is the value to which the
      toolkit theme was altered.  */
   , TOOLKIT_THEME_CHANGED_EVENT
+#ifdef HAVE_GLITNIR
+
+  /* A MOUSE_SENSOR_EVENT: the pointer went from one run of
+     `mouse-sensor-functions' to another (xdisp.c).  .arg is (OLD
+     OLD-WINDOW OLD-POS NEW NEW-WINDOW NEW-POS).  */
+  , MOUSE_SENSOR_EVENT
+#endif
 
 #ifdef HAVE_HAIKU
   /* In a NOTIFICATION_CLICKED_EVENT, .arg is an integer identifying

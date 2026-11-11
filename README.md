@@ -1216,6 +1216,30 @@ types). Emacs reads only presses, so Nidhogg's native shell (Wayland and Naglfar
 - Tests: `nidhogg/glue/tests/keys.rs` (`release_repeats_the_press`, the compose row) and the GUI row
   `nhwl-gui/key-release-and-repeat-events` (recorder).
 
+## Mouse sensors
+
+`mouse-face` changes a face under the pointer, never text, so a control cannot change on hover (drgnx's ● of a file
+with unsaved changes, which becomes × to close it, as VS Code's does). Mouse sensors are cursor-sensor for the pointer
+(group `glitnir`, `HAVE_GLITNIR`).
+
+- `mouse-sensor-enabled`: nil (the default) reads nothing: the pointer's path costs one flag test. Non-nil:
+  `note_mouse_highlight` reads the property `mouse-sensor-functions` (text or overlay, overlay strings included) where
+  the pointer is, beside the `mouse-face` and `help-echo` reads it already does.
+- A change of run (by `eq` of the value, or another window) is queued as a `MOUSE_SENSOR_EVENT`, never run in the
+  display code. read_char runs it as it runs `help-echo`: the old run's functions get (WINDOW POS `left`), then the new
+  one's (WINDOW POS `entered`). It is no command and no input: `this-command`, the key sequence being read, the recent
+  keys, the dribble file and keyboard macros are untouched, `while-no-input` ignores it, and the echo area stays. An
+  error is reported in a message, never raised. POS is the buffer position; in an overlay or display string, its row's
+  start.
+- Leaving: moving off a window's text (a mode line, a fringe, another window, nothing) leaves the run, and each shell's
+  leave handler calls `note_mouse_sensor_leave` (Wayland: `nhwl_leave_apply`; the NS port: `mouseExited:`; Naglfar:
+  its mouse-exited path, once it reports motion).
+- Files: `src/xdisp.c` (`note_mouse_sensor`, the read in `note_mouse_highlight`, `nidhogg--note-mouse` for tests),
+  `src/keyboard.c` (the event, `run_mouse_sensor`), `src/termhooks.h`, `src/dispextern.h`, `src/nhwlterm.c`,
+  `src/nsterm.m`.
+- Tests: `test/src/nidhogg-tests/mouse-sensor-gui-tests.el` (order, leaving, off, a key sequence across a sensor, an
+  error; `mouse-sensor-gui/motion-cost`, tagged `:timing`, measures the pointer's cost off and on).
+
 ## Reporting issues
 
 - Problems specific to Nidhogg (its patches, build, or `nidhogg-version`) go to this repository's issue tracker.

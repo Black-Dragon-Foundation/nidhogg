@@ -2961,6 +2961,9 @@ nhwl_leave_apply (struct frame *f)
   Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
 
   clear_mouse_face (hlinfo);
+#ifdef HAVE_GLITNIR
+  note_mouse_sensor_leave (f);
+#endif
   if (FRAME_DISPLAY_INFO (f)->last_mouse_frame == f)
     FRAME_DISPLAY_INFO (f)->last_mouse_frame = NULL;
 }
