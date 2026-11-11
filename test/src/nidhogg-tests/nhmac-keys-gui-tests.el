@@ -77,4 +77,41 @@ and drgnx's `drgnx-keys--mac-cmd' binds it; on a named key Shift stays (S-s-<rig
           (should (eq (nhmac-keys--read #xF703 (logior nhmac-keys--command shift arrow)) 'S-s-right)))
       (setq ns-command-modifier 'super))))
 
+;; Key releases (the kitty keyboard protocol's event types, for drgnx's terminal): Naglfar's keyUp: sends the key code
+;; its keyDown: sent, and the glue gives the release its press's event.
+(defvar nidhogg-key-events)
+
+(ert-deftest nhmac-keys-release-events ()
+  "A release is a `key-release' special event only while `nidhogg-key-events' is non-nil: off, only the press
+arrives; on, the press and then (key-release ?a), plain and with Option as meta."
+  (skip-unless (nhmac-keys--naglfar-p))
+  (let* ((released nil) (read nil)
+         (special-event-map (let ((m (copy-keymap special-event-map)))
+                              (define-key m [key-release] (lambda () (interactive) (push last-input-event released)))
+                              m))
+         (ns-alternate-modifier 'meta)
+         (nidhogg-key-events nil)
+         (drain (lambda () (dotimes (_ 10) (let ((e (read-event nil nil 0.1))) (when e (push e read)))))))
+    (while (read-event nil nil 0.1))
+    ;; off: the press arrives, the release does not
+    (nhmac--test-post-key ?a)
+    (should (eq (read-event nil nil 2) ?a))
+    (funcall drain)
+    (message "nhmac-keys-release-events: off, released %S, read after %S" released read)
+    (should-not released)
+    ;; on: the release arrives as the press's event
+    (setq nidhogg-key-events t read nil)
+    (nhmac--test-post-key ?a)
+    (should (eq (read-event nil nil 2) ?a))
+    (dotimes (_ 50) (unless released (funcall drain)))
+    (message "nhmac-keys-release-events: on, released %S, read after %S" released read)
+    (should (equal released '((key-release ?a))))
+    ;; a chord's release is its press's event too
+    (setq released nil read nil)
+    (nhmac--test-post-key ?a ?a nhmac-keys--option)
+    (should (eq (read-event nil nil 2) ?\M-a))
+    (dotimes (_ 50) (unless released (funcall drain)))
+    (message "nhmac-keys-release-events: chord, released %S, read after %S" released read)
+    (should (equal released '((key-release ?\M-a))))))
+
 ;;; nhmac-keys-gui-tests.el ends here
