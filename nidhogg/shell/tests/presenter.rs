@@ -713,6 +713,45 @@ mod presenter {
         );
     }
 
+    /// The structure the 1 ms bound of the GUI storm row (`nhwl-gui/delete-frame-storm-while-presenting`) rests on,
+    /// asserted by what completes, not by a clock: with a compose parked at the gate (no tree mutex held), the host's
+    /// calls (50 more packets, the window's destroy) all return, so none of them waits for a compose.  A watchdog
+    /// aborts the run if one does.
+    #[test]
+    fn the_host_never_waits_for_a_parked_compose() {
+        let rec = Recorder::start_clock("sway", "manual");
+        let mut shell = threaded(&rec);
+        let mut b = Backing::new(200, 100);
+        let id = window(&mut shell, &rec, &mut b);
+        present(&rec);
+        until(&mut shell, "the callback", |s| !waiting(s, id));
+        shell.set_compose_gate(true);
+        b.fill(Rect::new(0, 0, 50, 50), 0xff00_ff00);
+        assert!(publish(&mut shell, id, &[(&b, id)], 0));
+        assert!(
+            shell.composes_held(1, Duration::from_secs(10)),
+            "the picture composed"
+        );
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watch = done.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(30));
+            if !watch.load(std::sync::atomic::Ordering::SeqCst) {
+                eprintln!("a host call is waiting for a parked compose");
+                std::process::abort();
+            }
+        });
+        for i in 0..50u32 {
+            b.fill(Rect::new(i as i32, 0, 10, 10), 0xff00_0000 | (i * 7919));
+            assert!(publish(&mut shell, id, &[(&b, id)], 0));
+        }
+        shell.window_destroy(id).unwrap();
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        shell.set_compose_gate(false);
+        stays_up(&mut shell);
+        assert!(shell.next_event().is_ok(), "no protocol error");
+    }
+
     /// Closing joins the presenter within 100 ms, even with a compose under way.
     #[test]
     fn close_joins_within_100ms() {
