@@ -944,8 +944,10 @@ mod tests {
         assert_eq!(std::mem::offset_of!(LayerDesc, rect), 20);
         assert_eq!(std::mem::offset_of!(LayerDesc, scale), 40);
         assert_eq!(std::mem::offset_of!(LayerDesc, visible), 48);
-        assert_eq!(std::mem::size_of::<Chrome>(), 36);
+        assert_eq!(std::mem::size_of::<Chrome>(), 44);
         assert_eq!(std::mem::offset_of!(Chrome, border_argb), 32);
+        assert_eq!(std::mem::offset_of!(Chrome, ring_px), 36);
+        assert_eq!(std::mem::offset_of!(Chrome, ring_argb), 40);
     }
 
     #[test]

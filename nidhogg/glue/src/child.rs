@@ -83,6 +83,8 @@ pub struct Child {
     /// The transitions the shell has for the window, and its backdrop's σ in logical pixels (0: none).
     motion: Option<MotionSpec>,
     backdrop: f32,
+    /// The edge ring just outside the frame, `(0xRRGGBB, opacity)`, 1 logical px wide (None: none).
+    ring: Option<(u32, f32)>,
     /// The Glitnir layer's rectangle as last handed over (None: not yet).
     layer: Option<NhgRect>,
     /// The surface's offset in the parent's surface (logical) and its input region (logical; all 0 for none), as
@@ -215,12 +217,18 @@ fn scale120(f: &Frame) -> u32 {
 /// each is grown to a whole number of logical pixels: the surface's place in its parent is logical, so at scale 2 an
 /// odd margin would put the native area a device pixel off where the frame is.  At scale 1 (`s120` 120) it is the
 /// logical room a framed top-level's margins hold (`csd::layout`).
-pub(crate) fn margins(c: &NhgChrome, s120: u32) -> [i32; 4] {
-    // as C's `opacity > 0`: none at 0 or below, or NaN
-    if c.on == 0 || c.opacity.is_nan() || c.opacity <= 0.0 {
-        return [0; 4];
-    }
+pub(crate) fn margins(c: &NhgChrome, ring: bool, s120: u32) -> [i32; 4] {
     let s = f64::from(if s120 == 0 { 120 } else { s120 }) / 120.0;
+    // a ring is 1 logical px just outside the frame: every side keeps room for it
+    let ring = if ring && c.on != 0 {
+        s.round().max(1.0) as i32
+    } else {
+        0
+    };
+    // as C's `opacity > 0`: no shadow at 0 or below, or NaN
+    if c.on == 0 || c.opacity.is_nan() || c.opacity <= 0.0 {
+        return [ring; 4];
+    }
     let pad = ((1.5 * f64::from(c.blur) * s).ceil() as i32)
         .saturating_add(1)
         .saturating_add((f64::from(c.spread) * s).round() as i32);
@@ -231,10 +239,10 @@ pub(crate) fn margins(c: &NhgChrome, s120: u32) -> [i32; 4] {
     let k = if n % 120 == 0 { (n / 120) as i32 } else { 1 };
     let whole = |m: i32| m.saturating_add(k - 1) / k * k;
     [
-        whole(pad.saturating_sub(ox).max(0)),
-        whole(pad.saturating_sub(oy).max(0)),
-        whole(pad.saturating_add(ox).max(0)),
-        whole(pad.saturating_add(oy).max(0)),
+        whole(pad.saturating_sub(ox).max(ring)),
+        whole(pad.saturating_sub(oy).max(ring)),
+        whole(pad.saturating_add(ox).max(ring)),
+        whole(pad.saturating_add(oy).max(ring)),
     ]
 }
 
@@ -255,7 +263,7 @@ pub fn layout(
     s120: u32,
 ) -> Result<(bool, NhgCsdLayout), GlueError> {
     let f = child_mut(state, window)?;
-    let m = margins(&f.child.chrome, s120);
+    let m = margins(&f.child.chrome, f.child.ring.is_some(), s120);
     let changed = f.csd.set_margins(s120, m);
     Ok((
         changed,
@@ -386,12 +394,14 @@ pub fn chrome(state: &mut Display, window: u64, v: &[f32]) -> Result<bool, GlueE
         f.child.backdrop = d.backdrop_px;
     }
     let n = d.chrome.unwrap_or_default();
-    if f.child.chrome == n {
+    if f.child.chrome == n && f.child.ring == d.ring {
         return Ok(false);
     }
-    f.child.chrome = n;
+    // a ring needs room around the frame as the shadow does: C lays it out again
+    let margins = f.child.chrome != n || f.child.ring.is_some() != d.ring.is_some();
+    (f.child.chrome, f.child.ring) = (n, d.ring);
     f.child.chrome_dirty = true;
-    Ok(true)
+    Ok(margins)
 }
 
 /// Child `window`'s border as C painted it now: `width` device pixels (0: none) in premultiplied `argb`.  Whether it
@@ -554,7 +564,8 @@ pub fn apply_chrome(state: &mut Display, window: u64, key: u64, s120: u32) {
     let s = f64::from(s120) / 120.0;
     c.chrome_dirty = false;
     c.chrome_s120 = s120;
-    let (mut ch, (border, border_argb)) = (c.chrome, c.border);
+    let (mut ch, (border, border_argb), ring) =
+        (c.chrome, c.border, if top { None } else { c.ring });
     if top {
         ch = match (framed && margins, floating && ch.on != 0) {
             (false, _) => NhgChrome::default(),
@@ -577,6 +588,8 @@ pub fn apply_chrome(state: &mut Display, window: u64, key: u64, s120: u32) {
         // already device pixels: C paints the border in the frame's own pixels
         border_px: border as f32,
         border_argb,
+        ring_px: ring.map_or(0.0, |_| s.round().max(1.0) as f32),
+        ring_argb: ring.map_or(0, |(rgb, o)| crate::cards::premultiplied(rgb, o)),
     });
     let p = g.as_ref().map_or(ptr::null(), |g| g as *const Chrome);
     // SAFETY: `p` is null or points to `g`, a readable Chrome for the call.  Glitnir's answer is ignored, as C did (a
