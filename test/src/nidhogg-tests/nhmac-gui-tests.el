@@ -2403,6 +2403,20 @@ families as on NS."
                 (should (nhmac-gui--near (mapcar (lambda (g) (nthcdr 3 g)) nglyphs)
                                          (mapcar (lambda (g) (nthcdr 3 g)) mglyphs) scale)))))
 
+(ert-deftest nhmac-font-at-every-script ()
+  "Each shaping text shown in the default face has a font: `font-at' gives a font object at its first character, as
+on NS.  Logged: what `font-at' gave, the character's script and how many fonts `list-fonts' finds for the script."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (dolist (td nhmac-gui--shaping-texts)
+    (nhmac-gui--with-text 'default (car td)
+      (let* ((font (font-at (point)))
+             (script (aref char-script-table (char-after)))
+             (listed (list-fonts (font-spec :script script))))
+        (nhmac-gui--say "nhmac-font-at-every-script: %s %S: font-at %S, %d fonts listed, first %S"
+                        script (char-after) font (length listed) (car listed))
+        (should (fontp font 'font-object))))))
+
 (ert-deftest nhmac-paired-cjk-emoji-scroll ()
   "Scrolling CJK and emoji text by a line, timed in the process: 50 scrolls, each a redisplay, written to
 GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line), as nhmac-paired-key-to-commit's times are; both builds
