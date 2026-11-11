@@ -459,9 +459,11 @@ glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
 
 /* Repaint the corners of the rounded run end that the glyph on S's row
    beside S (NB, on SIDE of S) carries, after S's redraw may have painted over
-   them: the r x r squares in the colour beneath (S's own background there),
-   the run's rounded background, then the ring.  The run is NB and the glyphs
-   of its face before it (SIDE_LEFT) or after it (SIDE_RIGHT).  */
+   them: outside each arc the colour beneath (S's own background there), then
+   the ring.  Inside the arcs nothing: the run's own background and text are
+   there, and a run whose text reaches its ends (a pill with little or no
+   pad, a radius up to half the row) would lose it.  The run is NB and the
+   glyphs of its face before it (SIDE_LEFT) or after it (SIDE_RIGHT).  */
 
 static void
 repaint_neighbour_end (struct glyph_string *s, struct glyph *nb, int side)
@@ -503,6 +505,16 @@ repaint_neighbour_end (struct glyph_string *s, struct glyph *nb, int side)
 
   int left_x = side == SIDE_LEFT ? s->x - w : s->x + s->width;
   int top_y = s->y, h = s->height;
+  /* :fit text: the run's box spans its font's ascent and descent, as
+     glitnir_decor_draw_box drew it, not S's row.  */
+  if (k.fit_text && face->font)
+    {
+      int line = max (face->box_horizontal_line_width, 0);
+      int y0 = max (top_y, s->ybase - FONT_BASE (face->font) - line);
+      int y1 = min (top_y + h - 1,
+		    s->ybase + FONT_DESCENT (face->font) + line - 1);
+      top_y = y0, h = y1 + 1 - y0;
+    }
   struct glyph *beside = side == SIDE_LEFT ? s->first_glyph
 					   : s->first_glyph + s->nchars - 1;
   unsigned long beneath;
@@ -527,8 +539,9 @@ repaint_neighbour_end (struct glyph_string *s, struct glyph *nb, int side)
   cairo_clip (cr);
 
   /* The two corner squares at the end facing S (corners 0 top left, then
-     clockwise): the colour beneath, then the run's quarter disc; then the
-     ring there.  The coverage kernel when it can; else Cairo.  */
+     clockwise): the colour beneath outside the arc, composed over what is
+     there (FILL 0); then the ring there.  The coverage kernel when it can;
+     else Cairo.  */
   unsigned long under[2] = { beneath, beneath };
   XRectangle end_clip = { left_x - 1, clip.y, w + 2, clip.height };
   bool kernel_p
@@ -536,27 +549,23 @@ repaint_neighbour_end (struct glyph_string *s, struct glyph *nb, int side)
 		  side == SIDE_LEFT ? (rr ? 2 : 0) : (l ? 8 : 0),
 		  (side == SIDE_LEFT ? (rtr > 0) << 1 | (rbr > 0) << 2
 		   : (rtl > 0) | (rbl > 0) << 3),
-		  under, premul (f, face->background), end_clip);
-  struct { int i; double rad, x, y; } sq[2];
+		  under, 0, end_clip);
+  struct { int i; double rad; } sq[2];
   if (side == SIDE_LEFT)
     {
-      sq[0].i = 1, sq[0].rad = rtr, sq[0].x = r.x + r.w - rtr, sq[0].y = r.y;
-      sq[1].i = 2, sq[1].rad = rbr, sq[1].x = r.x + r.w - rbr;
-      sq[1].y = r.y + r.h - rbr;
+      sq[0].i = 1, sq[0].rad = rtr;
+      sq[1].i = 2, sq[1].rad = rbr;
     }
   else
     {
-      sq[0].i = 0, sq[0].rad = rtl, sq[0].x = r.x, sq[0].y = r.y;
-      sq[1].i = 3, sq[1].rad = rbl, sq[1].x = r.x, sq[1].y = r.y + r.h - rbl;
+      sq[0].i = 0, sq[0].rad = rtl;
+      sq[1].i = 3, sq[1].rad = rbl;
     }
   for (int i = 0; i < 2 && !kernel_p; i++)
     if (sq[i].rad > 0)
       {
-	cairo_rectangle (cr, sq[i].x, sq[i].y, sq[i].rad, sq[i].rad);
+	corner_path (cr, r.x, r.y, r.w, r.h, sq[i].i, sq[i].rad, true);
 	set_colour (f, beneath);
-	cairo_fill (cr);
-	corner_path (cr, r.x, r.y, r.w, r.h, sq[i].i, sq[i].rad, false);
-	set_colour (f, face->background);
 	cairo_fill (cr);
       }
   if (!kernel_p)

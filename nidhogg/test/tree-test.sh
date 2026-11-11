@@ -14,6 +14,24 @@ command -v unifdef >/dev/null || { echo "TREE FAIL: unifdef is not installed (th
 # working, overridable) defaults to the parent of the oldest commit on HEAD whose subject starts 'nidhogg: <name>:'.
 # Order-independent: either group may be on top.
 FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers shell:HAVE_NHWL,NHWL_WAYLAND:nidhogg-wayland history:HAVE_NIDHOGG_HISTORY:nidhogg-history naglfar:HAVE_NHMAC:naglfar'
+# Commits listed in SERIES_EXCEPTIONS (default nidhogg/test/series-exceptions.txt: "<sha> <reason>" per line) are
+# misfiled commits the release rebuild re-subjects; the rule does not count them.
+series_exception() {
+  local file=${SERIES_EXCEPTIONS:-nidhogg/test/series-exceptions.txt}
+  [ -f "$file" ] && grep -q "^$1" "$file"
+}
+# Whether Lisp file $1, created by a commit of a flag group, has a later commit that belongs to none (an exception excepted).
+lisp_group_file_edited_by_others() {
+  local f=$1 pat sha subj created
+  pat="^nidhogg: ($(IFS='|'; echo "${gname[*]}")):"
+  created=$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1)
+  printf '%s\n' "$created" | grep -qE "$pat" || return 1
+  while read -r sha subj; do
+    series_exception "$sha" && continue
+    printf '%s\n' "$subj" | grep -qE "$pat" || return 0
+  done < <(git log --no-merges --format='%H %s' HEAD -- "$f")   # merges never enter the final series
+  return 1
+}
 flag_rule() {
   local g name def ft b var first f sha body i j c n matched feat lowest d
   local -a gname=() gdef=() gfeat=() gbase=() flags=() feats=()
@@ -36,7 +54,11 @@ flag_rule() {
       fi
     done
     while IFS= read -r f; do
-      git cat-file -e "${gbase[i]}:$f" 2>/dev/null || continue   # new files are the group's own
+      if ! git cat-file -e "${gbase[i]}:$f" 2>/dev/null; then    # new files are the group's own, a Lisp file also
+        # when it was created by a group: only group commits may touch it, whichever group's base comes after its creation
+        case $f in lisp/*) lisp_group_file_edited_by_others "$f" && fail "$f changed outside the groups' own files" ;; esac
+        continue
+      fi
       if ! git cat-file -e "HEAD:$f" 2>/dev/null; then           # a group may remove its own file, not an upstream one
         [ -n "$(git log -1 --format=%h --diff-filter=A --grep='^nidhogg: ' HEAD -- "$f")" ] || fail "$f was removed"
         continue
@@ -57,7 +79,7 @@ flag_rule() {
           # A Lisp file a flag group created is the groups' own file: it passes while only flag-group commits touch it.
           # (Upstream files, and files whose history has any other commit, still go through the loadup-line rule.)
           if [ -z "$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1 | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ] &&
-             [ -z "$(git log --format=%s "${gbase[i]}..HEAD" -- "$f" | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ]; then
+             ! lisp_group_file_edited_by_others "$f"; then
             continue
           fi
           body=$(git diff -U0 "${gbase[i]}" HEAD -- "$f" | grep -E '^[+-][^+-]')
@@ -184,6 +206,11 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: shell: s" src/s.c '#ifdef HAVE_NHWL\nint s;\n#endif\n'
   putf "nidhogg: pgtk: p" lisp/g.el '(a)\n(b)\n'
   expect "another commit editing a Lisp file a group created" "lisp/g.el changed outside the groups' own files"
+  fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: pgtk: p" lisp/g.el '(a)\n(b)\n'
+  expect "another commit editing a Lisp file the only group created" "lisp/g.el changed outside the groups' own files"
+  fixture; putf "nidhogg: glitnir: g" lisp/g.el '(a)\n'; putf "nidhogg: pgtk: p" lisp/g.el '(a)\n(b)\n'
+  echo "$(git -C "$self/r" rev-parse HEAD) a listed exception" > "$self/exc"
+  SERIES_EXCEPTIONS="$self/exc" expect "a listed exception edits a group-created Lisp file" ""
   fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
   putf "nidhogg: shell: s2" src/nhwl.c 'int s;\nint t;\n'
   expect "a shell commit above history editing a C file the shell created" ""
@@ -217,7 +244,7 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; put "pgtk change without the prefix" "int a;\n/* p */\n"
   RULE=subj expect "a non-merge commit with a non-nidhogg subject" "commit subject does not start with 'nidhogg: '"
   unset RULE
-  echo "tree self-test: 34 cases ok"
+  echo "tree self-test: 37 cases ok"
   exit 0
 fi
 
