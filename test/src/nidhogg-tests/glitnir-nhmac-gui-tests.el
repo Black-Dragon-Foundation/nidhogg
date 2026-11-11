@@ -807,14 +807,17 @@ The line count is the default line height times 3 (no line spacing in the rows).
                                     :beneath ,(glitnir-nhmac--hex glitnir-nhmac--gap))))
       (* 3 (frame-char-height (window-frame w))))))
 
-(defun glitnir-nhmac--ring-check (row img bg height)
-  "Assert that IMG shows the block ring inside the box of background BG (the window's, as IMG shows it), as wide as
-it within 3 pixels, below its first line, HEIGHT device pixels tall within 3; ROW names it."
+(defun glitnir-nhmac--ring-check (row img bg height w)
+  "Assert that IMG shows the block ring inside the box of background BG (window W's, as IMG shows it), from its text
+area's left edge to the box's right within 3 pixels, below its first line, HEIGHT device pixels tall within 3; ROW
+names it."
   (let ((r (glitnir-nhmac--box img glitnir-nhmac--block-ring))
-        (box (glitnir-nhmac--box img bg)))
-    (nhmac-gui--say "%s: ring %S in %S, rows %d px" row r box height)
+        (box (glitnir-nhmac--box img bg))
+        ;; the text area's left edge in the window (its left margin and fringe)
+        (inset (- (nth 0 (window-body-pixel-edges w)) (nth 0 (window-pixel-edges w)))))
+    (nhmac-gui--say "%s: ring %S in %S, text area %d px in, rows %d px" row r box inset height)
     (should (and r box))
-    (should (<= (abs (- (nth 0 r) (nth 0 box))) 3))
+    (should (<= (abs (- (nth 0 r) (+ (nth 0 box) inset))) 3))
     (should (<= (abs (- (nth 2 r) (nth 2 box))) 3))
     (should (> (nth 1 r) (nth 1 box)))
     (should (<= (nth 3 r) (nth 3 box)))
@@ -832,7 +835,7 @@ cards; a child frame's window's ring shows the same way, on the child; each goes
      (let ((h (glitnir-nhmac--ring-on left)))
        (should (= (length (plist-get (glitnir-nhmac--cards t) :cards)) 1))
        (glitnir-nhmac--ring-check 'nhmac-blocks-drawn-like-cards (glitnir-nhmac--grab "block-ring")
-                                  glitnir-nhmac--card-bg h)
+                                  glitnir-nhmac--card-bg h left)
        (set-window-parameter left 'glitnir-blocks nil)
        (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
        (should-not (glitnir-nhmac--box (glitnir-nhmac--grab "block-ring-gone") glitnir-nhmac--block-ring))))))
@@ -859,7 +862,7 @@ the root has no block image."
               (should (= (length (plist-get cards :cards)) 1))
               (should (null (plist-get (nhmac--test-cards) :cards)))
               (glitnir-nhmac--ring-check 'nhmac-blocks-drawn-on-a-child-frame
-                                         (glitnir-nhmac--grab "block-ring-child") #xff00ff h)))
+                                         (glitnir-nhmac--grab "block-ring-child") #xff00ff h w)))
           (set-window-parameter w 'glitnir-blocks nil)
           (force-window-update)
           (redisplay t)
