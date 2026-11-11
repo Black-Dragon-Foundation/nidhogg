@@ -1057,7 +1057,9 @@ PROTO (nhg_frame_param, int32_t (uint32_t, const NhgParamFrame *, const NhgParam
     /// The font records' part of the header (its own table).
     #[test]
     fn fontspec_header_matches() {
-        use nhglue::ffi::{nhg_font_id, nhg_font_list, nhg_font_match, nhg_font_name};
+        use nhglue::ffi::{
+            nhg_font_has_char, nhg_font_id, nhg_font_list, nhg_font_match, nhg_font_name,
+        };
         use nhglue::fontspec::*;
         let rows: &[(&str, i64)] = &[
             ("sizeof (NhgFontSpec)", size_of::<NhgFontSpec>() as i64),
@@ -1104,7 +1106,9 @@ PROTO (nhg_frame_param, int32_t (uint32_t, const NhgParamFrame *, const NhgParam
 PROTO (nhg_font_id, int32_t (const char *, size_t, uint32_t *));
 PROTO (nhg_font_name, int32_t (uint32_t, char *, size_t, size_t *));
 PROTO (nhg_font_list, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, size_t *));
-PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, size_t *));";
+PROTO (nhg_font_match, int32_t (const NhgFontSpec *, NhgFontEntity *, size_t, size_t *));
+PROTO (nhg_font_has_char, int32_t (uint64_t, uint32_t, int32_t *));";
+        let _: unsafe extern "C" fn(u64, u32, *mut i32) -> i32 = nhg_font_has_char;
         let _: unsafe extern "C" fn(*const c_char, usize, *mut u32) -> i32 = nhg_font_id;
         let _: unsafe extern "C" fn(u32, *mut c_char, usize, *mut usize) -> i32 = nhg_font_name;
         let _: unsafe extern "C" fn(

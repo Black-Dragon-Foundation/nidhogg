@@ -625,6 +625,16 @@ mod coretext {
                     || (language == "zh-Hans" && l.iter().any(|x| x == "zh"))
             }
         }
+
+        /// The face's character set (`macfont_has_char` on an entity).
+        fn has_char(&self, id: u64, c: u32) -> Option<bool> {
+            let faces = text::faces();
+            let f = usize::try_from(id)
+                .ok()
+                .and_then(|i| i.checked_sub(1))
+                .and_then(|i| faces.get(i))?;
+            Some(f.has(c))
+        }
     }
 
     /// A font's glyphs and bounds from Core Text, one batched call per table page.

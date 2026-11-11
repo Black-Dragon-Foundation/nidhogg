@@ -234,6 +234,10 @@ pub trait FontSource {
     fn fits(&self, face: &FontFace, script: &str, language: &str) -> bool {
         covers(&face.scripts, script) && covers(&face.languages, language)
     }
+    /// Whether face `id` has character `c` (`macfont_has_char` on an entity); `None`: not known without opening it.
+    fn has_char(&self, _id: u64, _c: u32) -> Option<bool> {
+        None
+    }
 }
 
 /// A listed font: the spec's fields as the face has them.
@@ -537,8 +541,18 @@ pub(crate) fn name_raw(id: u32, buf: *mut c_char, cap: usize, len: *mut usize) -
     true
 }
 
-/// Fill `out` (`cap` records) with the fonts for `spec`, the count that fit into `*n`.  `all` is `nhg_font_list`
-/// (every font), else `nhg_font_match` (the nearest one).  Returns false without a source.
+/// Whether face `id` has character `c`: 1 or 0, -1 when the source cannot tell (or there is none).
+pub(crate) fn has_char(id: u64, c: u32) -> i32 {
+    match source().as_deref().and_then(|s| s.has_char(id, c)) {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
+    }
+}
+
+/// Fill `out` (`cap` records) with the fonts for `spec`, and put how many there are into `*n`: more than `out` holds
+/// when it is too small (the caller asks again with room for them all).  `all` is `nhg_font_list` (every font), else
+/// `nhg_font_match` (the nearest one).  Returns false without a source.
 pub(crate) fn run(spec: &NhgFontSpec, all: bool, out: &mut [NhgFontEntity], n: &mut usize) -> bool {
     let guard = source();
     let Some(src) = guard.as_deref() else {
@@ -552,7 +566,7 @@ pub(crate) fn run(spec: &NhgFontSpec, all: bool, out: &mut [NhgFontEntity], n: &
         best(src, &spec).into_iter().collect()
     };
     let mut nm = names();
-    *n = found.len().min(out.len());
+    *n = found.len();
     for (slot, e) in out.iter_mut().zip(&found) {
         *slot = e.to_record(&mut nm);
     }
@@ -575,6 +589,17 @@ mod tests {
                 "monospace" => vec!["Menlo".into(), "Courier".into()],
                 "sans-serif" => vec!["Helvetica".into()],
                 _ => Vec::new(),
+            }
+        }
+        // a latin face has the Latin letters, a han one the CJK ideographs; other faces are not known
+        fn has_char(&self, id: u64, c: u32) -> Option<bool> {
+            let f = self.faces.iter().find(|f| f.id == id)?;
+            if covers(&f.scripts, "latin") {
+                Some(c < 0x250)
+            } else if covers(&f.scripts, "han") {
+                Some((0x4e00..0xa000).contains(&c))
+            } else {
+                None
             }
         }
     }
@@ -1124,6 +1149,19 @@ mod tests {
         .to_record(&mut names());
         assert!(run(&open, true, &mut out, &mut n));
         assert_eq!(n, 4); // Menlo's three faces and the italic one made bold
+        // more fonts than `out` holds: the count says so, and the first ones are written
+        let mut two = [NhgFontEntity::default(); 2];
+        assert!(run(&open, true, &mut two, &mut n));
+        assert_eq!(
+            (n, two[0].font_id, two[1].font_id),
+            (4, out[0].font_id, out[1].font_id)
+        );
+        // a face's characters, without opening it
+        assert_eq!(has_char(1, 'a' as u32), 1);
+        assert_eq!(has_char(1, 0x5b57), 0);
+        assert_eq!(has_char(9, 0x5b57), 1);
+        assert_eq!(has_char(8, 'a' as u32), -1);
+        assert_eq!(has_char(99, 'a' as u32), -1);
         let mut buf = [0 as c_char; 16];
         let mut len = 0;
         assert!(name_raw(

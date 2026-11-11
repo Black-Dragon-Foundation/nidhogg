@@ -325,7 +325,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_layers_sync` / `nhg_layers_count` | - | demote layers that are gone, resized or idle; count them | same |
 | `nhg_bell_flash` / `nhg_bell_restore` | W | the visible bell's rows inverted and put back | same |
 | `nhg_frame_param` | - | what changing a frame parameter does (validation, clamps, defaults, what to redo): `params.rs` | same |
-| `nhg_font_id` / `nhg_font_name` / `nhg_font_list` / `nhg_font_match` | - | font-spec records and `macfont_list`/`macfont_match` matching over a font source (`fontspec.rs`; none on Linux) | Core Text source |
+| `nhg_font_id` / `nhg_font_name` / `nhg_font_list` / `nhg_font_match` / `nhg_font_has_char` | - | font-spec records and `macfont_list`/`macfont_match`/`macfont_has_char` over a font source (`fontspec.rs`; none on Linux) | Core Text source |
 | (action) `NHG_ACT_MENU` | - | none | a choice from the native menu bar: `code` the item's place, `flags` the tree's generation; C turns it into the menu-bar events of the item's key path |
 | `nhg_startup` / `nhg_relocate` | - | none (unsupported; no path moves) | first in `main`, no display: `LANG` from `NSLocale` when unset (no outer pool: each call drains its own); `ns_relocate` into the app bundle |
 | `nhg_inhibit_idle` | - | hold or release an idle inhibitor | `IOPMAssertion` |
