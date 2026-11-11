@@ -209,6 +209,8 @@ def connect(port, wait_s):
 
 
 def free_port():
+    if os.environ.get("DBGSPIKE_PORT"):
+        return int(os.environ["DBGSPIKE_PORT"])
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     p = s.getsockname()[1]
