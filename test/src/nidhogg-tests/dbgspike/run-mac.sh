@@ -77,7 +77,9 @@ outside() {
     { split($1, e, "->"); if ($2 == "(LISTEN)" || e[2] == "") { if (!inb(e[1])) print $1 }
       else if (!inb(e[1]) && !inb(e[2])) print $1 }'
 }
-for a in debugpy-listen jsdebug-attach; do
+# run 11: the hub's build (configurationDone held for the js-debug attach; debugpy started after a probe of its port;
+# the preload drgnx ships), and the old order (-nohold) beside it, with a parent that forks on its first line
+for a in debugpy-listen jsdebug-attach jsdebug-attach-nohold; do
   for run in 1 2; do
     rm -rf "$B/w/r.json" "$B/w/mark" "$B/t/claims"; mkdir -p "$B/t/claims"
     : > "$B/t/claims/port-47610"; : > "$B/t/claims/port-47611"
@@ -106,7 +108,7 @@ for a in debugpy-listen jsdebug-attach; do
     wait $top
     echo "dbgspike-sweep $a run$run outside=[$(sort -u "$B/w/sweep" | paste -sd' ' -)]"
     sort -u "$B/w/sweep-ps" 2>/dev/null | sed "s/^/dbgspike-sweep-ps $a run$run /"; rm -f "$B/w/sweep-ps"
-    grep -a "fixture-child" "$B/w/r.json.stderr" 2>/dev/null | cut -c1-400 | sed "s/^/dbgspike-child $a run$run /"
+    grep -a "fixture-" "$B/w/r.json.stderr" 2>/dev/null | cut -c1-400 | sed "s/^/dbgspike-child $a run$run /"
     grep -a "drgnx-preload" "$B/w/r.json.stderr" 2>/dev/null | cut -c1-300 | sed "s/^/dbgspike-preload $a run$run /"
     echo "dbgspike-result $a run$run rc=$? $(summ "$B/w/r.json") $(head -c 300 "$B/w/se.txt" 2>/dev/null)"
   done

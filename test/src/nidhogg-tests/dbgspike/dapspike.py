@@ -256,11 +256,13 @@ def run(adapter, fix, out_path, use_shim):
             debuggee = ([sys.executable, "-m", "debugpy", "--connect", f"127.0.0.1:{BLOCK[1]}",
                          "--configure-subProcess", "true", prog], None)
             bp_file, bp_line, probe_line, probe_expr = child_fix, 9, 7, "{total}"
-        elif adapter == "jsdebug-attach":
-            # node --inspect-brk on the block's second port; children's inspector.open(0) mapped by the preload
+        elif adapter.startswith("jsdebug-attach"):
+            # node --inspect-brk on the block's second port; children's inspector.open(0) mapped by the preload (the
+            # one drgnx ships); the parent forks on its first line (run 11: the hub's hold, configurationDone after
+            # the attach's answer; "-nohold" sends it at initialized, as runs 8-10 did)
             port = BLOCK[0]
             cmd = ["node", os.path.join(os.environ.get("JS_DEBUG", "/opt/js-debug"), "src/dapDebugServer.js"), str(port), "127.0.0.1"]
-            prog = os.path.join(fix, "fixture-child.js")
+            prog = os.path.join(fix, "fixture-fork.js")
             launch = {"type": "pwa-node", "request": "attach", "address": "127.0.0.1", "port": BLOCK[1],
                       "autoAttachChildProcesses": True, "continueOnAttach": True, "cwd": fix}
             env = {**os.environ, "NODE_OPTIONS": "--require " + os.path.join(fix, "preload.js"),
@@ -285,7 +287,7 @@ def run(adapter, fix, out_path, use_shim):
         stderr_path = out_path + ".stderr"
         errf = open(stderr_path, "wb")
         step("spawn", cmd=cmd)
-        if debuggee and adapter == "jsdebug-attach":
+        if debuggee and adapter.startswith("jsdebug-attach"):
             # waits at its first line for the attach
             procs.append(subprocess.Popen(debuggee[0], env=debuggee[1], cwd=fix, stdout=errf, stderr=errf))
             step("debuggee", cmd=debuggee[0])
@@ -354,10 +356,14 @@ def run(adapter, fix, out_path, use_shim):
         caps = c.call("initialize", init_args(), timeout=30)
         step("initialize", filters=[f.get("filter") for f in caps.get("exceptionBreakpointFilters", [])],
              caps=sorted(k for k, v in caps.items() if v is True))
-        c.request(launch["request"], launch)
+        rid = c.request(launch["request"], launch)
         if debuggee and adapter == "debugpy-listen":
-            # the adapter listens once it has the attach; the debuggee connects to it
-            time.sleep(1)
+            # the adapter listens once it has the attach; the hub (run 11) probes the port with a connection debugpy
+            # drops, then starts the debuggee, which connects once
+            t0 = time.monotonic()
+            probe = connect(BLOCK[1], 30)
+            probe.close()
+            step("probe", ms=round((time.monotonic() - t0) * 1000))
             procs.append(subprocess.Popen(debuggee[0], cwd=fix, stdout=errf, stderr=errf))
             step("debuggee", cmd=debuggee[0])
         c.wait(lambda m: m.get("event") == "initialized", 30)
@@ -365,6 +371,9 @@ def run(adapter, fix, out_path, use_shim):
         if not adapter.startswith("jsdebug"):
             configure(c)
         else:
+            if adapter == "jsdebug-attach":
+                c.wait(lambda m: m.get("type") == "response" and m.get("request_seq") == rid, 30)
+                step("attach-answered")
             c.call("configurationDone")
             step("configurationDone", conn="main")
 
