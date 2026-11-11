@@ -20,4 +20,4 @@ pub mod view;
 pub mod wire;
 
 pub use names::Id;
-pub use view::{Status, Step, View};
+pub use view::{HISTORY, Status, Step, View};

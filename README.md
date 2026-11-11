@@ -1237,10 +1237,33 @@ with unsaved changes, which becomes × to close it, as VS Code's does). Mouse se
 - Leaving: moving off a window's text (a mode line, a fringe, another window, nothing) leaves the run, and each shell's
   leave handler calls `note_mouse_sensor_leave` (Wayland: `nhwl_leave_apply`; Naglfar: its mouse-exited path, once it
   reports motion).  The NS port is frozen until Naglfar replaces it: there, leaving the frame leaves no run.
-- Files: `src/xdisp.c` (`note_mouse_sensor`, the read in `note_mouse_highlight`, `nidhogg--note-mouse` for tests),
+- An overlay's row and its string are one lit run: with the pointer on an overlay's before- or after-string whose
+  `mouse-face` is `equal` to the overlay's, `note_mouse_highlight` lights the overlay's whole run (its text and its
+  strings), as from its text (`mouse_face_string_owner`); stock Emacs lights the string alone. A string with a mouse
+  face of its own still lights only itself. drgnx's rows draw their tail (the ● / ×, the fill to the edge) as an
+  after-string, so the hover covers the row from any point of it.
+- Files: `src/xdisp.c` (`note_mouse_sensor`, the read in `note_mouse_highlight`, `nidhogg--note-mouse` for tests: it
+  answers the lit run, `(BEG-ROW BEG-COL END-ROW END-COL)`),
   `src/keyboard.c` (the event, `run_mouse_sensor`), `src/termhooks.h`, `src/dispextern.h`, `src/nhwlterm.c`.
 - Tests: `test/src/nidhogg-tests/mouse-sensor-gui-tests.el` (order, leaving, off, a key sequence across a sensor, an
   error; `mouse-sensor-gui/motion-cost`, tagged `:timing`, measures the pointer's cost off and on).
+
+### `mouse-face` in the margins
+
+Stock Emacs lights a string's `mouse-face` in the mode, header and tab lines only; in a window margin the property is
+read for `help-echo` and ignored. Nidhogg lights it there too on graphical frames (group `glitnir`, `HAVE_GLITNIR`), so
+a debugger's breakpoint column can show a faint dot under the pointer.
+
+- `note_line_or_margin_highlight` finds the margin's row and glyph under the pointer and lights the string's run of
+  that `mouse-face`, as on a mode line. `Mouse_HLInfo` gains `mouse_face_area` (the glyph area the run's columns count
+  in; `TEXT_AREA` otherwise, and again after every clear), which `draw_row_with_mouse_face` draws in. Text positions
+  are never inside a margin's run (`coords_in_mouse_face_p`), and the cursor's mouse-face offset counts text runs only.
+- A mouse face changes the face only: an image glyph keeps its picture, so the lit thing is text (drgnx draws the
+  hover dot as a character).
+- Terminals are unchanged: a margin there lights nothing.
+- The feature `glitnir-margin-mouse-face` says a build has it (drgnx lays out its hover dots only then).
+- Naglfar draws through the same `draw_glyphs` with the area, so it needs nothing beyond reporting pointer motion.
+- Tests: `test/src/nidhogg-tests/margin-mouse-face-gui-tests.el`.
 
 ## Reporting issues
 
