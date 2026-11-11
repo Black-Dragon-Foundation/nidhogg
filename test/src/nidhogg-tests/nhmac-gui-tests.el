@@ -1073,11 +1073,16 @@ It measures; it asserts only that it ran."
              (end (+ (float-time) 4)))
         (sleep-for 0.5)
         (while (< (float-time) end) (execute-kbd-macro "x") (redisplay))
-        (while (and (process-live-p p) (< (float-time) (+ end 10))) (accept-process-output p 0.2))
+        ;; sample symbolicates after its 4 s, which took over 10 s on the runner; the profile is a diagnostic, so a
+        ;; sample still writing after a minute is dropped
+        (while (and (process-live-p p) (< (float-time) (+ end 60))) (accept-process-output p 0.2))
         ;; sample's own output says why a file is missing
         (nhmac-gui--say "nhmac-pair-stages: %s: sample %s %s, exit %S: %s" build out (file-exists-p out)
                         (process-exit-status p)
                         (with-current-buffer (process-buffer p) (string-trim (buffer-string))))
+        ;; a sample still running past the bound goes without asking: killing its buffer would prompt
+        (set-process-query-on-exit-flag p nil)
+        (delete-process p)
         (kill-buffer (process-buffer p))))
     (kill-buffer)
     (should (file-exists-p file))))
