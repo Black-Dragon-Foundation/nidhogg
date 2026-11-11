@@ -1998,7 +1998,7 @@ settle (no configure took it back), and the content size times the scale is the 
 
 (ert-deftest nhmac-tool-bar-off-and-on-window-follows ()
   "The tool bar turned off and on again: the window shows the frame's surface at the surface's size (its points times
-the scale), and a later `set-frame-size' is followed in both directions."
+the scale), and a later `set-frame-size' (smaller: a larger one may pass the screen) is followed.
   :tags '(draws)
   (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (tb (frame-parameter f 'tool-bar-lines))
@@ -2018,9 +2018,28 @@ the scale), and a later `set-frame-size' is followed in both directions."
           (set-frame-parameter f 'tool-bar-lines 1)
           (should (funcall fits "on again"))
           (let ((before (cons (frame-pixel-width f) (frame-pixel-height f))))
-            (set-frame-size f (+ (frame-text-width f) 32) (+ (frame-text-height f) 32) t)
+            (set-frame-size f (- (frame-text-width f) 32) (- (frame-text-height f) 32) t)
             (should (nhmac-gui--window-follows "set-frame-size after the tool bar" before))))
       (set-frame-parameter f 'tool-bar-lines tb)
+      (nhmac-gui--settle))))
+
+(ert-deftest nhmac-set-frame-size-past-the-screen ()
+  "A frame sized taller than its screen: AppKit keeps the window on the screen, and the frame takes the height its
+window got (as NS's does), so the window shows the frame's surface at the surface's size."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((f (selected-frame)) (w (frame-text-width f)) (h (frame-text-height f)))
+    (unwind-protect
+        (progn
+          (set-frame-size f w (+ (display-pixel-height) 200) t)
+          (nhmac-gui--settle)
+          (nhmac-gui--settle)
+          (let* ((s (nhmac--test-surface 0 0)) (k (plist-get s :scale)) (p (plist-get s :points)))
+            (nhmac-gui--say "nhmac-set-frame-size-past-the-screen: display %d, frame %dx%d, %S"
+                            (display-pixel-height) (frame-pixel-width f) (frame-pixel-height f) s)
+            (should (<= (abs (- (* k (nth 1 p)) (plist-get s :h))) 1))
+            (should (<= (abs (- (frame-pixel-height f) (plist-get s :h))) 1))))
+      (set-frame-size f w h t)
       (nhmac-gui--settle))))
 
 (ert-deftest nhmac-set-frame-size ()
@@ -2461,6 +2480,11 @@ on NS.  Logged: what `font-at' gave, the character's script and how many fonts `
              (listed (list-fonts (font-spec :script script))))
         (nhmac-gui--say "nhmac-font-at-every-script: %s %S: font-at %S, %d fonts listed, first %S"
                         script (char-after) font (length listed) (car listed))
+        ;; why a listed font is not taken: the fontset's specs, and the first font's answer for the character
+        (let ((fo (and listed (open-font (car listed) 12))))
+          (nhmac-gui--say "nhmac-font-at-every-script: fontset %S; opened %S, has-char %S, glyphs %S"
+                          (fontset-font t (char-after)) fo (and fo (font-has-char-p fo (char-after)))
+                          (and fo (font-get-glyphs fo 0 1 (string (char-after))))))
         (should (fontp font 'font-object))))))
 
 (ert-deftest nhmac-paired-cjk-emoji-scroll ()
