@@ -9,6 +9,10 @@
 (require 'ert)
 (require 'cl-lib)
 
+(defun nhmac-app--say (fmt &rest args)
+  "Print FMT with ARGS as a line of the lane's log (stderr), not to *Messages*."
+  (princ (concat (apply #'format fmt args) "\n") #'external-debugging-output))
+
 (defun nhmac-app--dir ()
   "The bundle the lane was given (NHMAC_APP), or nil."
   (let ((app (getenv "NHMAC_APP")))
@@ -72,12 +76,17 @@
   (let* ((sock (make-temp-name (expand-file-name "nhd" temporary-file-directory)))
          (client (expand-file-name "Contents/MacOS/bin/emacsclient" (nhmac-app--dir)))
          (started (nhmac-app--run (nhmac-app--emacs) (list (concat "--daemon=" sock)) 90)))
-    (message "nhmac-daemon-client: daemon %S" started)
+    ;; on stderr (the lane's log), not *Messages*: batch 2's client answered "" with exit 0
+    (nhmac-app--say "nhmac-daemon-client: daemon %S" started)
     (unwind-protect
         (progn
           (should (eq (car started) 0))
           (let ((r (nhmac-app--run client (list "-s" sock "-c" "-n" "-e" "(list window-system (length (frame-list)))") 60)))
-            (message "nhmac-daemon-client: client %S" r)
+            (nhmac-app--say "nhmac-daemon-client: client %S" r)
+            (unless (string-match-p "\\`(ns [2-9]" (string-trim (cdr r)))
+              ;; what the daemon says it has: its frames and the window system it would make one on
+              (nhmac-app--say "nhmac-daemon-client: daemon's view %S"
+                                (nhmac-app--run client (list "-s" sock "-e" "(list (frame-list) (mapcar (lambda (f) (framep f)) (frame-list)) initial-window-system (featurep 'ns) (featurep 'nidhogg-macos) (daemonp))") 30)))
             (should (eq (car r) 0))
             (should (string-match-p "\\`(ns [2-9]" (string-trim (cdr r))))))
       (nhmac-app--run client (list "-s" sock "-e" "(kill-emacs)") 30))))
