@@ -69,7 +69,8 @@ views (`kernels::{Pixels, PixelsMut, Mask}`).
 in the root's device pixels), within the given rectangles (the damage, or a draw's clip), from the frames' surfaces
 (sources, by layer id), bottom to top: layers without chrome are copied; a chromed layer's shadow tiles go over what
 lies below, then the layer is copied but for its four corner squares, which go through the corner mask, with the
-border ring when it has a border. Window layers are their frame's pixels (P1 composes a scroll as damage). A window
+border ring when it has a border, and the chrome's edge ring (`ring_px`, `ring_argb`) just outside the rounded
+rectangle after the shadow. Window layers are their frame's pixels (P1 composes a scroll as damage). A window
 layer with a card (`scene::set_card`, Rust only: a `Card`'s beneath colour, edge ring and the rectangles it keeps out,
 with the radius and shadow from the layer's chrome) then draws over the frame's pixels and labels: in the gap around the
 window (inside the frame, never inside a rectangle it keeps out, the other windows), the shadow and then the ring, a
