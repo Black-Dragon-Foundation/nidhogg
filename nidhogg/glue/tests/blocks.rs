@@ -149,6 +149,48 @@ mod blocks {
         assert_eq!(count(&mut b, key), 0);
     }
 
+    /// For a shell that shows the cards itself (macOS): each window's blocks drawn alone over a clear text area, placed
+    /// in the native area, once per change.  The ring's left side is its colour, a corner outside the rounded path the
+    /// colour beneath, the rows inside clear; the same list again gives nothing; the blocks gone leave an empty list.
+    #[test]
+    fn blocks_drawn_alone_for_a_shell_once_per_change() {
+        use nhglue::blocks::images_at;
+        let mut b = Backings::default();
+        let (key, _v) = frame(&mut b, 120);
+        let r = rows(1, 3, 10, 190);
+        let one = [block(r, 0)];
+        let list = images_at(&mut b, key, &one).unwrap().expect("a change");
+        assert_eq!(list.len(), 1);
+        let c = &list[0];
+        assert_eq!(c.id, block_id(SEQ));
+        // the text area, with the native area's origin
+        assert_eq!(c.rect, (CLIP.x, CLIP.y, CLIP.w as u32, CLIP.h as u32));
+        let (x, y, w, _) = c.rect;
+        let px = c.argb.as_ref().expect("an image");
+        assert_eq!(px.len(), (CLIP.w * CLIP.h) as usize);
+        let at = |nx: i32, ny: i32| px[((ny - y) * w as i32 + (nx - x)) as usize];
+        // the left side, halfway down: the ring's colour, opaque
+        assert_eq!(at(r.x, r.y + r.h / 2), 0xff40_5060);
+        // the top-left corner, outside the rounded path: the colour beneath
+        assert_eq!(at(r.x, r.y), 0xff12_3456);
+        // inside the ring: the rows' own pixels
+        assert_eq!(at(r.x + 20, r.y + r.h / 2), 0);
+        // outside the block: clear
+        assert_eq!(at(r.x - 5, r.y + r.h / 2), 0);
+        assert_eq!(count(&mut b, key), 1);
+        // nothing changed: nothing to give
+        assert!(images_at(&mut b, key, &one).unwrap().is_none());
+        // the blocks go
+        assert!(
+            images_at(&mut b, key, &[])
+                .unwrap()
+                .expect("a change")
+                .is_empty()
+        );
+        assert!(images_at(&mut b, key, &[]).unwrap().is_none());
+        assert_eq!(count(&mut b, key), 0);
+    }
+
     /// At scale 2 the line is two device px; an unchanged list changes nothing in the scene.
     #[test]
     fn scale_and_no_change() {

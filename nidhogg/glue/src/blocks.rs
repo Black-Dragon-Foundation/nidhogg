@@ -187,6 +187,15 @@ pub fn sync_at(b: &mut Backings, key: u64, blocks: &[NhgBlock]) -> Result<u32, i
     Ok(u32::try_from(applied.len()).unwrap_or(u32::MAX))
 }
 
+/// [`sync_at`] for a shell that shows the cards on layers of its own (`cards_on_layers`): not drawn yet.
+pub fn images_at(
+    _b: &mut Backings,
+    _key: u64,
+    _blocks: &[NhgBlock],
+) -> Result<Option<Vec<nhshell::api::CardImage>>, i32> {
+    Ok(None)
+}
+
 /// [`sync_at`] for frame `frame` of shell window `window`.  A shell that shows window cards on layers of its own
 /// (`cards_on_layers`, macOS) draws no blocks yet: nothing is kept for it.
 pub fn sync(
