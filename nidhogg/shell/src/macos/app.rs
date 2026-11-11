@@ -288,6 +288,11 @@ impl MacShell {
                 self.push(ShellEvent::Menu(MenuEv { generation, index }), 0);
             }
             MacEv::Resize(id, frame) => self.resize_step(id, frame),
+            MacEv::FullScreen(id, busy) => {
+                if let Some(w) = self.windows.get_mut(&id) {
+                    super::windowing::fullscreen_transition(w, busy);
+                }
+            }
         }
     }
 

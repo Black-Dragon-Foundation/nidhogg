@@ -37,6 +37,10 @@ pub struct Win {
     pub configuring: Option<u32>,
     /// Non-native full screen: the frame and style to go back to.
     pub saved: Option<(NSRect, NSWindowStyleMask)>,
+    /// Native full screen: AppKit is in a transition (it ignores a toggle until the transition ends), and the state
+    /// asked for meanwhile, applied when it ends.
+    pub fs_busy: bool,
+    pub fs_want: Option<bool>,
     /// Our own edge-drag resize: the frame the host is drawing for, and the newest one asked for since.
     pub resize: Pending,
 }
@@ -106,6 +110,8 @@ impl Win {
             mapped: true,
             configuring: None,
             saved: None,
+            fs_busy: false,
+            fs_want: None,
             resize: Pending::default(),
         }
     }
