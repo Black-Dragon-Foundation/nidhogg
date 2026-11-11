@@ -1199,38 +1199,57 @@ checked against the faces, tolerance 0 for fills and box lines."
     (expand-file-name (format "nhmac-ns-font-scale%s.%s" (or (getenv "GLITNIR_GUI_SCALE") "1") ext)
                       (if ns (expand-file-name ".." out) out))))
 
+(defconst nhmac-gui--crop-marker "#00ff00"
+  "The colour of the rule the capture scenes draw across the top of their window's text area.")
+
+(defun nhmac-gui--marker-line ()
+  "A line of `nhmac-gui--crop-marker' as wide as the window's text area: `nhmac-gui--text-crop' crops below it and
+within its width, so the title bar, a tool bar and scroll bars (each build has its own) are never in a crop."
+  (concat (propertize " " 'display '(space :align-to right) 'face `(:background ,nhmac-gui--crop-marker)) "\n"))
+
+(defmacro nhmac-gui--bare-frame (&rest body)
+  "Run BODY with the selected frame showing one window, no tool bar and an empty echo area; put them back after.
+drgnx never shows Emacs's tool bar, and an earlier window (a *Compile-Log* of the test files' loading) or message
+differs between the builds' captures."
+  (declare (indent 0))
+  `(let ((conf (current-window-configuration))
+         (tb (frame-parameter nil 'tool-bar-lines)))
+     (unwind-protect
+         (progn
+           (set-frame-parameter nil 'tool-bar-lines 0)
+           (delete-other-windows)
+           (message nil)
+           ,@body)
+       (set-window-configuration conf)
+       (set-frame-parameter nil 'tool-bar-lines tb))))
+
 (defmacro nhmac-gui--with-font-scene (&rest body)
-  "Run BODY with the frame in Menlo 12, black on `nhmac-gui--font-bg', no cursor, mode line or fringes, showing a
-blank line and then a line of ASCII in its only window, the echo area empty; the frame's font, colours and windows
-are put back after."
+  "Run BODY with the frame in Menlo 12, black on `nhmac-gui--font-bg', no cursor, mode line or fringes, showing the
+crop marker (`nhmac-gui--marker-line'), a blank line and then a line of ASCII, in a bare frame
+\(`nhmac-gui--bare-frame'); the frame's font and colours are put back after."
   (declare (indent 0))
   `(let ((font (frame-parameter nil 'font))
          (fg (frame-parameter nil 'foreground-color))
-         (bg (frame-parameter nil 'background-color))
-         (conf (current-window-configuration)))
-     (unwind-protect
-         (progn
-           (set-frame-font "Menlo-12" nil (list (selected-frame)))
-           (set-foreground-color "#000000")
-           (set-background-color nhmac-gui--font-bg)
-           ;; nothing else in the capture: no other window (a *Compile-Log* the test files' loading showed) and no
-           ;; message, in either build
-           (delete-other-windows)
-           (message nil)
-           (switch-to-buffer (generate-new-buffer " *nhmac-font*"))
-           (setq-local cursor-type nil mode-line-format nil)
-           (set-window-fringes nil 0 0)
-           (insert "\n    Hello, world! 0123456789 {}[]()<>;:'\",./?\n")
-           (redraw-frame)
-           (redisplay t)
-           (sit-for 0.5)
-           ,@body)
-       (kill-buffer)
-       (set-window-fringes nil nil nil)
-       (set-window-configuration conf)
-       (set-frame-font font nil (list (selected-frame)))
-       (set-foreground-color fg)
-       (set-background-color bg))))
+         (bg (frame-parameter nil 'background-color)))
+     (nhmac-gui--bare-frame
+       (unwind-protect
+           (progn
+             (set-frame-font "Menlo-12" nil (list (selected-frame)))
+             (set-foreground-color "#000000")
+             (set-background-color nhmac-gui--font-bg)
+             (switch-to-buffer (generate-new-buffer " *nhmac-font*"))
+             (setq-local cursor-type nil mode-line-format nil)
+             (set-window-fringes nil 0 0)
+             (insert (nhmac-gui--marker-line) "\n    Hello, world! 0123456789 {}[]()<>;:'\",./?\n")
+             (redraw-frame)
+             (redisplay t)
+             (sit-for 0.5)
+             ,@body)
+         (kill-buffer)
+         (set-window-fringes nil nil nil)
+         (set-frame-font font nil (list (selected-frame)))
+         (set-foreground-color fg)
+         (set-background-color bg)))))
 
 (defun nhmac-gui--font-metrics ()
   "The default face's font's (ascent descent average-width space-width), from `font-info'."
@@ -1302,24 +1321,35 @@ environment (`nhmac-gui--capture-env')."
   "Whether #xRRGGBB colours A and B differ by more than TOL in a channel."
   (cl-some (lambda (sh) (> (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))) tol)) '(16 8 0)))
 
-(defun nhmac-gui--text-crop (img)
+(defun nhmac-gui--text-crop (img &optional pad)
   "The text in IMG (from `nhmac-gui--bmp-read'): the commonest colour is the frame's background; inside the box of
-the pixels near it (16 pixels in, past the window's rounded corners), the box of the pixels away from it.
-Returns (W H PIXELS) of that box."
+the pixels near it, the box of the pixels away from it.  Where IMG shows the crop marker (`nhmac-gui--marker-line'),
+that inside is below the marker and within its width widened by PAD pixels on each side (a fringe), down to 16 pixels
+above the background box's bottom (the window's rounded corners); elsewhere it is the box less 16 pixels on each
+side.  Returns (W H PIXELS) of that box."
   (pcase-let* ((`(,w ,h ,px) img)
                (counts (make-hash-table))
                (bg (progn (mapc (lambda (p) (puthash p (1+ (gethash p counts 0)) counts)) px)
                           (let ((best nil) (n 0))
                             (maphash (lambda (k v) (when (> v n) (setq best k n v))) counts)
                             best)))
-               (x0 w) (y0 h) (x1 -1) (y1 -1))
+               (marker (string-to-number (substring nhmac-gui--crop-marker 1) 16))
+               (x0 w) (y0 h) (x1 -1) (y1 -1)
+               (mx0 w) (mx1 -1) (my1 -1))
     (dotimes (y h)
       (dotimes (x w)
-        (unless (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
-          (setq x0 (min x0 x) y0 (min y0 y) x1 (max x1 x) y1 (max y1 y)))))
-    (let ((tx0 w) (ty0 h) (tx1 -1) (ty1 -1))
-      (cl-loop for y from (+ y0 16) to (- y1 16) do
-               (cl-loop for x from (+ x0 16) to (- x1 16) do
+        (let ((p (aref px (+ (* y w) x))))
+          (unless (nhmac-gui--far p bg 2)
+            (setq x0 (min x0 x) y0 (min y0 y) x1 (max x1 x) y1 (max y1 y)))
+          (unless (nhmac-gui--far p marker 8)
+            (setq mx0 (min mx0 x) mx1 (max mx1 x) my1 (max my1 y))))))
+    (pcase-let ((`(,cx0 ,cy0 ,cx1 ,cy1)
+                 (if (>= mx1 0)
+                     (list (max x0 (- mx0 (or pad 0))) (1+ my1) (min x1 (+ mx1 (or pad 0))) (- y1 16))
+                   (list (+ x0 16) (+ y0 16) (- x1 16) (- y1 16))))
+                (tx0 w) (ty0 h) (tx1 -1) (ty1 -1))
+      (cl-loop for y from cy0 to cy1 do
+               (cl-loop for x from cx0 to cx1 do
                         (when (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
                           (setq tx0 (min tx0 x) ty0 (min ty0 y) tx1 (max tx1 x) ty1 (max ty1 y)))))
       (if (< tx1 0)
@@ -1433,30 +1463,27 @@ frame's text still reaches the surface."
       (and w h (cons w h)))))
 
 (defmacro nhmac-gui--with-image-scene (file &rest body)
-  "Run BODY with FILE's image alone at the top left of a buffer on `nhmac-gui--font-bg', no cursor, mode line or
-fringes, in the frame's only window, the echo area empty; the frame's colours and windows are put back after."
+  "Run BODY with FILE's image alone below the crop marker (`nhmac-gui--marker-line') of a buffer on
+`nhmac-gui--font-bg', no cursor, mode line or fringes, in a bare frame (`nhmac-gui--bare-frame'); the frame's colours
+are put back after."
   (declare (indent 1))
-  `(let ((bg (frame-parameter nil 'background-color))
-         (conf (current-window-configuration)))
-     (unwind-protect
-         (progn
-           (set-background-color nhmac-gui--font-bg)
-           ;; nothing else in the capture (as `nhmac-gui--with-font-scene')
-           (delete-other-windows)
-           (message nil)
-           (switch-to-buffer (generate-new-buffer " *nhmac-img*"))
-           (setq-local cursor-type nil mode-line-format nil)
-           (set-window-fringes nil 0 0)
-           (insert "\n    ")
-           (insert-image (create-image ,file nil nil :scale 1))
-           (redraw-frame)
-           (redisplay t)
-           (sit-for 0.5)
-           ,@body)
-       (kill-buffer)
-       (set-window-fringes nil nil nil)
-       (set-window-configuration conf)
-       (set-background-color bg))))
+  `(let ((bg (frame-parameter nil 'background-color)))
+     (nhmac-gui--bare-frame
+       (unwind-protect
+           (progn
+             (set-background-color nhmac-gui--font-bg)
+             (switch-to-buffer (generate-new-buffer " *nhmac-img*"))
+             (setq-local cursor-type nil mode-line-format nil)
+             (set-window-fringes nil 0 0)
+             (insert (nhmac-gui--marker-line) "\n    ")
+             (insert-image (create-image ,file nil nil :scale 1))
+             (redraw-frame)
+             (redisplay t)
+             (sit-for 0.5)
+             ,@body)
+         (kill-buffer)
+         (set-window-fringes nil nil nil)
+         (set-background-color bg)))))
 
 (ert-deftest nhmac-ns-images-dump ()
   "NS's sizes of the shared images, and at scale 1 a capture of each, for nhmac-images-native in the Naglfar lane."
@@ -2525,38 +2552,40 @@ An alist of (NAME . FILE) in this lane's output directory."
 
 (defmacro nhmac-gui--with-fringe-scene (&rest body)
   "Run BODY showing only fringe bitmaps: empty lines with an arrow in each fringe, then the empty-line indicator, the
-fringe in black on `nhmac-gui--font-bg', fringes 8 NS points wide, in the frame's only window, the echo area empty."
+fringe in black on `nhmac-gui--font-bg', fringes 8 NS points wide, below the crop marker (`nhmac-gui--marker-line';
+crop with `nhmac-gui--fringe-pad'), in a bare frame (`nhmac-gui--bare-frame')."
   (declare (indent 0))
   `(let ((k (nhmac-gui--draw-k))
          (bg (frame-parameter nil 'background-color))
-         (ffg (face-foreground 'fringe)) (fbg (face-background 'fringe))
-         (conf (current-window-configuration)))
-     (unwind-protect
-         (progn
-           (set-background-color nhmac-gui--font-bg)
-           (set-face-attribute 'fringe nil :foreground "#000000" :background nhmac-gui--font-bg)
-           ;; nothing else in the capture (as `nhmac-gui--with-font-scene')
-           (delete-other-windows)
-           (message nil)
-           (switch-to-buffer (generate-new-buffer " *nhmac-fringe*"))
-           (setq-local cursor-type nil mode-line-format nil indicate-empty-lines t)
-           (set-window-fringes nil (* 8 k) (* 8 k))
-           (set-window-scroll-bars nil 0 nil 0 nil)
-           (insert (propertize " " 'display '(left-fringe right-triangle))
-                   (propertize " " 'display '(right-fringe left-arrow)) "\n"
-                   (propertize " " 'display '(left-fringe up-arrow))
-                   (propertize " " 'display '(right-fringe filled-rectangle)) "\n")
-           (goto-char (point-min))
-           (redraw-frame)
-           (redisplay t)
-           (sit-for 0.5)
-           ,@body)
-       (kill-buffer)
-       (set-face-attribute 'fringe nil :foreground (or ffg 'unspecified) :background (or fbg 'unspecified))
-       (set-window-fringes nil nil nil)
-       (set-window-scroll-bars nil nil nil nil nil)
-       (set-window-configuration conf)
-       (set-background-color bg))))
+         (ffg (face-foreground 'fringe)) (fbg (face-background 'fringe)))
+     (nhmac-gui--bare-frame
+       (unwind-protect
+           (progn
+             (set-background-color nhmac-gui--font-bg)
+             (set-face-attribute 'fringe nil :foreground "#000000" :background nhmac-gui--font-bg)
+             (switch-to-buffer (generate-new-buffer " *nhmac-fringe*"))
+             (setq-local cursor-type nil mode-line-format nil indicate-empty-lines t)
+             (set-window-fringes nil (* 8 k) (* 8 k))
+             (set-window-scroll-bars nil 0 nil 0 nil)
+             (insert (nhmac-gui--marker-line)
+                     (propertize " " 'display '(left-fringe right-triangle))
+                     (propertize " " 'display '(right-fringe left-arrow)) "\n"
+                     (propertize " " 'display '(left-fringe up-arrow))
+                     (propertize " " 'display '(right-fringe filled-rectangle)) "\n")
+             (goto-char (point-min))
+             (redraw-frame)
+             (redisplay t)
+             (sit-for 0.5)
+             ,@body)
+         (kill-buffer)
+         (set-face-attribute 'fringe nil :foreground (or ffg 'unspecified) :background (or fbg 'unspecified))
+         (set-window-fringes nil nil nil)
+         (set-window-scroll-bars nil nil nil nil nil)
+         (set-background-color bg)))))
+
+(defun nhmac-gui--fringe-pad ()
+  "The fringe scene's fringe width in capture pixels: 8 points at the lane's scale, on both builds."
+  (* 8 (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
 
 (ert-deftest nhmac-ns-draw-dump ()
   "NS's draw scene: its geometry and a capture of it without a cursor and with each cursor kind over the image, for
@@ -2572,7 +2601,8 @@ nhmac-draw-all-records in the Naglfar lane; and the fringe scene's capture, for 
       (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c)))) 0))))
   (nhmac-gui--with-fringe-scene
     (nhmac-gui--capture (nhmac-gui--font-file "fringe.bmp"))
-    (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "fringe.bmp")))) 0))))
+    (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "fringe.bmp"))
+                                             (nhmac-gui--fringe-pad))) 0))))
 
 (ert-deftest nhmac-draw-all-records ()
   "The draw scene on Naglfar against NS's in the same run: its geometry is NS's times the scale; at scale 1 (NS points
@@ -2605,8 +2635,9 @@ wide as NS's, draw it as scale by scale pixels.  The bitmaps' crop is NS's size 
   (should (file-exists-p (nhmac-gui--font-file "fringe.bmp" t)))
   (nhmac-gui--with-fringe-scene
     (let* ((dark (lambda (c) (cl-count-if (lambda (p) (< (logand (ash p -8) 255) 128)) (nth 2 c))))
-           (ns (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "fringe.bmp" t))))
-           (mine (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "fringe.bmp")))))
+           (ns (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "fringe.bmp" t)) (nhmac-gui--fringe-pad)))
+           (mine (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "fringe.bmp")))
+                                       (nhmac-gui--fringe-pad)))
            (d (nhmac-gui--crop-diff ns mine)))
       (message "nhmac-draw-fringe-bitmaps: scale %d: NS %dx%d %d dark, Naglfar %dx%d %d dark; diff %S"
                k (nth 0 ns) (nth 1 ns) (funcall dark ns) (nth 0 mine) (nth 1 mine) (funcall dark mine) d)
