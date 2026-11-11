@@ -55,6 +55,7 @@ pub mod chrome;
 pub mod layers;
 
 // window cards
+pub mod blocks;
 pub mod cards;
 
 // layout legs

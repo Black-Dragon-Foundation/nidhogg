@@ -560,6 +560,94 @@ The windows are deleted and the card parameters and flag cleared after."
        (clrhash glitnir--cards-seen)
        (set-frame-parameter nil 'glitnir--cards nil))))
 
+(ert-deftest glitnir-block-vector-from-spec ()
+  "A block spec (KIND START END . PLIST) resolves into the vector C reads: the kind, the markers, the inset, the
+radius, the ring's colour from a face's foreground and the colour beneath; a bad shape signals."
+  (with-temp-buffer
+    (insert "one\ntwo\nthree\n")
+    (let* ((s (copy-marker 5)) (e (copy-marker 13))
+           ;; colours the batch terminal has exactly (it rounds others to its palette)
+           (v (glitnir--block-vector `(ring ,s ,e :x0 40 :x1 300 :radius 6 :ring ("#ff0000" . 1) :beneath "#0000ff")
+                                     (selected-frame))))
+      (should (equal (append v nil) (list 0 s e 40 300 6 #xff0000 1 #x0000ff)))
+      (should (= (aref (glitnir--block-vector `(rule ,s ,e :ring ("#ff0000" . 0.5)) (selected-frame)) 0) 1))
+      ;; no ring: -1; no beneath: the frame's background
+      (cl-letf (((symbol-function 'frame-parameter)
+                 (lambda (_f p) (and (eq p 'background-color) "#00ff00"))))
+        (let ((v (glitnir--block-vector `(ring ,s ,e) (selected-frame))))
+          (should (= (aref v 6) -1))
+          (should (= (aref v 8) #x00ff00))))
+      (dolist (bad (list '(box 1 2) '(ring 1) 3 `(ring ,s ,e :ring 3)))
+        (should-error (glitnir--block-vector bad (selected-frame)) :type 'wrong-type-argument)))))
+
+(ert-deftest glitnir-blocks-set-only-on-change ()
+  "The redisplay hook resolves a window's `glitnir-blocks' into `glitnir--blocks' once per change of the spec (or
+the theme's generation), and the frame's `glitnir--blocks' flag follows whether any window has blocks."
+  (let ((w (selected-window)) (sets 0)
+        (set-window-parameter (symbol-function 'set-window-parameter)))
+    (with-temp-buffer
+      (insert "one\ntwo\n")
+      (cl-letf (((symbol-function 'set-window-parameter)
+                 (lambda (win p v)
+                   (when (eq p 'glitnir--blocks) (setq sets (1+ sets)))
+                   (funcall set-window-parameter win p v))))
+        (unwind-protect
+            (let ((spec `((ring ,(copy-marker 1) ,(copy-marker 5) :radius 6 :ring ("#405060" . 1) :beneath "#102030"))))
+              (set-window-parameter w 'glitnir-blocks spec)
+              (glitnir--recheck-frame-cards w)
+              (should (vectorp (window-parameter w 'glitnir--blocks)))
+              (should (eq (frame-parameter nil 'glitnir--blocks) t))
+              (should (= sets 1))
+              ;; nothing changed: nothing is set
+              (glitnir--recheck-frame-cards w)
+              (glitnir--recheck-frame-cards w)
+              (should (= sets 1))
+              ;; a theme change (a new generation) resolves it again; the same colours set nothing
+              (setq glitnir--card-generation (1+ glitnir--card-generation))
+              (glitnir--recheck-frame-cards w)
+              (should (= sets 1))
+              ;; a new spec: set once
+              (set-window-parameter w 'glitnir-blocks (list (car spec) (list 'rule (copy-marker 5) (copy-marker 9))))
+              (glitnir--recheck-frame-cards w)
+              (should (= sets 2))
+              (should (= (length (window-parameter w 'glitnir--blocks)) 2))
+              ;; none: cleared, and the frame's flag with it
+              (set-window-parameter w 'glitnir-blocks nil)
+              (glitnir--recheck-frame-cards w)
+              (should-not (window-parameter w 'glitnir--blocks))
+              (should-not (frame-parameter nil 'glitnir--blocks)))
+          (dolist (k '(glitnir-blocks glitnir--blocks glitnir--blocks-key))
+            (set-window-parameter w k nil))
+          (clrhash glitnir--blocks-seen)
+          (set-frame-parameter nil 'glitnir--blocks nil))))))
+
+(ert-deftest glitnir-block-ring-follows-theme ()
+  "A ring given as a face takes the theme's colour again after a theme change."
+  (let ((w (selected-window)))
+    (custom-declare-theme 'glitnir-test-red nil)
+    (custom-declare-theme 'glitnir-test-blue nil)
+    (custom-theme-set-faces 'glitnir-test-red '(window-divider ((t :foreground "#ff0000"))))
+    (custom-theme-set-faces 'glitnir-test-blue '(window-divider ((t :foreground "#0000ff"))))
+    (with-temp-buffer
+      (insert "one\n")
+      (set-face-attribute 'window-divider (selected-frame) :foreground 'unspecified)
+      (unwind-protect
+          (progn
+            (set-window-parameter w 'glitnir-blocks `((ring ,(copy-marker 1) ,(copy-marker 4) :ring window-divider)))
+            (enable-theme 'glitnir-test-red)
+            (glitnir--recheck-frame-cards w)
+            (should (= (aref (aref (window-parameter w 'glitnir--blocks) 0) 6) #xff0000))
+            (disable-theme 'glitnir-test-red)
+            (enable-theme 'glitnir-test-blue)
+            (glitnir--recheck-frame-cards w)
+            (should (= (aref (aref (window-parameter w 'glitnir--blocks) 0) 6) #x0000ff)))
+        (disable-theme 'glitnir-test-red)
+        (disable-theme 'glitnir-test-blue)
+        (dolist (k '(glitnir-blocks glitnir--blocks glitnir--blocks-key))
+          (set-window-parameter w k nil))
+        (clrhash glitnir--blocks-seen)
+        (set-frame-parameter nil 'glitnir--blocks nil)))))
+
 (defun glitnir-test--recheck-n (n window)
   "Run the card hook N times on WINDOW (compiled by the test: an interpreted loop conses by itself)."
   (dotimes (_ n) (glitnir--recheck-frame-cards window)))

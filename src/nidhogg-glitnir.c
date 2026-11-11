@@ -620,6 +620,7 @@ Setting it to nil turns its decorations off.  */);
   DEFSYM (Qglitnir__chrome_vector, "glitnir--chrome-vector");
   DEFSYM (Qglitnir__card, "glitnir--card");
   DEFSYM (Qglitnir__cards, "glitnir--cards");
+  DEFSYM (Qglitnir__blocks, "glitnir--blocks");
 
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();
