@@ -77,9 +77,10 @@ outside() {
     { split($1, e, "->"); if ($2 == "(LISTEN)" || e[2] == "") { if (!inb(e[1])) print $1 }
       else if (!inb(e[1]) && !inb(e[2])) print $1 }'
 }
-# run 11: the hub's build (configurationDone held for the js-debug attach; debugpy started after a probe of its port;
-# the preload drgnx ships), and the old order (-nohold) beside it, with a parent that forks on its first line
-for a in debugpy-listen jsdebug-attach jsdebug-attach-nohold; do
+# run 12: debugpy started after a probe of its port (run 11: 4/4); js-debug's parent forks on its first line and
+# the preload makes the fork wait for js-debug's bootloader (run 11: holding configurationDone deadlocks, js-debug
+# answers the attach only after it); -nowait is the same without the wait
+for a in debugpy-listen jsdebug-attach jsdebug-attach-nowait; do
   for run in 1 2; do
     rm -rf "$B/w/r.json" "$B/w/mark" "$B/t/claims"; mkdir -p "$B/t/claims"
     : > "$B/t/claims/port-47610"; : > "$B/t/claims/port-47611"

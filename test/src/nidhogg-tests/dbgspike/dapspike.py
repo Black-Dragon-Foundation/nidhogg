@@ -258,8 +258,8 @@ def run(adapter, fix, out_path, use_shim):
             bp_file, bp_line, probe_line, probe_expr = child_fix, 9, 7, "{total}"
         elif adapter.startswith("jsdebug-attach"):
             # node --inspect-brk on the block's second port; children's inspector.open(0) mapped by the preload (the
-            # one drgnx ships); the parent forks on its first line (run 11: the hub's hold, configurationDone after
-            # the attach's answer; "-nohold" sends it at initialized, as runs 8-10 did)
+            # one drgnx ships); the parent forks on its first line (run 12: the preload makes the fork wait for
+            # js-debug's bootloader; "-nowait" without it; run 11's hold of configurationDone deadlocked)
             port = BLOCK[0]
             cmd = ["node", os.path.join(os.environ.get("JS_DEBUG", "/opt/js-debug"), "src/dapDebugServer.js"), str(port), "127.0.0.1"]
             prog = os.path.join(fix, "fixture-fork.js")
@@ -267,7 +267,8 @@ def run(adapter, fix, out_path, use_shim):
                       "autoAttachChildProcesses": True, "continueOnAttach": True, "cwd": fix}
             env = {**os.environ, "NODE_OPTIONS": "--require " + os.path.join(fix, "preload.js"),
                    "DRGNX_DEBUG_PORTS": ",".join(str(p) for p in BLOCK[2:]),
-                   "DRGNX_DEBUG_CLAIMS": os.environ["DBGSPIKE_CLAIMS"], "DRGNX_DEBUG_TRACE": "1"}
+                   "DRGNX_DEBUG_CLAIMS": os.environ["DBGSPIKE_CLAIMS"], "DRGNX_DEBUG_TRACE": "1",
+                   **({} if adapter.endswith("-nowait") else {"DRGNX_DEBUG_WAIT_BOOTLOADER": "1"})}
             debuggee = (["node", f"--inspect-brk=127.0.0.1:{BLOCK[1]}", prog], env)
             bp_file, bp_line, probe_line, probe_expr = os.path.join(fix, "fixture.js"), 7, 5, "{total}"
         elif adapter == "delve":
@@ -371,9 +372,6 @@ def run(adapter, fix, out_path, use_shim):
         if not adapter.startswith("jsdebug"):
             configure(c)
         else:
-            if adapter == "jsdebug-attach":
-                c.wait(lambda m: m.get("type") == "response" and m.get("request_seq") == rid, 30)
-                step("attach-answered")
             c.call("configurationDone")
             step("configurationDone", conn="main")
 

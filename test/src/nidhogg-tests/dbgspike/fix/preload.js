@@ -4,6 +4,7 @@
 //
 // DRGNX_DEBUG_PORTS: the block's ports for children, comma-separated. DRGNX_DEBUG_CLAIMS: a directory in the
 // session's tmp where each port is claimed by an O_EXCL file, so two children never take the same one.
+// DRGNX_DEBUG_WAIT_BOOTLOADER: when set, starting a child first waits for js-debug's bootloader (below).
 // DRGNX_DEBUG_TRACE: when set, each step is written to stderr.
 "use strict";
 const fs = require("fs");
@@ -37,4 +38,26 @@ if (dir && ports.length) {
     }
     return open.call(this, port, host, wait);
   };
+}
+// js-debug writes its bootloader into this process's NODE_OPTIONS only once it has attached (100-200 ms in, while
+// the program already runs, since js-debug answers the attach only after configurationDone); a child started before
+// that would run without a debugger. So starting a child first waits for the bootloader, at most 5 s, in 5 ms
+// sleeps: between them V8 runs the inspector's pending messages (interrupts), js-debug's evaluate among them.
+if (process.env.DRGNX_DEBUG_WAIT_BOOTLOADER) {
+  const cp = require("child_process");
+  const ready = () => /bootloader/.test(process.env.NODE_OPTIONS || "");
+  const cell = new Int32Array(new SharedArrayBuffer(4));
+  const wait = () => {
+    if (ready()) return;
+    const t0 = Date.now();
+    while (!ready() && Date.now() - t0 < 5000) Atomics.wait(cell, 0, 0, 5);
+    trace(`waited ${Date.now() - t0} ms for the bootloader: ${ready() ? "there" : "not there"}`);
+  };
+  for (const name of ["spawn", "spawnSync", "fork", "exec", "execSync", "execFile", "execFileSync"]) {
+    const orig = cp[name];
+    cp[name] = function (...args) {
+      wait();
+      return orig.apply(this, args);
+    };
+  }
 }
