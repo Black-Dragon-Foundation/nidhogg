@@ -37145,10 +37145,17 @@ note_mouse_sensor (struct frame *f, Lisp_Object window, Lisp_Object value,
 
 /* EXPORT:
    The pointer left frame F (a shell's leave handler): the sensor it was
-   on, if on F, is left.  */
+   on, if on F, is left.  The frame's last pointer position is forgotten
+   too, as the X and NS ports' leave handlers do: else a redisplay that
+   overwrote the mouse face notes that position again (redisplay's
+   re-highlight), entering a sensor the pointer has left.  */
 void
 note_mouse_sensor_leave (struct frame *f)
 {
+  Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (f);
+
+  if (hlinfo && hlinfo->mouse_face_mouse_frame == f)
+    hlinfo->mouse_face_mouse_frame = NULL;
   if (!NILP (mouse_sensor_value) && WINDOWP (mouse_sensor_window)
       && XFRAME (WINDOW_FRAME (XWINDOW (mouse_sensor_window))) == f)
     note_mouse_sensor (f, Qnil, Qnil, 0);
