@@ -45,19 +45,18 @@
     ("png" 'png) ("jpg" 'jpeg) ("gif" 'gif) ("webp" 'webp)))
 
 (defun workers-image-tests--core-p (file-or-type)
-  "Non-nil if this build's cores decode FILE-OR-TYPE (a corpus file or type).
-A build has a core for each decoder library it links: the NS build has
-no libjpeg or giflib (its loaders for those are NSImage's), so the rows
-of those types have nothing to run there."
-  (assq (if (stringp file-or-type) (workers-image-tests--type file-or-type)
-          file-or-type)
-        (nidhogg-workers--test-image-cores)))
+  "Non-nil if a decoder library's core decodes FILE-OR-TYPE (a corpus file or type) in this build.
+These rows hold the C cores to the loaders' recorded results and texts,
+which are the libraries' (libpng, libjpeg, giflib, libwebp).  Naglfar
+links none: its cores are ImageIO's, so those rows have nothing to run
+there."
+  (nth 2 (assq (if (stringp file-or-type) (workers-image-tests--type file-or-type)
+                 file-or-type)
+               (nidhogg-workers--test-image-cores))))
 
 (defun workers-image-tests--header-p (type)
-  "Non-nil if the header path answers images of TYPE in this build.
-It never does where the loaders are the native image API's (NS):
-`nh_img_spec_format' knows no type there (src/image.c:3553-3575)."
-  (cdr (workers-image-tests--core-p type)))
+  "Non-nil if the header path answers images of TYPE in this build."
+  (nth 1 (assq type (nidhogg-workers--test-image-cores))))
 
 (defun workers-image-tests--core-spec (file index)
   "The image spec of corpus FILE with INDEX."
@@ -102,6 +101,7 @@ GOLDEN-HEADER is the corpus' recorded frame background colour."
                    (lambda (r) (workers-image-tests--core-p (caar r)))
                    (cdr (assq 'results golden))))
          (n 0))
+    (skip-unless (cl-some #'workers-image-tests--core-p '(png jpeg gif webp)))
     (should results)
     (nidhogg-workers--test-image-cache-clear)
     (dolist (case (cl-remove-if-not
@@ -626,6 +626,7 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
         (golden (workers-image-tests--golden))
         (texts (workers-image-tests--read "oracle-errors-golden.eld")))
     (should texts)
+    (skip-unless (cl-some #'workers-image-tests--core-p '(png jpeg gif webp)))
     (dolist (entry (cl-remove-if-not
                     (lambda (e) (workers-image-tests--core-p (if (consp e) (car e) e)))
                     (workers-image-tests--read "oracle-errors.eld")))
@@ -881,13 +882,14 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
   (dolist (type '(png jpeg gif webp svg xpm))
     (should (memq (nidhogg-workers--deferrable-p type) '(t nil)))))
 
-;; macOS keeps NSImage for its native types (Task 37): they decode
-;; synchronously there, so none of them is deferrable.  WebP is not
-;; asserted: whether it reaches nh-img on NS is decided by the Mac build.
+;; On macOS (Naglfar) the image worker decodes PNG, JPEG, GIF and WebP
+;; off the main thread, ImageIO behind Glitnir's decoders; TIFF and the
+;; other types ImageIO alone knows load synchronously.
 (ert-deftest workers/macos-image-types ()
   (skip-unless (and (eq system-type 'darwin)
                     (fboundp 'nidhogg-workers--deferrable-p)))
-  (dolist (type '(png jpeg gif tiff))
-    (should-not (nidhogg-workers--deferrable-p type))))
+  (dolist (type '(png jpeg gif webp))
+    (should (nidhogg-workers--deferrable-p type)))
+  (should-not (nidhogg-workers--deferrable-p 'tiff)))
 
 ;;; workers-image-tests.el ends here
