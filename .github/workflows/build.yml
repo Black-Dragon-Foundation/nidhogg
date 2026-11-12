@@ -873,12 +873,6 @@ jobs:
         run: |
           (cd nidhogg/shell && cargo test --locked --lib --no-default-features --features macos)
           (cd nidhogg/glue && cargo test --locked --lib --no-default-features --features macos,test-hooks)
-      # the lane's interposer (nidhogg/test/mac-interpose, test-only) under clippy, warnings as errors
-      - name: The lane's interposer (clippy)
-        if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
-        env:
-          CARGO_HOME: ${{ runner.temp }}/cargo-home
-        run: cd nidhogg/test/mac-interpose && cargo clippy --locked -- -D warnings
       - name: Naglfar's boundary check (nm-check)
         if: ${{ !cancelled() && steps.nbuild.outcome == 'success' }}
         run: bash nidhogg/glue/nm-check.sh "$RUNNER_TEMP/nbuild"
@@ -1109,6 +1103,11 @@ jobs:
         run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/shell/check.sh --container fedora-45
       - id: glue
         run: T="$RUNNER_TEMP" NH_RECORDER="$RUNNER_TEMP/nh-recorder-target/release/nh-recorder" bash nidhogg/glue/check.sh --container fedora-45
+      # the macOS lane's interposer (test-only) under clippy for aarch64-apple-darwin, on this image's rustc as the
+      # shell and the glue (ci/target-std.sh adds the darwin std), never a runner's moving stable
+      - id: interpose
+        if: ${{ !cancelled() }}
+        run: T="$RUNNER_TEMP" bash nidhogg/test/mac-interpose/check.sh --container fedora-45
       # saved after the checks whatever they said (a red run is the one that runs again); incremental data is left
       # out: it only speeds up rebuilding the crates themselves, which a change to them does anyway.  The entry names
       # the commit it was built from (set-mtimes.sh --since), and only when all three checks passed: a red check may

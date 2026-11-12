@@ -355,8 +355,10 @@ elif ! out=$(emacs -Q --batch --eval '(dolist (f command-line-args-left)
                                    (error-message-string err))))))' "${lane_files[@]}" 2>&1); then
   fail "a lane file does not read: $(grep -m 1 'does not read' <<<"$out" || tail -n 1 <<<"$out")"
 fi
-job macos-naglfar | grep -qF 'cd nidhogg/test/mac-interpose && cargo clippy --locked -- -D warnings' ||
-  fail "macos-naglfar does not hold the lane's interposer to clippy"
+job native-crates | grep -qF 'bash nidhogg/test/mac-interpose/check.sh --container fedora-45' ||
+  fail "native-crates does not hold the lane's interposer to clippy on the pinned image's toolchain"
+! grep -qE 'mac-interpose.*cargo clippy|cargo clippy.*mac-interpose' "$wf" ||
+  fail "the lane's interposer runs clippy outside its check.sh (a runner's own toolchain)"
 job macos-naglfar | grep -qF -- "--exclude=glitnir-target"           || fail "the Naglfar build tree artifact carries the Rust target"
 job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "macos-naglfar does not follow the macOS path filter"
 job gate | grep -qF 'macos-naglfar macos-naglfar-rows " ;; esac'     || fail "the gate lets a filtered macOS run skip macos but not the Naglfar jobs"
