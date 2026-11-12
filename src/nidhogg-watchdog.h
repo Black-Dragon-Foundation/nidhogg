@@ -259,6 +259,7 @@ extern void nh_wd_wait_enter (struct thread_state *self,
 			      const struct timespec *timeout);
 extern void nh_wd_wait_leave (struct thread_state *self);
 extern void nh_wd_suspend (bool);
+extern void nh_wd_runloop_sleep (bool);
 extern uint64_t nh_wd_now_ns (void);
 #ifdef HAVE_NIDHOGG_WORKERS
 extern uint64_t nh_wd_last_span_ns (void);
@@ -296,6 +297,9 @@ extern void nh_wd_monitor_stop (void);
 extern void nh_wd_monitor_keep_hang (void);
 extern void nh_wd_monitor_span_close (struct nh_wd_stall *);
 extern void nh_wd_monitor_syms (void);
+/* On Naglfar, observe the main run loop's sleeps (ON) or stop
+   (nh_wd_runloop_sleep); nothing elsewhere.  */
+extern void nh_wd_runloop_observe (bool on);
 
 /* The handler, the raw ring and `--take'.
    [nidhogg-watchdog-sample.c]

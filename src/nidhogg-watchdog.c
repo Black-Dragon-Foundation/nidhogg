@@ -64,6 +64,10 @@ char *nh_wd_hang_file;
 /* Main-thread state (written only by the main thread, with the global
    lock held or in wait_leave, which only the main thread runs).  */
 static bool wd_waiting;		/* in a responsive wait */
+static bool wd_in_select;	/* between the main thread's wait edges */
+/* A sleep of a run loop the shell runs outside Emacs's own wait (a
+   menu's tracking, a modal panel) is a wait (nh_wd_runloop_sleep).  */
+static bool wd_runloop_asleep;
 static uint64_t wd_busy_since;	/* the current span's start */
 #ifdef HAVE_NIDHOGG_WORKERS
 static uint64_t wd_last_wall;	/* the last closed span's length (ns) */
@@ -186,9 +190,10 @@ nh_wd_last_span_ns (void)
 }
 
 #endif
-/* The span ends at NOW: a responsive wait begins.  */
+/* The span ends at NOW: a responsive wait begins.  The phases stay
+   (span_close pops them).  */
 static void
-span_close (uint64_t now)
+span_end (uint64_t now)
 {
   /* When still waiting, the last wait's leave never ran: a longjmp out
      of the select skips it (a tty C-g: handle_interrupt ->
@@ -219,6 +224,13 @@ span_close (uint64_t now)
 	}
       wd_waiting = true;
     }
+}
+
+/* The span ends at NOW: a responsive wait begins.  */
+static void
+span_close (uint64_t now)
+{
+  span_end (now);
   nh_wd_phase_pop_to (0);
 }
 
@@ -227,6 +239,7 @@ nh_wd_wait_enter (struct thread_state *self, const struct timespec *timeout)
 {
   if (!main_thread_p (self) || !nh_wd_on)
     return;
+  wd_in_select = true;
   /* No wait is inside a specpdl growth: a memory_full longjmp out of
      xpalloc would otherwise leave the flag set for good.  */
   nh_wd_specpdl_unstable = 0;
@@ -252,6 +265,7 @@ nh_wd_wait_leave (struct thread_state *self)
   if (!main_thread_p (self) || !nh_wd_on
       || !pthread_equal (pthread_self (), nh_wd.main_id))
     return;
+  wd_in_select = false;
   if (wd_wait_depth >= 0)
     {
       nh_wd_phase_pop_to (wd_wait_depth);
@@ -259,6 +273,31 @@ nh_wd_wait_leave (struct thread_state *self)
     }
   if (wd_waiting)
     span_open (nh_wd_now_ns ());
+}
+
+/* The main thread's run loop goes to sleep (SLEEPING) or wakes, from
+   the shell's run-loop observer.  Only a sleep outside Emacs's own wait
+   counts: one inside the select's wait (the shell's pump runs the run
+   loop there) is already that wait, and its wake never ends it.  The
+   phases stay: the span goes on after the wake where it was.  */
+void
+nh_wd_runloop_sleep (bool sleeping)
+{
+  if (!nh_wd_on || !pthread_equal (pthread_self (), nh_wd.main_id))
+    return;
+  if (sleeping)
+    {
+      if (wd_in_select || wd_waiting || wd_runloop_asleep)
+	return;
+      wd_runloop_asleep = true;
+      span_end (nh_wd_now_ns ());
+    }
+  else if (wd_runloop_asleep)
+    {
+      wd_runloop_asleep = false;
+      if (wd_waiting)
+	span_open (nh_wd_now_ns ());
+    }
 }
 
 void
@@ -306,7 +345,7 @@ the main thread, or on a platform it does not support yet.
 usage: (nidhogg-watchdog--start THRESHOLD-MS HANG-MS HANG-FILE &rest FLAGS)  */)
   (ptrdiff_t nargs, Lisp_Object *args)
 {
-#ifndef __linux__
+#if !defined __linux__ && !defined __APPLE__
   error ("nidhogg-watchdog: not on this platform yet");
 #endif
   bool no_monitor = false;
@@ -362,6 +401,7 @@ usage: (nidhogg-watchdog--start THRESHOLD-MS HANG-MS HANG-FILE &rest FLAGS)  */)
       error ("nidhogg-watchdog: cannot install the signal handler");
     }
   span_open (nh_wd_now_ns ());
+  wd_in_select = wd_runloop_asleep = false;
   nh_wd_on = true;
   wd_monitor_started = false;
   if (!no_monitor)
@@ -375,6 +415,7 @@ usage: (nidhogg-watchdog--start THRESHOLD-MS HANG-MS HANG-FILE &rest FLAGS)  */)
 	}
       wd_monitor_started = true;
     }
+  nh_wd_runloop_observe (true);
   return Qt;
 }
 
@@ -388,6 +429,7 @@ Unfinished and untaken records are dropped.  Safe when it is off.  */)
     return Qnil;
   if (!main_thread_p (current_thread))
     error ("nidhogg-watchdog: stop it from the main thread");
+  nh_wd_runloop_observe (false);
   nh_wd_on = false;
   /* A stop inside a hang: SIGTERM, SIGHUP and SIGINT call `kill-emacs'
      from the signal handler, while the main thread is still busy.  The
@@ -639,10 +681,10 @@ syms_of_nidhogg_watchdog (void)
   DEFSYM (QCtyping, ":typing");
   DEFSYM (QCcollections, ":collections");
 
-#ifdef __linux__
-  /* Where the watchdog cannot start (macOS: no monitor yet), the start
-     is not defined, so `nidhogg-watchdog-mode' says so and the tests
-     that need it skip.  */
+#if defined __linux__ || defined __APPLE__
+  /* Where the watchdog cannot start (no monitor there), the start is
+     not defined, so `nidhogg-watchdog-mode' says so and the tests that
+     need it skip.  */
   defsubr (&Snidhogg_watchdog__start);
 #endif
   defsubr (&Snidhogg_watchdog__stop);
