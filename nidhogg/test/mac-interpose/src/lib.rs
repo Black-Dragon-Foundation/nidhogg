@@ -136,7 +136,7 @@ static INIT: extern "C" fn() = install_observer;
 type emacs_value = *mut c_void;
 
 #[repr(C)]
-struct emacs_runtime {
+pub struct emacs_runtime {
     size: isize,
     private_members: *mut c_void,
     get_environment: unsafe extern "C" fn(*mut emacs_runtime) -> *mut emacs_env,
@@ -224,6 +224,11 @@ unsafe fn defun(env: *mut emacs_env, name: &CStr, min: isize, max: isize, f: ema
     (e.funcall)(env, fset, 2, args.as_mut_ptr());
 }
 
+/// Emacs's module entry: registers the counters' functions and provides `mac-interpose`.
+///
+/// # Safety
+///
+/// `rt` is the runtime Emacs passes to a module's `emacs_module_init`, valid for this call.
 #[no_mangle]
 pub unsafe extern "C" fn emacs_module_init(rt: *mut emacs_runtime) -> c_int {
     let env = ((*rt).get_environment)(rt);
