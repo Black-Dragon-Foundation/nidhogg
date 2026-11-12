@@ -1168,6 +1168,8 @@ int32_t nhg_frame_param (uint32_t key, const NhgParamFrame *f, const NhgParamVal
    A native font driver's records (glue/src/fontspec.rs).  Names (family, foundry, registry, script, language, `:otf`
    features) are ids from nhg_font_id, 0 for unset; the numbers are FONT_*_NUMERIC (-1: unset); the size is in device
    pixels (0: unset).  The matching is macfont_list and macfont_match's, over the faces the driver's font source lists.
+   CASCADE is an open font (nhg_font_open's handle, 0: none) whose own cascade picks the preferred family of a spec
+   without a family, as the fallback of a face in that font does (Core Text's CTFontCreateForString); listing only.
    Neither reads nor writes pixels.  */
 
 #define NHG_FS_OTF_MAX 8
@@ -1179,6 +1181,7 @@ typedef struct
   float size;
   uint32_t otf_n;
   uint32_t otf[NHG_FS_OTF_MAX];
+  uint64_t cascade;
 } NhgFontSpec;
 
 /* A listed font: the spec's fields as the face has them, the id the driver opens the face by, and what is synthesised

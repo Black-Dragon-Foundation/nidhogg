@@ -605,6 +605,42 @@ pub fn cascade_family(handle: u64, c: u32) -> Option<String> {
     })?
 }
 
+/// The family Core Text lays `chars` out in, in `language` (empty: none), when the text's font is the open font
+/// `handle`: its own cascade, as a native app's text in that font falls back (the font and language attributes on
+/// one line).  `None`: not open, no characters, or not one font.
+pub fn cascade_family_for(handle: u64, chars: &[u32], language: &str) -> Option<String> {
+    let mut units = Vec::new();
+    for &c in chars {
+        let mut b = [0u16; 2];
+        units.extend_from_slice(char::from_u32(c)?.encode_utf16(&mut b));
+    }
+    if units.is_empty() {
+        return None;
+    }
+    let lang = if language.is_empty() {
+        None
+    } else {
+        Some(cf_string(language)?)
+    };
+    super::fonts::with_font(handle, |font| {
+        // SAFETY: CoreText constants, live for the process; the font and language are live.
+        let attrs = match &lang {
+            Some(l) => dictionary(
+                &[unsafe { kCTFontAttributeName }, unsafe {
+                    kCTLanguageAttributeName
+                }],
+                &[font, l.get()],
+            )?,
+            None => dictionary(&[unsafe { kCTFontAttributeName }], &[font])?,
+        };
+        let l = line(&units, &attrs)?;
+        let f = single_font(l.get())?;
+        // SAFETY: a live font; the copy is +1.
+        let family = Cf::new(unsafe { CTFontCopyFamilyName(f) })?;
+        Some(string(family.get()))
+    })?
+}
+
 /// One glyph run of a line, in Core Text's storage order.
 pub struct Run {
     pub rtl: bool,

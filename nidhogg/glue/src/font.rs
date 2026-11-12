@@ -531,9 +531,15 @@ mod coretext {
     struct Scripts {
         chars: HashMap<String, ScriptChars>,
         preferred: HashMap<(String, String), Option<String>>,
+        /// Each (open font, script, language)'s family from that font's cascade (`preferred_from`): asked on
+        /// redisplay's fallback path, so kept, and at most `CASCADED_MAX` of them (all go when it is full).
+        cascaded: HashMap<(u64, String, String), Option<String>>,
         /// The listing `preferred` was asked under (`text::listing`).
         generation: usize,
     }
+
+    /// How many cascade answers `Scripts` keeps: a session's faces' fonts times the scripts their text falls back for.
+    const CASCADED_MAX: usize = 256;
 
     fn scripts() -> MutexGuard<'static, Scripts> {
         static S: OnceLock<Mutex<Scripts>> = OnceLock::new();
@@ -546,6 +552,7 @@ mod coretext {
         let mut s = scripts();
         s.chars = named.into_iter().collect();
         s.preferred.clear();
+        s.cascaded.clear();
     }
 
     /// Core Text's face `i` (`text::face_at`) as the matcher sees it; its id is `i` plus one.
@@ -606,6 +613,7 @@ mod coretext {
             let mut s = scripts();
             if s.generation != generation {
                 s.preferred.clear();
+                s.cascaded.clear();
                 s.generation = generation;
             }
             let key = (script.to_owned(), language.to_owned());
@@ -621,6 +629,40 @@ mod coretext {
                 .clone();
             let p = text::preferred_family_in(&chars, language);
             s.preferred.insert(key, p.clone());
+            p
+        }
+
+        /// The script's characters laid out in the open font `font`, so its own cascade picks the family (a face in
+        /// that font falling back, as a native app's text does); the plain preferred family when the font is not open
+        /// or the characters land in more than one font.
+        fn preferred_from(&self, font: u64, script: &str, language: &str) -> Option<String> {
+            let generation = text::listing().0;
+            let mut s = scripts();
+            if s.generation != generation {
+                s.preferred.clear();
+                s.cascaded.clear();
+                s.generation = generation;
+            }
+            let key = (font, script.to_owned(), language.to_owned());
+            if let Some(p) = s.cascaded.get(&key) {
+                return p.clone();
+            }
+            let chars = s
+                .chars
+                .get(script)
+                .filter(|c| !c.any && !c.chars.is_empty())
+                .map(|c| c.chars.clone());
+            drop(s);
+            let p = match chars {
+                Some(c) => text::cascade_family_for(font, &c, language),
+                None => None,
+            }
+            .or_else(|| self.preferred(script, language));
+            let mut s = scripts();
+            if s.cascaded.len() >= CASCADED_MAX {
+                s.cascaded.clear();
+            }
+            s.cascaded.insert(key, p.clone());
             p
         }
 
