@@ -2356,7 +2356,6 @@ image_spec_hash (Lisp_Object spec)
   return hash;
 }
 #else
-
 /* Filter out image elements that don't affect display, but will
    disrupt finding the image in the cache.  This should perhaps be
    user-configurable, but for now it's hard-coded (but new elements
