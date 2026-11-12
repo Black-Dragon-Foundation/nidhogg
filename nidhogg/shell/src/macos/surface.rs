@@ -80,7 +80,7 @@ pub struct Cf(CFRef);
 impl Cf {
     /// Take a +1 reference; `None` for null.
     fn take(r: CFRef) -> Option<Cf> {
-        (!r.is_null()).then_some(Cf(r))
+        (!r.is_null()).then(|| Cf(r))
     }
 
     pub fn as_ptr(&self) -> CFRef {
@@ -499,5 +499,16 @@ impl Surfaces {
             IOSurfaceUnlock(s.as_ptr(), LOCK_READ_ONLY, std::ptr::null_mut());
         }
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_null_reference_is_none_and_never_released() {
+        // CFRelease(NULL) traps: a Cf made for a null result and dropped would end the process
+        assert!(Cf::take(std::ptr::null_mut()).is_none());
     }
 }

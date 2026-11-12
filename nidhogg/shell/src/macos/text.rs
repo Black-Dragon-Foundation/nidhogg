@@ -125,7 +125,7 @@ unsafe impl Sync for Cf {}
 impl Cf {
     /// Own `r`, a +1 reference from a Create or Copy call.
     pub(crate) fn new(r: CFRef) -> Option<Cf> {
-        (!r.is_null()).then_some(Cf(r))
+        (!r.is_null()).then(|| Cf(r))
     }
 
     pub(crate) fn get(&self) -> CFRef {
@@ -485,4 +485,15 @@ fn shape_in(font: CFRef, units: &[u16]) -> Option<Line> {
         })
         .collect();
     Some(Line { runs, composed })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_null_reference_is_none_and_never_released() {
+        // CFRelease(NULL) traps: a Cf made for a null result and dropped would end the process
+        assert!(Cf::new(std::ptr::null_mut()).is_none());
+    }
 }
