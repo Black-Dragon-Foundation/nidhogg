@@ -2627,6 +2627,23 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// How many times the installed fonts changed since the process started (Core Text's registered-fonts
+    /// notifications; 0 off macOS) into `*n`: when it changes, the driver drops Emacs's own lists, so a font installed
+    /// or removed while Emacs runs is listed or gone at the next `list-fonts`.
+    ///
+    /// # Safety
+    /// `n` is writable.
+    unlocked fn nhg_font_changes(n: *mut u32) -> i32 {
+        if n.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { n.write(crate::font::changes()) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Startup, before Lisp is initialised and without a display: `LANG` from the system's locale when the
     /// environment has none (macOS; `NHG_E_UNSUPPORTED` elsewhere).  Calls nothing in Emacs.  It keeps no pool: every
     /// entry point drains its own (`guard`), so a pool made here would be gone when this call returns.

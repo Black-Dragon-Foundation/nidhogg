@@ -1183,6 +1183,14 @@ pub fn open(id: u64, size: i32, flags: u32) -> Option<NhgFontMetrics> {
     }
 }
 
+/// How many times the installed fonts changed (Core Text's registered-fonts notifications); 0 without Core Text.
+pub fn changes() -> u32 {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    return nhshell::macos::text::notes();
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    0
+}
+
 pub fn close(handle: u64) {
     #[cfg(all(feature = "macos", target_os = "macos"))]
     coretext::close(handle);

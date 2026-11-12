@@ -360,6 +360,11 @@ pub fn font_changes() -> (u32, usize, bool) {
     )
 }
 
+/// How many registered-fonts notifications have come: the driver drops Emacs's own font lists when it changes.
+pub fn notes() -> u32 {
+    NOTES.load(Ordering::Acquire)
+}
+
 /// List the faces again at the next `listing`, as a registered-fonts notification does.
 pub fn relist() {
     STALE.store(true, Ordering::Release);
