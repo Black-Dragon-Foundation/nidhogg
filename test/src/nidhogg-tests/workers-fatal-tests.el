@@ -153,7 +153,9 @@ fallbacks among them) and how many workers are parked at POINT."
   ;; and the system names the signal itself ("Abort trap: 6").  That is
   ;; NS's, not macOS's: Naglfar's shutdown does not abort, so on macOS
   ;; without NS the child dies of SIG with a Backtrace, as on GNU/Linux.
-  (let ((ns (featurep 'ns)))
+  ;; Naglfar provides `ns' too (src/nhmacterm.c, for `window-system'), so
+  ;; only `naglfar' tells the two apart.
+  (let ((ns (and (featurep 'ns) (not (featurep 'naglfar)))))
     (should (equal (list (plist-get r :status) (plist-get r :code))
                    (list 'signal (if ns 6 (cdr sig)))))
     ;; The fatal path ended the child before the helper's 30 s kill: a
