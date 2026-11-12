@@ -90,8 +90,9 @@ the driver lists its faces again (macfont drops its family cache then), so an un
               ;; the notification reaches the shell through the run loop
               (while (and (not (setq found (funcall listed))) (< (float-time) deadline))
                 (sit-for 0.1))
-              (nhmac-driver--say "nhmac-font-list-refresh: %s listed %s, %.1f s left" new (if found "yes" "no")
-                                 (- deadline (float-time)))
+              (nhmac-driver--say "nhmac-font-list-refresh: %s listed %s, %.1f s left; (notifications generation stale) %S"
+                                 new (if found "yes" "no") (- deadline (float-time))
+                                 (nhmac-driver--probe 'font-changes))
               (should found)))
         (ignore-errors (delete-file file))))))
 
@@ -188,7 +189,7 @@ colour, `None' there is transparent (the background shows), and a symbol not the
                       "};"))
          (img (create-image xpm 'xpm t :scale 1
                             :color-symbols '(("fg" . "#00ff00") ("mask" . "None")))))
-    (should (valid-image-p img))
+    (should (imagep img))
     (let* ((size (image-size img t))
            (third (/ (car size) 3))
            (mid (/ (cdr size) 2))

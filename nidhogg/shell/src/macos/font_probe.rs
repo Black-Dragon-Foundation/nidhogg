@@ -2,6 +2,9 @@
 //! the rows judge the driver against.  Each answer is a Lisp form.
 //!
 //! - `(register "FILE")`: register a font file for the process (`CTFontManagerRegisterFontsForURL`); `t` or `nil`.
+//! - `(relist)`: list the faces again at the next listing, as Core Text's registered-fonts notification does; `t`.
+//! - `(font-changes)`: `(NOTIFICATIONS GENERATION STALE)`: the registered-fonts notifications so far, the listing's
+//!   generation, and whether a new listing is due.
 //! - `(preferred "LANG" C...)`: the family Core Text lays the characters out in, in language LANG ("": none).
 //! - `(ultralight)`: every listed face whose weight trait is -0.40, as `(ID "FAMILY" "POSTSCRIPT" APPKIT)`: ID the one
 //!   its entities carry (`:font-entity`), APPKIT `weightOfFont:` (nil when it does not open).
@@ -51,6 +54,14 @@ pub fn query(arg: &str) -> Option<String> {
             "nil"
         })
         .into(),
+        "relist" => {
+            text::relist();
+            "t".into()
+        }
+        "font-changes" => {
+            let (notes, generation, stale) = text::font_changes();
+            format!("({notes} {generation} {})", if stale { "t" } else { "nil" })
+        }
         "preferred" => {
             let chars: Vec<u32> = (2..w.len())
                 .filter_map(|i| num(i).map(|c| c as u32))
