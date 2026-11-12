@@ -42,6 +42,9 @@ struct CGPoint {
 struct KeyCallBacks([usize; 6]);
 #[repr(C)]
 struct ValueCallBacks([usize; 5]);
+/// `CFSetCallBacks`, whose address is all that is used.
+#[repr(C)]
+struct SetCallBacks([usize; 6]);
 
 const NUMBER_SINT64: isize = 4;
 const NUMBER_FLOAT32: isize = 5;
@@ -53,6 +56,8 @@ const RUN_RTL: u32 = 1;
 unsafe extern "C" {
     static kCFTypeDictionaryKeyCallBacks: KeyCallBacks;
     static kCFTypeDictionaryValueCallBacks: ValueCallBacks;
+    static kCFTypeSetCallBacks: SetCallBacks;
+    fn CFSetCreate(alloc: CFRef, values: *const CFRef, n: isize, cb: *const c_void) -> CFRef;
     fn CFRetain(r: CFRef) -> CFRef;
     fn CFRelease(r: CFRef);
     fn CFEqual(a: CFRef, b: CFRef) -> u8;
@@ -258,7 +263,50 @@ fn face(d: CFRef) -> Option<Face> {
     })
 }
 
+/// The faces of family `family` (a borrowed CFString), as Core Text matches its name; with `exact`, only faces of
+/// that family (the family name a mandatory attribute, as macfont_list asks): a name Core Text does not have then
+/// matches nothing, where without it Core Text offers other faces.
+fn family_faces(family: CFRef, exact: bool) -> Vec<Face> {
+    // SAFETY: the attribute key is Core Text's; the family name is live.
+    let Some(attrs) = dictionary(&[unsafe { kCTFontFamilyNameAttribute }], &[family]) else {
+        return Vec::new();
+    };
+    // SAFETY: live attributes; each result is +1.
+    let Some(pat) = Cf::new(unsafe { CTFontDescriptorCreateWithAttributes(attrs.get()) }) else {
+        return Vec::new();
+    };
+    let mandatory = if exact {
+        // SAFETY: one live key; the CF type callbacks retain it; the set is +1.
+        let key = unsafe { kCTFontFamilyNameAttribute };
+        let Some(m) = Cf::new(unsafe {
+            CFSetCreate(
+                std::ptr::null(),
+                &key,
+                1,
+                (&raw const kCFTypeSetCallBacks).cast(),
+            )
+        }) else {
+            return Vec::new();
+        };
+        Some(m)
+    } else {
+        None
+    };
+    let m = mandatory.as_ref().map_or(std::ptr::null(), Cf::get);
+    // SAFETY: a live pattern, and a live set or null; the result is +1.
+    let Some(descs) =
+        Cf::new(unsafe { CTFontDescriptorCreateMatchingFontDescriptors(pat.get(), m) })
+    else {
+        return Vec::new();
+    };
+    // SAFETY: a live array of descriptors, borrowed.
+    (0..unsafe { CFArrayGetCount(descs.get()) })
+        .filter_map(|j| face(unsafe { CFArrayGetValueAtIndex(descs.get(), j) }))
+        .collect()
+}
+
 /// Every face, in Core Text's family order (`mac_font_create_available_families`); listed on the first call and kept.
+/// Faces of a family the listing leaves out follow it once asked for by name (`named`).
 pub fn faces() -> &'static [Face] {
     static FACES: OnceLock<Vec<Face>> = OnceLock::new();
     FACES.get_or_init(|| {
@@ -278,31 +326,65 @@ pub fn faces() -> &'static [Face] {
                     .as_ref()
                     // SAFETY: two live strings (kCFCompareEqualTo is 0).
                     .is_some_and(|l| unsafe { CTFontManagerCompareFontFamilyNames(family, l.get(), std::ptr::null_mut()) } == 0);
-            if hidden {
-                continue;
-            }
-            // SAFETY: the attribute key is Core Text's; the family name is live.
-            let Some(attrs) = dictionary(&[unsafe { kCTFontFamilyNameAttribute }], &[family]) else {
-                continue;
-            };
-            // SAFETY: live attributes; each result is +1.
-            let Some(pat) = Cf::new(unsafe { CTFontDescriptorCreateWithAttributes(attrs.get()) }) else {
-                continue;
-            };
-            let Some(descs) =
-                Cf::new(unsafe { CTFontDescriptorCreateMatchingFontDescriptors(pat.get(), std::ptr::null()) })
-            else {
-                continue;
-            };
-            // SAFETY: a live array of descriptors, borrowed.
-            for j in 0..unsafe { CFArrayGetCount(descs.get()) } {
-                if let Some(f) = face(unsafe { CFArrayGetValueAtIndex(descs.get(), j) }) {
-                    out.push(f);
-                }
+            if !hidden {
+                out.extend(family_faces(family, false));
             }
         }
         out
     })
+}
+
+/// The faces found by name after the listing (leaked: they live as long as the listing), and the names asked for.
+struct Named {
+    faces: Vec<&'static Face>,
+    asked: std::collections::HashSet<String>,
+}
+
+fn named_store() -> std::sync::MutexGuard<'static, Named> {
+    static NAMED: OnceLock<std::sync::Mutex<Named>> = OnceLock::new();
+    NAMED
+        .get_or_init(|| {
+            std::sync::Mutex::new(Named {
+                faces: Vec::new(),
+                asked: Default::default(),
+            })
+        })
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+/// Face `i` (zero-based) of the listing and the faces found by name after it.
+pub fn face_at(i: usize) -> Option<&'static Face> {
+    let listed = faces();
+    listed
+        .get(i)
+        .or_else(|| named_store().faces.get(i - listed.len()).copied())
+}
+
+/// The indices (for `face_at`) of `family`'s faces when the listing leaves it out: `macfont_list` matches a named
+/// family's descriptor directly, so a family Core Text hides from its list (Courier and Times on macOS 27) still
+/// opens.  Empty for a listed family, and for one Core Text does not have.
+pub fn named(family: &str) -> Vec<usize> {
+    let listed = faces();
+    if family.is_empty() || listed.iter().any(|f| f.family.eq_ignore_ascii_case(family)) {
+        return Vec::new();
+    }
+    let mut n = named_store();
+    if n.asked.insert(family.to_lowercase())
+        && let Some(name) = cf_string(family)
+    {
+        for f in family_faces(name.get(), true) {
+            if f.family.eq_ignore_ascii_case(family) {
+                n.faces.push(Box::leak(Box::new(f)));
+            }
+        }
+    }
+    n.faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.family.eq_ignore_ascii_case(family))
+        .map(|(j, _)| listed.len() + j)
+        .collect()
 }
 
 /// The PostScript name of the font `f` (borrowed).
