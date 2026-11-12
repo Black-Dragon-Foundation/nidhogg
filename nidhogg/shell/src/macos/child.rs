@@ -668,6 +668,7 @@ impl MacShell {
             order,
             retired,
             cards,
+            legs,
             ..
         } = self;
         let w = &windows[&root];
@@ -689,6 +690,12 @@ impl MacShell {
             }
             if let Some(c) = cards.get_mut(&root) {
                 c.apply(&w.layer, f64::from(rh), scale);
+            }
+            // the layout legs: ended ones go, waiting ones start on the new picture shown above
+            if let Some(l) = legs.get_mut(&root) {
+                l.commit(&w.layer, drawn.contains(&root), f64::from(rh), scale, |r| {
+                    w.surfaces.region(r.x, r.y, r.w, r.h)
+                });
             }
             for (r, k) in retired.iter() {
                 if *r == root

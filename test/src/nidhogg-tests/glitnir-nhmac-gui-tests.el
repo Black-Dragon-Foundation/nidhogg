@@ -1506,10 +1506,16 @@ A leg left by an earlier row ends first: the same value would not be a new reque
       ;; round 2: never captured.  Which step stops: Lisp sent no leg (leg-sent, reduced motion), or the shell
       ;; answers another serial than the one sent (nil: no legs on this frame; 0: no capture taken)
       (let ((sent (window-parameter nil 'glitnir--leg-sent)))
-        (nhmac-gui--say "glitnir-nhmac--leg-capture: not captured: to-send %S, reduced motion %S, sent (cap mot serial edges moved) %S, shell's serial %S"
+        (nhmac-gui--say "glitnir-nhmac--leg-capture: not captured: to-send %S, reduced motion %S, sent (cap mot serial edges moved) %S, shell's serial %S, shell's legs %S"
                         (glitnir--leg-to-send (selected-window)) (glitnir--reduced-motion-p)
-                        (seq-take sent 5) (glitnir--layout-leg (selected-window) (nth 5 sent)))))
+                        (seq-take sent 5) (glitnir--layout-leg (selected-window) (nth 5 sent))
+                        (glitnir-nhmac--legs))))
     (should ok)))
+
+(defun glitnir-nhmac--legs ()
+  "The shell's layout legs of the selected frame: each window's (KEY CAPTURED SKIPPED PENDING RUNNING) and the log of
+captures, legs, starts and ends."
+  (condition-case err (nhmac--query 'test-legs (selected-frame)) (error err)))
 
 (defun glitnir-nhmac--leg-scroll ()
   "Show the next line first: the pattern's two kinds of line trade places."
@@ -1517,28 +1523,31 @@ A leg left by an earlier row ends first: the same value would not be a new reque
   (redisplay t))
 
 (ert-deftest glitnir-nhmac/layout-leg-shows-old-picture ()
-  "The capture is the picture from before the redraw: a leg that moves it nowhere shows it all along, to within 2 per
-channel, and when the leg ends the new layout is what shows (over 100 pixels differ)."
+  "The capture is the picture from before the redraw: a stepped leg with no items shows it until its midpoint, to
+within 2 per channel, and when the leg ends the new layout is what shows (over 100 pixels differ).
+The leg is drawn as `glitnir::layout::compose_leg' draws it for the Wayland presenter: the background is the
+capture cross-faded to the new picture (a stepped leg switches at its midpoint), and a move shows the new picture
+at its moving place, so a whole-area move would show the new layout from the start."
   :tags '(draws)
   (let ((glitnir-reduced-motion nil) before during after)
     (glitnir-nhmac--with-pattern
      (lambda ()
-       (let ((area (glitnir-nhmac--leg-area)))
-         (setq before (glitnir-nhmac--grab "leg-before"))
-         (glitnir-nhmac--leg-capture)
-         ;; the motion goes out with the redraw that draws the new layout
-         (set-window-parameter nil 'glitnir-layout-motion
-                               `(:moves ((page ,area ,area)) :duration 30 :background "#000000"))
-         (glitnir-nhmac--leg-scroll)
-         (should (> (nth 2 (window-parameter nil 'glitnir--leg-sent)) 0))
-         (setq during (glitnir-nhmac--grab "leg-during"))
-         (glitnir-nhmac--leg-end)
-         (setq after (glitnir-nhmac--grab "leg-after"))
-         (let* ((rect (glitnir-nhmac--root-rect before))
-                (shown (glitnir-nhmac--diff before during rect)) (new (glitnir-nhmac--diff during after rect)))
-           (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: during vs before %S, after vs during %S" shown new)
-           (should (<= (cadr shown) 2))
-           (should (> (car new) 100))))))))
+       (setq before (glitnir-nhmac--grab "leg-before"))
+       (glitnir-nhmac--leg-capture)
+       ;; the motion goes out with the redraw that draws the new layout
+       (set-window-parameter nil 'glitnir-layout-motion '(:duration 30 :step t :background "#000000"))
+       (glitnir-nhmac--leg-scroll)
+       (should (> (nth 2 (window-parameter nil 'glitnir--leg-sent)) 0))
+       (setq during (glitnir-nhmac--grab "leg-during"))
+       (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: legs during %S" (glitnir-nhmac--legs))
+       (glitnir-nhmac--leg-end)
+       (setq after (glitnir-nhmac--grab "leg-after"))
+       (let* ((rect (glitnir-nhmac--root-rect before))
+              (shown (glitnir-nhmac--diff before during rect)) (new (glitnir-nhmac--diff during after rect)))
+         (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: during vs before %S, after vs during %S, legs %S"
+                         shown new (glitnir-nhmac--legs))
+         (should (<= (cadr shown) 2))
+         (should (> (car new) 100)))))))
 
 (ert-deftest glitnir-nhmac/layout-leg-ends-plain ()
   "After its duration the leg's layers are gone and the new layout shows as drawn: the root with the leg ended
@@ -1563,7 +1572,7 @@ equals the root drawn at once without one (tolerance 0)."
          (setq moved (glitnir-nhmac--grab "leg-moved"))
          (glitnir-nhmac--leg-end)
          (let ((d (glitnir-nhmac--diff plain moved (glitnir-nhmac--root-rect plain))))
-           (nhmac-gui--say "glitnir-nhmac/layout-leg-ends-plain: %S" d)
+           (nhmac-gui--say "glitnir-nhmac/layout-leg-ends-plain: %S, legs %S" d (glitnir-nhmac--legs))
            (should (equal d '(0 0)))))))))
 
 (ert-deftest glitnir-nhmac/layout-leg-jumps-under-reduced-motion ()
