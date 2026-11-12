@@ -2,7 +2,8 @@
 # Build Nidhogg in a capped podman container or on the host.  See README.md ("Building").
 #   nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
 #                    [--build-dir DIR] [--check FILE] [--out FILE] [--stage STAGE] [--dry-run]
-# Linux builds Nidhogg's own Wayland shell (--with-nidhogg-wayland, which carries Glitnir), the one Linux path; macOS the NS app.
+# Linux builds Nidhogg's own Wayland shell (--with-nidhogg-wayland, which carries Glitnir), the one Linux path; macOS its
+# own macOS shell, Naglfar, which configure picks there by itself (the NS port is never built).
 # --without-glitnir on Linux is a terminal-only build with no Rust: the shell needs Glitnir, so there is no window system.
 # --nidhogg-wayland is the default and stays accepted; with --without-glitnir it is refused.
 # --stage build|check|pack runs one part on an existing --build-dir (default: all three in one run): build = configure and make
@@ -20,15 +21,16 @@
 # and JIT compilation is off in the image.  It is a tarball for tests, not a release: BUILDINFO's configure line says
 # --with-native-compilation=yes, which tarball-test.sh reads to check what this mode promises.
 # NIDHOGG_BUILD_LISP_CACHE_ELC=1 lets the compiled-Lisp cache give the byte-compiled part (not the .eln files) to a build
-# of another native-compilation mode or window system (the NS app, Naglfar), which the entry's full stamp refuses.
-# --naglfar builds Nidhogg's own macOS shell (--with-nidhogg-macos) instead of the NS app; on macOS only, except with
+# of another native-compilation mode or window system, which the entry's full stamp refuses.
+# --naglfar names the macOS shell, the only macOS build (the default on a macOS host); elsewhere it only works with
 # --dry-config, which stops after configure (src/config.h in the build dir) and on Linux configures for a darwin host.
 # --checking configures --enable-checking (dev builds only): Emacs's assertions, and the shell's and glue's test hooks
 # (the macOS rows inject events and read counters through them).  --test-hooks (dev builds only) configures the hooks
 # alone (--enable-nidhogg-test-hooks): a timing build, compared with a release build that has no assertions.
 # Exit: 0 ok, 1 build/check failed or not enough memory, 2 usage.
 # Test overrides: NIDHOGG_BUILD_UNAME, NIDHOGG_BUILD_NPROC, NIDHOGG_BUILD_MEMORY_KB, NIDHOGG_BUILD_PODMAN,
-# NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300).
+# NIDHOGG_BUILD_VMSTAT (a vm_stat stand-in), NIDHOGG_BUILD_HEARTBEAT (seconds between "still running" lines, default 300),
+# NIDHOGG_BUILD_CONF_EXTRA (words added to the configure line).
 # NIDHOGG_BUILD_PKG_CACHE=DIR keeps the container's downloaded packages (dnf, apt) in DIR between builds.
 # NIDHOGG_BUILD_CCACHE=DIR compiles the C code through ccache with its cache in DIR.  In a container ccache is installed
 # there and the compiler is checked by content, so a changed gcc never hits; on the host (macOS CI) ccache must be on
@@ -65,7 +67,7 @@ NHWL=0       # --nidhogg-wayland was asked for by name
 WATCHDOG=1  # the stall watchdog is built in unless --without-nidhogg-watchdog
 WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
 HISTORY=1    # the edit history's change hook is built in with Glitnir (it holds the rings) unless --without-nidhogg-history
-NAGLFAR=0    # --naglfar: the macOS shell (--with-nidhogg-macos), not the NS app
+NAGLFAR=0    # --naglfar: the macOS shell (the default on a macOS host)
 DRYCONF=0    # --dry-config: configure only
 CHECKING=0   # --checking: --enable-checking, so the test hooks are built; dev builds only
 HOOKS=0      # --test-hooks: the test hooks without --enable-checking (a timing build); dev builds only
@@ -189,22 +191,22 @@ if [ -z "$JOBS" ]; then
   [ "$JOBS" -ge 1 ] || JOBS=1
 fi
 
+{ [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; } && NAGLFAR=1
 if [ "$NAGLFAR" = 1 ]; then
-  [ -n "$GLITNIR" ] || die "--naglfar needs Glitnir: leave out --without-glitnir"
+  [ -n "$GLITNIR" ] || die "the macOS shell needs Glitnir: leave out --without-glitnir"
   { [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; } || [ "$DRYCONF" = 1 ] ||
     die "--naglfar builds on macOS (--host); elsewhere only --dry-config"
-  CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-nidhogg-macos"
+  # configure picks the macOS shell for a darwin host by itself
+  CONF="--with-native-compilation=$NATIVE --with-tree-sitter"
   # configure on Linux as for a darwin host (the result is config.h, never a binary)
   [ "$UNAME" = Darwin ] || CONF="$CONF --build=aarch64-apple-darwin24.6.0"
-elif [ "$MODE" = host ] && [ "$UNAME" = Darwin ]; then
-  CONF="--with-ns --with-native-compilation=$NATIVE --with-tree-sitter"
 elif [ -n "$GLITNIR" ]; then
   CONF="--with-native-compilation=$NATIVE --with-tree-sitter --with-nidhogg-wayland"
 else
   CONF="--with-native-compilation=$NATIVE --with-tree-sitter --without-x"
 fi
-# Glitnir (the compositor, Rust) is on by default on Linux and NS; --without-glitnir drops it and the Rust packages
-CONF="$CONF${GLITNIR:+ $GLITNIR}"
+# Glitnir (the compositor, Rust) is on by default; --without-glitnir drops it and the Rust packages
+CONF="$CONF${GLITNIR:+ $GLITNIR}${NIDHOGG_BUILD_CONF_EXTRA:+ $NIDHOGG_BUILD_CONF_EXTRA}"
 PKGS="\$(sed \"s/#.*//\" \$S/nidhogg/deps/$DISTRO.build"
 if [ -n "$GLITNIR" ]; then PKGS="$PKGS)"; else PKGS="$PKGS | grep -vxE 'cargo|rust|rustc')"; fi
 [ "$WATCHDOG" = 0 ] || CONF="$CONF --with-nidhogg-watchdog"

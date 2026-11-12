@@ -89,13 +89,15 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 ```
 
 - Targets today: Linux (Nidhogg's own Wayland shell, no GTK) in a container or on the host. pgtk is not built:
-  `configure` refuses `--with-pgtk`, and upstream's pgtk files stay in the tree only for clean merges. macOS: `--host
-  --naglfar` builds Naglfar, Nidhogg's own macOS shell, as `Nidhogg.app`; the release tarball is its bundle.
+  `configure` refuses `--with-pgtk`, and upstream's pgtk files stay in the tree only for clean merges. macOS: `--host`
+  builds Naglfar, Nidhogg's own macOS shell, as `Nidhogg.app` (`--naglfar` names it; on Linux, with `--dry-config`, it
+  configures for a darwin host); the release tarball is its bundle. The NS port is not built: `configure` picks
+  `--with-nidhogg-macos` on macOS by itself and refuses `--with-ns`, and the NS files stay only for clean merges.
 - Requirements: podman for `--container` (never docker) and enough free memory (below).
 - `--container DISTRO` (`fedora-45`, `ubuntu-26.04`, `debian-13`, `arch`) builds in a memory-capped podman container (podman only,
   never docker). `--host` builds on this machine (on Linux the packages in `nidhogg/deps/<distro>.build`
   must be installed).
-- Configure flags: `--with-native-compilation=aot --with-tree-sitter --with-nidhogg-wayland` (Linux), `--with-nidhogg-macos ...` (macOS, `--naglfar`), each followed by `--with-glitnir` unless `--without-glitnir` is given.
+- Configure flags: `--with-native-compilation=aot --with-tree-sitter --with-nidhogg-wayland` (Linux), `--with-native-compilation=aot --with-tree-sitter` (macOS: configure picks `--with-nidhogg-macos`), each followed by `--with-glitnir` unless `--without-glitnir` is given.
   The shell carries Glitnir, so on Linux `--without-glitnir` is a terminal-only build (`--without-x`, no Rust installed);
   it exists to show the tree compiles without Rust. `--nidhogg-wayland` is the default, still accepted, and refused
   together with `--without-glitnir`.
@@ -257,6 +259,25 @@ frame's default font is opened again from its setting (the default face's height
 a ratio, so 1.25 → 2 → 1.25 gives back the same pixel size; then `nidhogg-frame-scale-change-functions` run with the
 frame. `(nidhogg-set-frame-text-zoom FRAME ZOOM)` sets a zoom (0.5–3) for a frame and its child frames and opens their
 fonts at once; `(nidhogg-frame-text-zoom FRAME)` reads it. The rows are in `test/src/nidhogg-tests/nhwl-gui-scale-tests.el`.
+
+## macOS: Naglfar
+
+On macOS, Nidhogg is Naglfar: its own AppKit shell (Rust, `nidhogg/shell`) over the native shell's C, drawing with Core
+Text and Core Graphics, decoding images with ImageIO and SVG with resvg. It replaces GNU Emacs's NS port, which is not
+built. The `ns-*` variables, functions and hooks that Mac users set keep working (`lisp/term/nhmac-win.el`), and the menu
+bar is the system's. What differs from the NS port:
+
+- **Sizes are device pixels.** As on the Wayland shell, a Lisp pixel is a device pixel: at scale 2, frame sizes,
+  positions and `frame-monitor-attributes` are twice what NS reported in points.
+- **Menus are built at idle.** The menu bar shows the state as of the last idle build (`nhmac-menu-delay`, 0.3 s of
+  idleness, and again after `buffer-list-update-hook` or `nhmac-menu-invalidate`). State that a timer or a process
+  changes later in the same idle period, such as a buffer a process creates, shows at the next command, focus change or
+  rebuild; a menu opened within 0.3 s of a command can show the state before it.
+- **Accessibility reads the line around point.** The accessibility value is the line around point and the selected
+  text the region within it, not the whole buffer; Zoom follows the cursor as with NS.
+- **Drag-in feedback comes from the last redisplay.** While something is dragged over a frame, the insertion point
+  shown is the one known at the last redisplay, so it can lag while Lisp is busy; the drop itself goes where it was
+  released.
 
 ## The test clock
 

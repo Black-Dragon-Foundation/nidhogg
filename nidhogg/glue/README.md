@@ -290,7 +290,7 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
 ## The calls
 
 Every `nhg_*` entry point of `include/nhglue.h`. **Pixels** says whether the call reads (R) or writes (W) a frame's
-backing pixels; the rest touch none (-). **macOS** is what a macOS backend would do for the same call; "same" means
+backing pixels; the rest touch none (-). **macOS** is what the macOS backend (Naglfar, `shell/src/macos`) does for the same call; "same" means
 the glue's own logic carries over and only the shell's request changes. A call the platform has no counterpart for is
 accepted and does nothing, as for a missing Wayland protocol.
 
@@ -307,7 +307,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_panic_message` / `nhg_test_panic` / `nhg_last_error` / `nhg_give_up` / `nhg_debug_check_frame` | - | panic, error and checking-build helpers | same |
 | `nhg_app_call` / `nhg_app_query` | - | a platform request by kind, its arguments and answer as Lisp text (`nhmac--call`, `nhmac--query`) | the AppKit requests (`app.rs`); a query may run a modal session; on Wayland every kind is `NHG_E_UNSUPPORTED` |
 | `nhg_layer_ensure` | - | make the frame's Glitnir layer match a geometry | same (Glitnir is the compositor-independent scene) |
-| `nhg_backing` | R W | size the frame's backing and describe it | same; CoreAnimation layers could use an IOSurface instead |
+| `nhg_backing` | R W | size the frame's backing and describe it | same; a commit copies the damage into a ring of IOSurfaces that the window's Core Animation layer shows |
 | `nhg_damage` / `nhg_damage_all` | - | damage rectangles of the frame | same |
 | `nhg_snapshot` / `nhg_tree_snapshot` | R | borrow the backing; the tree's picture as the compositor was given it | same |
 | `nhg_backing_forget` | - | drop a frame's scene and backing | same |

@@ -1,4 +1,4 @@
-# Homebrew packages the macOS (NS) build needs.
+# Homebrew packages the macOS build (Naglfar) needs.  No image library: ImageIO decodes, and SVG goes through resvg.
 autoconf
 automake
 texinfo
@@ -8,10 +8,8 @@ gnutls
 tree-sitter
 libgccjit
 gcc
-librsvg
 sqlite
 gmp
-webp
 little-cms2
 libxml2
 rust
