@@ -12,8 +12,10 @@ use super::runloop::{MacEv, deliver};
 use crate::api::{ShellError, ShellResult, WindowId};
 use crate::event::{KeyEv, ShellEvent, TextEv};
 use crate::ime_text::Surrounding;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 /// What C pushed for one window: the cursor rectangle (points from the content's top left) and the text around it.
 #[derive(Clone, Debug, Default)]
@@ -22,45 +24,56 @@ pub struct Pushed {
     pub text: Surrounding,
 }
 
+// The pushed state and the record texts are the process's, not a thread's: C pushes at the consistency point of
+// whichever Lisp thread holds the lock, and the host that takes a record's text may be a Lisp thread too, while AppKit
+// asks and makes records on the main thread.  Each lock is held for one short access, never across a call out.
+static PUSHED: LazyLock<Mutex<HashMap<WindowId, Pushed>>> = LazyLock::new(Mutex::default);
+/// The texts of the preedit and commit records, until the host takes them.
+static TEXTS: LazyLock<Mutex<HashMap<u32, Vec<u8>>>> = LazyLock::new(Mutex::default);
+static NEXT: AtomicU32 = AtomicU32::new(1);
+
 thread_local! {
-    static PUSHED: RefCell<HashMap<WindowId, Pushed>> = RefCell::new(HashMap::new());
-    /// The key `interpretKeyEvents:` is running for, and its characters.
+    /// The key `interpretKeyEvents:` is running for, and its characters (the main thread's).
     static CURRENT: RefCell<Option<(Option<KeyEv>, String)>> = const { RefCell::new(None) };
-    /// The texts of the preedit and commit records, until the host takes them.
-    static TEXTS: RefCell<HashMap<u32, Vec<u8>>> = RefCell::new(HashMap::new());
-    static NEXT: Cell<u32> = const { Cell::new(1) };
+}
+
+fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    // a panic under the lock left whole values behind (every access is one insert, remove or field write)
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// `window`'s pushed state, changed by `f`.
 pub fn with<R>(window: WindowId, f: impl FnOnce(&mut Pushed) -> R) -> R {
-    PUSHED.with(|p| f(p.borrow_mut().entry(window).or_default()))
+    f(locked(&PUSHED).entry(window).or_default())
 }
 
 /// The window went.
 pub fn forget(window: WindowId) {
-    PUSHED.with(|p| p.borrow_mut().remove(&window));
+    locked(&PUSHED).remove(&window);
 }
 
 /// `ShellBackend::text_len`.
 pub fn text_len(id: u32) -> ShellResult<usize> {
-    TEXTS.with(|t| t.borrow().get(&id).map(Vec::len).ok_or(ShellError::State))
+    locked(&TEXTS)
+        .get(&id)
+        .map(Vec::len)
+        .ok_or(ShellError::State)
 }
 
 /// `ShellBackend::take_text`.
 pub fn take_text(id: u32) -> ShellResult<Vec<u8>> {
-    TEXTS.with(|t| t.borrow_mut().remove(&id).ok_or(ShellError::State))
+    locked(&TEXTS).remove(&id).ok_or(ShellError::State)
 }
 
 fn text_event(text: &str) -> TextEv {
     if text.is_empty() {
         return TextEv::default();
     }
-    let id = NEXT.with(|n| {
-        let id = n.get();
-        n.set(id.wrapping_add(1).max(1));
-        id
-    });
-    TEXTS.with(|t| t.borrow_mut().insert(id, text.as_bytes().to_vec()));
+    let id = match NEXT.fetch_add(1, Ordering::Relaxed) {
+        0 => NEXT.fetch_add(1, Ordering::Relaxed),
+        id => id,
+    };
+    locked(&TEXTS).insert(id, text.as_bytes().to_vec());
     TextEv {
         id,
         len: u32::try_from(text.len()).unwrap_or(u32::MAX),
@@ -281,3 +294,22 @@ mod tis {
 
 #[cfg(feature = "test-hooks")]
 pub use tis::test_input_source;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lisp_threads_push_and_take_reach_the_main_threads_state() {
+        // C pushes at a Lisp thread's consistency point; AppKit reads on the main thread
+        std::thread::spawn(|| with(0x7e57, |p| p.cursor = [1, 2, 3, 4]))
+            .join()
+            .unwrap();
+        assert_eq!(with(0x7e57, |p| p.cursor), [1, 2, 3, 4]);
+        forget(0x7e57);
+        // a commit's text, made here, taken by the Lisp thread that runs `read_socket`
+        let ev = text_event("かな");
+        let took = std::thread::spawn(move || take_text(ev.id)).join().unwrap();
+        assert_eq!(took.expect("the text is there"), "かな".as_bytes());
+    }
+}

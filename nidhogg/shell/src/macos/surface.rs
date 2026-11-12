@@ -255,8 +255,9 @@ fn make(w: i32, h: i32, srgb: bool) -> Option<Cf> {
     }
 }
 
-/// Copy `fill` of `f`'s layer from its backing into `s` (`w` x `h`).  Writes pixels.
-fn copy(s: &Cf, fill: &Fill, f: &SurfaceFrame, w: i32, h: i32) {
+/// Copy `fill` of `f`'s layer from its backing into `s` (`w` x `h`).  Writes pixels; `false` when the surface would
+/// not lock (nothing copied).
+fn copy(s: &Cf, fill: &Fill, f: &SurfaceFrame, w: i32, h: i32) -> bool {
     let all = [Rect::new(0, 0, w, h)];
     let rects: &[Rect] = match fill {
         Fill::All => &all,
@@ -266,7 +267,7 @@ fn copy(s: &Cf, fill: &Fill, f: &SurfaceFrame, w: i32, h: i32) {
     // against both buffers before it is copied, and a surface and a backing never overlap.
     unsafe {
         if IOSurfaceLock(s.as_ptr(), 0, std::ptr::null_mut()) != 0 {
-            return;
+            return false;
         }
         let base = IOSurfaceGetBaseAddress(s.as_ptr()).cast::<u8>();
         let (dst_stride, size) = (
@@ -286,6 +287,7 @@ fn copy(s: &Cf, fill: &Fill, f: &SurfaceFrame, w: i32, h: i32) {
         }
         IOSurfaceUnlock(s.as_ptr(), 0, std::ptr::null_mut());
     }
+    true
 }
 
 /// One window's ring of surfaces.
@@ -387,7 +389,14 @@ impl Surfaces {
         let Pick { slot, busy } = pick;
         let fill = self.ring.fill(slot, &damage, w, h);
         if slot == self.slots.len() {
-            self.slots.push(make(w, h, self.srgb)?);
+            let Some(s) = make(w, h, self.srgb) else {
+                // the pacer gave this commit's damage up: the ring starts over, so the next commit fills a new surface
+                // whole (as after a size change; the layer keeps the surface it shows)
+                self.ring.clear();
+                self.slots.clear();
+                return None;
+            };
+            self.slots.push(s);
         }
         let st = &STATS;
         st.ring_acquires.fetch_add(1, Ordering::Relaxed);
@@ -401,7 +410,12 @@ impl Surfaces {
         if busy {
             st.surface_busy.fetch_add(1, Ordering::Relaxed);
         }
-        copy(&self.slots[slot], &fill, f, w, h);
+        if !copy(&self.slots[slot], &fill, f, w, h) {
+            // nothing was copied, and the pacer gave this commit's damage up: the ring starts over, as above
+            self.ring.clear();
+            self.slots.clear();
+            return None;
+        }
         self.same = self.ring.commit(slot, &damage);
         Some(Drew::Drawn)
     }
