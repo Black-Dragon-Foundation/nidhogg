@@ -58,6 +58,8 @@ pub struct NhgFontSpec {
     /// How many of `otf` are set.
     pub otf_n: u32,
     pub otf: [u32; NHG_FS_OTF_MAX],
+    /// An open font whose cascade picks a familyless spec's preferred family (0: none); listing only.
+    pub cascade: u64,
 }
 
 impl Default for NhgFontSpec {
@@ -75,6 +77,7 @@ impl Default for NhgFontSpec {
             size: 0.0,
             otf_n: 0,
             otf: [0; NHG_FS_OTF_MAX],
+            cascade: 0,
         }
     }
 }
@@ -134,6 +137,8 @@ pub struct FontSpec {
     pub spacing: i32,
     pub size: f32,
     pub otf: Vec<String>,
+    /// The open font whose own cascade picks the preferred family (`NhgFontSpec::cascade`; 0: none).
+    pub cascade: u64,
 }
 
 impl FontSpec {
@@ -153,6 +158,7 @@ impl FontSpec {
                 .iter()
                 .map(|id| names.name(*id).to_owned())
                 .collect(),
+            cascade: r.cascade,
         }
     }
 
@@ -175,6 +181,7 @@ impl FontSpec {
             size: self.size,
             otf_n: n as u32,
             otf,
+            cascade: self.cascade,
         }
     }
 }
@@ -235,6 +242,11 @@ pub trait FontSource {
     fn preferred(&self, _script: &str, _language: &str) -> Option<String> {
         None
     }
+    /// As `preferred`, from the open font `font`'s own cascade (a face in that font falling back: Core Text's
+    /// `CTFontCreateForString`); by default the font changes nothing.
+    fn preferred_from(&self, _font: u64, script: &str, language: &str) -> Option<String> {
+        self.preferred(script, language)
+    }
     /// Whether `face` has `script` and `language` (either empty: any); by default from the face's own lists.  A source
     /// that reads coverage lazily (Core Text's character sets) answers here instead.
     fn fits(&self, face: &FontFace, script: &str, language: &str) -> bool {
@@ -273,6 +285,7 @@ impl FontEntity {
             spacing: self.face.spacing,
             size: self.size,
             otf: Vec::new(),
+            cascade: 0,
         };
         NhgFontEntity {
             spec: spec.to_record(names),
@@ -408,6 +421,8 @@ fn candidates(src: &dyn FontSource, spec: &FontSpec) -> Vec<(usize, FontFace)> {
         None
     } else if let Some(c) = charset {
         src.preferred_chars(c.chars, language)
+    } else if !script.is_empty() && spec.cascade != 0 {
+        src.preferred_from(spec.cascade, script, language)
     } else if !script.is_empty() {
         src.preferred(script, language)
     } else {
@@ -818,6 +833,7 @@ mod tests {
             spacing: NHG_FS_UNSET,
             size: 0.0,
             otf: Vec::new(),
+            cascade: 0,
         }
     }
 
@@ -1205,6 +1221,51 @@ mod tests {
             families("ja"),
             ["Arial Unicode MS", "Hiragino Sans", "Osaka"]
         );
+    }
+
+    /// A source whose system preferred family for Hebrew differs from a font's own cascade, as Core Text's does
+    /// (Lucida Grande, but Courier New from Menlo).
+    struct FromFont(Vec<FontFace>);
+    impl FontSource for FromFont {
+        fn faces(&self) -> Vec<FontFace> {
+            self.0.clone()
+        }
+        fn preferred(&self, script: &str, _language: &str) -> Option<String> {
+            (script == "hebrew").then(|| "Lucida Grande".into())
+        }
+        fn preferred_from(&self, font: u64, script: &str, language: &str) -> Option<String> {
+            if font == 7 && script == "hebrew" {
+                Some("Courier New".into())
+            } else {
+                self.preferred(script, language)
+            }
+        }
+    }
+
+    #[test]
+    fn a_cascade_font_s_own_pick_comes_first() {
+        let src = FromFont(vec![
+            face(1, "Courier New", 80, 100, 0, &["hebrew"]),
+            face(2, "Lucida Grande", 80, 100, 0, &["hebrew"]),
+        ]);
+        let first = |cascade: u64, family: &str| {
+            list(
+                &src,
+                &FontSpec {
+                    family: family.into(),
+                    script: "hebrew".into(),
+                    cascade,
+                    ..spec()
+                },
+            )
+            .first()
+            .map(|e| e.face.family.clone())
+        };
+        // no cascade font: the system's pick; from font 7: its cascade's
+        assert_eq!(first(0, "").as_deref(), Some("Lucida Grande"));
+        assert_eq!(first(7, "").as_deref(), Some("Courier New"));
+        // a named family is not reordered
+        assert_eq!(first(7, "Lucida Grande").as_deref(), Some("Lucida Grande"));
     }
 
     #[test]
