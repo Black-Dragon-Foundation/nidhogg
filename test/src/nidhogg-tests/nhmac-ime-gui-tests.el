@@ -7,6 +7,7 @@
 ;; the view answers (`test-ime-state'), which comes from the state C pushed at the last redisplay.
 
 (require 'ert)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 (require 'cl-lib)
 
 (defun nhmac-ime--naglfar-p ()
@@ -44,7 +45,7 @@
   (skip-unless (nhmac-ime--naglfar-p))
   (nhmac-ime--in-buffer ""
     ;; C pushes what the view answers only for the focused frame
-    (message "nhmac-ime-marked-and-commit: focus %S" (frame-focus-state))
+    (glitnir-gui--say "nhmac-ime-marked-and-commit: focus %S" (frame-focus-state))
     (nhmac--call 'test-ime (selected-frame) 0 "か")
     (nhmac-ime--events 1)
     (should (equal (buffer-string) "か"))
@@ -83,7 +84,7 @@
   (nhmac-ime--in-buffer "abcdefghij"
     (goto-char 2)
     (let* ((s1 (nhmac-ime--state)) (r1 (plist-get s1 :rect)) (win (plist-get s1 :window)))
-      (message "nhmac-ime-first-rect: %S" s1)
+      (glitnir-gui--say "nhmac-ime-first-rect: %S" s1)
       (should (> (nth 3 r1) 0))
       (should (<= (nth 0 win) (nth 0 r1) (+ (nth 0 win) (nth 2 win))))
       (should (<= (nth 1 win) (nth 1 r1) (+ (nth 1 win) (nth 3 win))))

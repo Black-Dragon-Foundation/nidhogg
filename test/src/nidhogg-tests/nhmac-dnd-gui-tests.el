@@ -7,6 +7,7 @@
 ;; of its own, as AppKit does for another application's drag.  A drag out needs a window-server dragging session.
 
 (require 'ert)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 
 (defun nhmac-dnd--naglfar-p ()
   (and (featurep 'nidhogg-macos) (fboundp 'nhmac--query)))
@@ -21,7 +22,7 @@
       (when (and (eq (car-safe ev) 'drag-n-drop) (eq (car-safe (nth 2 ev)) 'quote))
         (setq drop ev)))
     (should drop)
-    (message "nhmac-dnd--drop: %S; frame %S, window edges %S" drop
+    (glitnir-gui--say "nhmac-dnd--drop: %S; frame %S, window edges %S" drop
              (list (frame-pixel-width) (frame-pixel-height)) (window-pixel-edges))
     (funcall (key-binding [drag-n-drop]) drop)))
 

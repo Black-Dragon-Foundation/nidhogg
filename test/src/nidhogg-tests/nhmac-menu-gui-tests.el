@@ -7,6 +7,8 @@
 ;; popup's tracking loop with a timer.
 
 (require 'ert)
+(require 'benchmark)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 (require 'cl-lib)
 (require 'subr-x)
 
@@ -34,7 +36,7 @@
     (dotimes (_ 20)
       (execute-kbd-macro "x"))
     (nhmac-menu-gui--settle)
-    (message "nhmac-menu-builds-per-key: %d builds" (- nhmac-menu-builds before))
+    (glitnir-gui--say "nhmac-menu-builds-per-key: %d builds" (- nhmac-menu-builds before))
     (should (<= (- nhmac-menu-builds before) 1))))
 
 (ert-deftest nhmac-menu-bar-holds-the-tree ()
@@ -94,8 +96,10 @@ leaves by a throw from a timer, as `with-timeout' does."
                                                            (nhmac-menu-gui--dump))
                                           (float-time)))))
           (should made)
-          (message "nhmac-menu-buffers-after-filter: listed %s"
-                   (if listed (format "%.2f s after the filter" (- listed made)) "never"))
+          ;; the build's own time: the listing waits `nhmac-menu-delay' of idleness, then one build
+          (glitnir-gui--say "nhmac-menu-buffers-after-filter: listed %s; delay %s, a build %.3f s"
+                            (if listed (format "%.2f s after the filter" (- listed made)) "never")
+                            nhmac-menu-delay (car (benchmark-run 1 (nhmac-menu-flatten-bar-with-paths))))
           (should listed)
           (should (< (- listed made) 0.5)))
       (delete-process proc)
@@ -136,7 +140,7 @@ and neither overlaps a take."
   (skip-unless (nhmac-menu-gui--naglfar-p))
   (nhmac-menu-build)
   (let ((dump (nhmac--query 'test-dock-menu -1)))
-    (message "nhmac-dock-menu: %S" dump)
+    (glitnir-gui--say "nhmac-dock-menu: %S" dump)
     (should (string-match-p "\\`0\tNew Frame\t5\t1\n" dump)))
   (let ((before (length (frame-list))))
     (nhmac--query 'test-dock-menu 0)
