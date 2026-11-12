@@ -36,27 +36,6 @@
     (set-frame-parameter nil 'fullscreen nil)
     (should (null (plist-get (nhmac-win-gui--wait :fullscreen nil) :fullscreen)))))
 
-(ert-deftest nhmac-fullscreen-native-ns-control ()
-  "The control for `nhmac-fullscreen-native' on the stock NS port: on this runner, native full screen is entered and
-left, each within 4 s (the frame takes the screen's width, then gives it back)."
-  (skip-unless (and (featurep 'ns) (not (nhmac-win-gui--naglfar-p))))
-  (let* ((ns-use-native-fullscreen t)
-         (w0 (frame-pixel-width))
-         (screen (nth 2 (frame-monitor-workarea)))
-         (wait (lambda (pred)
-                 (let ((t0 (float-time)))
-                   (while (and (not (funcall pred)) (< (- (float-time) t0) 4))
-                     (sit-for 0.2))
-                   (and (funcall pred) (- (float-time) t0))))))
-    (set-frame-parameter nil 'fullscreen 'fullboth)
-    (let ((in (funcall wait (lambda () (>= (frame-pixel-width) (- screen 20))))))
-      (set-frame-parameter nil 'fullscreen nil)
-      (let ((out (funcall wait (lambda () (<= (frame-pixel-width) (+ w0 20))))))
-        (glitnir-gui--say "nhmac-fullscreen-native-ns-control: width %d, screen %d; in after %S s, out after %S s"
-                          w0 screen in out)
-        (should in)
-        (should out)))))
-
 (ert-deftest nhmac-fullscreen-non-native ()
   "With `ns-use-native-fullscreen' off, full screen is the screen's frame without the title bar."
   (skip-unless (nhmac-win-gui--naglfar-p))
