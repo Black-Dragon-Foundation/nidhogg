@@ -14,3 +14,8 @@ files nhmac-gui-tests.el
 files nhmac-ns-gui-tests.el nhmac-window-gui-tests.el nhmac-resize-gui-tests.el nhmac-keys-gui-tests.el
 files nhmac-ime-gui-tests.el nhmac-menu-gui-tests.el nhmac-pasteboard-gui-tests.el nhmac-dnd-gui-tests.el
 files nhmac-ax-gui-tests.el nhmac-lifecycle-gui-tests.el nhmac-app-gui-tests.el
+# the backend-neutral files of the Wayland lane: their rows that need the Wayland shell's scene tree or the recorder
+# skip with the reason (glitnir-gui-tests.el, glitnir-faces-gui-tests.el's fixture rows).  Not the recorder-driven
+# nhwl-gui-*.el, glitnir-effects-gui-tests.el or glitnir-decor-gui-tests.el
+files glitnir-gui-tests.el glitnir-faces-gui-tests.el margin-mouse-face-gui-tests.el mouse-sensor-gui-tests.el
+files stock-fix-gui-tests.el

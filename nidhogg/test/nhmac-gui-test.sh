@@ -51,7 +51,7 @@ echo "Ran \$n tests, \$n as expected (0 skipped), 0 unexpected" >&2
 EOF
 chmod +x "$d/bin/uname" "$d/bin/clang" "$d/emacs"
 
-PATH=$d/bin:$PATH TMPDIR=$d timeout 120 bash "$d/co/nidhogg/test/nhmac-gui.sh" --emacs "$d/emacs" --scale 1 \
+PATH=$d/bin:$PATH TMPDIR=$d timeout 120 bash "$d/co/nidhogg/test/nhmac-gui.sh" --emacs "$d/emacs" --scale 1 --floor 1 \
   --row-timeout 3 --out "$d/out" > "$d/lane.log" 2>&1
 st=$?
 [ "$st" = 1 ] || fail "the lane's exit is $st, not 1 (two red rows)"

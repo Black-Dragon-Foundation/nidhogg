@@ -22,7 +22,9 @@
 #                    reason, and a new session runs the rows not yet reported.  A row that ends Emacs (a crash) is one
 #                    red row the same way.  So a hung row (a modal panel, a wait that never returns) fails itself,
 #                    never the rest of the lane
-#   --floor N        the fewest rows a run may report (default 1): a run that reports 0 rows, or fewer than N, is red
+#   --floor N        the fewest rows a run may report: a run that reports 0 rows, or fewer than N, is red.  The default is
+#                    the lane's floor (`lane_floor' below) for a run of the whole lane (no --select, --files or --drgnx),
+#                    else 1
 #   --interpose      build nidhogg/test/mac-interpose (cargo, on the runner) and run Emacs with it inserted: the
 #                    counters nidhogg/test/mac-counts.el reads (NHMAC_INTERPOSE_LIB names the dylib)
 #   --drgnx DIR      drgnx's fit-check row instead of Nidhogg's rows: DIR is drgnx at the commit Nidhogg pins; its hub
@@ -50,7 +52,13 @@ set -u
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 checkout=$(cd "$self/../.." && pwd)
 
-tarball= prefix= emacs= scales=() select= files= timeout=3600 rtimeout=240 out= floor=1 interpose=0 app= drgnx= dstrict=0
+# The fewest rows the whole lane reports per scale (a skipped row is reported too).  Counted on 2026-11-12 as the
+# `(ert-deftest' forms at the start of a line in the files nhmac-lane.txt lists (nidhogg/test/ci-test.sh counts them
+# the same way and fails when this is above the count): 232 then, so 200 leaves room for a file that loses rows and
+# is far above a pass that ran one file, or none.
+lane_floor=200
+
+tarball= prefix= emacs= scales=() select= files= timeout=3600 rtimeout=240 out= floor= interpose=0 app= drgnx= dstrict=0
 while [ $# -gt 0 ]; do
   case $1 in
     --tarball) tarball=${2:-}; shift 2 ;;
@@ -71,6 +79,9 @@ while [ $# -gt 0 ]; do
     *) echo "nhmac-gui.sh: unknown argument $1" >&2; exit 2 ;;
   esac
 done
+if [ -z "$floor" ]; then
+  if [ -z "$select$files$drgnx" ]; then floor=$lane_floor; else floor=1; fi
+fi
 case $floor in ''|*[!0-9]*) echo "nhmac-gui.sh: --floor is a number" >&2; exit 2 ;; esac
 case $rtimeout in ''|*[!0-9]*) echo "nhmac-gui.sh: --row-timeout is a number" >&2; exit 2 ;; esac
 [ "$(uname -s)" = Darwin ] || { echo "nhmac-gui.sh: macOS only" >&2; exit 2; }
