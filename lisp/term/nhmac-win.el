@@ -1253,15 +1253,35 @@ if the TOKEN block was unblocked."
     ns-use-native-fullscreen ns-antialias-text ns-use-thin-smoothing)
   "The variables whose changes `nhmac--variable-changed' passes to the shell.")
 
+(defun nhmac--frame-up-p ()
+  "Whether a macOS frame is open: the shell is up (batch, or a daemon before its first frame, has none)."
+  (and (fboundp 'nhmac--call)
+       (let ((up nil))
+         (dolist (f (frame-list) up)
+           (when (eq (framep f) 'ns) (setq up t))))))
+
 (defun nhmac--variable-changed (symbol newval operation where)
   "Pass NEWVAL of SYMBOL to the shell when it is set (a variable watcher).
 OPERATION and WHERE are as `add-variable-watcher' gives them; only a global
-`set' counts.  Nothing is passed before the shell is up."
-  (when (and (eq operation 'set) (null where) (fboundp 'nhmac--call))
+`set' counts.  Nothing is passed while no macOS frame is open:
+`nhmac--push-variables' passes every value when the first one opens."
+  (when (and (eq operation 'set) (null where) (nhmac--frame-up-p))
     (funcall 'nhmac--call 'variable symbol newval)))
+
+(defvar nhmac--variables-pushed nil
+  "Whether the shell has the watched variables' values (`nhmac--push-variables').")
+
+(defun nhmac--push-variables (frame)
+  "On the first macOS FRAME, pass the shell every watched variable's global value (set before it was up)."
+  (when (and (not nhmac--variables-pushed) (eq (framep frame) 'ns) (fboundp 'nhmac--call))
+    (setq nhmac--variables-pushed t)
+    (dolist (v nhmac--watched-variables)
+      (when (boundp v)
+        (funcall 'nhmac--call 'variable v (default-value v))))))
 
 (dolist (variable nhmac--watched-variables)
   (add-variable-watcher variable #'nhmac--variable-changed))
+(add-hook 'after-make-frame-functions #'nhmac--push-variables)
 
 (provide 'nhmac-win)
 

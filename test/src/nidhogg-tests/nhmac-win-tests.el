@@ -348,12 +348,14 @@ Shell events (`make-non-key-event' codes) are the shell's to produce.")
                    nil))))
 
 (ert-deftest nhmac-win-watchers-push-changes ()
-  "A `set' of a variable the shell needs reaches `nhmac--call'; others do not."
+  "With a macOS frame open, a `set' of a variable the shell needs reaches `nhmac--call'; others do not."
   (let ((pushed nil)
         (old (list ns-confirm-quit ns-command-modifier ns-click-through)))
     (unwind-protect
         (cl-letf (((symbol-function 'nhmac--call)
-                   (lambda (what &rest args) (push (cons what args) pushed))))
+                   (lambda (what &rest args) (push (cons what args) pushed)))
+                  ;; the batch frame stands in for a macOS one
+                  ((symbol-function 'framep) (lambda (_) 'ns)))
           (setq ns-confirm-quit t)
           (setq ns-command-modifier 'meta)
           (setq ns-click-through nil)
@@ -613,6 +615,26 @@ finish behind the glue's back left it holding a dropped offer, which the next dr
       (nhmac-preedit-text '(preedit-text nil))
       (should (equal (nreverse calls) '((put "かな") (unput))))
       (should (eq (lookup-key special-event-map [preedit-text]) 'nhmac-preedit-text)))))
+
+(ert-deftest nhmac-win-watched-variable-set-without-a-display ()
+  "Setting a watched variable with no macOS frame (batch, a daemon before its first frame) passes nothing and
+signals nothing; the first macOS frame then passes every watched variable's value."
+  (let ((calls nil) (old (default-value 'ns-command-modifier)) (nhmac--variables-pushed nil))
+    (cl-letf (((symbol-function 'nhmac--call)
+               (lambda (&rest args) (if (cl-some (lambda (f) (eq (framep f) 'ns)) (frame-list))
+                                        (push args calls)
+                                      (error "No Naglfar display")))))
+      (unwind-protect
+          (progn
+            (setq-default ns-command-modifier 'super)
+            (should (null calls))
+            ;; the first macOS frame (its type faked): every watched variable goes, this one with its new value
+            (cl-letf (((symbol-function 'framep) (lambda (_) 'ns)))
+              (nhmac--push-variables (selected-frame)))
+            (should (member '(variable ns-command-modifier super) calls))
+            (should (= (length calls)
+                       (cl-count-if #'boundp nhmac--watched-variables))))
+        (setq-default ns-command-modifier old)))))
 
 (provide 'nhmac-win-tests)
 ;;; nhmac-win-tests.el ends here
