@@ -1248,6 +1248,18 @@ pub fn variation_glyphs(handle: u64, c: u32, out: &mut [u32; 256]) -> Option<u32
     }
 }
 
+/// The file the open font `handle` is read from (`nhshell::macos::fonts::file`).  `None` without Core Text, for a font
+/// that is not open, or when Core Text names no file.
+pub fn file(handle: u64) -> Option<String> {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    return nhshell::macos::fonts::file(handle);
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    {
+        let _ = handle;
+        None
+    }
+}
+
 /// Count one `nhg_font_*` call (`(nhmac-stats)`'s `:font-calls`; macOS).
 pub fn note_call() {
     #[cfg(all(feature = "macos", target_os = "macos"))]

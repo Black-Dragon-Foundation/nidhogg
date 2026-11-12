@@ -66,6 +66,8 @@ unsafe extern "C" {
     fn CTFontGetSymbolicTraits(font: *const c_void) -> u32;
     fn CTFontCopyFamilyName(font: *const c_void) -> *const c_void;
     fn CTFontCopyTable(font: *const c_void, tag: u32, options: u32) -> *const c_void;
+    fn CTFontCopyAttribute(font: *const c_void, attribute: *const c_void) -> *const c_void;
+    static kCTFontURLAttribute: *const c_void;
     #[cfg(feature = "test-hooks")]
     fn CTFontManagerRegisterFontsForURL(
         url: *const c_void,
@@ -83,6 +85,13 @@ unsafe extern "C" {
         valid: *mut u8,
     ) -> isize;
     fn CFDataGetLength(d: *const c_void) -> isize;
+    fn CFURLGetFileSystemRepresentation(
+        url: *const c_void,
+        resolve: u8,
+        buf: *mut u8,
+        cap: isize,
+    ) -> u8;
+    fn CFRelease(cf: *const c_void);
     fn CFDataGetBytePtr(d: *const c_void) -> *const u8;
 }
 
@@ -243,6 +252,38 @@ pub fn close(handle: u64) {
 pub fn with_font<R>(handle: u64, f: impl FnOnce(*const c_void) -> R) -> Option<R> {
     let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
     open.1.get(&handle).map(|o| f(o.font.get()))
+}
+
+/// The file the open font `handle` is read from (its `kCTFontURLAttribute`, as a path), for `font-info`'s FILENAME:
+/// drgnx's hub reads its advances from it rather than asking the editor per character.  `None` when the font is not
+/// open, Core Text names no file, or the file is a collection (the face's index in it is not known).
+pub fn file(handle: u64) -> Option<String> {
+    with_font(handle, |ct| {
+        // SAFETY: a live font and the framework's constant; the URL (+1) is released once read.
+        unsafe {
+            let url = CTFontCopyAttribute(ct, kCTFontURLAttribute);
+            if url.is_null() {
+                return None;
+            }
+            let mut buf = [0u8; 4096];
+            let ok = CFURLGetFileSystemRepresentation(url, 1, buf.as_mut_ptr(), buf.len() as isize);
+            CFRelease(url);
+            let n = buf.iter().position(|&b| b == 0)?;
+            (ok != 0 && n > 0).then(|| String::from_utf8_lossy(&buf[..n]).into_owned())
+        }
+    })
+    .flatten()
+    .filter(|path| !collection(path))
+}
+
+/// Whether the font file at `path` is a collection (`ttcf`): its face's index is not known here, and a reader taking
+/// the first face would read another face's advances, so no file is named for it.
+fn collection(path: &str) -> bool {
+    use std::io::Read;
+    let mut tag = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut tag))
+        .map_or(true, |()| &tag == b"ttcf")
 }
 
 /// `f` on the open font `handle`'s `cmap` table (`CTFontCopyTable`, read once; empty when it has none); `None`: not

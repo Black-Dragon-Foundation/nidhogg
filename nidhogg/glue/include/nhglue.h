@@ -1263,6 +1263,10 @@ int32_t nhg_font_start (const uint32_t *scripts, size_t len);
 int32_t nhg_font_changes (uint32_t *n);
 int32_t nhg_font_open (uint64_t font_id, int32_t size, uint32_t flags, NhgFontMetrics *out);
 int32_t nhg_font_close (uint64_t handle);
+/* nhg_font_file: the file font HANDLE is read from (Core Text's kCTFontURLAttribute), NUL-terminated, into BUF of CAP
+   bytes, its length into *LEN (may be NULL): font-info's FILENAME.  NHG_E_TOO_SMALL when CAP is not above the length,
+   NHG_E_STATE for a font not open or without a file (a collection's face has none), NHG_E_UNSUPPORTED without Core Text.  */
+int32_t nhg_font_file (uint64_t handle, char *buf, size_t cap, size_t *len);
 int32_t nhg_font_shape (uint64_t handle, const uint32_t *chars, size_t n, NhgShaped *out, size_t cap,
 			size_t *used);
 
