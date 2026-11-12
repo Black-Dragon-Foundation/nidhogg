@@ -391,7 +391,17 @@ nhmacfont_text_extents (struct font *font, const unsigned int *code,
 	: (NhgGlyphMetrics) { 0, font->space_width, font->space_width,
 			      font->ascent, font->descent };
 
-      if (metrics)
+      if (metrics && i == 0)
+	{
+	  /* The first glyph's extents start the run's: a glyph whose
+	     ink begins right of its origin has a positive lbearing,
+	     which a start of 0 would hide (Menlo's period).  */
+	  metrics->lbearing = g.lbearing;
+	  metrics->rbearing = g.rbearing;
+	  metrics->ascent = g.ascent;
+	  metrics->descent = g.descent;
+	}
+      else if (metrics)
 	{
 	  if (total + g.lbearing < metrics->lbearing)
 	    metrics->lbearing = total + g.lbearing;
