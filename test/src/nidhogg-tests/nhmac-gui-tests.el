@@ -1308,11 +1308,13 @@ with two 6-pixel lines has no inside left (round 2's red at s2).  Returns the fr
 top left."
   (switch-to-buffer (generate-new-buffer " *nhmac-draw*"))
   (setq-local cursor-type nil)
-  (let ((w `(space :width (,(nhmac-gui--draw-px 12)))))
-    (insert (propertize " " 'display w 'face '(:background "#336699"))
-            (propertize " " 'display w
+  ;; a new spec for each stretch: characters whose `display' values are `eq' are one display element, so a shared
+  ;; spec made one stretch of the three (round 4: positions 2 to 4 all at x 12)
+  (let ((w (lambda () `(space :width (,(nhmac-gui--draw-px 12))))))
+    (insert (propertize " " 'display (funcall w) 'face '(:background "#336699"))
+            (propertize " " 'display (funcall w)
                         'face '(:background "#336699" :box (:line-width 3 :color "#ff0000")))
-            (propertize " " 'display w 'face '(:background "#ffffff"))
+            (propertize " " 'display (funcall w) 'face '(:background "#ffffff"))
             "\n"))
   (redraw-frame)
   (redisplay t)
