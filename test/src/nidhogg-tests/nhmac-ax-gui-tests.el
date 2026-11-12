@@ -7,6 +7,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 
 (defun nhmac-ax--naglfar-p ()
   (and (featurep 'nidhogg-macos) (fboundp 'nhmac--query)))
@@ -86,9 +87,13 @@ none."
       (nhmac-ax--with-text "one two three"
         (goto-char (point-min))
         (nhmac-ax--settle)
+        (nhmac--query 'test-zoom-log)
         (let ((before (plist-get (nhmac-stats) :zoom-calls)))
           (forward-char 4)
           (nhmac-ax--settle)
+          ;; round 2: 2 moves.  Each move's cursor rectangle and whether it was Zoom's first: a forced first move here
+          ;; (the settle above pushed none) or two rectangles (a transient cursor) are different causes
+          (glitnir-gui--say "nhmac-ax-zoom-follows-the-cursor: moves (X Y W H FIRST) %S" (nhmac--query 'test-zoom-log))
           (should (= (- (plist-get (nhmac-stats) :zoom-calls) before) 1))
           (setq before (plist-get (nhmac-stats) :zoom-calls))
           (force-mode-line-update)

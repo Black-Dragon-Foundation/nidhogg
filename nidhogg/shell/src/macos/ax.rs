@@ -57,6 +57,27 @@ thread_local! {
     static FORCE: Cell<bool> = const { Cell::new(false) };
 }
 
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    /// Test hook: each Zoom move since the last `test_zoom_log`: the cursor rectangle and whether it was the first after
+    /// Zoom came on.
+    static MOVES: std::cell::RefCell<Vec<([i32; 4], bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Test hook (`test-zoom-log`): the Zoom moves since the last call, as `((X Y W H FIRST) ...)`, and forget them.
+#[cfg(feature = "test-hooks")]
+pub fn test_zoom_log() -> String {
+    let moves = MOVES.with(|m| std::mem::take(&mut *m.borrow_mut()));
+    let items: Vec<String> = moves
+        .iter()
+        .map(|(c, first)| {
+            let first = if *first { "t" } else { "nil" };
+            format!("({} {} {} {} {first})", c[0], c[1], c[2], c[3])
+        })
+        .collect();
+    format!("({})", items.join(" "))
+}
+
 fn zoom_on() -> bool {
     if FORCE.with(Cell::get) {
         return true;
@@ -126,6 +147,8 @@ pub fn cursor_pushed(view: &NhView, id: WindowId) {
         NSAccessibilityPostNotification(view, NSAccessibilityFocusedUIElementChangedNotification);
     }
     ZOOM_CALLS.fetch_add(1, Ordering::Relaxed);
+    #[cfg(feature = "test-hooks")]
+    MOVES.with(|m| m.borrow_mut().push((cursor, force)));
 }
 
 /// Test hook: count Zoom as on (`true`) or ask the system again.
