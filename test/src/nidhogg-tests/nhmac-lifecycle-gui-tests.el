@@ -66,7 +66,9 @@ the wheel events that arrive."
 
 (ert-deftest nhmac-precise-scroll ()
   "A trackpad's precise scroll of 10 points down, in the gesture and in momentum, and of 7 up: each is one wheel
-event in its direction whose pixel delta is the points times the screen's `backingScaleFactor' (device pixels)."
+event in its direction whose pixel delta is the points times the window's screen's `backingScaleFactor' (device
+pixels).  The window's, not the main screen's: the lane's display is another screen, at scale 2 in the scale-2 lane
+\(round 2 took the main screen's 1 and expected -10 for the window's -20)."
   (skip-unless (nhmac-life--naglfar-p))
   (switch-to-buffer (get-buffer-create "nhmac-precise-scroll"))
   (erase-buffer)
@@ -74,7 +76,7 @@ event in its direction whose pixel delta is the points times the screen's `backi
   (goto-char (point-min))
   (redisplay t)
   (let ((mwheel-coalesce-scroll-events nil)
-        (k (nth 8 (car (nhmac--query 'screens)))))
+        (k (plist-get (nhmac--test-surface 0 0) :scale)))
     (pcase-dolist (`(,points ,phase ,type) '((10 0 wheel-down) (10 1 wheel-down) (-7 0 wheel-up)))
       (let ((events (nhmac-life--precise-events points phase)))
         (message "nhmac-precise-scroll: %d points, phase %d: %S" points phase events)

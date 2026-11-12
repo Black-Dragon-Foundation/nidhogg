@@ -713,17 +713,22 @@ deleted counts graphical frames deleted while shown, N frames graphical frames (
 
 (ert-deftest glitnir-gui/daemon-frame-born-with-the-child-minibuffer ()
   "A daemon's first graphical frame on a display, with the child-frame minibuffer asked for, leaves no other frame
-behind: the minibuffer frame C made for it to borrow from while it was made goes once it has its box."
+behind: the minibuffer frame C made for it to borrow from while it was made goes once it has its box.  The daemon
+makes it on this session's window system and display (round 2 on macOS: no WAYLAND_DISPLAY, so a nil display, a
+terminal frame, \"Unknown terminal type\" and a 60 s wait)."
   (let* ((dir (make-temp-file "nh-daemon-frame" t))
+         (ws (if (getenv "WAYLAND_DISPLAY") 'pgtk window-system))
+         (display (or (getenv "WAYLAND_DISPLAY") (frame-parameter nil 'display) (symbol-name ws)))
          (out (expand-file-name "out.eld" dir))
          (emacs (expand-file-name invocation-name invocation-directory))
          (name (format "nh-daemon-frame-%d" (emacs-pid))))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "early-init.el" dir)
-            (insert "(setf (alist-get 'minibuffer (alist-get 'pgtk window-system-default-frame-alist)) 'child-frame)\n"))
+            (insert (format "(setf (alist-get 'minibuffer (alist-get '%s window-system-default-frame-alist)) 'child-frame)\n"
+                            ws)))
           (with-temp-file (expand-file-name "init.el" dir)
-            (insert (format "(add-hook 'after-init-hook (lambda () (run-at-time 0.2 nil (lambda () (let* ((f (make-frame-on-display (getenv \"WAYLAND_DISPLAY\"))) (m (window-frame (minibuffer-window f)))) (with-temp-file %S (prin1 (list :box (and (not (eq m f)) (eq (frame-parent m) f)) :roots (length (seq-filter (lambda (x) (and (display-graphic-p x) (not (frame-parent x)))) (frame-list)))) (current-buffer))) (kill-emacs 0))))))\n" out)))
+            (insert (format "(add-hook 'after-init-hook (lambda () (run-at-time 0.2 nil (lambda () (let* ((f (make-frame-on-display %S)) (m (window-frame (minibuffer-window f)))) (with-temp-file %S (prin1 (list :box (and (not (eq m f)) (eq (frame-parent m) f)) :roots (length (seq-filter (lambda (x) (and (display-graphic-p x) (not (frame-parent x)))) (frame-list)))) (current-buffer))) (kill-emacs 0))))))\n" display out)))
           (let* ((log (generate-new-buffer " *nh-daemon-frame*"))
                  (p (start-process "nh-daemon-frame" log emacs (concat "--fg-daemon=" name) "--init-directory" dir)))
             (set-process-query-on-exit-flag p nil)
