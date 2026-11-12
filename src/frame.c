@@ -5830,7 +5830,6 @@ default_fringe_width (struct frame *f)
   return 8;
 }
 #endif
-
 void
 gui_set_left_fringe (struct frame *f, Lisp_Object new_value, Lisp_Object old_value)
 {
