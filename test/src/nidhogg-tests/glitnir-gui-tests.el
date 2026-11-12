@@ -138,6 +138,31 @@
           (should (> (glitnir-gui--samples 255 0 255) 0)))
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/a-bar-block-fills-its-rows ()
+  "A `bar' block over a window's first two rows: its x0..x1 filled in the line's colour on those rows only."
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-bar*" 10)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((bar ,(copy-marker 1) ,(save-excursion (goto-char 1) (forward-line 2) (point-marker))
+                      :x1 6 :ring ("#ff0000" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (at (lambda (dx row) (glitnir-gui--pixel snap (list (+ x dx) (+ y (* row lh) (/ lh 2)))))))
+            (should (equal (funcall at 2 0) '(255 0 0)))
+            (should (equal (funcall at 2 1) '(255 0 0)))
+            (should-not (equal (funcall at 2 2) '(255 0 0)))   ; the third row: past the block's end
+            (should-not (equal (funcall at 12 0) '(255 0 0))))) ; past x1
+      (set-window-parameter w 'glitnir-blocks nil)
+      (kill-buffer buf))))
+
 ;; The stacking list.
 
 (defun glitnir-gui--children (n)
