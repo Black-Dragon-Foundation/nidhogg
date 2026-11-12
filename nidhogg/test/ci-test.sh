@@ -69,8 +69,23 @@ jobs_all=$(awk '/^jobs:/{p=1;next} p' "$wf" | sed -nE 's/^  ([a-z0-9-]+):$/\1/p'
 grep -qF 'GATE: Nidhogg gate' "$wf"                               || fail "the changes job does not check the base's Nidhogg gate"
 # a pull request tests its head, which a fast-forward lands, never GitHub's merge commit: every checkout and the path
 # filter name the head, and a job (allowed to skip off pull requests) fails a head that does not descend from the base
-[ "$(grep -cF 'uses: actions/checkout@' "$wf")" = "$(grep -cxF '          ref: ${{ github.event.pull_request.head.sha }}' "$wf")" ] ||
-  fail "a checkout does not take a pull request's head"
+# (a checkout of another repository, `repository:` set, takes that repository's ref and is exempt)
+own_checkouts_off_head() {   # the line of each checkout of this repository in workflow $1 that does not name the head
+  awk '/uses: actions\/checkout@/ { if (at) report(); at = NR; other = 0; head = 0; next }
+       at && (/^      - / || /^  ?  ?[a-z]/) { report() }
+       at && /^          repository: / { other = 1 }
+       at && $0 == "          ref: ${{ github.event.pull_request.head.sha }}" { head = 1 }
+       function report() { if (!other && !head) print at; at = 0 }
+       END { if (at) report() }' "$1"
+}
+[ -z "$(own_checkouts_off_head "$wf")" ]                          || fail "a checkout does not take a pull request's head"
+d=$(mktemp -d)
+printf '%s\n' 'jobs:' '  a:' '    steps:' '      - uses: actions/checkout@x' '        with:' \
+  '          repository: o/other' '          ref: main' '      - uses: actions/checkout@x' '        with:' \
+  '          ref: ${{ github.event.pull_request.head.sha }}' '      - uses: actions/checkout@x' '        with:' \
+  '          ref: main' '  b:' '    steps:' '      - uses: actions/checkout@x' > "$d/wf"
+[ "$(own_checkouts_off_head "$d/wf" | tr '\n' ' ')" = "11 16 " ]  || fail "the checkout rule does not tell another repository's checkout from this one's"
+rm -r "$d"
 grep -qF 'SHA: ${{ github.event.pull_request.head.sha || github.sha }}' "$wf" || fail "the path filter diffs a pull request's merge commit"
 job fast-forward | grep -qF "if: github.event_name == 'pull_request'" || fail "no fast-forward job for pull requests"
 job fast-forward | grep -qF 'gh api "repos/$REPO/compare/$tip...$HEAD_SHA"' || fail "the fast-forward job does not compare the base's tip with the head"
@@ -303,7 +318,7 @@ job macos | grep -qF 'name: nhmac-ns-refs'                          || fail "the
 job macos | grep -qF 'path: ${{ runner.temp }}/nhmac-gui/nhmac-ns-*' || fail "the NS reference dumps are not every nhmac-ns-* file"
 job macos-naglfar | grep -qF 'name: naglfar-build'                  || fail "macos-naglfar does not upload its build tree"
 rj=$(job macos-naglfar-rows)
-grep -qE '^    needs: \[changes, macos, macos-naglfar\]$' <<<"$rj"     || fail "macos-naglfar-rows does not wait for both builds"
+grep -qE '^    needs: \[changes, pin, macos, macos-naglfar\]$' <<<"$rj" || fail "macos-naglfar-rows does not wait for both builds and the drgnx pin"
 for a in naglfar-build nhmac-ns-refs tarball-macos; do
   grep -qE "^          name: $a$" <<<"$rj"                          || fail "macos-naglfar-rows does not download $a"
 done
