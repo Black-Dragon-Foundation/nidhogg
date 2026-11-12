@@ -872,6 +872,15 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
               (dolist (i '(1 2 3))
                 (nidhogg-workers--test-image-forget i)))))))))
 
+;; `nidhogg-workers--deferrable-p' asks with a spec that names only its
+;; type, `(image :type png)', which is no valid image spec (no :file or
+;; :data): the format is read from the plist, never through
+;; image_spec_value, whose assertion stops a checking build.
+(ert-deftest workers/deferrable-p-takes-a-type-only-spec ()
+  (skip-unless (fboundp 'nidhogg-workers--deferrable-p))
+  (dolist (type '(png jpeg gif webp svg xpm))
+    (should (memq (nidhogg-workers--deferrable-p type) '(t nil)))))
+
 ;; macOS keeps NSImage for its native types (Task 37): they decode
 ;; synchronously there, so none of them is deferrable.  WebP is not
 ;; asserted: whether it reaches nh-img on NS is decided by the Mac build.
