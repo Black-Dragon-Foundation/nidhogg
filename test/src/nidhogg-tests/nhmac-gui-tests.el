@@ -861,9 +861,14 @@ it does not.  The pacer's request for the publish comes as a shell event (`nhmac
           (accept-process-output nil 0.01))
       (when (plist-get (nhmac-gui--surface) :held)
         ;; what could keep the shell's events from being read: an event still pending, or the taken ones
-        (nhmac-gui--say "nhmac-gui--wait-unheld: held after %s s; pending %S, unread %S, taken %S" secs
+        (nhmac-gui--say "nhmac-gui--wait-unheld: held after %s s; pending %S, unread %S, taken %S; \
+a read of 50 ms %S, then pending %S, last input %S" secs
                         (input-pending-p) unread-command-events
-                        (mapcar (lambda (e) (or (car-safe e) e)) nhmac-gui--taken)))
+                        (mapcar (lambda (e) (or (car-safe e) e)) nhmac-gui--taken)
+                        (let ((e (read-event nil nil 0.05)))
+                          (when e (push e nhmac-gui--taken))
+                          (or (car-safe e) e))
+                        (input-pending-p) (or (car-safe last-input-event) last-input-event)))
       (nhmac-gui--put-back))
     (not (plist-get (nhmac-gui--surface) :held))))
 
@@ -1928,9 +1933,10 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
                 (unless first-row (setq first-row (/ i (car inline)))))
               (dolist (sh '(16 8 0))
                 (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
-          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d (%d pixels, from row %S)%s; \
-reads %.1f s, compare %.1f s"
+          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d (%d pixels, from row %S; \
+first pixel inline #x%06x, worker #x%06x)%s; reads %.1f s, compare %.1f s"
                           name (car inline) (nth 1 inline) worst off-pixels first-row
+                          (aref (nth 2 inline) 0) (aref (nth 2 off) 0)
                           (if again
                               (format " (inline against inline: %d)"
                                       (let ((m 0))

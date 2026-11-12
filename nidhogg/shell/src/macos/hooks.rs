@@ -312,7 +312,7 @@ impl MacShell {
             "test-window-state" => first_number(arg).and_then(|w| {
                 let w = self.win(w)?;
                 Ok(format!(
-                    "(:fullscreen {} :zoomed {} :miniaturized {} :tabbing-disallowed {} :titlebar-transparent {} :dark {} :fs-busy {} :fs-want {})",
+                    "(:fullscreen {} :zoomed {} :miniaturized {} :tabbing-disallowed {} :titlebar-transparent {} :dark {} :fs-busy {} :fs-want {} :fs-notes ({}))",
                     if super::super::windowing::is_fullscreen(w) { "t" } else { "nil" },
                     if w.window.isZoomed() { "t" } else { "nil" },
                     if w.window.isMiniaturized() { "t" } else { "nil" },
@@ -321,6 +321,12 @@ impl MacShell {
                     if w.window.effectiveAppearance().name().to_string().contains("Dark") { "t" } else { "nil" },
                     if w.fs_busy { "t" } else { "nil" },
                     match w.fs_want { Some(true) => "on", Some(false) => "off", None => "nil" },
+                    // a Lisp list: will-enter will-exit did-enter did-exit fail-enter fail-exit applied
+                    super::super::runloop::FS_NOTES
+                        .iter()
+                        .map(|n| n.load(std::sync::atomic::Ordering::Relaxed).to_string())
+                        .collect::<Vec<_>>()
+                        .join(" "),
                 ))
             }),
             "test-menu-dump" => Ok(format!("{:?}", super::super::menus::test_dump(&self.app))),
