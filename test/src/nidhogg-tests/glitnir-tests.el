@@ -571,6 +571,9 @@ radius, the ring's colour from a face's foreground and the colour beneath; a bad
                                      (selected-frame))))
       (should (equal (append v nil) (list 0 s e 40 300 6 #xff0000 1 #x0000ff)))
       (should (= (aref (glitnir--block-vector `(rule ,s ,e :ring ("#ff0000" . 0.5)) (selected-frame)) 0) 1))
+      ;; a bar (a selected row's accent): kind 2, its x0..x1 the bar's width
+      (should (equal (append (glitnir--block-vector `(bar ,s ,e :x1 3 :ring ("#ff0000" . 1)) (selected-frame)) nil)
+                     (list 2 s e 0 3 0 #xff0000 1 (aref (glitnir--block-vector `(bar ,s ,e) (selected-frame)) 8))))
       ;; no ring: -1; no beneath: the frame's background
       (cl-letf (((symbol-function 'frame-parameter)
                  (lambda (_f p) (and (eq p 'background-color) "#00ff00"))))

@@ -772,6 +772,10 @@ fn draw_block(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Re
         solid(k, t, line.intersect(&clip), b.ring_argb);
         return;
     }
+    if b.kind == crate::scene::BlockKind::Bar {
+        solid(k, t, clip, b.ring_argb);
+        return;
+    }
     let wu = w as u32;
     let r0 = b.radius_px.max(wu);
     let (top, bottom) = (
@@ -3279,6 +3283,32 @@ mod tests {
             }
             assert_eq!(out.at(50, 40), RING, "the ring below is whole");
             assert_eq!(out.at(20, 40), BENEATH, "with its corners");
+        }
+
+        /// Bars: the block's whole rectangle filled in the line's colour (a selected row's accent bar), square, no
+        /// corners carved; nothing beside it.
+        #[test]
+        fn bars_fill_their_rectangle() {
+            for scale in [1.0, 2.0] {
+                let bar = Block {
+                    kind: BlockKind::Bar,
+                    ..ring(Rect::new(20, 10, 3, 30), 6, 1)
+                };
+                let s = blocked(ALL, &[bar], scale);
+                let out = compose_all(&s, &Buf::new(120, 80, FRONT), scale);
+                for x in 20..23 {
+                    for y in 10..40 {
+                        assert_eq!(out.at(x, y), RING, "scale {scale}: the bar at {x},{y}");
+                    }
+                }
+                for (x, y) in [(19, 20), (23, 20), (21, 9), (21, 40)] {
+                    assert_eq!(
+                        out.at(x, y),
+                        FRONT,
+                        "scale {scale}: beside the bar at {x},{y}"
+                    );
+                }
+            }
         }
 
         /// Nothing outside the window's rectangle: a block reaching above it is cut there.

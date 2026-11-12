@@ -277,8 +277,9 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   the beneath colour, whether a side was scrolled out), while the frame parameter `glitnir--blocks` is set or
   `nhg_blocks_count` is not 0. Each window with blocks gets a WINDOW layer, id `sequence_number | BLOCK_TAG`, at its
   text area, holding Glitnir `Block`s in root device px; compose draws a ring just inside the block (its corners
-  outside the rounded path in the beneath colour) or a rule on its bottom pixel rows, over the frame's pixels, never a
-  fill. The block layers stay above the frame's outputs. A scale change and a reconnect give them again. A shell with
+  outside the rounded path in the beneath colour), a rule on its bottom pixel rows or a bar (`NHG_BLOCK_BAR`, kind
+  `bar` in Lisp: the block's rectangle filled in the line's colour, square, a selected row's accent), over the frame's
+  pixels; only a bar fills. The block layers stay above the frame's outputs. A scale change and a reconnect give them again. A shell with
   cards on layers of its own (macOS) draws no blocks yet.
 - **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose
   last full-window scroll is 2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new

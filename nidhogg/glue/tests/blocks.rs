@@ -6,7 +6,9 @@ mod blocks {
     use glitnir::geom::Rect;
     use glitnir::scene::{BlockKind, Placed};
     use nhglue::backing::{Backings, NhgBacking, NhgFrameGeom, NhgRect};
-    use nhglue::blocks::{NHG_BLOCK_OPEN_TOP, NHG_BLOCK_RULE, NhgBlock, block_id, count, sync_at};
+    use nhglue::blocks::{
+        NHG_BLOCK_BAR, NHG_BLOCK_OPEN_TOP, NHG_BLOCK_RULE, NhgBlock, block_id, count, sync_at,
+    };
     use std::sync::Arc;
 
     /// The title strip above the native area.
@@ -141,6 +143,13 @@ mod blocks {
         assert_eq!(p.blocks[0].rect, at(rows(0, 0, 10, 190)));
         assert_eq!(p.blocks[1].rect, at(rows(1, 1, 10, 190)));
         assert_eq!(p.blocks[2].rect, at(rows(2, 4, 10, 190)));
+
+        // a bar (a selected row's accent): its own kind, its rectangle as given
+        sync_at(&mut b, key, &[block(rows(1, 1, 0, 3), NHG_BLOCK_BAR)]).unwrap();
+        let (_, c) = commit(key);
+        let p = placed(&c, block_id(SEQ)).unwrap();
+        assert_eq!(p.blocks[0].kind, BlockKind::Bar);
+        assert_eq!(p.blocks[0].rect, at(rows(1, 1, 0, 3)));
 
         // the window's blocks gone: its layer goes
         assert_eq!(sync_at(&mut b, key, &[]), Ok(0));
