@@ -28,7 +28,8 @@
 ;;
 ;; A frame without a minibuffer of its own borrows its display's default minibuffer frame while it is made; the
 ;; first frame's display has none yet, so C makes one (`make-initial-minibuffer-frame').  At startup that frame is
-;; made invisible and deleted once the first frame has its box: it is never shown.
+;; made invisible and deleted once the first frame has its box: it is never shown.  A daemon's first frame on a display
+;; borrows one the same way; it is deleted once that frame has its box.
 
 ;;; Code:
 
@@ -98,7 +99,34 @@ deleted and made again; its other parameters are applied as usual."
                    window-system-default-frame-alist)))
       (funcall orig))))
 
+(defvar nidhogg-frame--lent nil
+  "While `make-frame' runs outside startup: the minibuffer frames C made for the new frame to borrow from, `t' while
+none yet, nil otherwise.")
+
+(defun nidhogg-frame--note-lent (orig display)
+  "Around `make-initial-minibuffer-frame': while `make-frame' runs, note the frame made."
+  (let ((frame (funcall orig display)))
+    (when nidhogg-frame--lent
+      (setq nidhogg-frame--lent (cons frame (remq t nidhogg-frame--lent))))
+    frame))
+
+(defun nidhogg-frame--make-frame (orig &rest args)
+  "Around `make-frame': a frame made with a child-frame minibuffer on a display that had no minibuffer frame yet (a
+daemon's first frame there) borrowed one C made for it while it was made; once the frame has its box, that frame
+serves no one and is deleted, as the first frame's is at startup."
+  (let ((lent nil) frame)
+    (let ((nidhogg-frame--lent (list t)))
+      (setq frame (apply orig args))
+      (setq lent (remq t nidhogg-frame--lent)))
+    (when (and lent (nidhogg-frame--born-with-child-minibuffer-p frame))
+      (dolist (f lent)
+        (when (and (frame-live-p f) (not (eq f frame)) (not (eq (frame-parent f) frame)))
+          (delete-frame f t))))
+    frame))
+
 (advice-add 'make-initial-minibuffer-frame :around #'nidhogg-frame--stand-in)
+(advice-add 'make-initial-minibuffer-frame :around #'nidhogg-frame--note-lent)
+(advice-add 'make-frame :around #'nidhogg-frame--make-frame)
 (advice-add 'frame-initialize :around #'nidhogg-frame--initialize)
 (advice-add 'frame-notice-user-settings :around #'nidhogg-frame--notice-user-settings)
 
