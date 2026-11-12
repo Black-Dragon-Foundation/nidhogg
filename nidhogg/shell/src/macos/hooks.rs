@@ -645,18 +645,28 @@ impl MacShell {
             alert.setMessageText(&NSString::from_str("Nidhogg test alert"));
             let panel = alert.window();
             let session = app.beginModalSessionForWindow(&panel);
-            // a length past the clock's range ends the session at once
-            let deadline = Instant::now()
-                .checked_add(length)
-                .unwrap_or_else(Instant::now);
+            // the session runs `length` after its first round, which shows the panel: round 4 (s1) spent 335 ms in
+            // that round alone (AppKit's first alert of the process), and a deadline from the start left no second
+            // round.  A length past the clock's range ends the session after that round.
+            let mut deadline = None;
             let mut rounds = 0u64;
             // why a session ran few rounds (round 2, s1: one): each round's length and the last response
-            let (mut longest, mut response) = (Duration::ZERO, NSModalResponseContinue);
-            while Instant::now() < deadline {
+            let (mut longest, mut first, mut response) =
+                (Duration::ZERO, Duration::ZERO, NSModalResponseContinue);
+            while deadline.is_none_or(|d| Instant::now() < d) {
                 let t0 = Instant::now();
                 // SAFETY: the session is the one begun above, and not ended yet.
                 let r = unsafe { app.runModalSession(session) };
-                longest = longest.max(t0.elapsed());
+                if deadline.is_none() {
+                    first = t0.elapsed();
+                    deadline = Some(
+                        Instant::now()
+                            .checked_add(length)
+                            .unwrap_or_else(Instant::now),
+                    );
+                } else {
+                    longest = longest.max(t0.elapsed());
+                }
                 response = r;
                 rounds += 1;
                 if let (1, Some(t)) = (rounds, &test) {
@@ -670,12 +680,13 @@ impl MacShell {
             // SAFETY: the session begun above, ended once.
             unsafe { app.endModalSession(session) };
             panel.orderOut(None);
-            (rounds, longest, response)
+            (rounds, first, longest, response)
         });
-        let (rounds, longest, response) = rounds;
+        let (rounds, first, longest, response) = rounds;
         // counted before the test window goes: its closing events wait for the next pump
         let r = format!(
-            "(:rounds {rounds} :longest-round-ms {} :last-response {response} {})",
+            "(:rounds {rounds} :first-round-ms {} :longest-round-ms {} :last-response {response} {})",
+            first.as_millis(),
             longest.as_millis(),
             stats_delta(before, scope_stats())
         );
