@@ -54,6 +54,9 @@ mod chrome;
 
 #[path = "cards.rs"]
 mod cards;
+/// A root's windows' layout legs, run by Core Animation.
+#[path = "legs.rs"]
+mod legs;
 /// A child's show and hide transitions, run by Core Animation.
 #[path = "motion.rs"]
 mod motion;
@@ -97,6 +100,8 @@ pub struct MacShell {
     owed: BTreeSet<WindowId>,
     /// Each root's window cards (`set_cards`), shown by the root tree's commit.
     cards: BTreeMap<WindowId, cards::Cards>,
+    /// Each root's windows' layout captures and legs, started by the root tree's commit.
+    legs: BTreeMap<WindowId, legs::Legs>,
     /// The window under the pointer in each root's tree, and the press that holds it (root, window).
     hover: HashMap<WindowId, WindowId>,
     grab: Option<(WindowId, WindowId)>,
@@ -209,6 +214,7 @@ impl MacShell {
             retired: Vec::new(),
             owed: BTreeSet::new(),
             cards: BTreeMap::new(),
+            legs: BTreeMap::new(),
             hover: HashMap::new(),
             grab: None,
             #[cfg(feature = "test-hooks")]
@@ -562,6 +568,14 @@ fn layer_damage(g: u64, w: i32, h: i32) -> Vec<Rect> {
 }
 
 impl MacShell {
+    /// `root` as a top-level window, the windows layout legs are for (`State` for a child or no window).
+    fn layout_root(&self, root: WindowId) -> ShellResult<&Win> {
+        if self.kids.contains_key(&root) {
+            return Err(ShellError::State);
+        }
+        self.windows.get(&root).ok_or(ShellError::State)
+    }
+
     /// Commit the trees of `ids` (windows that drew) and of every root that owes one, each in one flushed transaction
     /// with its children's changes (main thread).
     fn commit(&mut self, ids: &[WindowId]) {
@@ -837,6 +851,7 @@ impl ShellBackend for MacShell {
         }
         self.children_gone(window);
         self.cards.remove(&window);
+        self.legs.remove(&window);
         self.windows
             .remove(&window)
             .map(drop)
@@ -1024,6 +1039,41 @@ impl ShellBackend for MacShell {
         self.cards.entry(window).or_default().set(list)?;
         self.owe(root);
         Ok(())
+    }
+
+    fn layout_capture(&mut self, root: WindowId, key: u64, serial: u64, rect: Rect) -> ShellResult {
+        // the picture before the redraw: the newest surface, which the host's next drawing does not touch
+        let w = self.layout_root(root)?;
+        let old = w.surfaces.region(rect.x, rect.y, rect.w, rect.h);
+        self.legs
+            .entry(root)
+            .or_default()
+            .capture(key, serial, rect, old);
+        Ok(())
+    }
+
+    fn layout_leg(
+        &mut self,
+        root: WindowId,
+        key: u64,
+        leg: Option<glitnir::layout::LayoutLeg>,
+    ) -> ShellResult {
+        self.layout_root(root)?;
+        // a leg ended early goes at once: the new picture shows
+        if let Some(l) = self.legs.entry(root).or_default().leg(key, leg) {
+            layers::transaction(|| l.removeFromSuperlayer());
+        }
+        Ok(())
+    }
+
+    fn layout_captured(&self, root: WindowId, key: u64) -> ShellResult<crate::api::LayoutAck> {
+        if !self.windows.contains_key(&root) || self.kids.contains_key(&root) {
+            return Err(ShellError::State);
+        }
+        Ok(self
+            .legs
+            .get(&root)
+            .map_or_else(crate::api::LayoutAck::default, |l| l.ack(key)))
     }
 
     fn set_chrome(

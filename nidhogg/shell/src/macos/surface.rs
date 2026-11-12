@@ -488,7 +488,6 @@ impl Surfaces {
 
     /// The newest surface's `w` x `h` pixels from `x`, `y`, row by row, as premultiplied ARGB (`None` when the
     /// rectangle is not inside it).  Reads pixels.
-    #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub fn region(&self, x: i32, y: i32, w: i32, h: i32) -> Option<Vec<u32>> {
         let s = self.newest()?;
         if x < 0 || y < 0 || w < 0 || h < 0 || x + w > self.w || y + h > self.h {

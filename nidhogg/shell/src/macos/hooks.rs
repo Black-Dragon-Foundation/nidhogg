@@ -570,6 +570,9 @@ impl MacShell {
             ),
             "test-font-probe" => super::super::font_probe::query(arg).ok_or(ShellError::Arg),
             "test-zoom-log" => Ok(super::super::ax::test_zoom_log()),
+            "test-legs" => first_number(arg).map(|w| {
+                self.legs.get(&w).map_or_else(|| "nil".to_owned(), |l| l.text())
+            }),
             _ => return None,
         })
     }
