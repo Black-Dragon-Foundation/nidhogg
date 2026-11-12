@@ -2372,6 +2372,39 @@ search_image_cache (struct frame *f, Lisp_Object spec, EMACS_UINT hash,
 }
 
 
+#ifdef HAVE_NIDHOGG_WORKERS
+/* The cache's hash of SPEC: its properties but the animation ones
+   (`:animate-buffer', `:animate-tardiness', `:animate-position'),
+   which don't affect display but would break the cache.  Upstream
+   hashes a filtered copy of SPEC; lookup_image runs for every image on
+   every redisplay, and that copy cost two conses per property each
+   time, so the properties are hashed in place.  */
+static EMACS_UINT
+image_spec_hash (Lisp_Object spec)
+{
+  EMACS_UINT hash = 0;
+
+  /* Skip past the `image' element.  */
+  if (CONSP (spec))
+    spec = XCDR (spec);
+
+  while (CONSP (spec))
+    {
+      Lisp_Object key = XCAR (spec);
+      spec = XCDR (spec);
+      if (!CONSP (spec))
+	break;
+      Lisp_Object value = XCAR (spec);
+      spec = XCDR (spec);
+      if (!(EQ (key, QCanimate_buffer)
+	    || EQ (key, QCanimate_tardiness)
+	    || EQ (key, QCanimate_position)))
+	hash = sxhash_combine (sxhash_combine (hash, sxhash (key)),
+			       sxhash (value));
+    }
+  return hash;
+}
+#else
 /* Filter out image elements that don't affect display, but will
    disrupt finding the image in the cache.  This should perhaps be
    user-configurable, but for now it's hard-coded (but new elements
@@ -2407,6 +2440,7 @@ filter_image_spec (Lisp_Object spec)
     }
   return out;
 }
+#endif
 
 /* Search frame F for an image with spec SPEC, and free it.  */
 
@@ -2414,7 +2448,11 @@ static void
 uncache_image (struct frame *f, Lisp_Object spec)
 {
   struct image *img;
+#ifdef HAVE_NIDHOGG_WORKERS
+  EMACS_UINT hash = image_spec_hash (spec);
+#else
   EMACS_UINT hash = sxhash (filter_image_spec (spec));
+#endif
 
   /* Because the background colors are based on the current face, we
      can have multiple copies of an image with the same spec. We want
@@ -3793,7 +3831,7 @@ nh_img_cache_find (struct frame *f, Lisp_Object spec)
   struct face *face = FACE_FROM_ID (f, DEFAULT_FACE_ID);
   if (!face->font)
     return NULL;
-  return search_image_cache (f, spec, sxhash (filter_image_spec (spec)),
+  return search_image_cache (f, spec, image_spec_hash (spec),
 			     face->foreground, face->background,
 			     face->font->pixel_size,
 			     SSDATA (face->lface[LFACE_FAMILY_INDEX]), false);
@@ -3830,7 +3868,11 @@ lookup_image (struct frame *f, Lisp_Object spec, int face_id)
   eassert (valid_image_p (spec));
 
   /* Look up SPEC in the hash table of the image cache.  */
+#ifdef HAVE_NIDHOGG_WORKERS
+  hash = image_spec_hash (spec);
+#else
   hash = sxhash (filter_image_spec (spec));
+#endif
   img = search_image_cache (f, spec, hash, foreground, background,
 			    font_size, font_family, false);
   if (img && img->load_failed_p)
