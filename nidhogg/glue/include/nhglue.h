@@ -1378,7 +1378,12 @@ int32_t nhg_image_type (const char *name, size_t len);
 /* An XPM's colours: nhg_xpm_names puts the names it needs resolved, each once and NUL-terminated, one after another,
    into OUT (CAP bytes; null when CAP is 0), their bytes into *NEED and their number into *COUNT (0 for anything
    that is not an XPM); NHG_E_TOO_SMALL, OUT untouched, when CAP is below *NEED.  nhg_image_decode takes their
-   0xRRGGBB in COLORS (NCOLORS words, in the same order; null and 0 for anything else).  */
+   0xRRGGBB in COLORS (NCOLORS words, in the same order; null and 0 for anything else).  A name that starts with
+   NHG_XPM_SYMBOL is a line's `s' symbol, answered from the image's :color-symbols: its colour, NHG_XPM_SYMBOL_NONE
+   (transparent) or NHG_XPM_SYMBOL_UNSET (not there, or no colour: the line's other keys decide).  */
+#define NHG_XPM_SYMBOL '\001'
+#define NHG_XPM_SYMBOL_UNSET (1u << 24)
+#define NHG_XPM_SYMBOL_NONE (1u << 25)
 int32_t nhg_xpm_names (const uint8_t *src, size_t len, uint32_t is_file, uint8_t *out, size_t cap, size_t *need,
                        uint32_t *count);
 int32_t nhg_image_decode (const uint8_t *src, size_t len, uint32_t is_file, uint32_t index, const uint32_t *colors,
