@@ -1066,10 +1066,20 @@ mod coretext {
                             "{family} {px} shaping {s:?}: Core Text needed another font"
                         )),
                         Some(line) => {
+                            // Rule: Core Text gives a right-to-left run's glyphs in display order; the gstring
+                            // is in logical order, so `mac_font_shape` reverses such a run
                             let ct_glyphs: Vec<u32> = line
                                 .runs
                                 .iter()
-                                .flat_map(|r| r.glyphs.iter().map(|&g| u32::from(g)))
+                                .flat_map(|r| {
+                                    let g: Vec<u32> =
+                                        r.glyphs.iter().map(|&g| u32::from(g)).collect();
+                                    if r.rtl {
+                                        g.into_iter().rev().collect()
+                                    } else {
+                                        g
+                                    }
+                                })
                                 .collect();
                             let ct_width: i32 = line
                                 .runs
