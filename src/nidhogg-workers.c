@@ -96,6 +96,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #endif
 
 #include "nidhogg-workers.h"
+#include "nidhogg-cond.h"
 #ifndef NH_WK_HARNESS
 # include "nidhogg-workers-phase.h"
 # include "process.h"
@@ -214,29 +215,10 @@ nh_wk_now (void)
   return nh_tc_on ? nh_tc_mono_ns () : nh_wk_real_ns ();
 }
 
-static struct timespec
-nh_wk_abs (uint64_t ns)
-{
-  return (struct timespec) { .tv_sec = ns / 1000000000,
-			     .tv_nsec = ns % 1000000000 };
-}
-
 void
 nh_wk_cond_init (pthread_cond_t *cv)
 {
-#ifdef __APPLE__
-
-  pthread_cond_init (cv, NULL);
-
-#else
-
-  pthread_condattr_t attr;
-  pthread_condattr_init (&attr);
-  pthread_condattr_setclock (&attr, CLOCK_MONOTONIC);
-  pthread_cond_init (cv, &attr);
-  pthread_condattr_destroy (&attr);
-
-#endif
+  nh_cond_init (cv);
 }
 
 int
@@ -249,18 +231,7 @@ nh_wk_cond_wait_until (pthread_cond_t *cv, pthread_mutex_t *m,
       && nh_tc_cond_wait (cv, m, deadline, !nh_wk_in_standby, &r))
     return r;
 #endif
-#ifdef __APPLE__
-
-  uint64_t now = nh_wk_real_ns ();
-  struct timespec rel = nh_wk_abs (deadline > now ? deadline - now : 0);
-  return pthread_cond_timedwait_relative_np (cv, m, &rel);
-
-#else
-
-  struct timespec ts = nh_wk_abs (deadline);
-  return pthread_cond_timedwait (cv, m, &ts);
-
-#endif
+  return nh_cond_wait_until (cv, m, deadline);
 }
 
 static void
