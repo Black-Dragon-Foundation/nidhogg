@@ -35,6 +35,7 @@
 The test's own span is ended (a short idle wait) and dropped first."
   (declare (indent 0))
   `(progn
+     (skip-unless (fboundp 'nidhogg-watchdog--start))
      (nidhogg-watchdog--start 100 600000 nil)
      (unwind-protect
          (progn

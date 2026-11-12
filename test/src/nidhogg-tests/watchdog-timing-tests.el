@@ -81,6 +81,7 @@ The span of the test itself is ended and dropped first."
 (defun watchdog-timing--spin-1s () (watchdog-timing--spin 1000))
 
 (ert-deftest watchdog/spin-from-timer ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-timing--running 100
     (let* ((stalls (watchdog-timing--stalls-from-timer
                     #'watchdog-timing--spin-1s 1.5))
@@ -100,6 +101,7 @@ The span of the test itself is ended and dropped first."
 (defun watchdog-timing--sleep-0.5 () (call-process "sleep" nil nil nil "0.5"))
 
 (ert-deftest watchdog/blocked-call-process ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-timing--running 100
     (let* ((stalls (watchdog-timing--stalls-from-timer
                     #'watchdog-timing--sleep-0.5 1))
@@ -117,6 +119,7 @@ The span of the test itself is ended and dropped first."
 (defun watchdog-timing--spin-800 () (watchdog-timing--spin 800))
 
 (ert-deftest watchdog/requests-only-past-half-threshold ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; The monitor asks for samples only once a span is past half the
   ;; threshold (200 ms of 400): a 150 ms spin gets none; a 800 ms one does
   ;; (the control: the counter does move).
@@ -380,6 +383,7 @@ result plist (:stalls :spans0 :stats :extra), or nil when it never wrote one."
     (setq watchdog-timing--stress-result round)))
 
 (ert-deftest watchdog/stress-10k-samples ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; 10 s of `--deep' sampling (1 ms) across allocation-heavy, byte-compiled
   ;; and native-compiled code, with forced collections and a specpdl past
   ;; 10^5 entries.  No crash, and every word the samples hold is a live
