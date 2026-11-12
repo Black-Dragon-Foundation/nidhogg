@@ -6657,8 +6657,8 @@ realize_gui_face (struct face_cache *cache, Lisp_Object attrs[LFACE_VECTOR_SIZE]
 	    }
 	}
     }
-
 #ifdef HAVE_NHWL
+
   /* Nidhogg's own shells: a box's line widths are logical pixels (NS's
      points), so they follow the frame's scale (a negative width keeps
      its sign: drawn inside the glyphs).  Faces are realized again when
