@@ -2688,6 +2688,9 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
   FRAME_NHWL_OUTPUT (f)->scale120 = FRAME_DISPLAY_INFO (f)->scale120 = scale120;
   FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = NHWL_DPI * scale120 / 120.0;
   nhwl_res_changed (f, was);
+  /* Faces hold device widths made at the scale (their boxes, xfaces.c):
+     realized again.  */
+  face_change = true;
   nhwl_csd_layout (f);
   /* Default fringes are 8 logical pixels (frame.c's
      default_fringe_width): their device width follows the scale.  */
