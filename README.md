@@ -1150,8 +1150,9 @@ a spec makes the decoder read `:data` as base64 text (on `nh-img` and in the syn
   (a reader-owned process holds three fds, which the budget check counts), timed waits use
   `pthread_cond_timedwait_relative_np`, speculative threads set `QOS_CLASS_UTILITY` on themselves and a wait raises the
   running one with `pthread_override_qos_class_start_np` / `_end_np`, host names resolve through `nh-blk` (no
-  `getaddrinfo_a`), auto-save uses named temporary files (no `O_TMPFILE`), and images stay on NSImage, synchronously,
-  for every type (`nidhogg-workers--deferrable-p` is nil). The `macos` CI job runs the `workers-*` batch files of
+  `getaddrinfo_a`), auto-save uses named temporary files (no `O_TMPFILE`), and the image worker decodes PNG, JPEG, GIF and WebP off
+  the main thread, ImageIO behind Glitnir's decoders (`nidhogg-workers--deferrable-p` is t for those four; Naglfar
+  links no image library, so the rows that hold the libraries' cores to their recorded results skip there). The `macos` CI job runs the `workers-*` batch files of
   `nidhogg/check-subset.txt`; there are no macOS GUI rows (no macOS GUI runner).
 <!-- wk: Task 37 -->
 - Android: no Android build exists; `nidhogg/test/android-check.sh` compiles each worker file (`-fsyntax-only`, harness

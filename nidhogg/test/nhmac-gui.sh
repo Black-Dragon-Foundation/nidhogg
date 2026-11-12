@@ -28,9 +28,12 @@
 #   --interpose      build nidhogg/test/mac-interpose (cargo, on the runner) and run Emacs with it inserted: the
 #                    counters nidhogg/test/mac-counts.el reads (NHMAC_INTERPOSE_LIB names the dylib)
 #   --drgnx DIR      drgnx's fit-check row instead of Nidhogg's rows: DIR is drgnx at the commit Nidhogg pins; its hub
-#                    is built here (cargo build --locked --release, aarch64-apple-darwin, as drgnx's install builds
-#                    it) and named by DRGNX_RATATOSKR_BIN, and DIR/test/ui/rows-fit-gui-test.el runs with drgnx's
-#                    harness, core and wb on the load path (default scale 2).  Until that commit has the file, the
+#                    is built here (cargo build --locked --release, aarch64-apple-darwin, with drgnx's test hooks and
+#                    ratatoskr-mock beside it, as drgnx's build-test-bins action builds them) and named by
+#                    DRGNX_RATATOSKR_BIN, the fixture fonts (DIR/test/fixtures/fonts) go to ~/Library/Fonts before
+#                    Emacs starts (Core Text may not see a font added to a running process), and
+#                    DIR/test/ui/rows-fit-gui-test.el runs with drgnx's harness, core and wb on the load path
+#                    (default scale 2).  Until that commit has the file, the
 #                    row is reported skipped, with that reason; --drgnx-strict makes a missing file red (the combined
 #                    gate pass)
 #   --out DIR        where the logs go (default $TMPDIR/nhmac-gui); one nhmac-gui-scaleS.log per scale, and the pixels of a
@@ -147,9 +150,17 @@ fi
 
 if [ -n "$drgnx" ]; then
   cargo build --locked --release --target aarch64-apple-darwin --manifest-path "$drgnx/runtime/Cargo.toml" \
-        -p drgnx-ratatoskr --target-dir "$work/hub" || { echo "nhmac-gui.sh: cannot build drgnx's hub" >&2; exit 1; }
+        -p drgnx-ratatoskr -p domr --features drgnx-ratatoskr/test-hooks --bin ratatoskr --bin ratatoskr-mock \
+        --target-dir "$work/hub" || { echo "nhmac-gui.sh: cannot build drgnx's hub" >&2; exit 1; }
   export DRGNX_RATATOSKR_BIN=$work/hub/aarch64-apple-darwin/release/ratatoskr
-  [ -x "$DRGNX_RATATOSKR_BIN" ] || { echo "nhmac-gui.sh: no $DRGNX_RATATOSKR_BIN" >&2; exit 1; }
+  for b in "$DRGNX_RATATOSKR_BIN" "${DRGNX_RATATOSKR_BIN%/*}/ratatoskr-mock"; do
+    [ -x "$b" ] || { echo "nhmac-gui.sh: no $b" >&2; exit 1; }
+  done
+  # the fixture fonts, known to Core Text before Emacs starts
+  mkdir -p "$HOME/Library/Fonts"
+  for f in "$drgnx"/test/fixtures/fonts/*.ttf "$drgnx"/test/fixtures/fonts/*.otf; do
+    [ -f "$f" ] && [ ! -e "$HOME/Library/Fonts/${f##*/}" ] && { cp "$f" "$HOME/Library/Fonts/" || exit 1; }
+  done
   # drgnx's test helpers, then Emacs's own directories (the empty element)
   export EMACSLOADPATH=$drgnx/harness:$drgnx/core:$drgnx/wb:
 fi
