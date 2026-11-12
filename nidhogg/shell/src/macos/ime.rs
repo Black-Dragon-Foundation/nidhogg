@@ -210,3 +210,74 @@ pub fn test_state(
         )
     }
 }
+
+/// Text Input Sources, for the test hook that selects a real input source.
+#[cfg(feature = "test-hooks")]
+mod tis {
+    use crate::api::{ShellError, ShellResult};
+
+    /// `TISInputSourceRef` and the other Core Foundation objects the input source calls take.
+    type CFRef = *const std::ffi::c_void;
+
+    #[link(name = "Carbon", kind = "framework")]
+    unsafe extern "C" {
+        static kTISPropertyInputSourceID: CFRef;
+        fn TISCreateInputSourceList(properties: CFRef, include_all_installed: u8) -> CFRef;
+        fn TISEnableInputSource(source: CFRef) -> i32;
+        fn TISSelectInputSource(source: CFRef) -> i32;
+        fn TISCopyCurrentKeyboardInputSource() -> CFRef;
+        fn TISGetInputSourceProperty(source: CFRef, key: CFRef) -> CFRef;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFArrayGetCount(a: CFRef) -> isize;
+        fn CFArrayGetValueAtIndex(a: CFRef, i: isize) -> CFRef;
+    }
+
+    /// The current keyboard input source's id (`kTISPropertyInputSourceID`).
+    fn current_source_id() -> Option<String> {
+        use super::super::text::{Cf, string};
+        // SAFETY: a Copy call (+1, owned by `Cf`); the property is a borrowed CFString of the live source.
+        unsafe {
+            let cur = Cf::new(TISCopyCurrentKeyboardInputSource())?;
+            let id = TISGetInputSourceProperty(cur.get(), kTISPropertyInputSourceID);
+            (!id.is_null()).then(|| string(id))
+        }
+    }
+
+    /// Test hook (`test-input-source`): enable and select the installed input source `id` (Text Input Sources, e.g.
+    /// `com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese`), or with an empty `id` only report.  Its answer, for Lisp:
+    /// `(:found BOOL :enable STATUS :select STATUS :current "ID")`, STATUS the OSStatus (0 is done).
+    pub fn test_input_source(id: &str) -> ShellResult<String> {
+        use super::super::text::{Cf, cf_string, dictionary};
+        let id = id.trim_matches('"');
+        let (mut found, mut enable, mut select) = (false, -1, -1);
+        if !id.is_empty() {
+            let key = cf_string(id).ok_or(ShellError::NoMem)?;
+            // SAFETY: the property key is HIToolbox's constant; the dictionary retains it and the id.
+            let props = dictionary(&[unsafe { kTISPropertyInputSourceID }], &[key.get()])
+                .ok_or(ShellError::NoMem)?;
+            // SAFETY: a Create call (+1, owned by `Cf`); its elements are borrowed while it lives.
+            unsafe {
+                if let Some(list) = Cf::new(TISCreateInputSourceList(props.get(), 1))
+                    && CFArrayGetCount(list.get()) > 0
+                {
+                    let src = CFArrayGetValueAtIndex(list.get(), 0);
+                    found = true;
+                    enable = TISEnableInputSource(src);
+                    select = TISSelectInputSource(src);
+                }
+            }
+        }
+        Ok(format!(
+            "(:found {} :enable {enable} :select {select} :current {})",
+            if found { "t" } else { "nil" },
+            current_source_id()
+                .map_or_else(|| "nil".into(), |s| crate::pasteboard::lisp_string(&s))
+        ))
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+pub use tis::test_input_source;

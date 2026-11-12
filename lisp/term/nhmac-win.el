@@ -1032,10 +1032,25 @@ Only the clipboard exists on macOS."
 (defun ns-display-monitor-attributes-list (&optional terminal)
   "Return a list of physical monitor attributes on the display TERMINAL.
 The screens the shell announced, as the shared C lists them (geometry
-in device pixels), with `source' \"NS\"."
-  (mapcar (lambda (m)
-            (mapcar (lambda (kv) (if (eq (car kv) 'source) (cons 'source "NS") kv)) m))
-          (pgtk-display-monitor-attributes-list terminal)))
+in device pixels), with `source' \"NS\".  Each `workarea' is the
+screen's `visibleFrame' (what the menu bar and the Dock leave), in the
+same device pixels."
+  (let ((screens (nhmac--query 'screens)))
+    (cl-loop
+     for m in (pgtk-display-monitor-attributes-list terminal)
+     for s = (pop screens)
+     collect
+     (mapcar (lambda (kv)
+               (pcase (car kv)
+                 ('source (cons 'source "NS"))
+                 ((and 'workarea (guard s))
+                  (pcase-let* ((`(,x ,y . ,_) (alist-get 'geometry m))
+                               (`(,fx ,fy ,_ ,_ ,vx ,vy ,vw ,vh ,k) s))
+                    (list 'workarea
+                          (+ x (round (* (- vx fx) k))) (+ y (round (* (- vy fy) k)))
+                          (round (* vw k)) (round (* vh k)))))
+                 (_ kv)))
+             m))))
 
 (defun ns-do-applescript (script)
   "Execute AppleScript SCRIPT and return the result.

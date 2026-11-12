@@ -101,6 +101,7 @@ unsafe extern "C" {
     fn CTFontDescriptorCopyAttribute(d: CFRef, attr: CFRef) -> CFRef;
     fn CTFontCopyPostScriptName(f: CFRef) -> CFRef;
     fn CTFontCopyFamilyName(f: CFRef) -> CFRef;
+    fn CTFontCreateForString(current: CFRef, s: CFRef, range: CFRange) -> CFRef;
     fn CTLineCreateWithAttributedString(s: CFRef) -> CFRef;
     fn CTLineGetGlyphRuns(l: CFRef) -> CFRef;
     fn CTRunGetGlyphCount(r: CFRef) -> isize;
@@ -151,7 +152,7 @@ pub(crate) fn string(s: CFRef) -> String {
     unsafe { &*s.cast::<NSString>() }.to_string()
 }
 
-fn cf_string(s: &str) -> Option<Cf> {
+pub(crate) fn cf_string(s: &str) -> Option<Cf> {
     let units: Vec<u16> = s.encode_utf16().collect();
     cf_units(&units)
 }
@@ -163,7 +164,7 @@ fn cf_units(units: &[u16]) -> Option<Cf> {
     })
 }
 
-fn dictionary(keys: &[CFRef], values: &[CFRef]) -> Option<Cf> {
+pub(crate) fn dictionary(keys: &[CFRef], values: &[CFRef]) -> Option<Cf> {
     // SAFETY: as many live keys as values; the CF type callbacks retain both.
     Cf::new(unsafe {
         CFDictionaryCreate(
@@ -460,6 +461,24 @@ pub fn preferred_family_in(chars: &[u32], language: &str) -> Option<String> {
     // SAFETY: a live font; the copy is +1.
     let family = Cf::new(unsafe { CTFontCopyFamilyName(f) })?;
     Some(string(family.get()))
+}
+
+/// The family of the font Core Text's own cascade picks for `c` from the open font `handle`
+/// (`CTFontCreateForString`): the test hooks' oracle for fallback.  `None`: not open, or no font.
+pub fn cascade_family(handle: u64, c: u32) -> Option<String> {
+    let mut b = [0u16; 2];
+    let units = char::from_u32(c)?.encode_utf16(&mut b);
+    let s = cf_units(units)?;
+    let range = CFRange {
+        location: 0,
+        length: units.len() as isize,
+    };
+    super::fonts::with_font(handle, |font| {
+        // SAFETY: a live font and string; the result and the family name's copy are +1.
+        let f = Cf::new(unsafe { CTFontCreateForString(font, s.get(), range) })?;
+        let family = Cf::new(unsafe { CTFontCopyFamilyName(f.get()) })?;
+        Some(string(family.get()))
+    })?
 }
 
 /// One glyph run of a line, in Core Text's storage order.

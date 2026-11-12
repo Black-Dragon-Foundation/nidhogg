@@ -1432,6 +1432,8 @@ impl ShellBackend for MacShell {
         }
         match kind {
             "stats" => Ok(stats_text(scope_stats())),
+            // each screen as AppKit has it (`screens::frames_text`)
+            "screens" => Ok(screens::frames_text(self.mtm)),
             "get-resource" => Ok(defaults::get(arg)),
             "reduced-motion" => Ok(if motion::reduced() { "t" } else { "nil" }.into()),
             "system-appearance" => Ok(if self.dark { "dark" } else { "light" }.to_string()),

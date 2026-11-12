@@ -47,3 +47,35 @@ pub fn outputs(mtm: MainThreadMarker) -> Vec<OutputEv> {
         })
         .collect()
 }
+
+/// Each screen as AppKit has it, the main one first, for Lisp: `((X Y W H VX VY VW VH SCALE) ...)`, `frame` and
+/// `visibleFrame` (the part the menu bar and the Dock leave) in points from the main screen's top left (y down), and
+/// `backingScaleFactor`.
+pub fn frames_text(mtm: MainThreadMarker) -> String {
+    let screens = NSScreen::screens(mtm);
+    let top = screens
+        .iter()
+        .next()
+        .map_or(0.0, |s| s.frame().origin.y + s.frame().size.height);
+    let rect = |r: objc2_foundation::NSRect| {
+        format!(
+            "{} {} {} {}",
+            r.origin.x,
+            top - r.origin.y - r.size.height,
+            r.size.width,
+            r.size.height
+        )
+    };
+    let all: Vec<String> = screens
+        .iter()
+        .map(|s| {
+            format!(
+                "({} {} {})",
+                rect(s.frame()),
+                rect(s.visibleFrame()),
+                s.backingScaleFactor()
+            )
+        })
+        .collect();
+    format!("({})", all.join(" "))
+}
