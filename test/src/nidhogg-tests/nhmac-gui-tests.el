@@ -1754,7 +1754,10 @@ every box, or a glyph not where the widths before it put it."
                         :pixel (format "#x%08x" (aref px (+ (* y w) x)))
                         ;; the boxes of its column and the baseline, to tell a glyph's own ink from a stray
                         :column (seq-filter (lambda (b) (and (<= (nth 1 b) (+ x x0)) (< (+ x x0) (nth 3 b)))) boxes)
-                        :base base)
+                        :base base
+                        ;; the column's pixels down the line, from its top: where the glyph's bottom lands tells a
+                        ;; baseline drawn off the integral one from antialiasing bleeding over its box
+                        :down (cl-loop for yy below h collect (format "%x" (logand #xffffff (aref px (+ (* yy w) x))))))
                   bad)))))
     (nreverse bad)))
 
@@ -2657,8 +2660,9 @@ GLYPHS) for TEXT (`query-font', `line-pixel-height', `font-get-glyphs')."
 
 (defun nhmac-gui--ct-facts (family size text)
   "FAMILY at SIZE pixels as Core Text answers under the stated rules, in `nhmac-gui--font-facts''s form: the pixel
-size is the size asked for, the line height ascent + descent, or the frame's character height when that is taller
-\(`nhmac-gui--with-text' puts four spaces of the default face before the text).  Nil when the font is not open."
+size is the size asked for, the line height the taller ascent plus the taller descent of the font and the default
+face's font (`nhmac-gui--with-text' puts four spaces of the default face before the text), or the frame's character
+height when that is taller.  Nil when the font is not open."
   (let ((ct (nhmac-gui--ct family size (concat " " nhmac-gui--printable text))))
     (when ct
       (pcase-let* ((glyphs (plist-get ct :glyphs))
@@ -2666,7 +2670,10 @@ size is the size asked for, the line height ascent + descent, or the frame's cha
                    (`(,a ,d ,avg ,space)
                     (nhmac-gui--ct-metrics (plist-put (copy-sequence ct) :glyphs (take 95 glyphs))
                                            nhmac-gui--printable)))
-        (list :info (list size a d space avg (max (+ a d) (frame-char-height)))
+        (list :info (list size a d space avg
+                          ;; the line also holds the default face's spaces: its ascent and descent each the taller
+                          (let ((q (font-info (face-font 'default))))
+                            (max (+ (max a (aref q 4)) (max d (aref q 5))) (frame-char-height))))
               :glyphs (mapcar (lambda (g) (cons (nth 1 g) (nhmac-gui--ct-glyph mono space g)))
                               (nthcdr 95 glyphs)))))))
 
