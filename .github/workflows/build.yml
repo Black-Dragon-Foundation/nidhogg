@@ -980,6 +980,15 @@ jobs:
           ref: ${{ inputs.drgnx_ref || needs.pin.outputs.ref }}
           path: drgnx-pin
           persist-credentials: false
+      # drgnx's hub runs only the git of the developer dir xcode-select's link names, and refuses the image's Xcode
+      # under the admin-writable /Applications: without the Command Line Tools no folder is a project (drgnx's own
+      # macOS jobs do the same); after the Naglfar rows, so only the fit-check row runs with them
+      - name: xcode-select points at the Command Line Tools (the git drgnx's hub trusts)
+        if: ${{ !cancelled() && steps.dfit.outcome == 'success' }}
+        run: |
+          xcode-select -p
+          sudo xcode-select -s /Library/Developer/CommandLineTools
+          xcode-select -p
       - name: drgnx's fit-check row on Naglfar (scale 2)
         if: ${{ !cancelled() && steps.dfit.outcome == 'success' }}
         env:
