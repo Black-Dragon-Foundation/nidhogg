@@ -27,7 +27,7 @@ use crate::caps::NhShellCaps;
 use crate::event::{
     ConfigureEv, FocusEv, MenuEv, NHSHELL_STATE_ACTIVATED, OutputEv, Record, ScaleEv, ShellEvent,
 };
-use crate::scope::{Scope, ScopeStats};
+use crate::scope::{Scope, ScopeStats, Taken};
 use crate::vars::Settings;
 use crate::wait::{self, Change, Reg, WaitOps, Woke};
 use glitnir::geom::Rect;
@@ -82,6 +82,11 @@ pub struct MacShell {
     deferred: Vec<WindowId>,
     /// The commit pacer's timer: armed while a window holds a commit.
     pacer: pacer::Timer,
+    /// The AppKit calls an applied event asked for (a window frame, a full-screen toggle, a zoom): run once the
+    /// scope has the borrow back (`Taken::defer`), so the delegate callbacks they cause are applied in turn.
+    effects: Vec<Box<dyn FnOnce()>>,
+    /// Window titles a Lisp thread's redisplay set: AppKit takes them at the main thread's next pump.
+    titles: Vec<(WindowId, String)>,
     /// Child windows, each parent's children bottom to top, the parents whose children changed places, and children
     /// gone whose containers leave at their root's next commit.
     kids: HashMap<WindowId, child::Kid>,
@@ -196,6 +201,8 @@ impl MacShell {
             srgb: true,
             deferred: Vec::new(),
             pacer: pacer::Timer::default(),
+            effects: Vec::new(),
+            titles: Vec::new(),
             kids: HashMap::new(),
             order: HashMap::new(),
             order_dirty: BTreeSet::new(),
@@ -244,11 +251,31 @@ impl MacShell {
     /// are applied after.  `f` reaches the backend only through the scope.
     fn lent<R>(&mut self, f: impl FnOnce(&Scope<MacShell, MacEv>) -> R) -> R {
         let _pumping = layers::Pumping::enter();
-        SCOPE.with(|s| s.lend(self, || f(s), |shell, e| shell.apply(e)))
+        SCOPE.with(|s| s.lend(self, || f(s), MacShell::apply_taken))
+    }
+
+    /// A callback's event on the scope's borrow: the AppKit calls it asks for run once the borrow is put back.
+    pub(super) fn apply_taken(t: &mut Taken<'_, MacShell, MacEv>, ev: MacEv) {
+        t.apply_event(ev);
+        for effect in std::mem::take(&mut t.effects) {
+            t.defer(effect);
+        }
+    }
+
+    /// A callback's event applied outside the scope (a host call, a test hook): its AppKit calls run now.
+    pub(super) fn apply(&mut self, ev: MacEv) {
+        self.apply_event(ev);
+        self.run_effects();
+    }
+
+    fn run_effects(&mut self) {
+        for effect in std::mem::take(&mut self.effects) {
+            effect();
+        }
     }
 
     /// A callback's event, on the backend.  A test window's id names no window here: its events change nothing.
-    pub(super) fn apply(&mut self, ev: MacEv) {
+    fn apply_event(&mut self, ev: MacEv) {
         match ev {
             MacEv::Resized(id) => self.compare(id),
             MacEv::Screen(id) => self.screen_changed(id),
@@ -291,7 +318,7 @@ impl MacShell {
             MacEv::FullScreen(id, busy) => {
                 super::runloop::FS_NOTES[6].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if let Some(w) = self.windows.get_mut(&id) {
-                    super::windowing::fullscreen_transition(w, busy);
+                    super::windowing::fullscreen_transition(w, busy, &mut self.effects);
                 }
             }
         }
@@ -348,7 +375,9 @@ impl MacShell {
         let size = (r.size.width.round() as i32, r.size.height.round() as i32);
         if size == w.size {
             // the size held (at its minimum): only the origin can move, and there is nothing to draw
-            w.window.setFrame_display(frame, false);
+            let window = w.window.clone();
+            self.effects
+                .push(Box::new(move || window.setFrame_display(frame, false)));
             return;
         }
         let s = w.scale();
@@ -485,6 +514,11 @@ impl MacShell {
     fn pump(&mut self) {
         #[cfg(feature = "test-hooks")]
         self.maybe_raise();
+        for (id, title) in std::mem::take(&mut self.titles) {
+            if let Some(w) = self.windows.get(&id) {
+                w.window.setTitle(&NSString::from_str(&title));
+            }
+        }
         if !self.deferred.is_empty() || !self.owed.is_empty() {
             let ids = std::mem::take(&mut self.deferred);
             self.commit(&ids);
@@ -568,6 +602,7 @@ impl MacShell {
                 self.resize_step(*id, frame);
             }
         }
+        self.run_effects();
     }
 
     /// A watched variable's new value (`nhmac--variable-changed`): ARG is `(SYMBOL VALUE)` as Lisp prints it.  The
@@ -813,6 +848,14 @@ impl ShellBackend for MacShell {
     }
 
     fn set_title(&mut self, window: WindowId, title: &str) -> ShellResult {
+        if MainThreadMarker::new().is_none() {
+            // a Lisp thread's redisplay: AppKit is the main thread's, which takes the title at its next pump
+            self.win(window)?;
+            self.titles.retain(|(id, _)| *id != window);
+            self.titles.push((window, title.to_string()));
+            wait::wake();
+            return Ok(());
+        }
         self.win(window)?
             .window
             .setTitle(&NSString::from_str(title));
@@ -1130,7 +1173,10 @@ impl ShellBackend for MacShell {
     ) -> ShellResult {
         let view = self.win(window)?.view.clone();
         super::ime::with(window, |p| p.cursor = [x, y, w, h]);
-        super::ax::cursor_pushed(&view, window);
+        // Zoom follows the cursor from the main thread's own consistency points; a Lisp thread's only records it
+        if MainThreadMarker::new().is_some() {
+            super::ax::cursor_pushed(&view, window);
+        }
         Ok(())
     }
 
@@ -1332,6 +1378,8 @@ impl ShellBackend for MacShell {
     }
 
     fn app_call(&mut self, kind: &str, arg: &str) -> ShellResult {
+        // every request is AppKit's, whose calls are the main thread's: a Lisp thread's is refused
+        MainThreadMarker::new().ok_or(ShellError::State)?;
         #[cfg(feature = "test-hooks")]
         if let Some(r) = self.test_call(kind, arg) {
             return r;
@@ -1426,6 +1474,8 @@ impl ShellBackend for MacShell {
     }
 
     fn app_query(&mut self, kind: &str, arg: &str) -> ShellResult<String> {
+        // as `app_call`
+        MainThreadMarker::new().ok_or(ShellError::State)?;
         #[cfg(feature = "test-hooks")]
         if let Some(r) = self.test_query(kind, arg) {
             return r;
@@ -1448,7 +1498,8 @@ impl ShellBackend for MacShell {
             "menu-popup" => self.menu_popup(arg),
             "mouse-position" => Ok(nsapp::mouse_position(self.mtm)),
             "ax-trusted" => Ok(if nsapp::ax_trusted() { "t" } else { "nil" }.to_string()),
-            "applescript" => Ok(nsapp::applescript(nsapp::text_arg(arg))),
+            // a nested AppleEvent loop: lent, as the other nested loops are
+            "applescript" => Ok(self.lent(|_| nsapp::applescript(nsapp::text_arg(arg)))),
             // "(ALLOW-DISPLAY-SLEEP WHY)"
             "sleep-block" => {
                 let (n, why) = crate::menu::split_numbers(arg, 1).ok_or(ShellError::Arg)?;

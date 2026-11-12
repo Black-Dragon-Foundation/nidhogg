@@ -58,21 +58,28 @@ pub fn fullscreen(w: &mut Win, on: bool, native: bool) {
 }
 
 /// A native transition started (`busy`) or ended: at its end, the state asked for during it, unless the window is
-/// in that state already.
-pub fn fullscreen_transition(w: &mut Win, busy: bool) {
+/// in that state already.  A delegate's event: the AppKit calls go to `effects`, made once the backend's borrow is
+/// put back.
+pub fn fullscreen_transition(w: &mut Win, busy: bool, effects: &mut Vec<Box<dyn FnOnce()>>) {
     w.fs_busy = busy;
     if !busy
         && let Some(on) = w.fs_want.take()
         && on != is_fullscreen(w)
     {
-        w.window.toggleFullScreen(None);
+        let window = w.window.clone();
+        effects.push(Box::new(move || window.toggleFullScreen(None)));
         w.fs_busy = true;
     }
     if !w.fs_busy
         && !w.window.styleMask().contains(NSWindowStyleMask::FullScreen)
         && let Some(on) = w.zoom_want.take()
     {
-        maximize(w, on);
+        let window = w.window.clone();
+        effects.push(Box::new(move || {
+            if window.isZoomed() != on {
+                window.zoom(None);
+            }
+        }));
     }
 }
 

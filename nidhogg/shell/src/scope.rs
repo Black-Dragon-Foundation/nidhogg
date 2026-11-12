@@ -4,13 +4,15 @@
 //! `runModalSession:`), while the backend's state is mutably borrowed further up the stack.  The pump lends the state
 //! to a [`Scope`] for its whole length ([`Scope::lend`]); a callback reaches it only through [`Scope::take`], which
 //! empties the scope until the [`Taken`] borrow is dropped, unwind included.  A callback that finds the scope empty (no
-//! pump is running, or another take is live) [`queue`](Scope::queue)s its event, and the next lend applies it.  AppKit
+//! pump is running, or another take is live) [`queue`](Scope::queue)s its event; events are applied in the order they
+//! came: the queued ones at the start and end of the next lend, and before any event delivered after them.  AppKit
 //! calls made while a borrow is held go through [`Taken::defer`]: they run after the borrow is put back, so the
 //! callbacks they cause can take it in turn.
 //!
 //! Platform-neutral, so its tests run on Linux; the macOS backend keeps one per thread.
 
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
@@ -31,7 +33,7 @@ pub struct ScopeStats {
 pub struct Scope<T, E> {
     slot: Cell<Option<NonNull<T>>>,
     live: Cell<u32>,
-    pending: RefCell<Vec<E>>,
+    pending: RefCell<VecDeque<E>>,
     stats: Cell<ScopeStats>,
 }
 
@@ -46,7 +48,7 @@ impl<T, E> Scope<T, E> {
         Scope {
             slot: Cell::new(None),
             live: Cell::new(0),
-            pending: RefCell::new(Vec::new()),
+            pending: RefCell::new(VecDeque::new()),
             stats: Cell::new(ScopeStats {
                 takes: 0,
                 overlapping_takes: 0,
@@ -62,14 +64,15 @@ impl<T, E> Scope<T, E> {
         self.stats.set(s);
     }
 
-    /// Lend `state` while `f` runs: callbacks inside `f` take it.  The events queued before or during `f` are then
-    /// applied to it with `apply`, oldest first (an event `apply` queues again waits for the next lend).  The state
-    /// is back in the caller's hands when this returns or unwinds.
-    pub fn lend<R>(
-        &self,
+    /// Lend `state` while `f` runs: callbacks inside `f` take it.  The events queued before the lend are applied to it
+    /// with `apply` first, oldest first, and those queued during `f` after it, with the lend still on: `apply` reaches
+    /// the state through a [`Taken`], so its AppKit calls go through [`Taken::defer`] and their callbacks take the state
+    /// in turn.  The state is back in the caller's hands when this returns or unwinds.
+    pub fn lend<'s, R>(
+        &'s self,
         state: &mut T,
         f: impl FnOnce() -> R,
-        mut apply: impl FnMut(&mut T, E),
+        mut apply: impl FnMut(&mut Taken<'s, T, E>, E),
     ) -> R {
         struct Unlend<'s, T, E>(&'s Scope<T, E>);
         impl<T, E> Drop for Unlend<'_, T, E> {
@@ -85,16 +88,27 @@ impl<T, E> Scope<T, E> {
             "a scope lent twice"
         );
         self.slot.set(Some(NonNull::from(&mut *state)));
-        let r = {
-            let _unlend = Unlend(self);
-            f()
-        };
-        let pending = std::mem::take(&mut *self.pending.borrow_mut());
-        for e in pending {
-            self.bump(|s| s.applied += 1);
-            apply(state, e);
-        }
+        let _unlend = Unlend(self);
+        self.drain(&mut apply);
+        let r = f();
+        self.drain(&mut apply);
         r
+    }
+
+    /// Apply the queued events, oldest first, through one take (none while a borrow is live: they wait); those its
+    /// deferred effects queue are applied too.
+    fn drain<'s>(&'s self, apply: &mut impl FnMut(&mut Taken<'s, T, E>, E)) {
+        while !self.pending.borrow().is_empty() {
+            let Some(mut t) = self.take() else { return };
+            while let Some(e) = self.pop() {
+                self.bump(|s| s.applied += 1);
+                apply(&mut t, e);
+            }
+        }
+    }
+
+    fn pop(&self) -> Option<E> {
+        self.pending.borrow_mut().pop_front()
     }
 
     /// The lent state, emptied from the scope until the borrow drops; `None` outside a lend or while another borrow
@@ -117,13 +131,23 @@ impl<T, E> Scope<T, E> {
     /// Keep `event` for the next lend: for a callback that found the scope empty.
     pub fn queue(&self, event: E) {
         self.bump(|s| s.queued += 1);
-        self.pending.borrow_mut().push(event);
+        self.pending.borrow_mut().push_back(event);
     }
 
-    /// Hand `event` to `handle` on the lent state now, or queue it when the scope is empty.
-    pub fn deliver(&self, event: E, handle: impl FnOnce(&mut Taken<'_, T, E>, E)) {
+    /// Hand `event` to `handle` on the lent state now, after the events queued before it (they came first), or queue
+    /// it when the scope is empty.
+    pub fn deliver<'s>(&'s self, event: E, mut handle: impl FnMut(&mut Taken<'s, T, E>, E)) {
+        if !self.available() {
+            self.queue(event);
+            return;
+        }
+        self.drain(&mut handle);
         match self.take() {
-            Some(mut t) => handle(&mut t, event),
+            Some(mut t) => {
+                handle(&mut t, event);
+                drop(t);
+                self.drain(&mut handle);
+            }
             None => self.queue(event),
         }
     }
@@ -242,6 +266,64 @@ mod tests {
         assert!(st.log.is_empty());
         scope.lend(&mut st, || (), |st, e| st.log.push(e));
         assert_eq!(st.log, ["early"]);
+    }
+
+    #[test]
+    fn queued_events_go_before_later_ones() {
+        // an event queued outside a lend (a callback of a host call's AppKit call) is applied before one delivered
+        // during the next lend's `f`, and before `f` itself (the blocking sleep): will-enter, then did-enter
+        let scope: Scope<State, &'static str> = Scope::new();
+        let mut st = State::default();
+        scope.deliver("will", |_, _| unreachable!());
+        scope.lend(
+            &mut st,
+            || {
+                scope.take().expect("lent").log.push("f starts");
+                scope.deliver("did", |t, e| t.log.push(e));
+            },
+            |t, e| t.log.push(e),
+        );
+        assert_eq!(st.log, ["will", "f starts", "did"]);
+    }
+
+    #[test]
+    fn a_delivery_after_a_reentrant_queue_keeps_the_order() {
+        // inside one lend: an event queued under a live borrow, then one delivered once the borrow is back
+        let scope: Scope<State, &'static str> = Scope::new();
+        let mut st = State::default();
+        scope.lend(
+            &mut st,
+            || {
+                {
+                    let _outer = scope.take().unwrap();
+                    scope.deliver("first", |_, _| unreachable!());
+                }
+                scope.deliver("second", |t, e| t.log.push(e));
+            },
+            |t, e| t.log.push(e),
+        );
+        assert_eq!(st.log, ["first", "second"]);
+        assert_eq!(scope.stats().applied, 1);
+    }
+
+    #[test]
+    fn effects_deferred_by_a_queued_apply_run_with_the_scope_filled() {
+        // an apply that defers an AppKit call: its callback takes the state at once instead of queueing
+        let scope: Scope<State, &'static str> = Scope::new();
+        let mut st = State::default();
+        scope.deliver("early", |_, _| unreachable!());
+        scope.lend(
+            &mut st,
+            || (),
+            |t, e| {
+                t.log.push(e);
+                if e == "early" {
+                    t.defer(|| scope.deliver("callback", |t, e| t.log.push(e)));
+                }
+            },
+        );
+        assert_eq!(st.log, ["early", "callback"]);
+        assert_eq!(scope.stats().queued, 1);
     }
 
     #[test]

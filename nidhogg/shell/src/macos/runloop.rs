@@ -55,7 +55,7 @@ thread_local! {
 
 /// Hand `ev` to the backend now, or queue it for the next lend.
 pub fn deliver(ev: MacEv) {
-    SCOPE.with(|s| s.deliver(ev, |shell, e| shell.apply(e)));
+    SCOPE.with(|s| s.deliver(ev, MacShell::apply_taken));
 }
 
 define_class!(
