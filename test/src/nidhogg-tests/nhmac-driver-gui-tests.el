@@ -101,7 +101,8 @@ its regular, and ultra-light otherwise (`mac_font_descriptor_get_adjusted_weight
 traits and AppKit's `weightOfFont:', asked of each face."
   (skip-unless (nhmac-driver--naglfar-p))
   (let ((faces (nhmac-driver--probe 'ultralight))
-        (regular (font-get (font-spec :weight 'normal) :weight))
+        ;; the table's first names, as an entity has them (a spec keeps the name it was given: normal is regular)
+        (regular (font-get (font-spec :weight 'regular) :weight))
         (light (font-get (font-spec :weight 'ultra-light) :weight)))
     (nhmac-driver--say "nhmac-font-ultralight: %d faces at -0.40: %S" (length faces) faces)
     (dolist (f faces)
@@ -136,7 +137,8 @@ Text lays BASE + SELECTOR out with in that font, and one it does not list is lai
         (nhmac-driver--say "nhmac-font-variation: %s %X: %S (base glyph %S)" family base have plain)
         (when font
           (dolist (vs selectors)
-            (let ((ct (nhmac-driver--probe 'variation family size base vs))
+            (let ((ct (progn (nhmac-driver--say "nhmac-font-variation: asking %S" (list 'variation family size base vs))
+                             (nhmac-driver--probe 'variation family size base vs)))
                   (mine (cdr (assq vs have))))
               (nhmac-driver--say "nhmac-font-variation: %s %X %X: Core Text %S, driver %S" family base vs ct mine)
               (when ct
