@@ -736,14 +736,14 @@ jobs:
       - name: The tarball runs unpacked
         if: ${{ inputs.checks != 'build-only' }}
         run: bash nidhogg/test/tarball-test.sh dist/*.tar.xz macos
-      # the workers batch files of nidhogg/check-subset.txt (or of a narrowed run's targets); a cached tarball has no
-      # build tree to check
-      - name: Workers checks (nidhogg/check-subset.txt, workers-* files)
+      # the workers and watchdog batch files of nidhogg/check-subset.txt (or of a narrowed run's targets); a cached
+      # tarball has no build tree to check
+      - name: Workers and watchdog checks (nidhogg/check-subset.txt, workers-* and watchdog-* files)
         if: ${{ steps.build.outcome == 'success' }}
         env:
           CHECKS: ${{ inputs.checks }}
         run: |
-          if [ -n "$CHECKS" ]; then echo "$CHECKS" | tr ' ' '\n'; else cat nidhogg/check-subset.txt; fi | grep 'nidhogg-tests/workers-' > "$RUNNER_TEMP/macos-subset.txt" || true
+          if [ -n "$CHECKS" ]; then echo "$CHECKS" | tr ' ' '\n'; else cat nidhogg/check-subset.txt; fi | grep -E 'nidhogg-tests/(workers|watchdog)-' > "$RUNNER_TEMP/macos-subset.txt" || true
           [ -s "$RUNNER_TEMP/macos-subset.txt" ] || { echo "no workers files among the checks"; exit 0; }
           NIDHOGG_BUILD_NATIVE_PRELOADED=${{ steps.mode.outputs.preloaded == 'true' && '1' || '' }} /bin/bash nidhogg/build.sh --host --naglfar --stage check --jobs 3 --build-dir "$RUNNER_TEMP/build" --check "$RUNNER_TEMP/macos-subset.txt"
       - if: ${{ !cancelled() && hashFiles('dist/*.tar.xz') != '' }}

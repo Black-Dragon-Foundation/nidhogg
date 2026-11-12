@@ -50,6 +50,12 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef __linux__
 # include <sched.h>
 # include <sys/syscall.h>
+#endif
+#ifdef __APPLE__
+# include <mach/mach.h>
+# include <sys/sysctl.h>
+#endif
+#if defined __linux__ || defined __APPLE__
 # include <unistd.h>
 
 # include <fcntl.h>
@@ -57,6 +63,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 # include <stdlib.h>
 # include <string.h>
 #endif
+
+#include "nidhogg-cond.h"
 
 #include "nidhogg-watchdog.h"
 #include "nidhogg-watchdog-park.h"
@@ -106,13 +114,19 @@ nh_wd_publish_busy (uint64_t now)
     }
 }
 
-#ifdef __linux__
+#if defined __linux__ || defined __APPLE__
 
 static pthread_t nh_wd_mon_thread;
 static bool nh_wd_mon_running;	/* start and stop only */
 static bool nh_wd_mon_stop;	/* under nh_wd.m */
+#ifdef __linux__
 static pid_t nh_wd_mon_tid;	/* the monitor's task, for stop */
 static clockid_t nh_wd_main_cpu; /* the main thread's CPU clock */
+#else
+/* The main thread's Mach port (pthread_mach_thread_np: the thread's
+   own, not a new right, so it is never deallocated).  */
+static mach_port_t nh_wd_main_port;
+#endif
 /* Requests of armed_span that the handler never took (atomic).  */
 static uint32_t nh_wd_mon_missed;
 
@@ -128,14 +142,33 @@ nh_wd_clock_ns (clockid_t clock)
   return (uint64_t) ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
 
+/* The main thread's CPU time in ns (0 if it cannot be read).  macOS
+   has no clock for another thread: its Mach thread's user and system
+   time.  */
+static uint64_t
+nh_wd_main_cpu_ns (void)
+{
+#ifdef __linux__
+  return nh_wd_clock_ns (nh_wd_main_cpu);
+#else
+  thread_basic_info_data_t info;
+  mach_msg_type_number_t n = THREAD_BASIC_INFO_COUNT;
+  if (thread_info (nh_wd_main_port, THREAD_BASIC_INFO,
+		   (thread_info_t) &info, &n) != KERN_SUCCESS)
+    return 0;
+  return ((uint64_t) info.user_time.seconds + info.system_time.seconds)
+	  * 1000000000
+	  + ((uint64_t) info.user_time.microseconds
+	     + info.system_time.microseconds) * 1000;
+#endif
+}
+
 /* With nh_wd.m held: wait on the condition variable until DEADLINE
    (CLOCK_MONOTONIC ns), a stop, or a spurious wake-up.  */
 static void
 nh_wd_mon_sleep_until (uint64_t deadline)
 {
-  struct timespec ts = { .tv_sec = deadline / 1000000000,
-			 .tv_nsec = deadline % 1000000000 };
-  pthread_cond_timedwait (&nh_wd.cv, &nh_wd.m, &ts);
+  nh_cond_wait_until (&nh_wd.cv, &nh_wd.m, deadline);
 }
 
 /* Is span S still busy?  */
@@ -194,7 +227,7 @@ nh_wd_mon_watch (uint64_t s, uint64_t t0)
      acquire and uses the values only when it names its own span.  */
   __atomic_store_n (&nh_wd_mon_missed, 0, __ATOMIC_RELAXED);
   __atomic_store_n (&nh_wd.late_ns, now - deadline, __ATOMIC_RELAXED);
-  __atomic_store_n (&nh_wd.cpu_armed_ns, nh_wd_clock_ns (nh_wd_main_cpu),
+  __atomic_store_n (&nh_wd.cpu_armed_ns, nh_wd_main_cpu_ns (),
 		    __ATOMIC_RELAXED);
   __atomic_store_n (&nh_wd.mode, 0, __ATOMIC_RELAXED);
   __atomic_store_n (&nh_wd.armed_span, s, __ATOMIC_RELEASE);
@@ -314,8 +347,24 @@ nh_wd_read_small (const char *file, char *buf, size_t size)
 static void
 nh_wd_hang_start (void)
 {
-  char stat[1024], boot[64] = "";
+  char boot[64] = "";
   unsigned long long start = 0;
+#ifdef __APPLE__
+  /* The process's start time (microseconds since the epoch) and the
+     boot session's UUID, as /proc's start time and boot id are.  */
+  struct kinfo_proc kp;
+  size_t len = sizeof kp;
+  int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid () };
+  if (sysctl (mib, 4, &kp, &len, NULL, 0) == 0 && len == sizeof kp)
+    start = ((unsigned long long) kp.kp_proc.p_starttime.tv_sec * 1000000
+	     + kp.kp_proc.p_starttime.tv_usec);
+  size_t blen = sizeof boot - 1;
+  if (sysctlbyname ("kern.bootsessionuuid", boot, &blen, NULL, 0) == 0)
+    boot[blen < sizeof boot ? blen : sizeof boot - 1] = 0;
+  else
+    boot[0] = 0;
+#else
+  char stat[1024];
   if (nh_wd_read_small ("/proc/self/stat", stat, sizeof stat))
     {
       /* Field 22, counted after the command's closing parenthesis
@@ -330,6 +379,7 @@ nh_wd_hang_start (void)
     }
   if (nh_wd_read_small ("/proc/sys/kernel/random/boot_id", boot, sizeof boot))
     boot[strcspn (boot, "\n")] = 0;
+#endif
   snprintf (nh_wd_hang_ident, sizeof nh_wd_hang_ident,
 	    "pid %ld\nproc-start %llu\nboot-id %s\n",
 	    (long) getpid (), start, boot);
@@ -597,7 +647,12 @@ nh_wd_monitor_main (void *arg)
   uint64_t cpu_counted = 0;
   (void) arg;
 
+#ifdef __linux__
   nh_wd_mon_tid = syscall (SYS_gettid);
+#else
+  /* macOS names only the calling thread.  */
+  pthread_setname_np ("nh-watchdog");
+#endif
 
   pthread_mutex_lock (&nh_wd.m);
   while (!nh_wd_mon_stop)
@@ -653,20 +708,23 @@ nh_wd_monitor_start (void)
   nh_wd.main_id = pthread_self ();
   if (nh_wd.no_monitor || nh_wd_mon_running)
     return 0;
+#ifdef __linux__
   int err = pthread_getcpuclockid (nh_wd.main_id, &nh_wd_main_cpu);
   if (err)
     return err;
+#else
+  int err;
+  nh_wd_main_port = pthread_mach_thread_np (nh_wd.main_id);
+  if (nh_wd_main_port == MACH_PORT_NULL)
+    return ESRCH;
+#endif
   __atomic_store_n (&nh_wd.armed_span, UINT64_MAX, __ATOMIC_RELAXED);
   nh_wd_hang_start ();
 
   /* The waits are timed on CLOCK_MONOTONIC.  Nobody waits on the
      condition variable while the monitor is not running.  */
-  pthread_condattr_t attr;
-  pthread_condattr_init (&attr);
-  pthread_condattr_setclock (&attr, CLOCK_MONOTONIC);
   pthread_cond_destroy (&nh_wd.cv);
-  pthread_cond_init (&nh_wd.cv, &attr);
-  pthread_condattr_destroy (&attr);
+  nh_cond_init (&nh_wd.cv);
 
   /* The thread inherits a mask with every signal blocked.  */
   sigset_t all, old;
@@ -677,9 +735,11 @@ nh_wd_monitor_start (void)
   pthread_sigmask (SIG_SETMASK, &old, NULL);
   if (err)
     return err;
+#ifdef __linux__
   /* Named here, not by the thread itself, so the name is there when
      this returns.  */
   pthread_setname_np (nh_wd_mon_thread, "nh-watchdog");
+#endif
   nh_wd_mon_running = true;
   return 0;
 }
@@ -699,6 +759,7 @@ nh_wd_monitor_stop (void)
   pthread_join (nh_wd_mon_thread, NULL);
   nh_wd_mon_running = false;
   nh_wd_hang_stop ();
+#ifdef __linux__
   /* pthread_join returns once the thread's tid is cleared, a moment
      before the kernel drops the task from /proc/self/task; wait for
      that (a few yields), so no caller still sees it.  */
@@ -706,6 +767,7 @@ nh_wd_monitor_stop (void)
        i < 10000 && syscall (SYS_tgkill, getpid (), nh_wd_mon_tid, 0) == 0;
        i++)
     sched_yield ();
+#endif
 }
 
 /* Main thread, from `--stop' before it publishes waiting: the busy span
@@ -750,9 +812,9 @@ nh_wd_monitor_span_close (struct nh_wd_stall *st)
     }
 }
 
-#else  /* !__linux__ */
+#else  /* !(__linux__ || __APPLE__) */
 
-/* Not on this platform yet (macOS needs a run-loop observer).  */
+/* Not on this platform.  */
 
 int
 nh_wd_monitor_start (void)
@@ -776,7 +838,60 @@ nh_wd_monitor_span_close (struct nh_wd_stall *st)
   (void) st;
 }
 
-#endif /* !__linux__ */
+#endif /* !(__linux__ || __APPLE__) */
+
+/* The main run loop's sleeps (macOS, Naglfar): AppKit runs nested run
+   loops on the main thread while Lisp waits for them (a menu's
+   tracking, a modal panel, a live resize), and their sleeps are waits,
+   not a stall (nh_wd_runloop_sleep sorts out the ones inside Emacs's own
+   wait).  */
+
+#if defined __APPLE__ && defined HAVE_NHMAC
+
+#include <CoreFoundation/CoreFoundation.h>
+
+static CFRunLoopObserverRef nh_wd_rl_observer;
+
+static void
+nh_wd_rl_observe (CFRunLoopObserverRef o, CFRunLoopActivity activity,
+		  void *info)
+{
+  (void) o;
+  (void) info;
+  nh_wd_runloop_sleep (activity == kCFRunLoopBeforeWaiting);
+}
+
+void
+nh_wd_runloop_observe (bool on)
+{
+  if (on && !nh_wd_rl_observer)
+    {
+      nh_wd_rl_observer
+	= CFRunLoopObserverCreate (NULL, (kCFRunLoopBeforeWaiting
+					  | kCFRunLoopAfterWaiting
+					  | kCFRunLoopExit),
+				   true, 0, nh_wd_rl_observe, NULL);
+      if (nh_wd_rl_observer)
+	CFRunLoopAddObserver (CFRunLoopGetMain (), nh_wd_rl_observer,
+			      kCFRunLoopCommonModes);
+    }
+  else if (!on && nh_wd_rl_observer)
+    {
+      CFRunLoopObserverInvalidate (nh_wd_rl_observer);
+      CFRelease (nh_wd_rl_observer);
+      nh_wd_rl_observer = NULL;
+    }
+}
+
+#else
+
+void
+nh_wd_runloop_observe (bool on)
+{
+  (void) on;
+}
+
+#endif
 
 DEFUN ("nidhogg-watchdog--test-interleavings",
        Fnidhogg_watchdog__test_interleavings,
@@ -809,7 +924,7 @@ The waits keep the main thread busy (no responsive wait) and give up
 after 30 s.  Return t when a wait's condition was met, else nil.  */)
   (Lisp_Object hold)
 {
-#ifdef __linux__
+#if defined __linux__ || defined __APPLE__
   return nh_wd_test_hold_rename (hold);
 #else
   (void) hold;
