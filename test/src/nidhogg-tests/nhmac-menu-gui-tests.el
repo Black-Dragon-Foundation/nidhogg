@@ -121,6 +121,10 @@ a tree that lists it (and the shell's menu then shows it)."
                             (if listed (format "%.2f s after the filter" (- listed made)) "never")
                             nhmac-menu-delay (car (benchmark-run 1 (nhmac-menu-flatten-bar-with-paths)))
                             (reverse builds))
+          ;; round 4: built 0.42 s after the filter for a 0.3 s delay.  When the build was asked for and when its
+          ;; timer fired, by the clock and by idleness: idleness that started late, or a timer that fired late
+          (glitnir-gui--say "nhmac-menu-buffers-after-filter: filter at %.3f; timing (scheduled idle due fired idle) %S"
+                            made nhmac-menu--timing)
           (should listed)
           (should (< (- listed made) 0.5)))
       (advice-remove 'nhmac-menu-build watch)

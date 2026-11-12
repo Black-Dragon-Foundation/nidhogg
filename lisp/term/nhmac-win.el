@@ -401,6 +401,10 @@ needed."
 (defvar nhmac-menu--last nil "The flat vector the shell has.")
 (defvar nhmac-menu--timer nil "The one pending idle build, or nil.")
 (defvar nhmac-menu-delay 0.3 "Seconds of idleness before the deep build.")
+(defvar nhmac-menu--timing nil
+  "The newest idle build's timing, for tests: (SCHEDULED IDLE-THEN DUE FIRED IDLE-AT-FIRE).
+SCHEDULED and FIRED are `float-time' values, IDLE-THEN, DUE and
+IDLE-AT-FIRE seconds of idleness (nil when not idle).")
 
 (defun nhmac-menu-encode (vec)
   "VEC, a flat menu vector, as the text the shell reads: records of
@@ -433,6 +437,10 @@ A build allocates about 1 MB (a byte-compiled build of the default menu bar:
 `gc-cons-threshold' and collected twice in round 2's lane (0.16 s of a
 0.19 s build): no collection starts inside the build and its send, so the
 tree reaches the shell first and the next allocation after it collects."
+  (when (and nhmac-menu--timer (= (length nhmac-menu--timing) 3))
+    (setq nhmac-menu--timing
+          (append nhmac-menu--timing
+                  (list (float-time) (and (current-idle-time) (float-time (current-idle-time)))))))
   (setq nhmac-menu--timer nil)
   (when (and (fboundp 'nhmac--call) (display-graphic-p))
     (let* ((gc-cons-threshold (max gc-cons-threshold (* 8 1024 1024)))
@@ -450,9 +458,11 @@ tree reaches the shell first and the next allocation after it collects."
   "Schedule one deep rebuild `nhmac-menu-delay' after the idle time so far.
 More calls while one is pending change nothing."
   (unless nhmac-menu--timer
-    (setq nhmac-menu--timer
-          (run-with-idle-timer (time-add (or (current-idle-time) 0) nhmac-menu-delay)
-                               nil #'nhmac-menu-build))))
+    (let ((idle (and (current-idle-time) (float-time (current-idle-time)))))
+      (setq nhmac-menu--timing (list (float-time) idle (+ (or idle 0) nhmac-menu-delay))
+            nhmac-menu--timer
+            (run-with-idle-timer (time-add (or (current-idle-time) 0) nhmac-menu-delay)
+                                 nil #'nhmac-menu-build)))))
 
 (defun nhmac-menu--focus-changed ()
   "A frame gained or lost focus: build at once when one has it."
@@ -742,7 +752,7 @@ ON is non-nil, off when it is nil.  For tests."
   (nhmac--query 'test-entries (if on 1 0)))
 
 (defun nhmac--modal-alert (ms)
-  "Run a modal alert for MS milliseconds, then end it; return its rounds.
+  "Run a modal alert for MS milliseconds after its first round, then end it; return its rounds.
 A query that runs a modal session, for the pumps' tests."
   (nhmac--query 'modal-alert ms))
 
