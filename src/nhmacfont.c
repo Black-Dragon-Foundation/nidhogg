@@ -248,9 +248,26 @@ nhmac_query (Lisp_Object spec, bool all)
   return list;
 }
 
+/* The driver's cache.  When the installed fonts changed since the last
+   call (a font registered or removed while Emacs runs), its lists are
+   dropped first: Emacs keeps a driver's lists while a frame uses it, and
+   `clear-font-cache' clears only an unused driver's, so a list made
+   before the change would stand for good.  Only the lists go: an open
+   font stays with the faces that hold it.  */
 static Lisp_Object
 nhmacfont_get_cache (struct frame *f)
 {
+  static uint32_t seen;
+  uint32_t now = 0;
+
+  if (NHG (nhg_font_changes (&now)) == NHG_OK && now != seen)
+    {
+      seen = now;
+      /* Each entry is (TYPE NUM-FRAMES . LISTS).  */
+      for (Lisp_Object v = XCDR (nhmac_font_cache); CONSP (v); v = XCDR (v))
+	if (CONSP (XCAR (v)) && CONSP (XCDR (XCAR (v))))
+	  XSETCDR (XCDR (XCAR (v)), Qnil);
+    }
   return nhmac_font_cache;
 }
 

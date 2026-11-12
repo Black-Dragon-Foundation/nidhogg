@@ -71,8 +71,9 @@ ASCII and UTF-16BE, and its PostScript name (FAMILY without spaces) with it; the
 
 (ert-deftest nhmac-font-list-sees-a-font-installed-mid-session ()
   "A font registered while Emacs runs is listed without a restart: after Core Text's registered-fonts notification
-the driver lists its faces again (macfont drops its family cache then), so an unnamed `list-fonts' finds it once
-`clear-font-cache' drops Emacs's own lists."
+the driver lists its faces again (macfont drops its family cache then) and drops Emacs's own lists of its fonts
+\(which `clear-font-cache' keeps while a frame uses the driver: round 4 and 5 found the notification noted and the
+old list still served), so an unnamed `list-fonts' finds it."
   (skip-unless (nhmac-driver--naglfar-p))
   (let* ((src (seq-find (lambda (f) (file-exists-p (car f))) nhmac-driver--probe-fonts))
          (new (nth 2 src))

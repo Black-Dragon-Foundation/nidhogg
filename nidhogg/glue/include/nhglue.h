@@ -1259,6 +1259,8 @@ typedef struct
 } NhgShaped;
 
 int32_t nhg_font_start (const uint32_t *scripts, size_t len);
+/* How many times the installed fonts changed (Core Text's registered-fonts notifications; 0 off macOS) into *N.  */
+int32_t nhg_font_changes (uint32_t *n);
 int32_t nhg_font_open (uint64_t font_id, int32_t size, uint32_t flags, NhgFontMetrics *out);
 int32_t nhg_font_close (uint64_t handle);
 int32_t nhg_font_shape (uint64_t handle, const uint32_t *chars, size_t n, NhgShaped *out, size_t cap,
