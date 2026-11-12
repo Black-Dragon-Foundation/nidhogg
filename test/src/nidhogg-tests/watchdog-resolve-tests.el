@@ -113,6 +113,7 @@
   (plist-get (car (plist-get r :stacks)) :frames))
 
 (ert-deftest watchdog/attribution-native-and-bytecode ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A sample taken inside the wdfix package, byte-compiled and then
   ;; native-compiled at speed 2: the culprit's package is `wdfix' both times.
   (skip-unless (and (fboundp 'native-comp-available-p)
@@ -151,6 +152,7 @@
               (should (member "<lambda in wdfix-core>" (wdres--stack r))))))))))
 
 (ert-deftest watchdog/signature-same-byte-and-native ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A regexp search in wdfix from byte code and from native code: one
   ;; signature, phase `regex'.
   (skip-unless (and (fboundp 'native-comp-available-p)

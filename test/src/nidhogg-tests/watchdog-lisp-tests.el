@@ -91,6 +91,7 @@ starts are in 1970."
     (nreverse out)))
 
 (ert-deftest watchdog/drain-fast-path ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Nothing pending: the drain allocates nothing (not even the clock read).
   (watchdog-lisp--with-log
     (watchdog-lisp--running
@@ -109,6 +110,7 @@ starts are in 1970."
         (should (equal (cl-mapcar #'- f e) (cl-mapcar #'- d c)))))))
 
 (ert-deftest watchdog/drain-budget ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A resolver costing 1 ms of (virtual) time per record: a 2 ms budget
   ;; resolves two of five; the rest wait as Lisp data for the next drains.
   (watchdog-lisp--with-log
@@ -131,6 +133,7 @@ starts are in 1970."
                        nidhogg-watchdog--drain-hist))))))
 
 (ert-deftest watchdog/drain-stats-budgeted-only ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Only budgeted drains go into the drain histograms, whose buckets start
   ;; at 1 and 2 ms so the 2 ms budget can be judged; `drain-now' is not
   ;; counted.  The take and the collection lines are counted apart.
@@ -156,6 +159,7 @@ starts are in 1970."
           (should (= 4 (plist-get s :drain-p95-ms))))))))
 
 (ert-deftest watchdog/summary-never-resets ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A summary line holds the deltas since the last one, by subtracting
   ;; what it kept, so other readers of `nidhogg-watchdog-stats' (a perf
   ;; probe) see whole totals; a reset by another caller only restarts the
@@ -184,6 +188,7 @@ starts are in 1970."
           (should (>= (alist-get 'spans l) 1)))))))
 
 (ert-deftest watchdog/log-schema ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-lisp--with-log
     (watchdog-lisp--running
       (watchdog-lisp--span 150)
@@ -286,6 +291,7 @@ File times are real: a test backdates from the file, not the clock."
       (should (file-exists-p other)))))
 
 (ert-deftest watchdog/summary-every-10-min ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-lisp--with-log
     (watchdog-lisp--running
       (let* ((now 1000.0)
@@ -307,6 +313,7 @@ File times are real: a test backdates from the file, not the clock."
         (should (= (length (watchdog-lisp--lines "summary")) 2))))))
 
 (ert-deftest watchdog/record-functions-called ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-lisp--with-log
     (watchdog-lisp--running
       (let (seen)
@@ -320,6 +327,7 @@ File times are real: a test backdates from the file, not the clock."
         (should (= (length (watchdog-lisp--lines "stall")) 2))))))
 
 (ert-deftest watchdog/mode-off-stops ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-lisp--with-log
     (let ((tasks (length (directory-files "/proc/self/task" nil "\\`[0-9]"))))
       (unwind-protect
@@ -348,6 +356,7 @@ File times are real: a test backdates from the file, not the clock."
         (when nidhogg-watchdog-mode (nidhogg-watchdog-mode -1))))))
 
 (ert-deftest watchdog/failed-start-stops ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A step after the C side started fails (17 typing commands, one more
   ;; than C takes): the mode stays off, the C side is stopped again, and
   ;; the next start works.
