@@ -1453,9 +1453,12 @@ impl ShellBackend for MacShell {
                 nsapp::warp(n[0] as f64, n[1] as f64);
                 Ok(())
             }
-            // "(WINDOW OTHER ABOVE)"
+            // "(WINDOW OTHER ABOVE)": a child frame is a layer, restacked among its siblings (`kid_stack`)
             "restack" => {
                 let (n, _) = crate::menu::split_numbers(arg, 3).ok_or(ShellError::Arg)?;
+                if self.kids.contains_key(&(n[0] as WindowId)) {
+                    return self.kid_stack(n[0] as WindowId, n[1] as WindowId, n[2] == 1);
+                }
                 let other = self.win(n[1] as WindowId)?.window.clone();
                 nsapp::restack(&self.win(n[0] as WindowId)?.window, &other, n[2] == 1);
                 Ok(())
