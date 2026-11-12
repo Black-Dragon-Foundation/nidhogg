@@ -1285,16 +1285,24 @@ none of its commits (bounded)."
   (nhmac-gui--wait-unheld 1)
   (plist-get (nhmac--test-surface x y) :pixel))
 
+(defun nhmac-gui--draw-px (n)
+  "N logical pixels as the selected frame's device pixels (its window's scale, rounded)."
+  (round (* n (plist-get (nhmac--test-surface 0 0) :scale))))
+
 (defun nhmac-gui--draw-scene ()
-  "A buffer of three 12-pixel stretches: plain #336699, boxed in #ff0000 (3 pixels), then #ffffff; drawn.
-Returns the frame position of the first stretch's top left."
+  "A buffer of three stretches 12 logical pixels wide: plain #336699, boxed in #ff0000 (3 pixels), then #ffffff;
+drawn.  A box's line widths are logical pixels (xfaces.c scales them by the frame's scale) while a stretch's
+`:width' is device pixels, so the stretches are given in device pixels at the scale: at scale 2 a 12-pixel stretch
+with two 6-pixel lines has no inside left (round 2's red at s2).  Returns the frame position of the first stretch's
+top left."
   (switch-to-buffer (generate-new-buffer " *nhmac-draw*"))
   (setq-local cursor-type nil)
-  (insert (propertize " " 'display '(space :width (12)) 'face '(:background "#336699"))
-          (propertize " " 'display '(space :width (12))
-                      'face '(:background "#336699" :box (:line-width 3 :color "#ff0000")))
-          (propertize " " 'display '(space :width (12)) 'face '(:background "#ffffff"))
-          "\n")
+  (let ((w `(space :width (,(nhmac-gui--draw-px 12)))))
+    (insert (propertize " " 'display w 'face '(:background "#336699"))
+            (propertize " " 'display w
+                        'face '(:background "#336699" :box (:line-width 3 :color "#ff0000")))
+            (propertize " " 'display w 'face '(:background "#ffffff"))
+            "\n"))
   (redraw-frame)
   (redisplay t)
   (let ((xy (posn-x-y (posn-at-point (point-min))))
@@ -1341,10 +1349,10 @@ colours, tolerance 0 for fills and box lines."
                                   (if (and out (= (caar out) c)) (cl-incf (cdar out)) (push (cons c 1) out))))
                     (mapcar (lambda (r) (format "#x%06x x%d" (car r) (cdr r))) (nreverse out))))))
       (nhmac-gui--say "nhmac-draw-fills-boxes-cursors: row y+h/2 from x: surface %S; backing %S; stretches at %S"
-                      (funcall runs (nhmac-gui--surface-rect x (+ y (/ h 2)) 40 1))
+                      (funcall runs (nhmac-gui--surface-rect x (+ y (/ h 2)) (nhmac-gui--draw-px 40) 1))
                       (condition-case err
                           (pcase-let ((`(,w ,_ ,bytes) (glitnir-snapshot nil 'raw)))
-                            (funcall runs (vconcat (cl-loop for i from 0 below 40
+                            (funcall runs (vconcat (cl-loop for i from 0 below (nhmac-gui--draw-px 40)
                                                             for o = (* 4 (+ (* (+ y (/ h 2)) w) x i))
                                                             collect (logior (ash (aref bytes (+ o 2)) 16)
                                                                             (ash (aref bytes (1+ o)) 8)
@@ -1353,19 +1361,19 @@ colours, tolerance 0 for fills and box lines."
                       (mapcar (lambda (pos) (car (posn-x-y (posn-at-point pos)))) '(1 2 3 4))))
     (should (> (plist-get (nhmac-stats) :draws) 0))
     ;; the plain stretch's middle
-    (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff336699))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 6)) (+ y (/ h 2))) #xff336699))
     ;; the boxed stretch: its top line, then its inside
-    (should (= (nhmac-gui--pixel-at (+ x 18) (+ y 1)) #xffff0000))
-    (should (= (nhmac-gui--pixel-at (+ x 18) (+ y (/ h 2))) #xff336699))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 18)) (+ y 1)) #xffff0000))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 18)) (+ y (/ h 2))) #xff336699))
     ;; the white stretch
-    (should (= (nhmac-gui--pixel-at (+ x 30) (+ y (/ h 2))) #xffffffff))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 30)) (+ y (/ h 2))) #xffffffff))
     ;; a bar cursor 4 pixels wide in the cursor colour, at the white stretch (the trace from here)
     (nhmac--pump-trace)
     (set-face-background 'cursor "#00ff00")
     (setq-local cursor-type '(bar . 4))
     (goto-char (+ (point-min) 2))
     (redisplay t)
-    (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xff00ff00))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 25)) (+ y (/ h 2))) #xff00ff00))
     ;; and gone again: the stretch's own colour where it was; the trace names both publishes and their damage
     (let ((draws (plist-get (nhmac-stats) :draws)))
       (setq-local cursor-type nil)
@@ -1374,7 +1382,7 @@ colours, tolerance 0 for fills and box lines."
       (redisplay t)
       (setq draws (- (plist-get (nhmac-stats) :draws) draws))
       (ert-info ((format "pump decisions %S, %d draws, surface %S" (nhmac--pump-trace) draws (nhmac-gui--surface)))
-        (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xffffffff)))))
+        (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 25)) (+ y (/ h 2))) #xffffffff)))))
   (kill-buffer))
 
 (ert-deftest nhmac-draw-other-thread ()
@@ -1397,7 +1405,7 @@ colours, tolerance 0 for fills and box lines."
     ;; the main thread's pump commits it
     (sit-for 0.1)
     (should (eq (plist-get (nhmac-gui--surface) :contents-is-newest) t))
-    (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff00ff00)))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 6)) (+ y (/ h 2))) #xff00ff00)))
   (kill-buffer))
 
 ;; Core Text text, judged on Core Text's own answers
