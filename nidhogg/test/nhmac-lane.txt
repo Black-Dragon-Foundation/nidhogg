@@ -1,0 +1,21 @@
+# The macOS GUI lane's file set and order (nidhogg/test/nhmac-gui.sh reads it).  A line is one of:
+#   fresh ROW         ROW runs alone in a fresh Emacs, before every file's rows: the timing and heap rows, which
+#                     measure GC and redisplay cost and must not inherit what earlier rows left live
+#   files GLOB...     the files of the lane's main session, in this order (each glob's files sorted); their rows run
+#                     by file, then by name (gui-runner.el), the fresh rows left out
+# A file that matches no line is not run: a new nhmac-*gui-tests.el is added here, in its place.
+fresh nhmac-key-stages
+fresh nhmac-key-to-commit
+fresh nhmac-cjk-emoji-scroll
+fresh nhmac-cpu-per-key
+fresh nhmac-blur-typing
+files glitnir-nhmac-gui-tests.el
+files nhmac-gui-tests.el
+files nhmac-ns-gui-tests.el nhmac-window-gui-tests.el nhmac-resize-gui-tests.el nhmac-keys-gui-tests.el
+files nhmac-ime-gui-tests.el nhmac-menu-gui-tests.el nhmac-pasteboard-gui-tests.el nhmac-dnd-gui-tests.el
+files nhmac-ax-gui-tests.el nhmac-lifecycle-gui-tests.el nhmac-app-gui-tests.el
+# the backend-neutral files of the Wayland lane: their rows that need the Wayland shell's scene tree or the recorder
+# skip with the reason (glitnir-gui-tests.el, glitnir-faces-gui-tests.el's fixture rows).  Not the recorder-driven
+# nhwl-gui-*.el, glitnir-effects-gui-tests.el or glitnir-decor-gui-tests.el
+files glitnir-gui-tests.el glitnir-faces-gui-tests.el margin-mouse-face-gui-tests.el mouse-sensor-gui-tests.el
+files stock-fix-gui-tests.el

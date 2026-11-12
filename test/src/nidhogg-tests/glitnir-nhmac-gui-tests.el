@@ -197,6 +197,27 @@ root's white, and a pixel just inside the curve at 45° is not the child's colou
              (should (nhmac-gui--far on-curve #xff00ff 64)))
          (delete-frame c t))))))
 
+(ert-deftest glitnir-nhmac/ring-outside-the-child ()
+  "A child frame's `ring' is a line one point wide just outside its edge, as Glitnir's compositor draws it: the pixel
+above the middle of the child's top edge is the ring's colour, and past the ring the root's white shows."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let ((c (glitnir-nhmac--chromed '((shadow . nil) (ring . ("#ff0000" . 1.0))))))
+       (unwind-protect
+           (let* ((s (glitnir-nhmac--scale))
+                  (img (glitnir-nhmac--grab "ring"))
+                  (b (glitnir-nhmac--box img #xff00ff))
+                  (x (/ (+ (nth 0 b) (nth 2 b)) 2))
+                  (rw (max 1 (round s)))
+                  (on (glitnir-nhmac--px img x (- (nth 1 b) 1)))
+                  (past (glitnir-nhmac--px img x (- (nth 1 b) rw 2))))
+             (nhmac-gui--say "glitnir-nhmac/ring-outside-the-child: box %S, ring %06x, past it %06x" b on past)
+             (should-not (nhmac-gui--far on #xff0000 24))
+             (should-not (nhmac-gui--far past #xffffff 24)))
+         (delete-frame c t))))))
+
 (ert-deftest nhmac-resize-shadow-renders ()
   "A chromed child resized five times renders no shadow image (the nine-slice image stretches): `:shadow-renders' 0,
 while its shadow layer's frame follows each size.  The child is first made large enough for the image to stretch at
@@ -307,6 +328,8 @@ it), and no animation outlives it."
           (progn
             (make-frame-visible c)
             (redisplay t)
+            ;; the wait that commits what the redisplay published (the commit is off the redisplay path)
+            (accept-process-output nil 0.001)
             (let ((before (nhmac-stats)))
               ;; idle through the leg, the wait turning the run loop as Emacs's does
               (nhmac-gui--idle-until #'ignore 0.5)
@@ -393,16 +416,12 @@ into the root's layer once the blur is off."
           (should-not (plist-get i :blur)))
       (delete-frame c t))))
 
-(ert-deftest nhmac-blur-pair ()
-  "Typing under a blurred child, timed in the process: 50 typed keys, each a command and a redisplay, written to
-GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line), and the same with the blur off, logged.  Both builds run
-it in turn (--pair, ABAB); nidhogg/test/nhmac-pair.sh --row nhmac-blur-pair compares the pairs: not slower than NS's
-blurred child."
-  :tags '(draws)
-  (let* ((build (if (nhmac-gui--ns-build-p) "ns" "naglfar"))
-         (file (expand-file-name (format "pair-%s.txt" build)
-                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
-         (c (nhmac-gui--child '((alpha-background . 0.6) (backdrop-blur . 12) (corner-radius . 12)
+(ert-deftest nhmac-blur-typing ()
+  "Typing under a blurred child, timed in the process: 50 typed keys, each a command, a redisplay and its commit.  The
+bar is drgnx's typing budget: p95 under 16 ms, max under 50 ms.  The same keys with the blur off are logged beside it."
+  :tags '(draws timing)
+  (nhmac-gui--timing-build)
+  (let* ((c (nhmac-gui--child '((alpha-background . 0.6) (backdrop-blur . 12) (corner-radius . 12)
                                 (width . 30) (height . 8))
                               80 120))
          (time-keys (lambda ()
@@ -417,7 +436,7 @@ blurred child."
          on off)
     (unwind-protect
         (progn
-          (switch-to-buffer (generate-new-buffer " *nhmac-blur-pair*"))
+          (switch-to-buffer (generate-new-buffer " *nhmac-blur*"))
           (insert "typing under a blurred child")
           (redisplay t)
           (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
@@ -426,12 +445,8 @@ blurred child."
           (glitnir-refresh c)
           (redisplay t)
           (setq off (funcall time-keys))
-          (nhmac-gui--say "nhmac-blur-pair: %s median %d us blurred, %d us without" build
-                          (funcall median on) (funcall median off))
-          (with-temp-buffer
-            (dolist (us on) (insert (format "%d\n" us)))
-            (write-region (point-min) (point-max) file t 'silent))
-          (should (file-exists-p file)))
+          (nhmac-gui--say "nhmac-blur-typing: median %d us blurred, %d us without" (funcall median on) (funcall median off))
+          (nhmac-gui--within-budget "nhmac-blur-typing" on 16 50))
       (kill-buffer)
       (delete-frame c t))))
 
@@ -710,16 +725,21 @@ the window's; without the card the corner is the window's."
                        (and b (mapcar (lambda (c) (format "%06x" (glitnir-nhmac--px img (car c) (cdr c))))
                                       (list (cons (nth 0 b) (nth 1 b)) (cons (nth 2 b) (nth 1 b))))))
        (should b)
-       ;; the card's bounding box is the window's: its corner pixels are outside the rounded shape, the gap's
-       (dolist (c (list (cons (nth 0 b) (nth 1 b)) (cons (nth 2 b) (nth 1 b))
-                        (cons (nth 0 b) (nth 3 b)) (cons (nth 2 b) (nth 3 b))))
+       ;; the card's bounding box is the window's: its corner pixels are outside the rounded shape, the gap's.  Each
+       ;; is read two device pixels in (still outside the arc, radius 10 points): the left window's left edge is the
+       ;; frame's, and the window server tints a window's outermost device pixel (its rim: the gap #20a040 shows as
+       ;; #36a953 there at either scale) and, near the window's own rounded bottom corners, the one inside it too
+       (dolist (c (list (cons (+ (nth 0 b) 2) (+ (nth 1 b) 2)) (cons (- (nth 2 b) 2) (+ (nth 1 b) 2))
+                        (cons (+ (nth 0 b) 2) (- (nth 3 b) 2)) (cons (- (nth 2 b) 2) (- (nth 3 b) 2))))
          (should (equal (list c (nhmac-gui--far (glitnir-nhmac--px img (car c) (cdr c)) glitnir-nhmac--gap 8))
                         (list c nil))))
        (should-not (nhmac-gui--far (glitnir-nhmac--px img (+ (nth 0 b) r) (nth 1 b)) glitnir-nhmac--card-bg 8))
        (set-window-parameter left 'corner-radius nil)
        (glitnir-nhmac--cards t)
+       ;; read two pixels in, as above: the rim tints the corner pixel itself (#f2dca9 for the card's #f0d8a0)
        (let ((img2 (glitnir-nhmac--grab "card-corner-off")))
-         (should-not (nhmac-gui--far (glitnir-nhmac--px img2 (nth 0 b) (nth 1 b)) glitnir-nhmac--card-bg 8)))))))
+         (should-not (nhmac-gui--far (glitnir-nhmac--px img2 (+ (nth 0 b) 2) (+ (nth 1 b) 2))
+                                     glitnir-nhmac--card-bg 8)))))))
 
 (ert-deftest glitnir-nhmac/card-shadow-only-in-gap ()
   "The look's card leaves the other window's pixels as they are without it; the gap beside the card is darker."
@@ -766,6 +786,84 @@ the window's; without the card the corner is the window's."
            (nhmac-gui--say "nhmac-cards-typing-no-change: %S -> %S" c1 c2)
            (should (equal c1 c2))))))))
 
+(defconst glitnir-nhmac--block-ring #xff0000 "A block's ring: a colour no other row shows.")
+
+(defun glitnir-nhmac--ring-on (w)
+  "Give window W, whose buffer has at least five lines, a ring block around its lines 2 to 4; return their height.
+The line count is the default line height times 3 (no line spacing in the rows)."
+  (with-current-buffer (window-buffer w)
+    (let ((s (save-excursion (goto-char (point-min)) (forward-line 1) (point-marker)))
+          (e (save-excursion (goto-char (point-min)) (forward-line 4) (point-marker))))
+      (set-window-parameter w 'glitnir-blocks
+                            `((ring ,s ,e :radius 6 :ring (,(glitnir-nhmac--hex glitnir-nhmac--block-ring) . 1)
+                                    :beneath ,(glitnir-nhmac--hex glitnir-nhmac--gap))))
+      (* 3 (frame-char-height (window-frame w))))))
+
+(defun glitnir-nhmac--ring-check (row img bg height w)
+  "Assert that IMG shows the block ring inside the box of background BG (window W's, as IMG shows it), from its text
+area's left edge to the box's right within 3 pixels, below its first line, HEIGHT device pixels tall within 3; ROW
+names it."
+  (let ((r (glitnir-nhmac--box img glitnir-nhmac--block-ring))
+        (box (glitnir-nhmac--box img bg))
+        ;; the text area's left edge in the window (its left margin and fringe)
+        (inset (- (nth 0 (window-body-pixel-edges w)) (nth 0 (window-pixel-edges w)))))
+    (nhmac-gui--say "%s: ring %S in %S, text area %d px in, rows %d px" row r box inset height)
+    (should (and r box))
+    (should (<= (abs (- (nth 0 r) (+ (nth 0 box) inset))) 3))
+    (should (<= (abs (- (nth 2 r) (nth 2 box))) 3))
+    (should (> (nth 1 r) (nth 1 box)))
+    (should (<= (nth 3 r) (nth 3 box)))
+    (should (<= (abs (- (1+ (- (nth 3 r) (nth 1 r))) height)) 3))))
+
+(ert-deftest nhmac-blocks-drawn-like-cards ()
+  "A window's ring block shows on the screen around its rows, as one image over the frame's pixels next to its
+cards; a child frame's window's ring shows the same way, on the child; each goes with its parameter."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-cards
+   nil
+   (lambda (left _right)
+     (with-current-buffer (window-buffer left) (dotimes (i 8) (insert (format "line %d\n" i))))
+     (let ((h (glitnir-nhmac--ring-on left)))
+       (should (= (length (plist-get (glitnir-nhmac--cards t) :cards)) 1))
+       (glitnir-nhmac--ring-check 'nhmac-blocks-drawn-like-cards (glitnir-nhmac--grab "block-ring")
+                                  glitnir-nhmac--card-bg h left)
+       (set-window-parameter left 'glitnir-blocks nil)
+       (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
+       (should-not (glitnir-nhmac--box (glitnir-nhmac--grab "block-ring-gone") glitnir-nhmac--block-ring))))))
+
+(ert-deftest nhmac-blocks-drawn-on-a-child-frame ()
+  "A child frame's window with a ring block: the child's own layers show the ring, inside the child on the screen;
+the root has no block image."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((child (nhmac-gui--child '((width . 30) (height . 8)) 80 200))
+         (w (frame-root-window child)))
+    (unwind-protect
+        (progn
+          (with-current-buffer (window-buffer w)
+            (erase-buffer)
+            (dotimes (i 7) (insert (format "line %d\n" i))))
+          (let ((h (glitnir-nhmac--ring-on w)))
+            (force-window-update)
+            (redisplay t)
+            (nhmac-gui--settle)
+            (let ((cards (nhmac--test-cards child)))
+              (nhmac-gui--say "nhmac-blocks-drawn-on-a-child-frame: child cards %S, root cards %S"
+                              cards (nhmac--test-cards))
+              (should (= (length (plist-get cards :cards)) 1))
+              (should (null (plist-get (nhmac--test-cards) :cards)))
+              (glitnir-nhmac--ring-check 'nhmac-blocks-drawn-on-a-child-frame
+                                         (glitnir-nhmac--grab "block-ring-child") #xff00ff h w)))
+          (set-window-parameter w 'glitnir-blocks nil)
+          (force-window-update)
+          (redisplay t)
+          (nhmac-gui--settle)
+          (should (null (plist-get (nhmac--test-cards child) :cards))))
+      (with-current-buffer (window-buffer w) (erase-buffer))
+      (delete-frame child)
+      (nhmac-gui--settle))))
+
 (ert-deftest glitnir-nhmac/card-removed-no-residue ()
   "A card that goes leaves the screen as it was before it came, and the root has no card layers."
   :tags '(draws)
@@ -805,10 +903,11 @@ colour."
                   (img (glitnir-nhmac--grab "card-theme"))
                   (b (glitnir-nhmac--box img glitnir-nhmac--card-bg)))
              (nhmac-gui--say "nhmac-cards-theme-switch: images %d -> %d, corner %06x" n (plist-get c :images)
-                             (if b (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) 0))
+                             (if b (glitnir-nhmac--px img (+ (nth 0 b) 2) (+ (nth 1 b) 2)) 0))
              (should (> (plist-get c :images) n))
              (should b)
-             (should-not (nhmac-gui--far (glitnir-nhmac--px img (nth 0 b) (nth 1 b)) new 8)))
+             ;; two pixels in, inside the window server's rim (as glitnir-nhmac/card-corner-shows-gap)
+             (should-not (nhmac-gui--far (glitnir-nhmac--px img (+ (nth 0 b) 2) (+ (nth 1 b) 2)) new 8)))
          (disable-theme 'glitnir-nhmac-test)
          (set-face-foreground 'window-divider face (selected-frame)))))))
 
@@ -887,3 +986,626 @@ colour."
           (should-not (glitnir--chrome-vector f))
           (should (= (length (nhwl-glue-panics)) panics)))
       (delete-frame f t))))
+
+;;; P5's remaining rows (Task 35).  The pair of windows P5 checked is one container in the parent's layer here: the
+;;; content, and below it (sublayer 0) the shadow layer, whose frame is read back in process (`nhmac--test-child');
+;;; the stacking order is the containers' `:index' among their parent's sublayers.
+
+(defun glitnir-nhmac--scale-env ()
+  "The display scale the lane asked for (GLITNIR_GUI_SCALE)."
+  (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
+
+(defun glitnir-nhmac--info-until (frame pred)
+  "Settle, wait (5 s at most) until PRED holds of FRAME's `nhmac--test-child', and return it."
+  (nhmac-gui--settle)
+  (nhmac-gui--idle-until (lambda () (funcall pred (nhmac--test-child frame))) 5)
+  (nhmac--test-child frame))
+
+(defun glitnir-nhmac--layer-problem (frame &optional hidden)
+  "Nil when FRAME's layers are as its chrome asks, else what is wrong.
+Shown: a shadow layer with an image, below the content in the container (sublayer 0) and around it: starting at or
+before the content's corner and reaching past its far sides.  HIDDEN: the container is hidden, with the shadow layer
+still below the content in it, so the two go together."
+  (let* ((i (nhmac--test-child frame)) (sh (plist-get i :shadow)) (fr (plist-get sh :frame)))
+    (cond ((and hidden (not (plist-get i :hidden))) (list "the container is not hidden" i))
+          ((and (not hidden) (plist-get i :hidden)) (list "the container is hidden" i))
+          ((/= (plist-get i :shadow-index) 0) (list "the shadow layer is not below the content" i))
+          (hidden nil)
+          ((null sh) (list "no shadow layer" i))
+          ((not (eq (plist-get sh :image) t)) (list "the shadow layer has no image" i))
+          ((not (and (< (nth 0 fr) 0) (< (nth 1 fr) 0)
+                     (> (+ (nth 0 fr) (nth 2 fr)) (plist-get i :w))
+                     (> (+ (nth 1 fr) (nth 3 fr)) (plist-get i :h))))
+           (list "the shadow layer does not surround the content" i)))))
+
+(defun glitnir-nhmac--layers-settled (frame &optional hidden)
+  "Settle, wait (5 s at most) for FRAME's layers to hold, and return what is still wrong with them, or nil."
+  (nhmac-gui--settle)
+  (nhmac-gui--idle-until (lambda () (null (glitnir-nhmac--layer-problem frame hidden))) 5)
+  (glitnir-nhmac--layer-problem frame hidden))
+
+(defun glitnir-nhmac--order (frames)
+  "FRAMES in their parent's layer order, bottom to top."
+  (sort (copy-sequence frames)
+        (lambda (a b) (< (plist-get (nhmac--test-child a) :index) (plist-get (nhmac--test-child b) :index)))))
+
+(defun glitnir-nhmac--ordered (frames)
+  "Settle, wait (5 s at most) until the layers stack FRAMES in that order, bottom to top; return their order."
+  (nhmac-gui--settle)
+  (nhmac-gui--idle-until (lambda () (equal (glitnir-nhmac--order frames) frames)) 5)
+  (glitnir-nhmac--order frames))
+
+(ert-deftest glitnir-nhmac/runner-smoke ()
+  "The lane's own proof: the frame is at the scale the lane asked for, and a capture has the screen's pixels."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (should (< (abs (- (frame-scale-factor) (glitnir-nhmac--scale-env))) 0.001))
+  (pcase-let ((`(,w ,h ,px) (glitnir-nhmac--grab "smoke")))
+    (nhmac-gui--say "glitnir-nhmac/runner-smoke: capture %dx%d, frame %dx%d at scale %s" w h
+                    (frame-pixel-width) (frame-pixel-height) (frame-scale-factor))
+    (should (> w 0))
+    (should (> h 0))
+    (should (<= w (* 900 (glitnir-nhmac--scale-env))))
+    (should (= (length px) (* w h)))))
+
+(ert-deftest glitnir-nhmac/layers-list-the-children ()
+  "Each child frame without chrome is a container in its parent's layer, with a position and a size and no panel,
+shadow or blur, and the containers stack in the order the frames were made."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((a (nhmac-gui--child nil 40 40)) (b (nhmac-gui--child nil 120 80)))
+    (unwind-protect
+        (let ((ia (nhmac--test-child a)) (ib (nhmac--test-child b)))
+          (nhmac-gui--say "glitnir-nhmac/layers-list-the-children: %S %S" ia ib)
+          (dolist (i (list ia ib))
+            (should (eq (plist-get i :host) 'parent))
+            (should (cl-every #'numberp (mapcar (lambda (k) (plist-get i k)) '(:x :y :w :h))))
+            (should (> (plist-get i :w) 0))
+            (should (> (plist-get i :h) 0))
+            (should-not (plist-get i :shadow))
+            (should-not (plist-get i :panel))
+            (should-not (plist-get i :blur)))
+          (should (>= (plist-get ia :index) 0))
+          (should (< (plist-get ia :index) (plist-get ib :index))))
+      (delete-frame b t)
+      (delete-frame a t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-move ()
+  "A chromed child moved by `set-frame-position' and by its `left' and `top' parameters keeps its shadow layer
+below the content and around it, and its container goes with it."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((c (glitnir-nhmac--chromed)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled c))
+          (let ((x0 (plist-get (nhmac--test-child c) :x)))
+            (set-frame-position c 160 200)
+            (should (> (plist-get (glitnir-nhmac--info-until c (lambda (i) (> (plist-get i :x) x0))) :x) x0))
+            (should-not (glitnir-nhmac--layers-settled c))
+            (modify-frame-parameters c '((left . 40) (top . 180)))
+            (should (< (plist-get (glitnir-nhmac--info-until c (lambda (i) (< (plist-get i :x) x0))) :x) x0))
+            (should-not (glitnir-nhmac--layers-settled c))))
+      (delete-frame c t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-resize ()
+  "A chromed child made larger and then smaller keeps its shadow layer around its content as the container's size
+follows."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((c (glitnir-nhmac--chromed)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled c))
+          (let ((w0 (plist-get (nhmac--test-child c) :w)))
+            (set-frame-size c 50 12)
+            (should (> (plist-get (glitnir-nhmac--info-until c (lambda (i) (> (plist-get i :w) w0))) :w) w0))
+            (should-not (glitnir-nhmac--layers-settled c))
+            (set-frame-size c 200 90 t)
+            (should (< (plist-get (glitnir-nhmac--info-until c (lambda (i) (< (plist-get i :w) w0))) :w) w0))
+            (should-not (glitnir-nhmac--layers-settled c))))
+      (delete-frame c t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-raise ()
+  "Raising a chromed child over its sibling and back reorders the containers, each keeping its shadow layer."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((a (glitnir-nhmac--chromed nil 80 200)) (b (glitnir-nhmac--chromed nil 160 260)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled a))
+          (should-not (glitnir-nhmac--layers-settled b))
+          (should (equal (glitnir-nhmac--ordered (list a b)) (list a b)))
+          (raise-frame a)
+          (should (equal (glitnir-nhmac--ordered (list b a)) (list b a)))
+          (should-not (glitnir-nhmac--layers-settled a))
+          (should-not (glitnir-nhmac--layers-settled b))
+          (raise-frame b)
+          (should (equal (glitnir-nhmac--ordered (list a b)) (list a b)))
+          (should-not (glitnir-nhmac--layers-settled a))
+          (should-not (glitnir-nhmac--layers-settled b)))
+      (delete-frame b t)
+      (delete-frame a t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-order-back ()
+  "Lowering the upper of two chromed children puts its container below the other, each keeping its shadow layer."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((a (glitnir-nhmac--chromed nil 80 200)) (b (glitnir-nhmac--chromed nil 160 260)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled b))
+          (lower-frame b)
+          (should (equal (glitnir-nhmac--ordered (list b a)) (list b a)))
+          (should-not (glitnir-nhmac--layers-settled a))
+          (should-not (glitnir-nhmac--layers-settled b)))
+      (delete-frame b t)
+      (delete-frame a t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-restack ()
+  "`frame-restack' of a chromed child below and above a sibling puts its container right there, every child keeping
+its shadow layer."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((a (glitnir-nhmac--chromed nil 80 200)) (b (glitnir-nhmac--chromed nil 160 260))
+         (c (glitnir-nhmac--chromed nil 240 320)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled c))
+          (frame-restack c a)             ; c below a
+          (should (equal (glitnir-nhmac--ordered (list c a b)) (list c a b)))
+          (dolist (f (list a b c)) (should-not (glitnir-nhmac--layers-settled f)))
+          (frame-restack c a t)           ; c above a
+          (should (equal (glitnir-nhmac--ordered (list a c b)) (list a c b)))
+          (dolist (f (list a b c)) (should-not (glitnir-nhmac--layers-settled f))))
+      (delete-frame c t)
+      (delete-frame b t)
+      (delete-frame a t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-z-group ()
+  "A chromed child put in the `above' z-group and out of it keeps its shadow layer."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((c (glitnir-nhmac--chromed)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled c))
+          (set-frame-parameter c 'z-group 'above)
+          (should-not (glitnir-nhmac--layers-settled c))
+          (set-frame-parameter c 'z-group nil)
+          (should-not (glitnir-nhmac--layers-settled c)))
+      (delete-frame c t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-hide-show ()
+  "A chromed child hidden and shown three times: hidden, its container is hidden with the shadow layer still below
+the content in it; shown, the layers are whole again."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((c (glitnir-nhmac--chromed)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled c))
+          (dotimes (_ 3)
+            (make-frame-invisible c t)
+            (should-not (glitnir-nhmac--layers-settled c t))
+            (make-frame-visible c)
+            (should-not (glitnir-nhmac--layers-settled c))))
+      (delete-frame c t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-parent-move ()
+  "Moving the root frame leaves a chromed child's container where it was in the root's layer, with its shadow layer."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((root (selected-frame)) (pos (frame-position root)) (c (glitnir-nhmac--chromed)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled c))
+          (let* ((i0 (nhmac--test-child c)) (at (list (plist-get i0 :x) (plist-get i0 :y))))
+            (set-frame-position root (+ (car pos) 30) (+ (cdr pos) 20))
+            (nhmac-gui--settle)
+            (let ((i (nhmac--test-child c)))
+              (should (equal (list (plist-get i :x) (plist-get i :y)) at)))
+            (should-not (glitnir-nhmac--layers-settled c))))
+      (set-frame-position root (car pos) (cdr pos))
+      (nhmac-gui--settle)
+      (delete-frame c t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-reparent ()
+  "A chromed child given another child frame as its parent and then the root again keeps its shadow layer, and no
+window of the window server comes of it."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((root (selected-frame)) (n (length (nhmac--test-windows)))
+         (p (nhmac-gui--child '((width . 70) (height . 25) (background-color . "#ffff00")) 10 10))
+         (c (glitnir-nhmac--chromed)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled c))
+          (set-frame-parameter c 'parent-frame p)
+          (should (eq (frame-parent c) p))
+          (should-not (glitnir-nhmac--layers-settled c))
+          (set-frame-parameter c 'parent-frame root)
+          (should (eq (frame-parent c) root))
+          (should-not (glitnir-nhmac--layers-settled c))
+          (should (nhmac-gui--windows-become n)))
+      (delete-frame c t)
+      (delete-frame p t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-undecorated-toggle ()
+  "A child frame made decorated has no chrome (no shadow layer; Glitnir reads none), and undecorated again it has its
+shadow layer once more."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((c (glitnir-nhmac--chromed)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled c))
+          (set-frame-parameter c 'undecorated nil)
+          (nhmac-gui--settle)
+          (should (nhmac-gui--idle-until
+                   (lambda () (condition-case nil (null (plist-get (nhmac--test-child c) :shadow)) (error nil)))
+                   5))
+          (should-not (glitnir--chrome c))
+          (set-frame-parameter c 'undecorated t)
+          (should-not (glitnir-nhmac--layers-settled c)))
+      (delete-frame c t))))
+
+(ert-deftest glitnir-nhmac/layer-follows-delete ()
+  "Deleting a chromed child takes its container, with the shadow layer, out of the parent's layer: the container
+above it moves down by one, and the window server lists no window more or less."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let* ((n (length (nhmac--test-windows)))
+         (a (glitnir-nhmac--chromed nil 80 200)) (b (glitnir-nhmac--chromed nil 160 260)))
+    (unwind-protect
+        (progn
+          (should-not (glitnir-nhmac--layers-settled a))
+          (let ((ib (plist-get (nhmac--test-child b) :index)))
+            (delete-frame a t)
+            (should (= (plist-get (glitnir-nhmac--info-until b (lambda (i) (< (plist-get i :index) ib))) :index)
+                       (1- ib)))
+            (should-not (glitnir-nhmac--layers-settled b))
+            (should (nhmac-gui--windows-become n))))
+      (when (frame-live-p a) (delete-frame a t))
+      (delete-frame b t))))
+
+;;; Pixels: the child's own colour is cyan (#00ffff), so the capture's box of it is the child; a blur is read as the
+;;; loss of detail (the mean absolute Laplacian of the luminance over a strip inside the child) against the pattern
+;;; the root shows beneath.  Detail beneath 35 % is blurred (the spike's measure).
+
+(defconst glitnir-nhmac--cyan #x00ffff "The child's colour in the translucency and blur rows.")
+
+(defun glitnir-nhmac--detail (img rect)
+  "The mean absolute Laplacian of the luminance over RECT (X Y W H, device pixels) of IMG."
+  (pcase-let ((`(,x ,y ,w ,h) rect) (sum 0.0) (n 0))
+    (cl-flet ((l (i j) (let ((p (glitnir-nhmac--px img i j)))
+                         (+ (* 0.2126 (ash p -16)) (* 0.7152 (logand (ash p -8) 255)) (* 0.0722 (logand p 255))))))
+      (cl-loop for j from (1+ y) below (+ y h -1)
+               do (cl-loop for i from (1+ x) below (+ x w -1)
+                           do (setq sum (+ sum (abs (- (* 4 (l i j)) (l (1- i) j) (l (1+ i) j) (l i (1- j)) (l i (1+ j)))))
+                                    n (1+ n)))))
+    (/ sum (max n 1))))
+
+(defun glitnir-nhmac--strip (box)
+  "A strip inside BOX (X0 Y0 X1 Y1) away from its corners and edges: 12 points in, 40 points high, as (X Y W H)."
+  (let* ((s (glitnir-nhmac--scale)) (in (ceiling (* 12 s)))
+         (w (- (1+ (- (nth 2 box) (nth 0 box))) in in)) (h (- (1+ (- (nth 3 box) (nth 1 box))) in in)))
+    (list (+ (nth 0 box) in) (+ (nth 1 box) in) w (min (round (* 40 s)) h))))
+
+(defun glitnir-nhmac--diff (a b rect)
+  "How images A and B differ over RECT (X Y W H): (PIXELS-DIFFERING LARGEST-CHANNEL-DIFFERENCE)."
+  (pcase-let ((`(,x ,y ,w ,h) rect) (n 0) (mx 0))
+    (dotimes (j h)
+      (dotimes (i w)
+        (let ((p (glitnir-nhmac--px a (+ x i) (+ y j))) (q (glitnir-nhmac--px b (+ x i) (+ y j))))
+          (unless (eql p q)
+            (setq n (1+ n))
+            (dolist (sh '(16 8 0))
+              (setq mx (max mx (abs (- (logand (ash p (- sh)) 255) (logand (ash q (- sh)) 255)))))))))
+    (list n mx)))
+
+(defun glitnir-nhmac--root-rect (img)
+  "The root frame's pixels in capture IMG as (X Y W H): the frame's place in the capture (`nhmac-gui--capture'),
+4 points in on every side, clipped to IMG."
+  (let* ((s (glitnir-nhmac--scale)) (in (round (* 4 s)))
+         (x (+ (round (* 20 s)) in)) (y (+ (round (* 60 s)) in)))
+    (list x y (min (- (frame-pixel-width) in in) (- (nth 0 img) x)) (min (- (frame-pixel-height) in in) (- (nth 1 img) y)))))
+
+(defun glitnir-nhmac--with-pattern (fn)
+  "Call FN with the root's one window showing lines of `#' and `@' (hard edges), no scroll bar, then as before."
+  (let ((config (current-window-configuration)) (buf (get-buffer-create " *glitnir-nhmac-pattern*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (erase-buffer)
+            (setq mode-line-format nil cursor-type nil)
+            (dotimes (_ 60) (insert (make-string 120 ?#) "\n" (make-string 120 ?@) "\n"))
+            (goto-char (point-min)))
+          (delete-other-windows)
+          (set-window-buffer (selected-window) buf)
+          (set-window-start (selected-window) 1)
+          ;; AppKit redraws a scroller's knob with its ends a level apart from one capture to the next
+          (set-window-scroll-bars (selected-window) nil nil nil nil)
+          (nhmac-gui--settle)
+          (funcall fn))
+      (set-window-configuration config)
+      (kill-buffer buf)
+      (nhmac-gui--settle))))
+
+(defun glitnir-nhmac--cyan-child (params)
+  "A shown chromed child with PARAMS and the cyan background, and its box in a capture (the child, opaque, alone)."
+  (let ((c (glitnir-nhmac--chromed (append params '((shadow . nil) (corner-radius . 8)
+                                                    (background-color . "#00ffff"))))))
+    (cons c (glitnir-nhmac--box (glitnir-nhmac--grab "cyan-child") glitnir-nhmac--cyan))))
+
+(ert-deftest glitnir-nhmac/alpha-background-shows-beneath ()
+  "A child with `alpha-background' 0.5 shows its background half and what lies beneath half (the pixel between its
+text and its bottom edge, within 8 per channel of the mean of the opaque child's and the root's), and its text stays
+opaque: every pixel inside a stem (black with its four neighbours) is the opaque child's."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let* ((buf (with-current-buffer (get-buffer-create " *glitnir-nhmac-text*")
+                   (erase-buffer)
+                   (insert "The quick brown fox jumps over the lazy dog.")
+                   (setq mode-line-format nil cursor-type nil truncate-lines t)
+                   (face-remap-add-relative 'default :height 3.0)
+                   (current-buffer)))
+            (c (glitnir-nhmac--chromed '((shadow . nil) (corner-radius . 8) (background-color . "#00ffff")
+                                         (foreground-color . "#000000")))))
+       (unwind-protect
+           (progn
+             (set-window-buffer (frame-root-window c) buf)
+             (nhmac-gui--settle)
+             (let* ((s (glitnir-nhmac--scale)) (stock (glitnir-nhmac--grab "alpha-stock"))
+                    (box (glitnir-nhmac--box stock glitnir-nhmac--cyan))
+                    (bx (/ (+ (nth 0 box) (nth 2 box)) 2)) (by (- (nth 3 box) (round (* 4 s))))
+                    (in (ceiling (* 9 s)))
+                    (inner (list (+ (nth 0 box) in) (+ (nth 1 box) in)
+                                 (- (nth 2 box) (nth 0 box) in in) (- (nth 3 box) (nth 1 box) in in)))
+                    beneath on)
+               (should box)
+               (make-frame-invisible c t)
+               (nhmac-gui--settle)
+               (setq beneath (glitnir-nhmac--grab "alpha-beneath"))
+               (make-frame-visible c)
+               (set-frame-parameter c 'alpha-background 0.5)
+               (nhmac-gui--settle)
+               (nhmac-gui--idle-until
+                (lambda () (nhmac-gui--far (glitnir-nhmac--px (setq on (glitnir-nhmac--grab "alpha-on")) bx by)
+                                           glitnir-nhmac--cyan 8))
+                5)
+               (let ((want (mapcar (lambda (sh) (/ (+ (logand (ash (glitnir-nhmac--px stock bx by) (- sh)) 255)
+                                                      (logand (ash (glitnir-nhmac--px beneath bx by) (- sh)) 255))
+                                                   2.0))
+                                   '(16 8 0)))
+                     (got (mapcar (lambda (sh) (logand (ash (glitnir-nhmac--px on bx by) (- sh)) 255)) '(16 8 0))))
+                 (nhmac-gui--say "glitnir-nhmac/alpha-background-shows-beneath: at %S got %S want %S" (cons bx by) got want)
+                 (should (cl-every (lambda (g w) (<= (abs (- g w)) 8)) got want)))
+               ;; the text is opaque: a stem's inside is the opaque child's pixel (a black edge pixel can be two
+               ;; partial draws, which blend with what is beneath)
+               (pcase-let ((`(,x ,y ,w ,h) inner) (n 0) (changed 0))
+                 (cl-flet ((black (i j) (eql (glitnir-nhmac--px stock i j) 0)))
+                   (dotimes (j (- h 2))
+                     (dotimes (i (- w 2))
+                       (let ((u (+ x i 1)) (v (+ y j 1)))
+                         (when (and (black u v) (black (1- u) v) (black (1+ u) v) (black u (1- v)) (black u (1+ v)))
+                           (setq n (1+ n))
+                           (unless (eql (glitnir-nhmac--px on u v) (glitnir-nhmac--px stock u v))
+                             (setq changed (1+ changed))))))))
+                 (nhmac-gui--say "glitnir-nhmac/alpha-background-shows-beneath: %d stem pixels, %d changed" n changed)
+                 (should (> n 20))
+                 (should (= changed 0)))))
+         (delete-frame c t)
+         (kill-buffer buf))))))
+
+(ert-deftest glitnir-nhmac/blur-behind-child ()
+  "A child over a pattern of hard edges: translucent (`alpha-background' 0.3) the pattern shows through sharp (over
+half its detail), and with `backdrop-blur' 20 the strip inside the child has under 35 % of the detail beneath, the
+child living in a blur panel.  The system's Reduce transparency setting, if on, would fail the row."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-pattern
+   (lambda ()
+     (pcase-let ((`(,c . ,box) (glitnir-nhmac--cyan-child nil)))
+       (unwind-protect
+           (let* ((strip (glitnir-nhmac--strip box)) d0 d1 d2)
+             (should box)
+             (make-frame-invisible c t)
+             (nhmac-gui--settle)
+             (setq d0 (glitnir-nhmac--detail (glitnir-nhmac--grab "blur-beneath") strip))
+             (nhmac-gui--say "glitnir-nhmac/blur-behind-child: detail beneath %.2f" d0)
+             (should (> d0 5))
+             (make-frame-visible c)
+             (set-frame-parameter c 'alpha-background 0.3)
+             (nhmac-gui--settle)
+             (nhmac-gui--idle-until
+              (lambda () (> (setq d1 (glitnir-nhmac--detail (glitnir-nhmac--grab "blur-translucent") strip)) (* 0.5 d0)))
+              5)
+             (should (> d1 (* 0.5 d0)))
+             (set-frame-parameter c 'backdrop-blur 20)
+             (nhmac-gui--settle)
+             (nhmac-gui--idle-until
+              (lambda () (< (setq d2 (glitnir-nhmac--detail (glitnir-nhmac--grab "blur-blurred") strip)) (* 0.35 d0)))
+              5)
+             (nhmac-gui--say "glitnir-nhmac/blur-behind-child: translucent %.2f, blurred %.2f" d1 d2)
+             (should (eq (plist-get (nhmac--test-child c) :blur) t))
+             (should (< d2 (* 0.35 d0))))
+         (delete-frame c t))))))
+
+(ert-deftest glitnir-nhmac/blur-off-identical ()
+  "A blur without a translucent background, or with Glitnir off, is the plain frame: an opaque child with
+`backdrop-blur' is pixel for pixel the one without (tolerance 0), and a translucent, blurred, rounded child with
+`glitnir-enable' nil is the opaque square child, with no panel and no blur."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (glitnir-nhmac--with-pattern
+   (lambda ()
+     (pcase-let ((`(,c . ,box) (glitnir-nhmac--cyan-child '((backdrop-blur . 20)))))
+       (unwind-protect
+           (let* ((pad 2) (rect (list (- (nth 0 box) pad) (- (nth 1 box) pad)
+                                      (+ (- (nth 2 box) (nth 0 box)) 1 pad pad) (+ (- (nth 3 box) (nth 1 box)) 1 pad pad)))
+                  with without off stock)
+             (should box)
+             (setq with (glitnir-nhmac--grab "blur-off-with"))
+             (set-frame-parameter c 'backdrop-blur nil)
+             (setq without (glitnir-nhmac--grab "blur-off-without"))
+             (should (equal (glitnir-nhmac--diff with without rect) '(0 0)))
+             (modify-frame-parameters c '((backdrop-blur . 20) (alpha-background . 0.3)))
+             (let ((glitnir-enable nil))
+               (glitnir-refresh c)
+               (nhmac-gui--settle)
+               (let ((i (nhmac--test-child c)))
+                 (should (= (plist-get i :radius) 0))
+                 (should-not (plist-get i :blur))
+                 (should-not (plist-get i :panel)))
+               (setq off (glitnir-nhmac--grab "blur-off-glitnir-off")))
+             (modify-frame-parameters c '((corner-radius . 0) (backdrop-blur . nil) (alpha-background . nil)))
+             (glitnir-refresh c)
+             (setq stock (glitnir-nhmac--grab "blur-off-stock"))
+             (should (equal (glitnir-nhmac--diff off stock rect) '(0 0)))
+             (should-not (nhmac-gui--far (glitnir-nhmac--px stock (/ (+ (nth 0 box) (nth 2 box)) 2)
+                                                           (/ (+ (nth 1 box) (nth 3 box)) 2))
+                                         glitnir-nhmac--cyan 8)))
+         (delete-frame c t))))))
+
+(defun glitnir-nhmac--fixture-run ()
+  "Type, scroll and show and hide a plain child in the root's one window; the capture after each step."
+  (let* ((w (selected-window)) (buf (window-buffer w)) shots)
+    (with-current-buffer buf
+      (goto-char (point-min))
+      (insert "typed: the quick brown fox\n")
+      (set-window-point w (point)))
+    (push (glitnir-nhmac--grab "fixture-typed") shots)
+    (set-window-start w (with-current-buffer buf (goto-char (point-min)) (forward-line 20) (point)))
+    (push (glitnir-nhmac--grab "fixture-scrolled") shots)
+    (let ((c (nhmac-gui--child nil 80 200)))
+      (unwind-protect (push (glitnir-nhmac--grab "fixture-popup") shots)
+        (delete-frame c t)))
+    (push (glitnir-nhmac--grab "fixture-hidden") shots)
+    (nreverse shots)))
+
+(ert-deftest glitnir-nhmac/on-equals-off ()
+  "On a fixture without chrome (typing, a scroll, a plain child shown and deleted), `glitnir-enable' t draws what
+nil draws, in every step's capture (tolerance 0).  The control, nil against nil again, is logged and not asserted:
+it tells a difference of ours from one of the window server's."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let (on off again)
+    (cl-flet ((rewind ()
+                (with-current-buffer (window-buffer (selected-window)) (delete-region (point-min) (+ (point-min) 27)))
+                (set-window-start (selected-window) 1)))
+      (glitnir-nhmac--with-pattern
+       (lambda ()
+         (nhmac-gui--without-blink
+          (lambda ()
+            (let ((glitnir-enable t)) (setq on (glitnir-nhmac--fixture-run)))
+            (rewind)
+            (let ((glitnir-enable nil)) (setq off (glitnir-nhmac--fixture-run)))
+            (rewind)
+            (let ((glitnir-enable nil)) (setq again (glitnir-nhmac--fixture-run))))))))
+    (should (= (length on) (length off) (length again) 4))
+    (let* ((rect (glitnir-nhmac--root-rect (car on)))
+           (control (cl-loop for a in off for b in again collect (glitnir-nhmac--diff a b rect)))
+           (diffs (cl-loop for a in on for b in off collect (glitnir-nhmac--diff a b rect))))
+      (nhmac-gui--say "glitnir-nhmac/on-equals-off: rect %S, on vs off %S, control off vs off %S" rect diffs control)
+      (should (equal diffs '((0 0) (0 0) (0 0) (0 0)))))))
+
+;;; Layout legs: a window's old layout is a layer of its text area's capture, moved by the leg; the glue's legs.rs
+;;; takes the vector `glitnir--leg-vector' makes (device pixels).  The leg's state is read by its pixels and by
+;;; Lisp's own record of what it sent (`glitnir--leg-sent', its serial), since the shell has no query for it.
+
+(defun glitnir-nhmac--leg-area ()
+  "The selected window's text area as (X Y W H) in device pixels."
+  (pcase-let ((`(,l ,tp ,r ,b) (window-body-pixel-edges)))
+    (list l tp (- r l) (- b tp))))
+
+(defun glitnir-nhmac--leg-end ()
+  "End the selected window's leg: both parameters go, and the layers with them."
+  (dolist (k '(glitnir-layout-capture glitnir-layout-motion)) (set-window-parameter nil k nil))
+  (redisplay t)
+  (nhmac-gui--settle))
+
+(defun glitnir-nhmac--leg-capture ()
+  "Ask for a capture of the selected window and wait (5 s at most) until the presenter holds it.
+A leg left by an earlier row ends first: the same value would not be a new request."
+  (glitnir-nhmac--leg-end)
+  (set-window-parameter nil 'glitnir-layout-capture t)
+  (redisplay t)
+  (should (gui-runner-wait #'glitnir-layout-captured-p 5)))
+
+(defun glitnir-nhmac--leg-scroll ()
+  "Show the next line first: the pattern's two kinds of line trade places."
+  (set-window-start nil (with-current-buffer (window-buffer) (goto-char (point-min)) (forward-line 1) (point)))
+  (redisplay t))
+
+(ert-deftest glitnir-nhmac/layout-leg-shows-old-picture ()
+  "The capture is the picture from before the redraw: a leg that moves it nowhere shows it all along, to within 2 per
+channel, and when the leg ends the new layout is what shows (over 100 pixels differ)."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((glitnir-reduced-motion nil) before during after)
+    (glitnir-nhmac--with-pattern
+     (lambda ()
+       (let ((area (glitnir-nhmac--leg-area)))
+         (setq before (glitnir-nhmac--grab "leg-before"))
+         (glitnir-nhmac--leg-capture)
+         ;; the motion goes out with the redraw that draws the new layout
+         (set-window-parameter nil 'glitnir-layout-motion
+                               `(:moves ((page ,area ,area)) :duration 30 :background "#000000"))
+         (glitnir-nhmac--leg-scroll)
+         (should (> (nth 2 (window-parameter nil 'glitnir--leg-sent)) 0))
+         (setq during (glitnir-nhmac--grab "leg-during"))
+         (glitnir-nhmac--leg-end)
+         (setq after (glitnir-nhmac--grab "leg-after"))
+         (let* ((rect (glitnir-nhmac--root-rect before))
+                (shown (glitnir-nhmac--diff before during rect)) (new (glitnir-nhmac--diff during after rect)))
+           (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: during vs before %S, after vs during %S" shown new)
+           (should (<= (cadr shown) 2))
+           (should (> (car new) 100))))))))
+
+(ert-deftest glitnir-nhmac/layout-leg-ends-plain ()
+  "After its duration the leg's layers are gone and the new layout shows as drawn: the root with the leg ended
+equals the root drawn at once without one (tolerance 0)."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((glitnir-reduced-motion nil) plain moved)
+    (glitnir-nhmac--with-pattern
+     (lambda ()
+       (let ((area (glitnir-nhmac--leg-area)))
+         (glitnir-nhmac--leg-scroll)
+         (setq plain (glitnir-nhmac--grab "leg-plain"))
+         (set-window-start nil 1)
+         (redisplay t)
+         (glitnir-nhmac--leg-capture)
+         (set-window-parameter nil 'glitnir-layout-motion
+                               `(:moves ((page ,area ,(list (nth 0 area) (+ 12 (nth 1 area)) (nth 2 area) (nth 3 area))))
+                                 :duration 1.0 :background "#000000"))
+         (glitnir-nhmac--leg-scroll)
+         (should (> (nth 2 (window-parameter nil 'glitnir--leg-sent)) 0))
+         ;; the leg's duration and a margin, the wait turning the run loop
+         (nhmac-gui--idle-until #'ignore 1.6)
+         (setq moved (glitnir-nhmac--grab "leg-moved"))
+         (glitnir-nhmac--leg-end)
+         (let ((d (glitnir-nhmac--diff plain moved (glitnir-nhmac--root-rect plain))))
+           (nhmac-gui--say "glitnir-nhmac/layout-leg-ends-plain: %S" d)
+           (should (equal d '(0 0)))))))))
+
+(ert-deftest glitnir-nhmac/layout-leg-jumps-under-reduced-motion ()
+  "Reduced motion asks for no capture: `glitnir-layout-captured-p' is nil and Lisp sent no leg."
+  :tags '(draws)
+  (skip-unless (not (nhmac-gui--ns-build-p)))
+  (let ((glitnir-reduced-motion t))
+    (glitnir-nhmac--with-pattern
+     (lambda ()
+       (unwind-protect
+           (progn
+             (set-window-parameter nil 'glitnir-layout-capture t)
+             (redisplay t)
+             (should-not (glitnir-layout-captured-p))
+             (should-not (> (or (nth 2 (window-parameter nil 'glitnir--leg-sent)) 0) 0)))
+         (set-window-parameter nil 'glitnir-layout-capture nil)
+         (redisplay t))))))
+
+;;; glitnir-nhmac-gui-tests.el ends here

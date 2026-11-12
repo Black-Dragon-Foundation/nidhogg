@@ -89,13 +89,15 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
 ```
 
 - Targets today: Linux (Nidhogg's own Wayland shell, no GTK) in a container or on the host. pgtk is not built:
-  `configure` refuses `--with-pgtk`, and upstream's pgtk files stay in the tree only for clean merges. macOS (NS app,
-  `Nidhogg.app`) is planned: `--host` has the code path, but it has not been built or tested yet.
+  `configure` refuses `--with-pgtk`, and upstream's pgtk files stay in the tree only for clean merges. macOS: `--host`
+  builds Naglfar, Nidhogg's own macOS shell, as `Nidhogg.app` (`--naglfar` names it; on Linux, with `--dry-config`, it
+  configures for a darwin host); the release tarball is its bundle. The NS port is not built: `configure` picks
+  `--with-nidhogg-macos` on macOS by itself and refuses `--with-ns`, and the NS files stay only for clean merges.
 - Requirements: podman for `--container` (never docker) and enough free memory (below).
 - `--container DISTRO` (`fedora-45`, `ubuntu-26.04`, `debian-13`, `arch`) builds in a memory-capped podman container (podman only,
   never docker). `--host` builds on this machine (on Linux the packages in `nidhogg/deps/<distro>.build`
   must be installed).
-- Configure flags: `--with-native-compilation=aot --with-tree-sitter --with-nidhogg-wayland` (Linux), `--with-ns ...` (macOS), each followed by `--with-glitnir` unless `--without-glitnir` is given.
+- Configure flags: `--with-native-compilation=aot --with-tree-sitter --with-nidhogg-wayland` (Linux), `--with-native-compilation=aot --with-tree-sitter` (macOS: configure picks `--with-nidhogg-macos`), each followed by `--with-glitnir` unless `--without-glitnir` is given.
   The shell carries Glitnir, so on Linux `--without-glitnir` is a terminal-only build (`--without-x`, no Rust installed);
   it exists to show the tree compiles without Rust. `--nidhogg-wayland` is the default, still accepted, and refused
   together with `--without-glitnir`.
@@ -257,6 +259,25 @@ frame's default font is opened again from its setting (the default face's height
 a ratio, so 1.25 → 2 → 1.25 gives back the same pixel size; then `nidhogg-frame-scale-change-functions` run with the
 frame. `(nidhogg-set-frame-text-zoom FRAME ZOOM)` sets a zoom (0.5–3) for a frame and its child frames and opens their
 fonts at once; `(nidhogg-frame-text-zoom FRAME)` reads it. The rows are in `test/src/nidhogg-tests/nhwl-gui-scale-tests.el`.
+
+## macOS: Naglfar
+
+On macOS, Nidhogg is Naglfar: its own AppKit shell (Rust, `nidhogg/shell`) over the native shell's C, drawing with Core
+Text and Core Graphics, decoding images with ImageIO and SVG with resvg. It replaces GNU Emacs's NS port, which is not
+built. The `ns-*` variables, functions and hooks that Mac users set keep working (`lisp/term/nhmac-win.el`), and the menu
+bar is the system's. What differs from the NS port:
+
+- **Sizes are device pixels.** As on the Wayland shell, a Lisp pixel is a device pixel: at scale 2, frame sizes,
+  positions and `frame-monitor-attributes` are twice what NS reported in points.
+- **Menus are built at idle.** The menu bar shows the state as of the last idle build (`nhmac-menu-delay`, 0.3 s of
+  idleness, and again after `buffer-list-update-hook` or `nhmac-menu-invalidate`). State that a timer or a process
+  changes later in the same idle period, such as a buffer a process creates, shows at the next command, focus change or
+  rebuild; a menu opened within 0.3 s of a command can show the state before it.
+- **Accessibility reads the line around point.** The accessibility value is the line around point and the selected
+  text the region within it, not the whole buffer; Zoom follows the cursor as with NS.
+- **Drag-in feedback comes from the last redisplay.** While something is dragged over a frame, the insertion point
+  shown is the one known at the last redisplay, so it can lag while Lisp is busy; the drop itself goes where it was
+  released.
 
 ## The test clock
 
@@ -458,7 +479,7 @@ post AppKit events and read the shell's counters through those hooks.
     build, for the cargo target) passed; after a red one the entry keeps the name it was restored with (or none, and
     every file is then stamped now), so a target a red check left unbuilt never passes for HEAD's.
   - configure's checks: `configure-D-I-<hash of configure.ac, m4/, build-aux/, autogen.sh, nidhogg/version,
-    build.sh>` (macOS: `configure-macos-<arch>-<hash of the Homebrew packages' versions and the runner image>-…`), exact,
+    build.sh>` (macOS: `configure-macos-app-<arch>-<hash of the Homebrew packages' versions and the runner image>-…`), exact,
     saved like the compiled Lisp; `build.sh` (`NIDHOGG_BUILD_CONFIG_CACHE`) runs configure again cold when it fails with
     them.
   - Glitnir's cargo target (the glue, the shell, Glitnir and their locked crates, built by `make`; the target directory
@@ -523,21 +544,21 @@ post AppKit events and read the shell's counters through those hooks.
   a run's gate is named `Nidhogg gate (partial)`, so it never reads as the full gate. A row-only run (`checks` names
   Nidhogg rows, not `none` or `build-only`) leaves out drgnx's macOS suite: the changes job logs `drgnx macOS suite:
   skipped, row-only run` (and a notice), and with no drgnx tier left the drgnx job is skipped. A full run and a tag run it.
-- The macOS lanes are two jobs that run at once (the org has five macOS slots): `macOS (NS app)` (build, tarball, tarball
-  test, NS rows, the `tarball-macos` artifact) and `macOS (Naglfar)` (its dev build, Rust tests, boundary check, rows,
-  logs in `nhmac-gui-logs-naglfar`).
-  Naglfar does not run for `ns_app_run`. The Naglfar rows compare with the NS rows' dumps (`nhmac-ns-*`, written on the NS
-  runner), so they run in a third job, `macOS (Naglfar rows)`, after both: the NS job uploads `nhmac-ns-refs`, the Naglfar
-  job its build tree as `naglfar-build` (object files and Rust targets left out), and the rows job (and the `pair` timing,
-  which also takes `tarball-macos`) fails naming the artifact if one is missing.
-- Native compilation in the macOS NS job: a `scratch/*` dispatch builds with `build.sh --native-preloaded` (only the
+- The macOS lanes are two jobs that run at once (the org has five macOS slots): `macOS (Naglfar app)` (the release
+  build, `build.sh --naglfar`, its bundle as the tarball, the tarball test, the `tarball-macos` artifact) and `macOS
+  (Naglfar)` (the dev build with `--enable-checking`, the timing build with the test hooks alone, Rust tests, boundary
+  check, the bundle). The rows run in a third job, `macOS (Naglfar rows)`, on the bundle's Emacs: the Naglfar job uploads
+  its build trees as `naglfar-build` (object files and Rust targets left out), and the rows job fails naming the
+  artifact if it is missing. Every row has a bar of its own (no row compares with the NS port): the timing rows run on
+  the timing build against `budgets.eld`, font rows judge Core Text's answers, image rows ImageIO's.
+- Native compilation in the macOS app job: a `scratch/*` dispatch builds with `build.sh --native-preloaded` (only the
   preloaded Lisp native-compiled, the rest byte code, JIT off in the image, so no compile starts under a timing row;
   the byte-compiled cache entry is taken from a full build's through `NIDHOGG_BUILD_LISP_CACHE_ELC=1`, the `.eln` entry
   is not used) and logs `native compilation: preloaded Lisp only`. `nidhogg-31`, tags and pull requests keep full AOT.
   `tarball-test.sh` reads the mode from BUILDINFO: AOT needs the full `.eln` set, the preloaded-only mode the preloaded
   ones and `native-comp-jit-compilation` nil.
-- The Naglfar job does not compile the Lisp again either: it restores the NS job's byte-compiled entry (the same key,
-  saved by `nidhogg-31`'s NS build; not for `nidhogg-31` or a tag), `build.sh` takes it for its different stamp
+- The Naglfar job does not compile the Lisp again either: it restores the app job's byte-compiled entry (the same key,
+  saved by `nidhogg-31`'s release build; not for `nidhogg-31` or a tag), `build.sh` takes it for its different stamp
   (`NIDHOGG_BUILD_LISP_CACHE_ELC=1`, same compiler, architecture and configure line apart from the native-compilation
   mode, the window system and `--enable-checking`) and make finds the `.elc` files current. Its configure checks are an
   entry of their own (`configure-macos-naglfar-…`).

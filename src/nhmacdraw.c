@@ -26,6 +26,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
 
+#include <math.h>
+
 #include "lisp.h"
 #include "nhwlterm.h"
 #include "frame.h"
@@ -228,6 +230,22 @@ nhwl_erase_corners_for_relief (struct frame *f, unsigned long color, int x,
   nhmac_rect (f, NHG_DRAW_CORNERS, corners, nhmac_argb (f, color, false),
 	      x, y, width, height, radius, margin);
   nhwl_end_cr_clip (f);
+}
+
+/* A box's ring for glitnir-decor.c: one NHG_DRAW_RING record on X, Y, W, H
+   with radius RAD, lines HW high and VW wide, FLAGS its rounded corners and
+   sides (the record's); with RELIEF, FG above the anti-diagonal and BG
+   below.  */
+void
+nhmac_draw_ring (struct frame *f, int x, int y, int w, int h, int hw, int vw,
+		 double rad, unsigned flags, unsigned long fg,
+		 unsigned long bg, bool relief)
+{
+  NhgDrawRec r = { NHG_DRAW_RING, flags | (relief ? NHG_DRAW_RELIEF : 0),
+		   { x, y, w, h }, nhmac_argb (f, fg, false),
+		   nhmac_argb (f, bg, false), lround (rad),
+		   min (hw, 255) | min (vw, 255) << 8 };
+  nhmac_emit (f, &r);
 }
 
 void

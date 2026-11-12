@@ -756,12 +756,13 @@ through `sendEvent:'.  For tests."
 
 (defun nhmac--test-post-mouse (kind x y &optional button flags frame)
   "Post a mouse event of KIND at X, Y to FRAME's window, as an AppKit event.
-KIND is `down', `up', `drag', `move' or `wheel'; X and Y are device
-pixels from the frame's top left.  BUTTON is 0 (left, the default), 1
+KIND is `down', `up', `drag', `move', `wheel' or `exit' (the pointer
+leaving the window there); X and Y are device pixels from the frame's
+top left.  BUTTON is 0 (left, the default), 1
 (right) or 2 (middle), or for `wheel' the lines to scroll (positive
 down).  FLAGS is the `NSEventModifierFlags' (default 0).  For tests."
   (nhmac--call 'test-post-mouse (or frame (selected-frame))
-               (pcase kind ('down 0) ('up 1) ('drag 2) ('move 3) ('wheel 4)
+               (pcase kind ('down 0) ('up 1) ('drag 2) ('move 3) ('wheel 4) ('exit 5)
                       (_ (error "Unknown mouse kind %s" kind)))
                x y (or button 0) (or flags 0)))
 
@@ -1031,10 +1032,25 @@ Only the clipboard exists on macOS."
 (defun ns-display-monitor-attributes-list (&optional terminal)
   "Return a list of physical monitor attributes on the display TERMINAL.
 The screens the shell announced, as the shared C lists them (geometry
-in device pixels), with `source' \"NS\"."
-  (mapcar (lambda (m)
-            (mapcar (lambda (kv) (if (eq (car kv) 'source) (cons 'source "NS") kv)) m))
-          (pgtk-display-monitor-attributes-list terminal)))
+in device pixels), with `source' \"NS\".  Each `workarea' is the
+screen's `visibleFrame' (what the menu bar and the Dock leave), in the
+same device pixels."
+  (let ((screens (nhmac--query 'screens)))
+    (cl-loop
+     for m in (pgtk-display-monitor-attributes-list terminal)
+     for s = (pop screens)
+     collect
+     (mapcar (lambda (kv)
+               (pcase (car kv)
+                 ('source (cons 'source "NS"))
+                 ((and 'workarea (guard s))
+                  (pcase-let* ((`(,x ,y . ,_) (alist-get 'geometry m))
+                               (`(,fx ,fy ,_ ,_ ,vx ,vy ,vw ,vh ,k) s))
+                    (list 'workarea
+                          (+ x (round (* (- vx fx) k))) (+ y (round (* (- vy fy) k)))
+                          (round (* vw k)) (round (* vh k)))))
+                 (_ kv)))
+             m))))
 
 (defun ns-do-applescript (script)
   "Execute AppleScript SCRIPT and return the result.

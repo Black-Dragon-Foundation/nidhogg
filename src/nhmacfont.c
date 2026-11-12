@@ -95,9 +95,23 @@ nhmac_spec_record (Lisp_Object spec, NhgFontSpec *r)
     ? XFIXNUM (AREF (spec, FONT_SPACING_INDEX)) : -1;
   r->size = FIXNUMP (AREF (spec, FONT_SIZE_INDEX))
     ? XFIXNUM (AREF (spec, FONT_SIZE_INDEX)) : 0;
+  /* :otf names a script by its OTF tag, which macfont takes as the
+     spec's script (macfont_get_open_type_spec); :script comes first.  */
   v = assq_no_quit (QCscript, extra);
   if (CONSP (v))
     r->script = nhmac_name_id (XCDR (v));
+  else
+    {
+      v = assq_no_quit (QCotf, extra);
+      if (CONSP (v) && CONSP (XCDR (v)) && SYMBOLP (XCAR (XCDR (v)))
+	  && !NILP (XCAR (XCDR (v))))
+	{
+	  Lisp_Object s = assq_no_quit (XCAR (XCDR (v)), Votf_script_alist);
+
+	  if (CONSP (s) && SYMBOLP (XCDR (s)))
+	    r->script = nhmac_name_id (XCDR (s));
+	}
+    }
   v = assq_no_quit (QClang, extra);
   if (CONSP (v))
     r->language = nhmac_name_id (XCDR (v));
@@ -175,7 +189,7 @@ nhmac_query (Lisp_Object spec, bool all)
 {
   static bool started;
   NhgFontSpec r;
-  NhgFontEntity out[256];
+  NhgFontEntity stack[256], *out = stack;
   size_t n = 0;
   int32_t rc;
   Lisp_Object list = Qnil;
@@ -187,13 +201,24 @@ nhmac_query (Lisp_Object spec, bool all)
     }
   nhmac_spec_record (spec, &r);
   block_input ();
-  rc = all ? NHG (nhg_font_list (&r, out, ARRAYELTS (out), &n))
+  rc = all ? NHG (nhg_font_list (&r, out, ARRAYELTS (stack), &n))
     : NHG (nhg_font_match (&r, out, 1, &n));
+  /* More fonts than the stack holds (a spec with no family or script
+     fits every face): ask again with room for them all.  */
+  if (all && rc == NHG_OK && n > ARRAYELTS (stack))
+    {
+      size_t cap = n;
+
+      out = xnmalloc (cap, sizeof *out);
+      rc = NHG (nhg_font_list (&r, out, cap, &n));
+      n = min (n, cap);
+    }
   unblock_input ();
-  if (rc != NHG_OK)
-    return Qnil;
-  for (size_t i = n; i > 0; i--)
-    list = Fcons (nhmac_entity (&out[i - 1]), list);
+  if (rc == NHG_OK)
+    for (size_t i = min (n, all ? n : 1); i > 0; i--)
+      list = Fcons (nhmac_entity (&out[i - 1]), list);
+  if (out != stack)
+    xfree (out);
   return list;
 }
 
@@ -214,6 +239,27 @@ nhmacfont_match (struct frame *f, Lisp_Object spec)
 {
   Lisp_Object l = nhmac_query (spec, false);
   return CONSP (l) ? XCAR (l) : Qnil;
+}
+
+/* Whether FONT has C (macfont_has_char): an entity's face answers from
+   its character set without opening it; an object is left to
+   encode_char (-1).  */
+static int
+nhmacfont_has_char (Lisp_Object font, int c)
+{
+  Lisp_Object val;
+  int32_t has = -1;
+
+  if (!FONT_ENTITY_P (font))
+    return -1;
+  val = assq_no_quit (QCfont_entity, AREF (font, FONT_EXTRA_INDEX));
+  if (!CONSP (val) || !CONSP (XCDR (val)))
+    return -1;
+  block_input ();
+  if (NHG (nhg_font_has_char (XFIXNUM (XCAR (XCDR (val))), c, &has)) != NHG_OK)
+    has = -1;
+  unblock_input ();
+  return has;
 }
 
 static Lisp_Object
@@ -291,6 +337,8 @@ nhmacfont_close (struct font *font)
     return;
   NHG (nhg_font_close (info->handle));
   info->handle = 0;
+  /* The glue freed the table's pages with the font.  */
+  info->table = NULL;
 }
 
 /* Character C's glyph, from the font's table; a page not read yet is
@@ -302,7 +350,7 @@ nhmacfont_encode_char (struct font *font, int c)
   unsigned page = (unsigned) c / NHG_FONT_PAGE;
   uint32_t glyph;
 
-  if (c < 0 || page >= NHG_FONT_CHAR_PAGES)
+  if (c < 0 || page >= NHG_FONT_CHAR_PAGES || !info->table)
     return FONT_INVALID_CODE;
   if (!info->table->chars[page])
     NHG (nhg_font_fill (info->handle, page));
@@ -318,7 +366,7 @@ nhmac_glyph_metrics (struct nhmac_font_info *info, unsigned g)
 {
   unsigned page = g / NHG_FONT_PAGE;
 
-  if (page >= NHG_FONT_GLYPH_PAGES)
+  if (page >= NHG_FONT_GLYPH_PAGES || !info->table)
     return NULL;
   if (!info->table->glyphs[page])
     NHG (nhg_font_fill (info->handle, page | NHG_FONT_FILL_GLYPHS));
@@ -429,6 +477,7 @@ struct font_driver const nhmacfont_driver =
     .get_cache = nhmacfont_get_cache,
     .list = nhmacfont_list,
     .match = nhmacfont_match,
+    .has_char = nhmacfont_has_char,
     .open_font = nhmacfont_open,
     .close_font = nhmacfont_close,
     .encode_char = nhmacfont_encode_char,

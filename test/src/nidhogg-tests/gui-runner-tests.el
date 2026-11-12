@@ -184,4 +184,26 @@ It read them on every run, and a shell that does not serve the monitors yet (Nag
     (should (ert-test-passed-p (ert-run-test draws)))
     (should ran)))
 
+(defvar gui-runner-tests--loaded nil "The row files `glitnir-gui--load-tests' loaded, as their base names.")
+
+(ert-deftest gui-runner-macos-rows-stay-out-off-macos ()
+  "Off macOS the macOS-only row files are not loaded, even when a glob names them, and the log counts them."
+  (let ((dir (make-temp-file "gui-runner-rows" t)) (said nil) (process-environment (copy-sequence process-environment)))
+    (unwind-protect
+        (progn
+          (dolist (n '("glitnir-a-gui-tests.el" "nhmac-b-gui-tests.el" "nhmac-c-gui-tests.el" "glitnir-ns-gui-tests.el"
+                       "nhmac-gui-tests.el"))
+            (with-temp-file (expand-file-name n dir)
+              (insert (format "(push %S gui-runner-tests--loaded)\n" n))))
+          (setenv "GLITNIR_GUI_TESTS" dir)
+          (dolist (glob '(nil "*-gui-tests.el"))
+            (setenv "GLITNIR_GUI_FILES" glob)
+            (setq gui-runner-tests--loaded nil said nil)
+            (cl-letf (((symbol-function 'glitnir-gui--say) (lambda (fmt &rest args) (push (apply #'format fmt args) said)))
+                      (system-type 'gnu/linux))
+              (glitnir-gui--load-tests))
+            (should (equal gui-runner-tests--loaded '("glitnir-a-gui-tests.el")))
+            (should (equal said '("gui-runner: 4 macOS-only row files not loaded off macOS: glitnir-ns-gui-tests.el nhmac-b-gui-tests.el nhmac-c-gui-tests.el nhmac-gui-tests.el")))))
+      (delete-directory dir t))))
+
 ;;; gui-runner-tests.el ends here

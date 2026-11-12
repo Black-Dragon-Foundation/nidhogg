@@ -26,6 +26,7 @@ mod pasteboard;
 mod power;
 mod resize;
 mod runloop;
+mod scale;
 mod screens;
 mod services;
 pub mod startup;

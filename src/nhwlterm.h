@@ -219,6 +219,13 @@ struct nhwl_display_info
   bool reconnecting, reconnect_settling;
   struct atimer *reconnect_timer;
   uint32_t reconnect_timeout_ms;
+
+#ifdef HAVE_NHMAC
+  /* The commit's deadline after a publish (nhwl_publish): the shell
+     commits at its next pump or wait, and this timer commits for Lisp
+     that runs on without waiting.  */
+  struct atimer *present_deadline;
+#endif
 };
 
 /* This is a chain of structures for all the displays currently in use.  */
@@ -671,6 +678,9 @@ extern void nhwl_fill_trapezoid_for_relief (struct frame *, unsigned long,
 extern void nhwl_erase_corners_for_relief (struct frame *, unsigned long,
 					   int, int, int, int, double,
 					   double, int);
+extern void nhmac_draw_ring (struct frame *, int, int, int, int, int, int,
+			     double, unsigned, unsigned long, unsigned long,
+			     bool);
 extern void nhwl_set_clip_rectangles (struct frame *, nhwl_cr *,
 				      XRectangle *, int);
 extern void nhwl_clip_to_row (struct window *, struct glyph_row *,

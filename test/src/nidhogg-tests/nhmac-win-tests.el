@@ -52,8 +52,8 @@ KIND is coarse (NS says nothing of toggles and radios): 0 item, 1 submenu,
               rows)))
     (nreverse rows)))
 
-(defun nhmac-win-test--golden ()
-  "The NS fixture as rows like `nhmac-win-test--rows'."
+(defun nhmac-win-test--expected ()
+  "The expected menu bar (menu-bar-expected.eld) as rows like `nhmac-win-test--rows'."
   (let ((stack nil))
     (mapcar (lambda (e)
               (setq stack (reverse (seq-take (reverse stack) (nth 0 e))))
@@ -62,7 +62,7 @@ KIND is coarse (NS says nothing of toggles and radios): 0 item, 1 submenu,
                     (nth 1 e) (nth 3 e) (nth 4 e) (nth 5 e)))
             (with-temp-buffer
               (insert-file-contents
-               (expand-file-name "nhmac-win-resources/menu-bar-golden.eld"
+               (expand-file-name "nhmac-win-resources/menu-bar-expected.eld"
                                  nhmac-win-test--dir))
               (read (current-buffer))))))
 
@@ -162,14 +162,14 @@ buffer with undo history."
       (setq-default transient-mark-mode saved-tmm blink-cursor-mode saved-blink)
       (use-global-map old))))
 
-(ert-deftest nhmac-win-menu-bar-matches-ns ()
-  "The flattener on `emacs -Q's menu bar gives what NS built, field by field.
-The NS session is rebuilt first (`nhmac-win-test--call-as-ns'); the rows
+(ert-deftest nhmac-win-menu-bar-matches-expected ()
+  "The flattener on `emacs -Q's menu bar gives the expected one (menu-bar-expected.eld), field by field.
+The macOS session is rebuilt first (`nhmac-win-test--call-as-ns'); the rows
 batch cannot reproduce are listed in `nhmac-win-test--ignore' and the lists beside it."
   (let* ((got (nhmac-win-test--normalize
                (nhmac-win-test--rows
                 (nhmac-win-test--call-as-ns #'nhmac-menu-flatten-bar))))
-         (want (nhmac-win-test--normalize (nhmac-win-test--golden))))
+         (want (nhmac-win-test--normalize (nhmac-win-test--expected))))
     (should (> (length want) 700))
     (should (= (length got) (length want)))
     (cl-mapc (lambda (g w) (should (equal g w))) got want)))
