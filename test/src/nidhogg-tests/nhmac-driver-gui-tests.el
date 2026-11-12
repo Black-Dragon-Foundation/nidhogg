@@ -216,5 +216,30 @@ that colour, one that sets none in the image's `:foreground'."
     (should (= (car own) (nhmac-driver--rgb "#00ff00")))
     (should (= (car fg) (nhmac-driver--rgb "#ff0000")))))
 
+;;; Drawing
+
+(ert-deftest nhmac-stipple-is-drawn ()
+  "A `:stipple' face draws its bitmap in the face's foreground over its background where the bits are set, tiled
+from the frame's origin as X and NS tile it, each bit a logical pixel (the frame's whole scale)."
+  (skip-unless (nhmac-driver--naglfar-p))
+  (let* ((k (max 1 (floor (frame-scale-factor))))
+         ;; a 2 x 2 checkerboard: row 0 its left bit, row 1 its right
+         (face '(:stipple (2 2 "\1\2") :foreground "#ff0000" :background "#0000ff"))
+         (pts nil)
+         (px (nhmac-driver--pixels (propertize "        " 'face face)
+                                   (lambda (o)
+                                     (setq pts (cl-loop for dx below (* 4 k) nconc
+                                                        (cl-loop for dy below (* 4 k)
+                                                                 collect (cons (+ (car o) (* 2 k) dx)
+                                                                               (+ (cdr o) dy)))))
+                                     pts)))
+         (want (mapcar (lambda (p)
+                         (nhmac-driver--rgb (if (= (% (/ (car p) k) 2) (% (/ (cdr p) k) 2)) "#ff0000" "#0000ff")))
+                       pts))
+         (bad (cl-loop for p in pts for g in px for w in want unless (= g w) collect (list p (format "#%08x" g)))))
+    (nhmac-driver--say "nhmac-stipple: scale %s, %d of %d pixels differ, first %S" k (length bad) (length pts)
+                       (car bad))
+    (should-not bad)))
+
 (provide 'nhmac-driver-gui-tests)
 ;;; nhmac-driver-gui-tests.el ends here
