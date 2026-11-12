@@ -2793,6 +2793,32 @@ nhg_export! {
     }
 }
 
+nhg_export! {
+    /// The glyph of each of the 256 variation sequences of character `c` in font `handle` into `out`
+    /// (`macfont_variation_glyphs`: VS1–VS16, then VS17–VS256; 0 for one the font lacks), and how many it has into
+    /// `*n`.  `NHG_E_STATE` for a font that is not open, `NHG_E_UNSUPPORTED` without Core Text.
+    ///
+    /// # Safety
+    /// `out` is null or holds 256 writable words; `n` is null or writable.
+    unlocked fn nhg_font_variation_glyphs(handle: u64, c: u32, out: *mut u32, n: *mut u32) -> i32 {
+        crate::font::note_call();
+        if out.is_null() || n.is_null() {
+            return Err(GlueError::Arg);
+        }
+        if !cfg!(all(feature = "macos", target_os = "macos")) {
+            return Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED));
+        }
+        let mut v = [0u32; 256];
+        let got = crate::font::variation_glyphs(handle, c, &mut v).ok_or(GlueError::State)?;
+        // SAFETY: 256 writable words and a writable count (the caller's promise).
+        unsafe {
+            std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len());
+            n.write(got);
+        }
+        Ok(NHG_OK)
+    }
+}
+
 /// The body of `nhg_font_list` and `nhg_font_match`.
 fn font_query(
     spec: *const crate::fontspec::NhgFontSpec,

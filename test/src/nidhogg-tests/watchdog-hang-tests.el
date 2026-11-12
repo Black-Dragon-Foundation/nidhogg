@@ -65,6 +65,7 @@ no frame is optimized away."
 ;;;; Names mode
 
 (ert-deftest watchdog/names-mode-below-innermost ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-hang--define)
   (watchdog-hang--sampling
     (should (= 0 (watchdog-hang--count)))
@@ -87,6 +88,7 @@ no frame is optimized away."
     (should (= 1 (watchdog-hang--count)))))
 
 (ert-deftest watchdog/names-mode-off-during-gc ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-hang--define)
   (watchdog-hang--sampling
     (nidhogg-watchdog--test-hang-now)
@@ -108,6 +110,7 @@ no frame is optimized away."
     (should (member "wdtest-outer" (watchdog-hang--names)))))
 
 (ert-deftest watchdog/names-cut-at-a-character ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A name is cut at 63 bytes, before a character and never inside one: a
   ;; split UTF-8 sequence would make the hang file invalid text.  40 two-
   ;; byte characters keep 31.
@@ -247,6 +250,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
 
 (ert-deftest watchdog/hang-file-schema ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-hang--hanging
    (lambda (file)
      (nidhogg-watchdog--test-hold-rename t)
@@ -282,6 +286,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
 
 (ert-deftest watchdog/hang-file-deleted-at-span-end ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (watchdog-hang--hanging
    (lambda (file)
      (nidhogg-watchdog--test-hold-rename t)
@@ -299,6 +304,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
 
 (ert-deftest watchdog/hang-ends-during-write ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; The span ends while the monitor is between fsync and rename: the
   ;; rename is skipped, so no finished hang comes back.
   (watchdog-hang--hanging
@@ -316,6 +322,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
 
 (ert-deftest watchdog/hang-file-kept-by-stop-in-hang ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; `kill-emacs', run by SIGTERM or SIGHUP from the signal handler, turns
   ;; the mode off while the hang's span is still busy: the stop keeps the
   ;; file for the next start's `:killed' record.
@@ -350,6 +357,7 @@ Threshold 100 ms, hang 300 ms; FN runs in a fresh busy span."
 
 (ert-deftest watchdog/hang-dir-held-for-fsync ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; The monitor holds the log directory open while it runs, to fsync it
   ;; after a hang file's first rename (only then is the rename durable),
   ;; and closes it at stop.

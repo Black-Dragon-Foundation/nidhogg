@@ -229,9 +229,10 @@ pub trait FontSource {
     fn aliases(&self, _family: &str) -> Vec<String> {
         Vec::new()
     }
-    /// The family the platform draws `script`'s characters in when no font is named (`macfont_list`'s preferred
-    /// family, moved to the front of an unnamed list); none by default.
-    fn preferred(&self, _script: &str) -> Option<String> {
+    /// The family the platform draws `script`'s characters in when no font is named, the text in `language` (empty:
+    /// none; `mac_font_create_preferred_family_for_attributes` lays the characters out with the spec's first
+    /// language): `macfont_list`'s preferred family, moved to the front of an unnamed list; none by default.
+    fn preferred(&self, _script: &str, _language: &str) -> Option<String> {
         None
     }
     /// Whether `face` has `script` and `language` (either empty: any); by default from the face's own lists.  A source
@@ -408,7 +409,7 @@ fn candidates(src: &dyn FontSource, spec: &FontSpec) -> Vec<(usize, FontFace)> {
     } else if let Some(c) = charset {
         src.preferred_chars(c.chars, language)
     } else if !script.is_empty() {
-        src.preferred(script)
+        src.preferred(script, language)
     } else {
         None
     };
@@ -577,6 +578,17 @@ fn from_trait(points: &[(f64, f64)], t: f64) -> i32 {
     let i = points.windows(2).position(|w| t <= w[1].0).unwrap_or(0);
     let (a, b) = (points[i], points[i + 1]);
     (a.1 + (b.1 - a.1) * (t - a.0) / (b.0 - a.0)).round() as i32
+}
+
+/// `mac_font_descriptor_get_adjusted_weight`: a face whose weight trait is -0.40 (to the hundredth, Core Text's
+/// ultra-light) is regular (0) when AppKit weighs it 5, its regular (`weightOfFont:`, asked only then): Core Text
+/// reports some regular faces ultra-light (Arial Unicode MS since OS X 10.11).
+pub fn adjusted_weight(t: f64, appkit_weight: impl FnOnce() -> Option<isize>) -> f64 {
+    if (t * 100.0).round() as i64 == -40 && appkit_weight() == Some(5) {
+        0.0
+    } else {
+        t
+    }
 }
 
 pub fn weight_to_trait(weight: i32) -> f64 {
@@ -886,6 +898,29 @@ mod tests {
     }
 
     #[test]
+    fn an_ultra_light_trait_that_appkit_weighs_regular_is_regular() {
+        // Core Text's -0.40 with AppKit's 5 is regular (80); AppKit's own ultra-light (2) stays 40
+        let w = |t: f64, appkit: Option<isize>| weight_from_trait(adjusted_weight(t, || appkit));
+        assert_eq!(w(-0.4, Some(5)), 80);
+        assert_eq!(w(-0.4001, Some(5)), 80);
+        assert_eq!(w(-0.4, Some(2)), 40);
+        assert_eq!(w(-0.4, None), 40);
+        // AppKit is asked only for -0.40
+        let asked = std::cell::Cell::new(false);
+        let probe = |t: f64| {
+            adjusted_weight(t, || {
+                asked.set(true);
+                Some(5)
+            })
+        };
+        assert_eq!(probe(-0.23), -0.23);
+        assert_eq!(probe(0.4), 0.4);
+        assert!(!asked.get());
+        assert_eq!(probe(-0.4), 0.0);
+        assert!(asked.get());
+    }
+
+    #[test]
     fn family_left_out_of_the_listing_found_by_name() {
         // macfont_list matches a named family directly: Core Text hides some from its list (Courier on macOS 27)
         let fx = fixture();
@@ -1035,7 +1070,7 @@ mod tests {
         fn faces(&self) -> Vec<FontFace> {
             self.0.faces()
         }
-        fn preferred(&self, script: &str) -> Option<String> {
+        fn preferred(&self, script: &str, _language: &str) -> Option<String> {
             (script == "latin").then(|| "Times".into())
         }
         fn fits(&self, face: &FontFace, script: &str, _language: &str) -> bool {
@@ -1078,6 +1113,48 @@ mod tests {
             },
         );
         assert_eq!(named[0].face.id, 1);
+    }
+
+    /// A source whose preferred family for Han text depends on its language, as Core Text's cascade does.
+    struct ByLanguage(Vec<FontFace>);
+    impl FontSource for ByLanguage {
+        fn faces(&self) -> Vec<FontFace> {
+            self.0.clone()
+        }
+        fn preferred(&self, script: &str, language: &str) -> Option<String> {
+            match (script, language) {
+                ("han", "ja") => Some("Hiragino".into()),
+                ("han", "zh-Hans") => Some("PingFang SC".into()),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn the_preferred_family_follows_the_spec_language() {
+        // both faces have Han and both languages, so only the preferred family orders them
+        let langs = || vec!["ja".to_string(), "zh-Hans".to_string()];
+        let mut pingfang = face(13, "PingFang SC", 80, 100, 0, &["han"]);
+        pingfang.languages = langs();
+        let mut hira = face(9, "Hiragino", 80, 100, 0, &["han"]);
+        hira.languages = langs();
+        let src = ByLanguage(vec![pingfang, hira]);
+        let first = |lang: &str| {
+            list(
+                &src,
+                &FontSpec {
+                    script: "han".into(),
+                    language: lang.into(),
+                    ..spec()
+                },
+            )
+            .first()
+            .map(|e| e.face.family.clone())
+        };
+        assert_eq!(first("ja").as_deref(), Some("Hiragino"));
+        assert_eq!(first("zh-Hans").as_deref(), Some("PingFang SC"));
+        // no language: the source's own order
+        assert_eq!(first("").as_deref(), Some("PingFang SC"));
     }
 
     #[test]

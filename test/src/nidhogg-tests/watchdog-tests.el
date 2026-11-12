@@ -97,6 +97,7 @@ deadline on the coarse clock, so it returns without a responsive select."
   (plist-get (nidhogg-watchdog--stats) key))
 
 (ert-deftest watchdog/span-counting ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A 99 ms span is no stall; a 100 ms span is exactly one record, even
   ;; with no samples at all.
   (watchdog-test--running '(100 2000 nil)
@@ -113,6 +114,7 @@ deadline on the coarse clock, so it returns without a responsive select."
         (should (eql (watchdog-test--stat :requests) 0))))))
 
 (ert-deftest watchdog/histogram-buckets ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Buckets (ms): <4 <8 <16 <33 <50 <100 <250 <1000 >=1000.  A wait may
   ;; select more than once, and each extra select ends a 0 ms span, so
   ;; the first bucket is only bounded below.
@@ -130,6 +132,7 @@ deadline on the coarse clock, so it returns without a responsive select."
       (should (= (length (plist-get h :collections)) 9)))))
 
 (ert-deftest watchdog/take-shape ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; The record's keys; `--take' empties the ring; `--pending' counts it.
   (watchdog-test--running '(100 2000 nil :no-monitor)
     (watchdog-test--align)
@@ -157,6 +160,7 @@ deadline on the coarse clock, so it returns without a responsive select."
     (should-not (car (nidhogg-watchdog--take)))))
 
 (ert-deftest watchdog/ring-overflow-drops-oldest ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; 33 stalls into a ring of 32: the oldest goes, and is counted.
   (watchdog-test--running '(100 2000 nil :no-monitor)
     (watchdog-test--align)
@@ -172,6 +176,7 @@ deadline on the coarse clock, so it returns without a responsive select."
 
 (ert-deftest watchdog/responsive-flag-unwinds ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A `throw' out of a nested responsive wait inside a filter
   ;; run by `accept-process-output'.  process.c restores
   ;; `waiting_for_user_input_p' on the way out, so the outer
@@ -209,6 +214,7 @@ deadline on the coarse clock, so it returns without a responsive select."
 
 (ert-deftest watchdog/idle-ends-a-span-after-a-slow-sentinel ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; The premise of `watchdog-test--idle': one short responsive wait may
   ;; end no span.  A child's exit not yet notified makes the wait's first
   ;; pass a zero-timeout poll, which runs the sentinel; a sentinel that
@@ -238,6 +244,7 @@ deadline on the coarse clock, so it returns without a responsive select."
 
 (ert-deftest watchdog/inhibit-redisplay-wait-is-busy ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; In a timer, a 300 ms wait under `inhibit-redisplay' does not end the
   ;; span (`dbus-call-method', jsonrpc's cancel-on-input wait): one 300 ms
   ;; stall, not two of 150.  Its phase (`process-wait') has its own row
@@ -257,6 +264,7 @@ deadline on the coarse clock, so it returns without a responsive select."
 
 (ert-deftest watchdog/null-timeout-is-idle ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A wait with no timeout of its own (left by a timer's `throw') is
   ;; idle: the span before it ends there (60 ms), and the one after it
   ;; (60 ms) starts when it returns.  Counted as busy it would be 120 ms.
@@ -272,6 +280,7 @@ deadline on the coarse clock, so it returns without a responsive select."
 
 (ert-deftest watchdog/lisp-thread-select-never-counts ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A Lisp thread's selects never touch the state, even its responsive
   ;; waits; the main thread waits in `thread-join' (busy, no select).
   (skip-unless (featurep 'threads))
@@ -286,6 +295,7 @@ deadline on the coarse clock, so it returns without a responsive select."
       (should (= spans (watchdog-test--stat :spans))))))
 
 (ert-deftest watchdog/start-stop-twice ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (unwind-protect
       (progn
         (should-error (nidhogg-watchdog--start 0 2000 nil))

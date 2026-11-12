@@ -735,6 +735,14 @@ image_create_bitmap_from_data (struct frame *f, char *bits,
   dpyinfo->bitmaps[id - 1].stipple_background
     = f->background_pixel & 0xffffffff;
 #endif
+#ifdef HAVE_NHMAC
+
+  /* Naglfar keeps the bits: its stipples are drawn from them
+     (nhmacdraw.c).  */
+  dpyinfo->bitmaps[id - 1].depth = 1;
+  dpyinfo->bitmaps[id - 1].bits = xmalloc (height * ((width + 7) / 8));
+  memcpy (dpyinfo->bitmaps[id - 1].bits, bits, height * ((width + 7) / 8));
+#endif
 
   dpyinfo->bitmaps[id - 1].file = NULL;
   dpyinfo->bitmaps[id - 1].height = height;
@@ -774,6 +782,13 @@ typedef int image_fd;
 
 #if defined HAVE_HAIKU || defined HAVE_NS || defined HAVE_PGTK	\
   || defined HAVE_ANDROID || defined HAVE_NTGUI
+static char *slurp_file (image_fd, ptrdiff_t *);
+static Lisp_Object image_find_image_fd (Lisp_Object, image_fd *);
+static bool xbm_read_bitmap_data (struct frame *, char *, char *,
+				  int *, int *, char **, bool);
+#endif
+#ifdef HAVE_NHMAC
+/* Naglfar reads an XBM file's bits for its stipples.  */
 static char *slurp_file (image_fd, ptrdiff_t *);
 static Lisp_Object image_find_image_fd (Lisp_Object, image_fd *);
 static bool xbm_read_bitmap_data (struct frame *, char *, char *,
@@ -911,6 +926,35 @@ image_create_bitmap_from_file (struct frame *f, Lisp_Object file)
     = image_bitmap_to_cr_pattern (data, width, height);
   xfree (contents);
   xfree (data);
+  return id;
+#endif
+#ifdef HAVE_NHMAC
+
+  /* Naglfar: an XBM file's bits, kept as image_create_bitmap_from_data
+     keeps them.  */
+  ptrdiff_t id, size;
+  int fd, width, height;
+  char *contents, *data;
+
+  if (!STRINGP (image_find_image_fd (file, &fd)))
+    return -1;
+  contents = slurp_file (fd, &size);
+  if (!contents)
+    return -1;
+  if (!xbm_read_bitmap_data (f, contents, contents + size,
+			     &width, &height, &data, 0))
+    {
+      xfree (contents);
+      return -1;
+    }
+  xfree (contents);
+  id = image_allocate_bitmap_record (f);
+  dpyinfo->bitmaps[id - 1].refcount = 1;
+  dpyinfo->bitmaps[id - 1].file = xlispstrdup (file);
+  dpyinfo->bitmaps[id - 1].height = height;
+  dpyinfo->bitmaps[id - 1].width = width;
+  dpyinfo->bitmaps[id - 1].depth = 1;
+  dpyinfo->bitmaps[id - 1].bits = data;
   return id;
 #endif
 
@@ -1156,6 +1200,11 @@ free_bitmap_record (Display_Info *dpyinfo, Bitmap_Record *bm)
   DeleteObject (bm->pixmap);
   DeleteObject (bm->stipple);
 #endif /* HAVE_NTGUI */
+#ifdef HAVE_NHMAC
+
+  xfree (bm->bits);
+  bm->bits = NULL;
+#endif
 
 #ifdef HAVE_NS
   ns_release_object (bm->img);
@@ -3627,7 +3676,9 @@ nh_img_spec_format (Lisp_Object spec)
 	  : NH_IMG_F_NONE);
 #endif
 #ifndef HAVE_NATIVE_IMAGE_API
-  Lisp_Object type = image_spec_value (spec, QCtype, NULL);
+  /* The plist, as Naglfar's branch: SPEC may name only its type, and
+     image_spec_value asserts a valid spec.  */
+  Lisp_Object type = plist_get (XCDR (spec), QCtype);
 # ifdef HAVE_PNG
   if (EQ (type, Qpng))
     return NH_IMG_F_PNG;
@@ -8200,12 +8251,42 @@ static const struct image_keyword native_image_format[NATIVE_IMAGE_LAST] =
 };
 
 /* Return true if OBJECT is a valid native API image specification.  */
+#ifdef HAVE_NHMAC
+
+/* Naglfar: OBJECT is an XPM spec (xpm_image_p's keywords): the native
+   ones and a :color-symbols list of (NAME . COLOR) strings.  */
+static bool
+nhmac_xpm_image_p (Lisp_Object object)
+{
+  struct image_keyword fmt[NATIVE_IMAGE_LAST + 1];
+  memcpy (fmt, native_image_format, sizeof native_image_format);
+  fmt[NATIVE_IMAGE_LAST] = (struct image_keyword)
+    { ":color-symbols", IMAGE_DONT_CHECK_VALUE_TYPE, 0 };
+  if (!parse_image_spec (object, fmt, NATIVE_IMAGE_LAST + 1,
+			 Qnative_image)
+      || fmt[NATIVE_IMAGE_FILE].count + fmt[NATIVE_IMAGE_DATA].count != 1)
+    return false;
+  Lisp_Object syms = fmt[NATIVE_IMAGE_LAST].count
+    ? fmt[NATIVE_IMAGE_LAST].value : Qnil;
+  for (; CONSP (syms); syms = XCDR (syms))
+    if (!CONSP (XCAR (syms)) || !STRINGP (XCAR (XCAR (syms)))
+	|| !STRINGP (XCDR (XCAR (syms))))
+      return false;
+  return NILP (syms);
+}
+#endif
 
 static bool
 native_image_p (Lisp_Object object)
 {
   struct image_keyword fmt[NATIVE_IMAGE_LAST];
   memcpy (fmt, native_image_format, sizeof fmt);
+#ifdef HAVE_NHMAC
+  Lisp_Object nhmac_type = plist_get (XCDR (object), QCtype);
+  if (SYMBOLP (nhmac_type)
+      && !strcmp (SSDATA (SYMBOL_NAME (nhmac_type)), "xpm"))
+    return nhmac_xpm_image_p (object);
+#endif
 
   if (!parse_image_spec (object, fmt, NATIVE_IMAGE_LAST, Qnative_image))
     return false;
@@ -8217,11 +8298,12 @@ native_image_p (Lisp_Object object)
 #ifdef HAVE_NHMAC
 /* Naglfar: the 0xRRGGBB of the colour names an XPM in SRC needs, as
    xpm_load_image resolves them (F's foreground for one it does not
-   know), into *COLORS (xmalloc'd; NULL for none), their number into *N.
-   False when the glue cannot read it.  */
+   know), into *COLORS (xmalloc'd; NULL for none), their number into *N;
+   a line's `s' symbol answered from COLOR_SYMBOLS (nhglue.h).  False
+   when the glue cannot read it.  */
 static bool
 nhmac_xpm_colors (struct frame *f, Lisp_Object src, bool is_file,
-		  uint32_t **colors, uint32_t *n)
+		  Lisp_Object color_symbols, uint32_t **colors, uint32_t *n)
 {
   size_t need;
   *colors = NULL;
@@ -8243,6 +8325,21 @@ nhmac_xpm_colors (struct frame *f, Lisp_Object src, bool is_file,
   for (uint32_t i = 0; i < *n; i++, name += strlen (name) + 1)
     {
       Emacs_Color c;
+      if (*name == NHG_XPM_SYMBOL)
+	{
+	  /* A line's `s' symbol: xpm_load_image's lookup in
+	     :color-symbols.  */
+	  Lisp_Object v = Fassoc (build_string (name + 1), color_symbols,
+				  Qnil);
+	  v = CONSP (v) ? XCDR (v) : Qnil;
+	  (*colors)[i]
+	    = (!STRINGP (v) ? NHG_XPM_SYMBOL_UNSET
+	       : !xstrcasecmp (SSDATA (v), "None") ? NHG_XPM_SYMBOL_NONE
+	       : FRAME_TERMINAL (f)->defined_color_hook (f, SSDATA (v), &c,
+							 false, false)
+	       ? c.pixel & 0xffffff : NHG_XPM_SYMBOL_UNSET);
+	  continue;
+	}
       (*colors)[i] = (FRAME_TERMINAL (f)->defined_color_hook (f, name, &c,
 							      false, false)
 		      ? c.pixel : FRAME_FOREGROUND_PIXEL (f)) & 0xffffff;
@@ -8264,7 +8361,10 @@ nhmac_load_image (struct frame *f, struct image *img, Lisp_Object file,
   NhgImage im;
   uint32_t *colors = NULL, ncolors = 0;
   bool ok = (STRINGP (src)
-	     && nhmac_xpm_colors (f, src, STRINGP (file), &colors, &ncolors)
+	     && nhmac_xpm_colors (f, src, STRINGP (file),
+				  image_spec_value (img->spec,
+						    QCcolor_symbols, NULL),
+				  &colors, &ncolors)
 	     && NHG (nhg_image_decode (SDATA (src), SBYTES (src),
 				       STRINGP (file),
 				       FIXNATP (index) ? XFIXNAT (index) : 0,

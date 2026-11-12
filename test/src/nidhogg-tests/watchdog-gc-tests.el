@@ -66,6 +66,7 @@ The rings are emptied first and after; the watchdog is stopped after."
     junk))
 
 (ert-deftest watchdog/gc-ring-entries ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (let ((gc-cons-threshold most-positive-fixnum))
     (watchdog-gc--with-mode 100
       (dotimes (_ 3) (garbage-collect))
@@ -88,6 +89,7 @@ The rings are emptied first and after; the watchdog is stopped after."
       (should-not (watchdog-gc--collections)))))
 
 (ert-deftest watchdog/gc-ring-overflow ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (let ((gc-cons-threshold most-positive-fixnum))
     (watchdog-gc--with-mode 100
       (let ((dropped (plist-get (nidhogg-watchdog--stats) :gc-dropped)))
@@ -101,6 +103,7 @@ The rings are emptied first and after; the watchdog is stopped after."
                    (1+ dropped)))))))
 
 (ert-deftest watchdog/gc-ring-reset-at-start ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Collections a run left untaken are not the next run's.
   (let ((gc-cons-threshold most-positive-fixnum))
     (watchdog-gc--with-mode 100
@@ -110,6 +113,7 @@ The rings are emptied first and after; the watchdog is stopped after."
       (should-not (cdr (nidhogg-watchdog--take))))))
 
 (ert-deftest watchdog/gc-hook-off-costs-nothing ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (let ((gc-cons-threshold most-positive-fixnum))
     ;; Empty whatever an earlier row left, then collect with the mode off.
     (watchdog-gc--with-mode 100)
@@ -118,6 +122,7 @@ The rings are emptied first and after; the watchdog is stopped after."
       (should-not (watchdog-gc--collections)))))
 
 (ert-deftest watchdog/gc-explicit-cleared-while-off ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (let ((gc-cons-threshold most-positive-fixnum))
     ;; `garbage-collect' marks its collection explicit; with the mode off
     ;; the mark must still be cleared, or it would tag the next one.
@@ -129,6 +134,7 @@ The rings are emptied first and after; the watchdog is stopped after."
         (should (eq (plist-get (car cs) :explicit) nil))))))
 
 (ert-deftest watchdog/gc-gcs-done ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Each entry's :gcs-done is the `gcs-done' a `post-gc-hook' function
   ;; sees for the same collection: the join key of the Lisp GC row and
   ;; of drgnx's census lines (their `gcs_done').
@@ -151,6 +157,7 @@ The rings are emptied first and after; the watchdog is stopped after."
         (remove-hook 'post-gc-hook note)))))
 
 (ert-deftest watchdog/gc-not-in-goal ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Virtual clock, no monitor: a 150 ms span with 120 ms of GC has
   ;; 30 ms of non-GC time (the GC row's, not the 100 ms goal's); one
   ;; with 40 ms of GC has 110 ms against the goal.
@@ -185,6 +192,7 @@ The rings are emptied first and after; the watchdog is stopped after."
 
 (ert-deftest watchdog/gc-split ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Threshold 1 ms; a timer forces a collection on a 2M-cons heap
   ;; and spins.  Its span is a record with the collection's exact pause
   ;; as its GC time, and the collection names that pause.

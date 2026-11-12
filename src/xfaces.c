@@ -6657,6 +6657,29 @@ realize_gui_face (struct face_cache *cache, Lisp_Object attrs[LFACE_VECTOR_SIZE]
 	    }
 	}
     }
+#ifdef HAVE_NHWL
+
+  /* Nidhogg's own shells: a box's line widths are logical pixels (NS's
+     points), so they follow the frame's scale (a negative width keeps
+     its sign: drawn inside the glyphs).  Faces are realized again when
+     the scale changes, as the fonts re-open.  */
+  if (FRAME_NHWL_P (f) && face->box != FACE_NO_BOX)
+    {
+      uint32_t s120 = FRAME_NHWL_OUTPUT (f)->scale120;
+      if (s120 && s120 != 120)
+	{
+	  int *lw[] = { &face->box_vertical_line_width,
+			&face->box_horizontal_line_width };
+	  for (int i = 0; i < 2; i++)
+	    if (*lw[i])
+	      {
+		int n = max (1, (int) ((eabs (*lw[i]) * (int64_t) s120 + 60)
+				       / 120));
+		*lw[i] = *lw[i] < 0 ? -n : n;
+	      }
+	}
+    }
+#endif
 
   /* Text underline, overline, strike-through.  */
 

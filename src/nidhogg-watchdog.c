@@ -639,7 +639,12 @@ syms_of_nidhogg_watchdog (void)
   DEFSYM (QCtyping, ":typing");
   DEFSYM (QCcollections, ":collections");
 
+#ifdef __linux__
+  /* Where the watchdog cannot start (macOS: no monitor yet), the start
+     is not defined, so `nidhogg-watchdog-mode' says so and the tests
+     that need it skip.  */
   defsubr (&Snidhogg_watchdog__start);
+#endif
   defsubr (&Snidhogg_watchdog__stop);
   defsubr (&Snidhogg_watchdog__pending);
   defsubr (&Snidhogg_watchdog__take);

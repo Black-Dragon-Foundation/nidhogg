@@ -53,6 +53,17 @@ static void nhwl_clip_to_row (struct window *, struct glyph_row *,
 			      enum glyph_row_area, cairo_t *);
 #endif
 
+/* N logical pixels as F's device pixels: the drawing's one-pixel lines
+   and the bar cursor follow the frame's scale, as NS's points do
+   (rounded, at least 1 for N > 0).  */
+static int
+nhwl_logical_px (struct frame *f, int n)
+{
+  uint32_t s120 = FRAME_NHWL_OUTPUT (f)->scale120;
+  int64_t s = s120 ? s120 : 120;
+  return n > 0 ? max (1, (int) ((n * s + 60) / 120)) : n;
+}
+
 /* Set S->gc to a suitable GC for drawing glyph string S in cursor
    face.  */
 
@@ -1528,7 +1539,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 		  if (font && font->underline_thickness > 0)
 		    thickness = font->underline_thickness;
 		  else
-		    thickness = 1;
+		    thickness = nhwl_logical_px (s->f, 1);
 		  if ((x_underline_at_descent_line
 		       || s->face->underline_at_descent_line_p))
 		    position = ((s->height - thickness)
@@ -1590,7 +1601,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
       /* Draw overline.  */
       if (s->face->overline_p)
 	{
-	  unsigned long dy = 0, h = 1;
+	  unsigned long dy = 0, h = nhwl_logical_px (s->f, 1);
 
 	  if (s->face->overline_color_defaulted_p)
 	    nhwl_draw_ops->fill (s->f, s->xgcv.foreground, s->x, s->y + dy,
@@ -1612,7 +1623,7 @@ nhwl_draw_glyph_string (struct glyph_string *s)
 	  int glyph_height = s->first_glyph->ascent + s->first_glyph->descent;
 	  /* Strike-through width and offset from the glyph string's
 	     top edge.  */
-          unsigned long h = 1;
+          unsigned long h = nhwl_logical_px (s->f, 1);
           unsigned long dy = (glyph_height - h) / 2;
 
 	  if (s->face->strike_through_color_defaulted_p)
@@ -1787,7 +1798,7 @@ nhwl_draw_bar_cursor (struct window *w, struct glyph_row *row, int width,
 
 	  if (width < 0)
 	    width = FRAME_CURSOR_WIDTH (f);
-	  width = min (cursor_glyph->pixel_width, width);
+	  width = min (cursor_glyph->pixel_width, nhwl_logical_px (f, width));
 
 	  w->phys_cursor_width = width;
 
@@ -1807,6 +1818,8 @@ nhwl_draw_bar_cursor (struct window *w, struct glyph_row *row, int width,
 
 	  if (width < 0)
 	    width = row->height;
+	  else
+	    width = nhwl_logical_px (f, width);
 
 	  width = min (row->height, width);
 

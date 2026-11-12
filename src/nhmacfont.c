@@ -470,6 +470,23 @@ nhmacfont_shape (Lisp_Object lgstring, Lisp_Object direction)
   return used ? make_fixnum (used) : Qnil;
 }
 
+/* The glyphs of C's 256 variation sequences (macfont_variation_glyphs),
+   from the font's cmap format-14 table; how many the font has.  */
+static int
+nhmacfont_variation_glyphs (struct font *font, int c, unsigned variations[256])
+{
+  uint32_t v[256], n = 0;
+
+  block_input ();
+  if (NHG (nhg_font_variation_glyphs (((struct nhmac_font_info *) font)->handle,
+				      c, v, &n)) != NHG_OK)
+    n = 0;
+  unblock_input ();
+  for (int i = 0; i < 256; i++)
+    variations[i] = n ? v[i] : 0;
+  return n;
+}
+
 struct font_driver const nhmacfont_driver =
   {
     .type = LISPSYM_INITIALLY (Qnaglfar),
@@ -484,6 +501,7 @@ struct font_driver const nhmacfont_driver =
     .text_extents = nhmacfont_text_extents,
     .draw = nhmacfont_draw,
     .shape = nhmacfont_shape,
+    .get_variation_glyphs = nhmacfont_variation_glyphs,
   };
 
 void

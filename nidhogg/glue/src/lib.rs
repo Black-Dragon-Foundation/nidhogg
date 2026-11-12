@@ -33,6 +33,7 @@ pub mod query;
 pub mod scroll;
 pub mod select;
 pub mod stand;
+pub mod uvs;
 pub mod wait;
 pub mod xpm;
 // window operations and tips
