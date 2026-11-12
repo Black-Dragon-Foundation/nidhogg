@@ -247,8 +247,20 @@ and `mouse-pixel-position' follows motion."
 
 ;; The wait: kqueue in the run loop, the helper, keys before process output
 (defun nhmac-gui--delta (before key)
-  "How much the counter KEY of `nhmac-stats' grew since BEFORE."
-  (- (plist-get (nhmac-stats) key) (plist-get before key)))
+  "How much the counter KEY of `nhmac-stats' grew since BEFORE.
+Each one asked for in a row is recorded (`nhmac-gui--record-count'): the counts nidhogg/test/nhmac-counts.eld
+freezes (plan Task 35)."
+  (let ((n (- (plist-get (nhmac-stats) key) (plist-get before key))))
+    (nhmac-gui--record-count key n)
+    n))
+
+(defun nhmac-gui--record-count (key n)
+  "Append (ROW KEY SCALE N) to nhmac-counts.eld under GLITNIR_GUI_OUT, when that is set and a row is running."
+  (let ((dir (getenv "GLITNIR_GUI_OUT")) (test (ert-running-test)))
+    (when (and dir test)
+      (let ((scale (condition-case nil (plist-get (nhmac--test-surface 0 0) :scale) (error nil))))
+        (write-region (format "%S\n" (list (ert-test-name test) key scale n)) nil
+                      (expand-file-name "nhmac-counts.eld" dir) t 'silent)))))
 
 (defun nhmac-gui--feed (name type gaps)
   "Start NAME, writing 100 lines 10 ms apart through TYPE (`pipe' or `pty').
@@ -999,6 +1011,12 @@ judged here; whether one was pending is logged."
       (nhmac-gui--say "nhmac-commit-shows-without-spin: %S; %d commits, %d deadline commits, %d pumps" s
                       (nhmac-gui--delta before :commits) (nhmac-gui--delta before :deadline-flushes)
                       (nhmac-gui--delta before :pumps))
+      ;; round 6: 0 commits and 0 deadline commits, red at both scales: whether the redisplay drew, and what the
+      ;; pacer held or deferred
+      (nhmac-gui--say "nhmac-commit-shows-without-spin: deltas %S"
+                      (mapcar (lambda (k) (cons k (nhmac-gui--delta before k)))
+                              '(:draws :held :held-timeouts :pacer-arms :pacer-fires :deferred-commits :handed-pumps
+                                       :takes :applied)))
       (should (eq (plist-get s :contents-is-newest) t))
       (should (equal (plist-get s :gravity) "topLeft"))
       (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
@@ -1781,6 +1799,17 @@ boxes (`nhmac-gui--ink-boxes')."
                                         start (save-excursion (goto-char start) (line-end-position)))
                                        start)))
         (nhmac-gui--say "nhmac-font-ascii: ink: %S" (seq-take bad 20))
+        ;; round 6 (scale 1): faint ink one row above the bounds of "6" and "?".  Core Text's own paint of each such
+        ;; glyph alone (whether the rasteriser puts ink above the bounds, or the surface's run does)
+        (dolist (b (seq-take bad 4))
+          (when (eq (car b) 'ink-outside-every-box)
+            (dolist (col (plist-get (cdr b) :column))
+              (nhmac-gui--say "nhmac-font-ascii: %s painted alone (base row, rows): %S" (car col)
+                              (condition-case e
+                                  (nhmac--query 'test-font-probe 'glyph-rows "Menlo" (font-get font :size)
+                                                (string-to-char (car col)) 0
+                                                (string-to-number (substring nhmac-gui--font-bg 1) 16))
+                                (error e))))))
         (should-not bad)))))
 
 (ert-deftest nhmac-font-open-close ()
@@ -2729,6 +2758,19 @@ the height, the fact, and the expected and actual values."
                 (dolist (k '(:info :glyphs))
                   (unless (equal (plist-get got k) (plist-get want k))
                     (push (list (car f) height k :expected (plist-get want k) :actual (plist-get got k)) bad)))
+                ;; round 6 (scale 2): PingFang SC 100's line 1 px taller than the rule.  The line's fonts, each with
+                ;; its ascent and descent, and the row's own heights (a font the rule does not count, or a rounding)
+                (unless (equal (nth 5 (plist-get got :info)) (nth 5 (plist-get want :info)))
+                  (let ((fonts nil))
+                    (save-excursion
+                      (goto-char (line-beginning-position))
+                      (while (< (point) (line-end-position))
+                        (let* ((fo (font-at (point))) (q (and fo (query-font fo))))
+                          (unless (assoc fo fonts)
+                            (push (list fo (and q (aref q 4)) (and q (aref q 5)) (char-after)) fonts)))
+                        (forward-char 1)))
+                    (nhmac-gui--say "nhmac-font-metrics-parity: %s %d: line fonts %S, window-line-height %S" (car f)
+                                    height (nreverse fonts) (window-line-height))))
                 (when (= height 120)
                   (let ((inhibit-read-only t) (s (point-max)))
                     (goto-char s)
@@ -2957,16 +2999,19 @@ and reliefs, stretches, glyphless and composed characters, images, fringe bitmap
 
 (defun nhmac-gui--run-box (text)
   "Where the buffer's first TEXT is drawn, in the frame's device pixels: (X0 TOP X1 BASE BOTTOM), X1 past its last
-glyph, BOTTOM past its row, BASE the row's baseline (the row's height less its first character's font's descent: the
-scene's rows have one font's descent)."
+glyph, TOP its row's top, BOTTOM past its row, BASE the row's baseline (the row's height less its first character's
+font's descent: the scene's rows have one font's descent).  The row's top, not the glyph's: `posn-at-point' gives
+the glyph's, below the row's top in a row a taller element heightens (round 6: 2 px), and the overline, the
+reliefs and the box are drawn from the row's top."
   (save-excursion
     (goto-char (point-min))
     (search-forward text)
     (let* ((s (match-beginning 0)) (e (match-end 0))
            (edges (window-inside-pixel-edges))
-           (a (posn-x-y (posn-at-point s)))
+           (p (posn-at-point s))
+           (a (posn-x-y p))
            (b (posn-x-y (posn-at-point e)))
-           (top (+ (nth 1 edges) (cdr a))))
+           (top (+ (nth 1 edges) (nth 2 (window-line-height (cdr (posn-actual-col-row p)))))))
       (goto-char s)
       (let ((h (line-pixel-height)))
         (list (+ (nth 0 edges) (car a)) top (+ (nth 0 edges) (car b))

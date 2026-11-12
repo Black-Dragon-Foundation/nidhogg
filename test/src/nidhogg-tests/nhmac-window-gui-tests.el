@@ -16,12 +16,16 @@
   (nhmac--query 'test-window-state (selected-frame)))
 
 (defun nhmac-win-gui--wait (key want)
-  "Wait up to 4 s for the window state KEY to be WANT; the state."
-  (let ((deadline (+ (float-time) 4)) st)
+  "Wait for the window state KEY to be WANT; the state.  Up to 4 s, or 12 s for `:fs-busy': that waits for AppKit's
+own full-screen animation to end (its did-notification), which round 6's runner took 2.6 to 4.8 s to enter and 4.0
+to 6.0 s to leave, and a toggle sent during one runs after it (FS log step 8)."
+  (let* ((start (float-time)) (deadline (+ start (if (eq key :fs-busy) 12 4))) st)
     (while (and (progn (setq st (nhmac-win-gui--state)) (not (eq (plist-get st key) want)))
                 (< (float-time) deadline))
       (sit-for 0.2))
-    (unless (eq (plist-get st key) want)
+    (if (eq (plist-get st key) want)
+        (when (eq key :fs-busy)
+          (glitnir-gui--say "nhmac-win-gui--wait: %S %S after %.1f s" key want (- (float-time) start)))
       (glitnir-gui--say "nhmac-win-gui--wait: %S never %S: %S" key want st))
     st))
 

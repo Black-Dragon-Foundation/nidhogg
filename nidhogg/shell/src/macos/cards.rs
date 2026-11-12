@@ -26,6 +26,9 @@ pub struct Cards {
     /// Images set on a layer since the window opened (test hook).
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub images: u64,
+    /// Each shown card's last image, by id (test hook: `test-card-row`).
+    #[cfg(feature = "test-hooks")]
+    pub last: BTreeMap<u64, std::sync::Arc<[u32]>>,
 }
 
 impl Cards {
@@ -93,6 +96,11 @@ impl Cards {
             }
             kept
         });
+        #[cfg(feature = "test-hooks")]
+        {
+            let shown = &self.shown;
+            self.last.retain(|id, _| shown.contains_key(id));
+        }
         for c in &list {
             let (l, at) = self.shown.entry(c.id).or_insert_with(|| {
                 let l = CALayer::new();
@@ -120,6 +128,8 @@ impl Cards {
                     }
                     l.setContentsScale(scale.factor());
                     self.images += 1;
+                    #[cfg(feature = "test-hooks")]
+                    self.last.insert(c.id, px.clone());
                 }
             }
             if *at != c.rect || c.argb.is_some() {
@@ -138,5 +148,19 @@ impl Cards {
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub fn shown(&self) -> Vec<(u64, Place)> {
         self.shown.iter().map(|(id, (_, at))| (*id, *at)).collect()
+    }
+
+    /// Card `id`'s last image's row `y` from column `x0`, `n` pixels, as #xRRGGBB words (test hook).
+    #[cfg(feature = "test-hooks")]
+    pub fn row(&self, id: u64, y: u32, x0: u32, n: u32) -> Option<Vec<u32>> {
+        let (_, (_, _, w, h)) = self.shown.get(&id)?;
+        let px = self.last.get(&id)?;
+        (y < *h && x0 < *w).then(|| {
+            let start = (y * w + x0) as usize;
+            px[start..start + n.min(w - x0) as usize]
+                .iter()
+                .map(|p| p & 0xff_ffff)
+                .collect()
+        })
     }
 }

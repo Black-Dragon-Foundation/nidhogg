@@ -279,13 +279,34 @@ pub fn start(
     let at = view.convertPoint_fromView(press.locationInWindow(), None);
     // SAFETY: a frame and no image contents, which AppKit takes (the drag shows no icon).
     unsafe { dragging.setDraggingFrame_contents(NSRect::new(at, NSSize::new(16.0, 16.0)), None) };
+    // round 6: the session saw no move (Lisp then read drag-mouse-1): how old the press was and whether the button
+    // was still down when the session began
+    #[cfg(feature = "test-hooks")]
+    let (age, buttons) = (
+        objc2_foundation::NSProcessInfo::processInfo().systemUptime() - press.timestamp(),
+        NSEvent::pressedMouseButtons(),
+    );
     let _session = view.beginDraggingSessionWithItems_event_source(
         &NSArray::from_retained_slice(&[dragging]),
         &press,
         ProtocolObject::from_ref(&*source),
     );
+    #[cfg(feature = "test-hooks")]
+    START_LOG.with(|l| {
+        *l.borrow_mut() = format!(
+            "(:press-age-ms {:.0} :buttons {buttons} :press-type {})",
+            age * 1000.0,
+            press.r#type().0
+        )
+    });
     SOURCE.with(|s| *s.borrow_mut() = Some(source));
     Ok(())
+}
+
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    /// The last drag start: the press's age and the buttons held then (`test-drag-log`).
+    pub static START_LOG: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// `ShellBackend::drag_cancel`.

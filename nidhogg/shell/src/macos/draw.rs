@@ -544,3 +544,54 @@ fn comps(argb: u32) -> [f64; 4] {
     let ch = |s: u32| f64::from((argb >> s) & 0xff) / 255.0;
     [ch(16), ch(8), ch(0), ch(24)]
 }
+
+/// Test hook (`test-font-probe`'s `glyph-rows`): glyph `glyph` of open font `font` painted alone, as a run is painted
+/// (`fg` over opaque `bg`, from x `w / 4`), its baseline `base` rows down a `w` x `h` canvas: each row's pixel furthest
+/// from `bg`, top down, as #xRRGGBB.  `None` when Core Graphics refuses the canvas.
+#[cfg(feature = "test-hooks")]
+pub fn glyph_rows(
+    font: u64,
+    glyph: u16,
+    fg: u32,
+    bg: u32,
+    w: i32,
+    h: i32,
+    base: i32,
+) -> Option<Vec<u32>> {
+    let mut px = vec![0u32; (w * h) as usize];
+    {
+        let mut slot = None;
+        let canvas = Canvas::over(&mut slot, &mut px, w, h)?;
+        canvas.paint(&Paint {
+            clip: Vec::new(),
+            shapes: vec![
+                Shape::Fill {
+                    r: Rect { x: 0, y: 0, w, h },
+                    argb: bg | 0xff00_0000,
+                    copy: true,
+                },
+                Shape::Glyphs {
+                    font,
+                    x: f64::from(w / 4),
+                    y: f64::from(base),
+                    glyphs: vec![glyph],
+                    xs: vec![0.0],
+                    argb: fg | 0xff00_0000,
+                    integral: false,
+                },
+            ],
+        });
+    }
+    let off = |p: u32| {
+        [0, 8, 16]
+            .iter()
+            .map(|s| ((p >> s) & 0xff).abs_diff((bg >> s) & 0xff))
+            .max()
+            .unwrap_or(0)
+    };
+    Some(
+        px.chunks(w as usize)
+            .map(|row| row.iter().copied().max_by_key(|&p| off(p)).unwrap_or(bg) & 0xff_ffff)
+            .collect(),
+    )
+}
