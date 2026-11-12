@@ -337,6 +337,8 @@ nhmacfont_close (struct font *font)
     return;
   NHG (nhg_font_close (info->handle));
   info->handle = 0;
+  /* The glue freed the table's pages with the font.  */
+  info->table = NULL;
 }
 
 /* Character C's glyph, from the font's table; a page not read yet is
@@ -348,7 +350,7 @@ nhmacfont_encode_char (struct font *font, int c)
   unsigned page = (unsigned) c / NHG_FONT_PAGE;
   uint32_t glyph;
 
-  if (c < 0 || page >= NHG_FONT_CHAR_PAGES)
+  if (c < 0 || page >= NHG_FONT_CHAR_PAGES || !info->table)
     return FONT_INVALID_CODE;
   if (!info->table->chars[page])
     NHG (nhg_font_fill (info->handle, page));
@@ -364,7 +366,7 @@ nhmac_glyph_metrics (struct nhmac_font_info *info, unsigned g)
 {
   unsigned page = g / NHG_FONT_PAGE;
 
-  if (page >= NHG_FONT_GLYPH_PAGES)
+  if (page >= NHG_FONT_GLYPH_PAGES || !info->table)
     return NULL;
   if (!info->table->glyphs[page])
     NHG (nhg_font_fill (info->handle, page | NHG_FONT_FILL_GLYPHS));
