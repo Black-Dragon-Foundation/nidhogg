@@ -12,10 +12,17 @@
 ;;   GLITNIR_GUI_RECORDER    the recorder's control socket (recorder only)
 ;;   GLITNIR_GUI_RECORDER_BIN, GLITNIR_GUI_RECORDER_PROFILE  its binary and profile file, for a row's second recorder
 ;;   GLITNIR_GUI_KNOWN       the known-differences file (gui-known-differences.eld next to the tests)
+;;   GLITNIR_GUI_ONLY        one row's name: the run is that row alone, when the selector takes it
+;;   GLITNIR_GUI_DONE        a file of row names, one per line, that a previous session of the same run already
+;;                           reported: they are not run again (a lane that ended a hung row starts a new session)
+;; The rows run in a fixed order: by file in GLITNIR_GUI_FILES's order (a space-separated list of globs), then by
+;; name; rows tagged `runs-last' after every other.  Rows tagged `parity' (compared with another build's output)
+;; are counted apart in the summary line.
 ;; Prints every result to `external-debugging-output', then `kill-emacs' 0 (all as expected) or 1.
 ;; The tests start only once the first frame is visible and has been redisplayed, never inside `command-line'.
 
 (require 'ert)
+(require 'seq)
 
 (defconst glitnir-gui--dir (file-name-directory (or load-file-name buffer-file-name)))
 
@@ -577,14 +584,25 @@ The recorder keeps its session store.  Signals an error when the script fails or
       (unless (and (eq rc 0) (string-match-p "^READY$" (buffer-string)))
         (error "gui-runner: the restart script failed (%S): %s" rc (buffer-string))))))
 
+(defun glitnir-gui--macos-only-p (file)
+  "Whether FILE holds macOS rows only: the NS port's and Naglfar's, an `ns' or `nhmac' part in its name."
+  (string-match-p "\\(\\`\\|-\\)\\(ns\\|nhmac\\)-.*gui-tests\\.el\\'" (file-name-nondirectory file)))
+
 (defun glitnir-gui--load-tests ()
-  (let ((dir (or (getenv "GLITNIR_GUI_TESTS") glitnir-gui--dir)))
-    (dolist (f (let ((glob (getenv "GLITNIR_GUI_FILES")))
-                 (if (and glob (not (string-empty-p glob)))
-                     (file-expand-wildcards (expand-file-name glob dir) t)
-                   (seq-remove (lambda (f)
-                                 (and (not (featurep 'ns)) (string-match-p "\\(-ns\\|nhmac\\)-gui-tests\\.el\\'" f)))
-                               (directory-files dir t "-gui\\(-[a-z0-9]+\\)?-tests\\.el\\'")))))
+  "Load the row files (GLITNIR_GUI_FILES' globs, or every row file); off macOS the macOS-only files are left out,
+by a glob too, and the log says how many."
+  (let* ((dir (or (getenv "GLITNIR_GUI_TESTS") glitnir-gui--dir))
+         (glob (getenv "GLITNIR_GUI_FILES"))
+         (files (if (and glob (not (string-empty-p glob)))
+                    ;; each glob in turn, its files sorted: the order the rows run in
+                    (mapcan (lambda (g) (sort (file-expand-wildcards (expand-file-name g dir) t) #'string<))
+                            (split-string glob))
+                  (directory-files dir t "-gui\\(-[a-z0-9]+\\)?-tests\\.el\\'")))
+         (left (and (not (eq system-type 'darwin)) (seq-filter #'glitnir-gui--macos-only-p files))))
+    (when left
+      (glitnir-gui--say "gui-runner: %d macOS-only row files not loaded off macOS: %s" (length left)
+                        (mapconcat #'file-name-nondirectory left " ")))
+    (dolist (f (seq-difference files left))
       (load f nil t))))
 
 ;; The known-differences file holds entries (TEST-NAME COMPOSITOR REASON . OPTIONS): the test is expected to fail on that
@@ -655,16 +673,45 @@ The rows without the tag (locks, fds, threads) still run."
            (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))
            ;; the `ert-info' lines, innermost first
            (dolist (info (ert-test-result-with-condition-infos result))
-             (glitnir-gui--say "  %s%s" (car info) (cdr info)))))))))
+             (glitnir-gui--say "  %s%s" (car info) (cdr info)))))
+       ;; logged: the result keeps no row's values (a capture's pixels in a `should' form, a backtrace's
+       ;; arguments), which would stay live to the end and make every later row's GC mark them
+       (setf (ert-test-result-should-forms result) nil)
+       (when (ert-test-result-with-condition-p result)
+         (setf (ert-test-result-with-condition-condition result) nil
+               (ert-test-result-with-condition-backtrace result) nil
+               (ert-test-result-with-condition-infos result) nil))))))
 
 (defun glitnir-gui--selector ()
   "The ERT selector: GLITNIR_GUI_SELECT (an Emacs regexp, default every test), and with GLITNIR_GUI_TAG set
 \(and REGEXP (tag TAG))."
   (let ((re (let ((r (getenv "GLITNIR_GUI_SELECT"))) (and r (not (string-empty-p r)) r)))
         (tag (let ((x (getenv "GLITNIR_GUI_TAG"))) (and x (not (string-empty-p x)) (intern x)))))
-    (cond ((and re tag) `(and ,re (tag ,tag)))
-          (tag `(tag ,tag))
-          (t (or re t)))))
+    (let ((sel (cond ((and re tag) `(and ,re (tag ,tag)))
+                     (tag `(tag ,tag))
+                     (t (or re t))))
+          (only (let ((o (getenv "GLITNIR_GUI_ONLY"))) (and o (not (string-empty-p o)) (intern o)))))
+      ;; GLITNIR_GUI_ONLY: that one row, when the selector takes it (a lane's fresh session)
+      (if only `(and ,sel (member ,only)) sel))))
+
+(defun glitnir-gui--done ()
+  "The rows GLITNIR_GUI_DONE names: reported by an earlier session of this run."
+  (let ((file (getenv "GLITNIR_GUI_DONE")))
+    (when (and file (file-readable-p file))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (mapcar #'intern (split-string (buffer-string) "\n" t "[ \t]+"))))))
+
+(defun glitnir-gui--ordered (tests)
+  "TESTS in the lane's fixed order: by the file that defines each (the load order), then by name."
+  (let ((files (mapcar #'car load-history)))
+    (sort (copy-sequence tests)
+          (lambda (a b)
+            (let ((fa (or (seq-position files (ert-test-file-name a)) 0))
+                  (fb (or (seq-position files (ert-test-file-name b)) 0)))
+              ;; `load-history' is newest first: a later-loaded file has the smaller position
+              (if (/= fa fb) (> fa fb)
+                (string< (symbol-name (ert-test-name a)) (symbol-name (ert-test-name b)))))))))
 
 (defun glitnir-gui--run ()
   (glitnir-gui--place-frame)
@@ -673,17 +720,31 @@ The rows without the tag (locks, fds, threads) still run."
   (glitnir-gui--wait-for-first-paint)
   (glitnir-gui--say-frame "first paint")
   (glitnir-gui--say-startup)
+  ;; the heap before any row, against which a timing row's heap is read
+  (glitnir-gui--say "gui-runner: heap at start %S" (garbage-collect))
   (glitnir-gui--load-tests)
   (glitnir-gui--apply-known-differences)
-  (let* ((tests (ert-select-tests (glitnir-gui--selector) t))
+  (let* ((done (glitnir-gui--done))
+         (tests (glitnir-gui--ordered
+                 (seq-remove (lambda (test) (memq (ert-test-name test) done))
+                             (ert-select-tests (glitnir-gui--selector) t))))
          (_ (glitnir-gui--fail-drawing-rows tests))
          ;; rows tagged `runs-last' (one that ends the compositor, say) run after every other row
          (last (seq-filter (lambda (test) (memq 'runs-last (ert-test-tags test))) tests))
          (stats (ert-run-tests `(member ,@(seq-difference tests last) ,@last) #'glitnir-gui--report))
          (n (ert-stats-total stats)) (bad (ert-stats-completed-unexpected stats))
-         (skipped (ert-stats-skipped stats)))
+         (skipped (ert-stats-skipped stats))
+         (parity (seq-filter (lambda (test) (memq 'parity (ert-test-tags test))) tests))
+         (parity-bad (seq-count (lambda (test)
+                                  (let ((r (ert-test-most-recent-result test)))
+                                    (and r (not (ert-test-result-expected-p test r)))))
+                                parity)))
     (glitnir-gui--say "Ran %d tests, %d as expected (%d skipped), %d unexpected" n (- n bad) skipped bad)
-    (kill-emacs (if (and (> n 0) (= bad 0)) 0 1))))
+    (when parity
+      (glitnir-gui--say "gui-runner: parity rows %d, %d unexpected; functional rows %d, %d unexpected"
+                        (length parity) parity-bad (- n (length parity)) (- bad parity-bad)))
+    ;; a fresh session's one row that the selector leaves out ran nothing, as asked
+    (kill-emacs (if (and (or (> n 0) (not (member (getenv "GLITNIR_GUI_ONLY") '(nil "")))) (= bad 0)) 0 1))))
 
 (defun glitnir-gui--start (&rest _)
   "Run the tests once, after the first frame is visible and redisplayed."

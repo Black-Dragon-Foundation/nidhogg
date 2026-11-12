@@ -12,8 +12,10 @@ use super::runloop::{MacEv, deliver};
 use crate::api::{ShellError, ShellResult, WindowId};
 use crate::event::{KeyEv, ShellEvent, TextEv};
 use crate::ime_text::Surrounding;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 /// What C pushed for one window: the cursor rectangle (points from the content's top left) and the text around it.
 #[derive(Clone, Debug, Default)]
@@ -22,45 +24,56 @@ pub struct Pushed {
     pub text: Surrounding,
 }
 
+// The pushed state and the record texts are the process's, not a thread's: C pushes at the consistency point of
+// whichever Lisp thread holds the lock, and the host that takes a record's text may be a Lisp thread too, while AppKit
+// asks and makes records on the main thread.  Each lock is held for one short access, never across a call out.
+static PUSHED: LazyLock<Mutex<HashMap<WindowId, Pushed>>> = LazyLock::new(Mutex::default);
+/// The texts of the preedit and commit records, until the host takes them.
+static TEXTS: LazyLock<Mutex<HashMap<u32, Vec<u8>>>> = LazyLock::new(Mutex::default);
+static NEXT: AtomicU32 = AtomicU32::new(1);
+
 thread_local! {
-    static PUSHED: RefCell<HashMap<WindowId, Pushed>> = RefCell::new(HashMap::new());
-    /// The key `interpretKeyEvents:` is running for, and its characters.
+    /// The key `interpretKeyEvents:` is running for, and its characters (the main thread's).
     static CURRENT: RefCell<Option<(Option<KeyEv>, String)>> = const { RefCell::new(None) };
-    /// The texts of the preedit and commit records, until the host takes them.
-    static TEXTS: RefCell<HashMap<u32, Vec<u8>>> = RefCell::new(HashMap::new());
-    static NEXT: Cell<u32> = const { Cell::new(1) };
+}
+
+fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    // a panic under the lock left whole values behind (every access is one insert, remove or field write)
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// `window`'s pushed state, changed by `f`.
 pub fn with<R>(window: WindowId, f: impl FnOnce(&mut Pushed) -> R) -> R {
-    PUSHED.with(|p| f(p.borrow_mut().entry(window).or_default()))
+    f(locked(&PUSHED).entry(window).or_default())
 }
 
 /// The window went.
 pub fn forget(window: WindowId) {
-    PUSHED.with(|p| p.borrow_mut().remove(&window));
+    locked(&PUSHED).remove(&window);
 }
 
 /// `ShellBackend::text_len`.
 pub fn text_len(id: u32) -> ShellResult<usize> {
-    TEXTS.with(|t| t.borrow().get(&id).map(Vec::len).ok_or(ShellError::State))
+    locked(&TEXTS)
+        .get(&id)
+        .map(Vec::len)
+        .ok_or(ShellError::State)
 }
 
 /// `ShellBackend::take_text`.
 pub fn take_text(id: u32) -> ShellResult<Vec<u8>> {
-    TEXTS.with(|t| t.borrow_mut().remove(&id).ok_or(ShellError::State))
+    locked(&TEXTS).remove(&id).ok_or(ShellError::State)
 }
 
 fn text_event(text: &str) -> TextEv {
     if text.is_empty() {
         return TextEv::default();
     }
-    let id = NEXT.with(|n| {
-        let id = n.get();
-        n.set(id.wrapping_add(1).max(1));
-        id
-    });
-    TEXTS.with(|t| t.borrow_mut().insert(id, text.as_bytes().to_vec()));
+    let id = match NEXT.fetch_add(1, Ordering::Relaxed) {
+        0 => NEXT.fetch_add(1, Ordering::Relaxed),
+        id => id,
+    };
+    locked(&TEXTS).insert(id, text.as_bytes().to_vec());
     TextEv {
         id,
         len: u32::try_from(text.len()).unwrap_or(u32::MAX),
@@ -208,5 +221,95 @@ pub fn test_state(
             sub_range.location,
             sub_range.length
         )
+    }
+}
+
+/// Text Input Sources, for the test hook that selects a real input source.
+#[cfg(feature = "test-hooks")]
+mod tis {
+    use crate::api::{ShellError, ShellResult};
+
+    /// `TISInputSourceRef` and the other Core Foundation objects the input source calls take.
+    type CFRef = *const std::ffi::c_void;
+
+    #[link(name = "Carbon", kind = "framework")]
+    unsafe extern "C" {
+        static kTISPropertyInputSourceID: CFRef;
+        fn TISCreateInputSourceList(properties: CFRef, include_all_installed: u8) -> CFRef;
+        fn TISEnableInputSource(source: CFRef) -> i32;
+        fn TISSelectInputSource(source: CFRef) -> i32;
+        fn TISCopyCurrentKeyboardInputSource() -> CFRef;
+        fn TISGetInputSourceProperty(source: CFRef, key: CFRef) -> CFRef;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFArrayGetCount(a: CFRef) -> isize;
+        fn CFArrayGetValueAtIndex(a: CFRef, i: isize) -> CFRef;
+    }
+
+    /// The current keyboard input source's id (`kTISPropertyInputSourceID`).
+    fn current_source_id() -> Option<String> {
+        use super::super::text::{Cf, string};
+        // SAFETY: a Copy call (+1, owned by `Cf`); the property is a borrowed CFString of the live source.
+        unsafe {
+            let cur = Cf::new(TISCopyCurrentKeyboardInputSource())?;
+            let id = TISGetInputSourceProperty(cur.get(), kTISPropertyInputSourceID);
+            (!id.is_null()).then(|| string(id))
+        }
+    }
+
+    /// Test hook (`test-input-source`): enable and select the installed input source `id` (Text Input Sources, e.g.
+    /// `com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese`), or with an empty `id` only report.  Its answer, for Lisp:
+    /// `(:found BOOL :enable STATUS :select STATUS :current "ID")`, STATUS the OSStatus (0 is done).
+    pub fn test_input_source(id: &str) -> ShellResult<String> {
+        use super::super::text::{Cf, cf_string, dictionary};
+        let id = id.trim_matches('"');
+        let (mut found, mut enable, mut select) = (false, -1, -1);
+        if !id.is_empty() {
+            let key = cf_string(id).ok_or(ShellError::NoMem)?;
+            // SAFETY: the property key is HIToolbox's constant; the dictionary retains it and the id.
+            let props = dictionary(&[unsafe { kTISPropertyInputSourceID }], &[key.get()])
+                .ok_or(ShellError::NoMem)?;
+            // SAFETY: a Create call (+1, owned by `Cf`); its elements are borrowed while it lives.
+            unsafe {
+                if let Some(list) = Cf::new(TISCreateInputSourceList(props.get(), 1))
+                    && CFArrayGetCount(list.get()) > 0
+                {
+                    let src = CFArrayGetValueAtIndex(list.get(), 0);
+                    found = true;
+                    enable = TISEnableInputSource(src);
+                    select = TISSelectInputSource(src);
+                }
+            }
+        }
+        Ok(format!(
+            "(:found {} :enable {enable} :select {select} :current {})",
+            if found { "t" } else { "nil" },
+            current_source_id()
+                .map_or_else(|| "nil".into(), |s| crate::pasteboard::lisp_string(&s))
+        ))
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+pub use tis::test_input_source;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lisp_threads_push_and_take_reach_the_main_threads_state() {
+        // C pushes at a Lisp thread's consistency point; AppKit reads on the main thread
+        std::thread::spawn(|| with(0x7e57, |p| p.cursor = [1, 2, 3, 4]))
+            .join()
+            .unwrap();
+        assert_eq!(with(0x7e57, |p| p.cursor), [1, 2, 3, 4]);
+        forget(0x7e57);
+        // a commit's text, made here, taken by the Lisp thread that runs `read_socket`
+        let ev = text_event("かな");
+        let took = std::thread::spawn(move || take_text(ev.id)).join().unwrap();
+        assert_eq!(took.expect("the text is there"), "かな".as_bytes());
     }
 }

@@ -66,6 +66,10 @@ int32_t nhg_fd (NhgDisplay *d);
 /* Run the shell's work that must happen on the host's thread (configure and surface events) and flush.  */
 int32_t nhg_dispatch_main (NhgDisplay *d);
 
+/* Commit now what the shell left for its next pump or wait (macOS: the commit is off the redisplay path); the host's
+   deadline after a redisplay, for Lisp that runs on without waiting.  */
+int32_t nhg_flush_presents (NhgDisplay *d);
+
 /* The shell's capabilities: one protocol version per optional feature, 0 when absent.  A missing protocol makes its
    feature do nothing.  */
 typedef struct
@@ -866,8 +870,9 @@ typedef struct
   int32_t beneath_rgb;
 } NhgBlock;
 
-/* FRAME (WINDOW its tree's shell window) is about to be published with the N blocks at BLOCKS: each window with blocks
-   gets its block layer, the others lose theirs.  Returns how many windows have block layers.  */
+/* FRAME (WINDOW its own shell window, a child frame's too) is about to be published with the N blocks at BLOCKS: each
+   window with blocks gets its block layer, the others lose theirs (a shell that shows cards itself gets them as images
+   with the frame's cards).  Returns how many windows have block layers.  */
 int32_t nhg_blocks_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const NhgBlock *blocks, size_t n);
 
 /* How many of FRAME's windows have a block layer (while it is not 0, C lists the frame's blocks at each publish).  */
@@ -1194,10 +1199,13 @@ int32_t nhg_font_id (const char *s, size_t len, uint32_t *id);
 /* The name of ID into BUF (CAP bytes, NUL-terminated), its length into *LEN (may be NULL).  NHG_E_TOO_SMALL.  */
 int32_t nhg_font_name (uint32_t id, char *buf, size_t cap, size_t *len);
 
-/* Every font that fits *SPEC into OUT (CAP records), how many into *N; the nearest one for nhg_font_match.
-   NHG_E_UNSUPPORTED without a font source (the Linux shell has none: fontconfig lists its fonts).  */
+/* Every font that fits *SPEC into OUT (CAP records), how many there are into *N (more than CAP: ask again with room
+   for them all); the nearest one for nhg_font_match.  NHG_E_UNSUPPORTED without a font source (the Linux shell has
+   none: fontconfig lists its fonts).  nhg_font_has_char: whether face FONT_ID (an entity's) has character C, without
+   opening it: 1 or 0 into *HAS, -1 when the source cannot tell.  */
 int32_t nhg_font_list (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
 int32_t nhg_font_match (const NhgFontSpec *spec, NhgFontEntity *out, size_t cap, size_t *n);
+int32_t nhg_font_has_char (uint64_t font_id, uint32_t c, int32_t *has);
 
 /* ---- The native font driver's fonts (glue/src/font.rs; macOS) ---------------------------------------------------
    nhg_font_start installs Core Text as the source nhg_font_list and nhg_font_match list from (NHG_E_UNSUPPORTED
@@ -1287,7 +1295,10 @@ int32_t nhg_font_fill (uint64_t handle, uint32_t page);
    half wave.  NHG_DRAW_DASH: a line R.h thick along R's top, dashes A long from phase B.  NHG_DRAW_BITMAP: R.h rows at
    BITS, R.w (at most 16) bits wide, the leftmost in bit R.w - 1, each bit A (0 or 1: one; at most 8) pixels square;
    set bits in FG, the rest in BG unless NHG_DRAW_OVERLAY.  NHG_DRAW_CORNERS: R in FG outside quarter circles of radius A set B pixels outside the corners
-   the flags' low four bits name (bottom right, bottom left, top left, top right).  NCLIP (0-2) clip rectangles
+   the flags' low four bits name (bottom right, bottom left, top left, top right).  NHG_DRAW_RING: a box's ring on
+   R (glitnir-decor.c's draw_ring), radius A, horizontal lines B & 0xff high and vertical ones B >> 8 wide; the flags'
+   low four bits name the rounded corners (top left, then clockwise), the next four the sides with a line (top,
+   right, bottom, left); with NHG_DRAW_RELIEF it is FG above R's anti-diagonal and BG below.  NCLIP (0-2) clip rectangles
    apply.  A refused record is skipped and the call returns NHG_E_ARG; NHG_E_UNSUPPORTED where the shell has no
    painter.  nhg_draw_glyphs paints one NHG_DRAW_GLYPHS record of the open font FONT (nhg_font_open): N glyphs at
    BITS in FG from x A on the baseline B, placed as macfont_draw places them (NHG_DRAW_PADDING: one pixel each); with
@@ -1306,12 +1317,14 @@ int32_t nhg_font_fill (uint64_t handle, uint32_t page);
 #define NHG_DRAW_CORNERS 7
 #define NHG_DRAW_GLYPHS 8
 #define NHG_DRAW_IMAGE 9
+#define NHG_DRAW_RING 10
 
 #define NHG_DRAW_COPY (1u << 0)
 #define NHG_DRAW_TOP (1u << 3)
 #define NHG_DRAW_BACKGROUND (1u << 4)
 #define NHG_DRAW_PADDING (1u << 5)
 #define NHG_DRAW_OVERLAY (1u << 7)
+#define NHG_DRAW_RELIEF (1u << 8)
 
 typedef struct
 {

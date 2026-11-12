@@ -9,6 +9,10 @@
 (require 'ert)
 (require 'cl-lib)
 
+(defun nhmac-app--say (fmt &rest args)
+  "Print FMT with ARGS as a line of the lane's log (stderr), not to *Messages*."
+  (princ (concat (apply #'format fmt args) "\n") #'external-debugging-output))
+
 (defun nhmac-app--dir ()
   "The bundle the lane was given (NHMAC_APP), or nil."
   (let ((app (getenv "NHMAC_APP")))
@@ -20,14 +24,16 @@
 (defun nhmac-app--run (program args secs)
   "Run PROGRAM with ARGS for at most SECS seconds; (EXIT-STATUS . OUTPUT), EXIT-STATUS `timeout' when it ran over."
   (let* ((buf (generate-new-buffer " *nhmac-app*"))
+         (done nil)
+         ;; the sentinel runs after the last output is read; `process-live-p' turns nil at the exit, before that
          (proc (make-process :name "nhmac-app" :buffer buf :command (cons program args)
-                             :connection-type 'pipe :noquery t :sentinel #'ignore))
+                             :connection-type 'pipe :noquery t :sentinel (lambda (_p _e) (setq done t))))
          (deadline (+ (float-time) secs)))
     (unwind-protect
         (progn
-          (while (and (process-live-p proc) (< (float-time) deadline))
+          (while (and (not done) (< (float-time) deadline))
             (accept-process-output proc 0.2))
-          (let ((live (process-live-p proc)))
+          (let ((live (not done)))
             (when live (delete-process proc))
             (cons (if live 'timeout (process-exit-status proc))
                   (with-current-buffer buf (buffer-string)))))
@@ -45,10 +51,10 @@
          (out (make-temp-file "nhmac-open"))
          (form (format "(progn (write-region (prin1-to-string (list invocation-directory data-directory window-system)) nil %S) (kill-emacs))" out))
          (r (nhmac-app--run "open" (list "-n" "-W" "-a" app "--args" "-Q" "--eval" form) 90)))
-    (message "nhmac-bundle-open: %S" r)
+    (nhmac-app--say "nhmac-bundle-open: %S" r)
     (should (eq (car r) 0))
     (let ((got (read (with-temp-buffer (insert-file-contents out) (buffer-string)))))
-      (message "nhmac-bundle-open: %S" got)
+      (nhmac-app--say "nhmac-bundle-open: %S" got)
       (should (string-prefix-p app (file-truename (nth 0 got))))
       (should (string-prefix-p app (file-truename (nth 1 got))))
       (should (eq (nth 2 got) 'ns)))))
@@ -72,12 +78,17 @@
   (let* ((sock (make-temp-name (expand-file-name "nhd" temporary-file-directory)))
          (client (expand-file-name "Contents/MacOS/bin/emacsclient" (nhmac-app--dir)))
          (started (nhmac-app--run (nhmac-app--emacs) (list (concat "--daemon=" sock)) 90)))
-    (message "nhmac-daemon-client: daemon %S" started)
+    ;; on stderr (the lane's log), not *Messages*: batch 2's client answered "" with exit 0
+    (nhmac-app--say "nhmac-daemon-client: daemon %S" started)
     (unwind-protect
         (progn
           (should (eq (car started) 0))
           (let ((r (nhmac-app--run client (list "-s" sock "-c" "-n" "-e" "(list window-system (length (frame-list)))") 60)))
-            (message "nhmac-daemon-client: client %S" r)
+            (nhmac-app--say "nhmac-daemon-client: client %S" r)
+            (unless (string-match-p "\\`(ns [2-9]" (string-trim (cdr r)))
+              ;; what the daemon says it has: its frames and the window system it would make one on
+              (nhmac-app--say "nhmac-daemon-client: daemon's view %S"
+                                (nhmac-app--run client (list "-s" sock "-e" "(list (frame-list) (mapcar (lambda (f) (framep f)) (frame-list)) initial-window-system (featurep 'ns) (featurep 'nidhogg-macos) (daemonp))") 30)))
             (should (eq (car r) 0))
             (should (string-match-p "\\`(ns [2-9]" (string-trim (cdr r))))))
       (nhmac-app--run client (list "-s" sock "-e" "(kill-emacs)") 30))))
@@ -87,7 +98,7 @@
   (skip-unless (nhmac-app--dir))
   (let* ((process-environment (nhmac-app--without-locale))
          (r (nhmac-app--run (nhmac-app--emacs) (list "--batch" "--eval" "(princ (getenv \"LANG\"))") 60)))
-    (message "nhmac-locale-from-system: %S" r)
+    (nhmac-app--say "nhmac-locale-from-system: %S" r)
     (should (eq (car r) 0))
     (should (string-match-p "[a-z]+\\(_[A-Za-z]+\\)?\\.UTF-8\\'" (string-trim (cdr r))))))
 

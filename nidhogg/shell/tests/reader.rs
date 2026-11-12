@@ -379,6 +379,8 @@ mod reader {
         "set_chrome",
         "cards_on_layers",
         "set_cards",
+        // the default leaves nothing to commit (only macOS defers a commit)
+        "flush_presents",
     ];
 
     /// The names of `ShellBackend`'s methods, read from its source.

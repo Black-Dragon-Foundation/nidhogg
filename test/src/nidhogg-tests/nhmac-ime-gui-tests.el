@@ -7,6 +7,7 @@
 ;; the view answers (`test-ime-state'), which comes from the state C pushed at the last redisplay.
 
 (require 'ert)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 (require 'cl-lib)
 
 (defun nhmac-ime--naglfar-p ()
@@ -43,6 +44,8 @@
   "Marked text shows as NS's working text, and a commit replaces it with the text inserted."
   (skip-unless (nhmac-ime--naglfar-p))
   (nhmac-ime--in-buffer ""
+    ;; C pushes what the view answers only for the focused frame
+    (glitnir-gui--say "nhmac-ime-marked-and-commit: focus %S" (frame-focus-state))
     (nhmac--call 'test-ime (selected-frame) 0 "か")
     (nhmac-ime--events 1)
     (should (equal (buffer-string) "か"))
@@ -81,7 +84,7 @@
   (nhmac-ime--in-buffer "abcdefghij"
     (goto-char 2)
     (let* ((s1 (nhmac-ime--state)) (r1 (plist-get s1 :rect)) (win (plist-get s1 :window)))
-      (message "nhmac-ime-first-rect: %S" s1)
+      (glitnir-gui--say "nhmac-ime-first-rect: %S" s1)
       (should (> (nth 3 r1) 0))
       (should (<= (nth 0 win) (nth 0 r1) (+ (nth 0 win) (nth 2 win))))
       (should (<= (nth 1 win) (nth 1 r1) (+ (nth 1 win) (nth 3 win))))
@@ -110,5 +113,41 @@
           (nhmac--call 'test-post-key (selected-frame) ?e ?e 0 14)
           (should (memq ?é (nhmac-ime--events 1.5))))
       (setq ns-alternate-modifier was))))
+
+;; A real input source: Japanese (Romaji) from Text Input Sources, selected for the session, typed through by AppKit
+;; key events; the input method itself makes the marked text and the commit.
+(defconst nhmac-ime--kana "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese"
+  "The Japanese Romaji input source, which macOS installs.")
+
+(ert-deftest nhmac-ime-real-input-source ()
+  "With the Japanese Romaji input source selected (`TISSelectInputSource'), k a typed as AppKit key events is marked
+か (the input method's own preedit), and Return commits it into the buffer; the earlier input source comes back."
+  (skip-unless (nhmac-ime--naglfar-p))
+  (let* ((before (nhmac--query 'test-input-source ""))
+         (was (plist-get before :current)))
+    (unwind-protect
+        (let ((sel (nhmac--query 'test-input-source nhmac-ime--kana)))
+          (glitnir-gui--say "nhmac-ime-real-input-source: before %S, select %S" before sel)
+          (should (plist-get sel :found))
+          (should (eql (plist-get sel :select) 0))
+          (should (equal (plist-get sel :current) nhmac-ime--kana))
+          (nhmac-ime--in-buffer ""
+            (nhmac-ime--events 0.3)
+            ;; ANSI key codes: k 40, a 0, Return 36
+            (nhmac--call 'test-post-key (selected-frame) ?k ?k 0 40)
+            (nhmac--call 'test-post-key (selected-frame) ?a ?a 0 0)
+            (nhmac-ime--events 1)
+            (let ((marked (plist-get (nhmac-ime--state) :marked)))
+              (glitnir-gui--say "nhmac-ime-real-input-source: after k a: %S, marked %S" (buffer-string) marked)
+              (should (equal (buffer-string) "か"))
+              (should marked))
+            (nhmac--call 'test-post-key (selected-frame) ?\r ?\r 0 36)
+            (dolist (ev (nhmac-ime--events 1))
+              (when (characterp ev) (insert ev)))
+            (glitnir-gui--say "nhmac-ime-real-input-source: after Return: %S" (buffer-string))
+            (should (equal (buffer-string) "か"))
+            (should (null (plist-get (nhmac-ime--state) :marked)))))
+      (when was (nhmac--query 'test-input-source was)))
+    (should (equal (plist-get (nhmac--query 'test-input-source "") :current) was))))
 
 ;;; nhmac-ime-gui-tests.el ends here

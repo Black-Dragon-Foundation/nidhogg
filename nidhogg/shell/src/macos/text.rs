@@ -42,6 +42,9 @@ struct CGPoint {
 struct KeyCallBacks([usize; 6]);
 #[repr(C)]
 struct ValueCallBacks([usize; 5]);
+/// `CFSetCallBacks`, whose address is all that is used.
+#[repr(C)]
+struct SetCallBacks([usize; 6]);
 
 const NUMBER_SINT64: isize = 4;
 const NUMBER_FLOAT32: isize = 5;
@@ -53,6 +56,8 @@ const RUN_RTL: u32 = 1;
 unsafe extern "C" {
     static kCFTypeDictionaryKeyCallBacks: KeyCallBacks;
     static kCFTypeDictionaryValueCallBacks: ValueCallBacks;
+    static kCFTypeSetCallBacks: SetCallBacks;
+    fn CFSetCreate(alloc: CFRef, values: *const CFRef, n: isize, cb: *const c_void) -> CFRef;
     fn CFRetain(r: CFRef) -> CFRef;
     fn CFRelease(r: CFRef);
     fn CFEqual(a: CFRef, b: CFRef) -> u8;
@@ -87,6 +92,7 @@ unsafe extern "C" {
     static kCTFontCharacterSetAttribute: CFRef;
     static kCTFontLanguagesAttribute: CFRef;
     static kCTFontAttributeName: CFRef;
+    static kCTLanguageAttributeName: CFRef;
     static kCTKernAttributeName: CFRef;
     fn CTFontManagerCopyAvailableFontFamilyNames() -> CFRef;
     fn CTFontManagerCompareFontFamilyNames(a: CFRef, b: CFRef, ctx: *mut c_void) -> isize;
@@ -95,6 +101,7 @@ unsafe extern "C" {
     fn CTFontDescriptorCopyAttribute(d: CFRef, attr: CFRef) -> CFRef;
     fn CTFontCopyPostScriptName(f: CFRef) -> CFRef;
     fn CTFontCopyFamilyName(f: CFRef) -> CFRef;
+    fn CTFontCreateForString(current: CFRef, s: CFRef, range: CFRange) -> CFRef;
     fn CTLineCreateWithAttributedString(s: CFRef) -> CFRef;
     fn CTLineGetGlyphRuns(l: CFRef) -> CFRef;
     fn CTRunGetGlyphCount(r: CFRef) -> isize;
@@ -124,7 +131,7 @@ unsafe impl Sync for Cf {}
 impl Cf {
     /// Own `r`, a +1 reference from a Create or Copy call.
     pub(crate) fn new(r: CFRef) -> Option<Cf> {
-        (!r.is_null()).then_some(Cf(r))
+        (!r.is_null()).then(|| Cf(r))
     }
 
     pub(crate) fn get(&self) -> CFRef {
@@ -145,7 +152,7 @@ pub(crate) fn string(s: CFRef) -> String {
     unsafe { &*s.cast::<NSString>() }.to_string()
 }
 
-fn cf_string(s: &str) -> Option<Cf> {
+pub(crate) fn cf_string(s: &str) -> Option<Cf> {
     let units: Vec<u16> = s.encode_utf16().collect();
     cf_units(&units)
 }
@@ -157,7 +164,7 @@ fn cf_units(units: &[u16]) -> Option<Cf> {
     })
 }
 
-fn dictionary(keys: &[CFRef], values: &[CFRef]) -> Option<Cf> {
+pub(crate) fn dictionary(keys: &[CFRef], values: &[CFRef]) -> Option<Cf> {
     // SAFETY: as many live keys as values; the CF type callbacks retain both.
     Cf::new(unsafe {
         CFDictionaryCreate(
@@ -257,7 +264,50 @@ fn face(d: CFRef) -> Option<Face> {
     })
 }
 
+/// The faces of family `family` (a borrowed CFString), as Core Text matches its name; with `exact`, only faces of
+/// that family (the family name a mandatory attribute, as macfont_list asks): a name Core Text does not have then
+/// matches nothing, where without it Core Text offers other faces.
+fn family_faces(family: CFRef, exact: bool) -> Vec<Face> {
+    // SAFETY: the attribute key is Core Text's; the family name is live.
+    let Some(attrs) = dictionary(&[unsafe { kCTFontFamilyNameAttribute }], &[family]) else {
+        return Vec::new();
+    };
+    // SAFETY: live attributes; each result is +1.
+    let Some(pat) = Cf::new(unsafe { CTFontDescriptorCreateWithAttributes(attrs.get()) }) else {
+        return Vec::new();
+    };
+    let mandatory = if exact {
+        // SAFETY: one live key; the CF type callbacks retain it; the set is +1.
+        let key = unsafe { kCTFontFamilyNameAttribute };
+        let Some(m) = Cf::new(unsafe {
+            CFSetCreate(
+                std::ptr::null(),
+                &key,
+                1,
+                (&raw const kCFTypeSetCallBacks).cast(),
+            )
+        }) else {
+            return Vec::new();
+        };
+        Some(m)
+    } else {
+        None
+    };
+    let m = mandatory.as_ref().map_or(std::ptr::null(), Cf::get);
+    // SAFETY: a live pattern, and a live set or null; the result is +1.
+    let Some(descs) =
+        Cf::new(unsafe { CTFontDescriptorCreateMatchingFontDescriptors(pat.get(), m) })
+    else {
+        return Vec::new();
+    };
+    // SAFETY: a live array of descriptors, borrowed.
+    (0..unsafe { CFArrayGetCount(descs.get()) })
+        .filter_map(|j| face(unsafe { CFArrayGetValueAtIndex(descs.get(), j) }))
+        .collect()
+}
+
 /// Every face, in Core Text's family order (`mac_font_create_available_families`); listed on the first call and kept.
+/// Faces of a family the listing leaves out follow it once asked for by name (`named`).
 pub fn faces() -> &'static [Face] {
     static FACES: OnceLock<Vec<Face>> = OnceLock::new();
     FACES.get_or_init(|| {
@@ -277,31 +327,65 @@ pub fn faces() -> &'static [Face] {
                     .as_ref()
                     // SAFETY: two live strings (kCFCompareEqualTo is 0).
                     .is_some_and(|l| unsafe { CTFontManagerCompareFontFamilyNames(family, l.get(), std::ptr::null_mut()) } == 0);
-            if hidden {
-                continue;
-            }
-            // SAFETY: the attribute key is Core Text's; the family name is live.
-            let Some(attrs) = dictionary(&[unsafe { kCTFontFamilyNameAttribute }], &[family]) else {
-                continue;
-            };
-            // SAFETY: live attributes; each result is +1.
-            let Some(pat) = Cf::new(unsafe { CTFontDescriptorCreateWithAttributes(attrs.get()) }) else {
-                continue;
-            };
-            let Some(descs) =
-                Cf::new(unsafe { CTFontDescriptorCreateMatchingFontDescriptors(pat.get(), std::ptr::null()) })
-            else {
-                continue;
-            };
-            // SAFETY: a live array of descriptors, borrowed.
-            for j in 0..unsafe { CFArrayGetCount(descs.get()) } {
-                if let Some(f) = face(unsafe { CFArrayGetValueAtIndex(descs.get(), j) }) {
-                    out.push(f);
-                }
+            if !hidden {
+                out.extend(family_faces(family, false));
             }
         }
         out
     })
+}
+
+/// The faces found by name after the listing (leaked: they live as long as the listing), and the names asked for.
+struct Named {
+    faces: Vec<&'static Face>,
+    asked: std::collections::HashSet<String>,
+}
+
+fn named_store() -> std::sync::MutexGuard<'static, Named> {
+    static NAMED: OnceLock<std::sync::Mutex<Named>> = OnceLock::new();
+    NAMED
+        .get_or_init(|| {
+            std::sync::Mutex::new(Named {
+                faces: Vec::new(),
+                asked: Default::default(),
+            })
+        })
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+/// Face `i` (zero-based) of the listing and the faces found by name after it.
+pub fn face_at(i: usize) -> Option<&'static Face> {
+    let listed = faces();
+    listed
+        .get(i)
+        .or_else(|| named_store().faces.get(i - listed.len()).copied())
+}
+
+/// The indices (for `face_at`) of `family`'s faces when the listing leaves it out: `macfont_list` matches a named
+/// family's descriptor directly, so a family Core Text hides from its list (Courier and Times on macOS 27) still
+/// opens.  Empty for a listed family, and for one Core Text does not have.
+pub fn named(family: &str) -> Vec<usize> {
+    let listed = faces();
+    if family.is_empty() || listed.iter().any(|f| f.family.eq_ignore_ascii_case(family)) {
+        return Vec::new();
+    }
+    let mut n = named_store();
+    if n.asked.insert(family.to_lowercase())
+        && let Some(name) = cf_string(family)
+    {
+        for f in family_faces(name.get(), true) {
+            if f.family.eq_ignore_ascii_case(family) {
+                n.faces.push(Box::leak(Box::new(f)));
+            }
+        }
+    }
+    n.faces
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.family.eq_ignore_ascii_case(family))
+        .map(|(j, _)| listed.len() + j)
+        .collect()
 }
 
 /// The PostScript name of the font `f` (borrowed).
@@ -349,6 +433,11 @@ fn line(units: &[u16], attrs: &Cf) -> Option<Cf> {
 
 /// The family Core Text lays `chars` out in when no font is asked for, if it is one font.
 pub fn preferred_family(chars: &[u32]) -> Option<String> {
+    preferred_family_in(chars, "")
+}
+
+/// As `preferred_family`, with the text in `language` (empty: none), as macfont asks for a registry's characters.
+pub fn preferred_family_in(chars: &[u32], language: &str) -> Option<String> {
     let mut units = Vec::new();
     for &c in chars {
         let mut b = [0u16; 2];
@@ -357,11 +446,39 @@ pub fn preferred_family(chars: &[u32]) -> Option<String> {
     if units.is_empty() {
         return None;
     }
-    let l = line(&units, &dictionary(&[], &[])?)?;
+    let lang = if language.is_empty() {
+        None
+    } else {
+        Some(cf_string(language)?)
+    };
+    // SAFETY: a CoreText constant, live for the process.
+    let attrs = match &lang {
+        Some(l) => dictionary(&[unsafe { kCTLanguageAttributeName }], &[l.get()])?,
+        None => dictionary(&[], &[])?,
+    };
+    let l = line(&units, &attrs)?;
     let f = single_font(l.get())?;
     // SAFETY: a live font; the copy is +1.
     let family = Cf::new(unsafe { CTFontCopyFamilyName(f) })?;
     Some(string(family.get()))
+}
+
+/// The family of the font Core Text's own cascade picks for `c` from the open font `handle`
+/// (`CTFontCreateForString`): the test hooks' oracle for fallback.  `None`: not open, or no font.
+pub fn cascade_family(handle: u64, c: u32) -> Option<String> {
+    let mut b = [0u16; 2];
+    let units = char::from_u32(c)?.encode_utf16(&mut b);
+    let s = cf_units(units)?;
+    let range = CFRange {
+        location: 0,
+        length: units.len() as isize,
+    };
+    super::fonts::with_font(handle, |font| {
+        // SAFETY: a live font and string; the result and the family name's copy are +1.
+        let f = Cf::new(unsafe { CTFontCreateForString(font, s.get(), range) })?;
+        let family = Cf::new(unsafe { CTFontCopyFamilyName(f.get()) })?;
+        Some(string(family.get()))
+    })?
 }
 
 /// One glyph run of a line, in Core Text's storage order.
@@ -469,4 +586,15 @@ fn shape_in(font: CFRef, units: &[u16]) -> Option<Line> {
         })
         .collect();
     Some(Line { runs, composed })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_null_reference_is_none_and_never_released() {
+        // CFRelease(NULL) traps: a Cf made for a null result and dropped would end the process
+        assert!(Cf::new(std::ptr::null_mut()).is_none());
+    }
 }

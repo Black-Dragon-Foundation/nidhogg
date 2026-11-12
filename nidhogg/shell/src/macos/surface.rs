@@ -80,7 +80,7 @@ pub struct Cf(CFRef);
 impl Cf {
     /// Take a +1 reference; `None` for null.
     fn take(r: CFRef) -> Option<Cf> {
-        (!r.is_null()).then_some(Cf(r))
+        (!r.is_null()).then(|| Cf(r))
     }
 
     pub fn as_ptr(&self) -> CFRef {
@@ -108,6 +108,8 @@ pub struct Stats {
     pub spins_in_redisplay: AtomicU64,
     pub pumps: AtomicU64,
     pub deferred_commits: AtomicU64,
+    /// Commits the host's deadline made (`flush_presents`): Lisp ran on after a redisplay without waiting.
+    pub deadline_flushes: AtomicU64,
     /// `nhg_dispatch_main` calls from a Lisp thread, handed to the main thread's wait.
     pub handed_pumps: AtomicU64,
     /// Publishes held by the pacer (every other slot held), and holds that outlasted its bound.
@@ -153,6 +155,7 @@ pub static STATS: Stats = Stats {
     spins_in_redisplay: AtomicU64::new(0),
     pumps: AtomicU64::new(0),
     deferred_commits: AtomicU64::new(0),
+    deadline_flushes: AtomicU64::new(0),
     handed_pumps: AtomicU64::new(0),
     held: AtomicU64::new(0),
     held_timeouts: AtomicU64::new(0),
@@ -171,7 +174,8 @@ impl Stats {
         format!(
             ":bytes-copied {} :damage-bytes {} :full-copies {} :commits {} :surface-busy {} :ring-acquires {} \
              :implicit-open-at-update-end {} :spins-in-redisplay {} :pumps {} :deferred-commits {} :handed-pumps {} \
-             :stretched-frames {} :draws {} :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {} :paint-ns {} :fill-ns {} :commit-ns {}",
+             :stretched-frames {} :draws {} :held {} :held-timeouts {} :pacer-fires {} :pacer-arms {} :paint-ns {} :fill-ns {} :commit-ns {} \
+             :deadline-flushes {}",
             g(&self.bytes_copied),
             g(&self.damage_bytes),
             g(&self.full_copies),
@@ -192,6 +196,7 @@ impl Stats {
             g(&self.paint_ns),
             g(&self.fill_ns),
             g(&self.commit_ns),
+            g(&self.deadline_flushes),
         )
     }
 }
@@ -250,8 +255,9 @@ fn make(w: i32, h: i32, srgb: bool) -> Option<Cf> {
     }
 }
 
-/// Copy `fill` of `f`'s layer from its backing into `s` (`w` x `h`).  Writes pixels.
-fn copy(s: &Cf, fill: &Fill, f: &SurfaceFrame, w: i32, h: i32) {
+/// Copy `fill` of `f`'s layer from its backing into `s` (`w` x `h`).  Writes pixels; `false` when the surface would
+/// not lock (nothing copied).
+fn copy(s: &Cf, fill: &Fill, f: &SurfaceFrame, w: i32, h: i32) -> bool {
     let all = [Rect::new(0, 0, w, h)];
     let rects: &[Rect] = match fill {
         Fill::All => &all,
@@ -261,7 +267,7 @@ fn copy(s: &Cf, fill: &Fill, f: &SurfaceFrame, w: i32, h: i32) {
     // against both buffers before it is copied, and a surface and a backing never overlap.
     unsafe {
         if IOSurfaceLock(s.as_ptr(), 0, std::ptr::null_mut()) != 0 {
-            return;
+            return false;
         }
         let base = IOSurfaceGetBaseAddress(s.as_ptr()).cast::<u8>();
         let (dst_stride, size) = (
@@ -281,6 +287,7 @@ fn copy(s: &Cf, fill: &Fill, f: &SurfaceFrame, w: i32, h: i32) {
         }
         IOSurfaceUnlock(s.as_ptr(), 0, std::ptr::null_mut());
     }
+    true
 }
 
 /// One window's ring of surfaces.
@@ -382,7 +389,14 @@ impl Surfaces {
         let Pick { slot, busy } = pick;
         let fill = self.ring.fill(slot, &damage, w, h);
         if slot == self.slots.len() {
-            self.slots.push(make(w, h, self.srgb)?);
+            let Some(s) = make(w, h, self.srgb) else {
+                // the pacer gave this commit's damage up: the ring starts over, so the next commit fills a new surface
+                // whole (as after a size change; the layer keeps the surface it shows)
+                self.ring.clear();
+                self.slots.clear();
+                return None;
+            };
+            self.slots.push(s);
         }
         let st = &STATS;
         st.ring_acquires.fetch_add(1, Ordering::Relaxed);
@@ -396,7 +410,12 @@ impl Surfaces {
         if busy {
             st.surface_busy.fetch_add(1, Ordering::Relaxed);
         }
-        copy(&self.slots[slot], &fill, f, w, h);
+        if !copy(&self.slots[slot], &fill, f, w, h) {
+            // nothing was copied, and the pacer gave this commit's damage up: the ring starts over, as above
+            self.ring.clear();
+            self.slots.clear();
+            return None;
+        }
         self.same = self.ring.commit(slot, &damage);
         Some(Drew::Drawn)
     }
@@ -494,5 +513,16 @@ impl Surfaces {
             IOSurfaceUnlock(s.as_ptr(), LOCK_READ_ONLY, std::ptr::null_mut());
         }
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_null_reference_is_none_and_never_released() {
+        // CFRelease(NULL) traps: a Cf made for a null result and dropped would end the process
+        assert!(Cf::take(std::ptr::null_mut()).is_none());
     }
 }

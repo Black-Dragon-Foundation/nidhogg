@@ -23,6 +23,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <config.h>
 
 #include "lisp.h"
+#include "atimer.h"
 #include "nhwlterm.h"
 #include "frame.h"
 #include "keyboard.h"
@@ -104,7 +105,22 @@ usage: (nhmac--query WHAT &rest ARGS)  */)
   if (nhwl_glue_rc (dpyinfo, rc) < 0)
     error ("nhmac--query %s: %d", SSDATA (SYMBOL_NAME (args[0])), rc);
   if (len >= sizeof buf)
-    error ("nhmac--query %s: the answer is too long", SSDATA (SYMBOL_NAME (args[0])));
+    {
+      /* A long answer (a menu tree's dump): asked again into a buffer
+	 that holds it (the glue gave its length).  */
+      USE_SAFE_ALLOCA;
+      size_t cap = len + 1;
+      char *big = SAFE_ALLOCA (cap);
+      rc = NHG (nhg_app_query (dpyinfo->glue, SSDATA (SYMBOL_NAME (args[0])),
+			       SSDATA (text), big, cap, &len));
+      if (nhwl_glue_rc (dpyinfo, rc) < 0 || len >= cap)
+	error ("nhmac--query %s: the answer is too long",
+	       SSDATA (SYMBOL_NAME (args[0])));
+      Lisp_Object v = Fcar (Fread_from_string (make_string (big, len),
+					       Qnil, Qnil));
+      SAFE_FREE ();
+      return v;
+    }
   return Fcar (Fread_from_string (make_string (buf, len), Qnil, Qnil));
 }
 
@@ -197,6 +213,13 @@ nhmac_select (int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds,
 	goto nothing;
       if (left.tv_sec < INT64_MAX / 1000000000 - 1)
 	ns = left.tv_sec * (int64_t) 1000000000 + left.tv_nsec;
+    }
+  /* The main thread's wait commits what the last redisplay published:
+     the deadline would only wake it again for an extra pump.  */
+  if (main_thread_p (current_thread) && dpyinfo->present_deadline)
+    {
+      cancel_atimer (dpyinfo->present_deadline);
+      dpyinfo->present_deadline = NULL;
     }
   bool waiting = waiting_for_input;
   waiting_for_input = false;
@@ -300,11 +323,23 @@ set_frame_menubar (struct frame *f, bool deep_p)
 {
 }
 
+/* Adapted from nsmenu.m: `window-system' reads `ns', so tooltip.el asks
+   it before showing a tip.  Naglfar's menus are tracked by AppKit with
+   Lisp waiting, so none is active while Lisp asks.  */
+DEFUN ("menu-or-popup-active-p", Fmenu_or_popup_active_p,
+       Smenu_or_popup_active_p, 0, 0, 0,
+       doc: /* SKIP: real doc in xmenu.c.  */)
+  (void)
+{
+  return popup_activated () ? Qt : Qnil;
+}
+
 void
 syms_of_nhmacterm (void)
 {
   defsubr (&Snhmac__call);
   defsubr (&Snhmac__query);
+  defsubr (&Smenu_or_popup_active_p);
   syms_of_nhmacfont ();
 
   /* `window-system' reads `ns', so ns-win.el and packages take their

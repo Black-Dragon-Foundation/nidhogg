@@ -35,6 +35,17 @@ pub enum MacEv {
     Screens,
     /// A drag in the window's resize band asks for this frame (`resize::NhWindow`).
     Resize(WindowId, NSRect),
+    /// A native full-screen transition started (`true`) or ended, entered, exited or failed.
+    FullScreen(WindowId, bool),
+}
+
+/// How many of AppKit's full-screen notifications reached the window delegates, in the order will enter, will exit,
+/// did enter, did exit, failed to enter, failed to exit, then how many of them the backend applied (test diagnostics).
+pub static FS_NOTES: [std::sync::atomic::AtomicU32; 7] =
+    [const { std::sync::atomic::AtomicU32::new(0) }; 7];
+
+fn fs_note(i: usize) {
+    FS_NOTES[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 thread_local! {
@@ -44,7 +55,7 @@ thread_local! {
 
 /// Hand `ev` to the backend now, or queue it for the next lend.
 pub fn deliver(ev: MacEv) {
-    SCOPE.with(|s| s.deliver(ev, |shell, e| shell.apply(e)));
+    SCOPE.with(|s| s.deliver(ev, MacShell::apply_taken));
 }
 
 define_class!(
@@ -91,6 +102,42 @@ define_class!(
         #[unsafe(method(windowDidResignKey:))]
         fn did_resign_key(&self, _n: &NSNotification) {
             deliver(MacEv::Key(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowWillEnterFullScreen:))]
+        fn will_enter_full_screen(&self, _n: &NSNotification) {
+            fs_note(0);
+            deliver(MacEv::FullScreen(*self.ivars(), true));
+        }
+
+        #[unsafe(method(windowWillExitFullScreen:))]
+        fn will_exit_full_screen(&self, _n: &NSNotification) {
+            fs_note(1);
+            deliver(MacEv::FullScreen(*self.ivars(), true));
+        }
+
+        #[unsafe(method(windowDidEnterFullScreen:))]
+        fn did_enter_full_screen(&self, _n: &NSNotification) {
+            fs_note(2);
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn did_exit_full_screen(&self, _n: &NSNotification) {
+            fs_note(3);
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidFailToEnterFullScreen:))]
+        fn did_fail_to_enter_full_screen(&self, _w: &objc2_app_kit::NSWindow) {
+            fs_note(4);
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidFailToExitFullScreen:))]
+        fn did_fail_to_exit_full_screen(&self, _w: &objc2_app_kit::NSWindow) {
+            fs_note(5);
+            deliver(MacEv::FullScreen(*self.ivars(), false));
         }
     }
 );

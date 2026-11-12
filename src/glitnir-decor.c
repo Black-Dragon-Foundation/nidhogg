@@ -27,7 +27,12 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
    From Nidhogg's own pgtk file for the same drawing, re-pointed to the
    shell: the backing is nhwl's, damage goes through nhwl_damage, and a
    frame has one Glitnir layer, so a window's label anchors live in its
-   frame's layer, clipped to the window's box.  */
+   frame's layer, clipped to the window's box.
+
+   On Naglfar (HAVE_NHMAC) the same boxes are draw records instead of Cairo
+   calls: the corners outside the arcs (NHG_DRAW_CORNERS) and the ring
+   (NHG_DRAW_RING), in the frame's own units, which the shell paints at its
+   scale.  Labels are Wayland's alone.  */
 
 #include <config.h>
 
@@ -35,14 +40,18 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <math.h>
 #include <string.h>
+#ifdef NHWL_WAYLAND
 #include <cairo-ft.h>
+#endif
 
 #include "lisp.h"
 #include "frame.h"
 #include "window.h"
 #include "dispextern.h"
 #include "font.h"
+#ifdef NHWL_WAYLAND
 #include "ftfont.h"
+#endif
 #include "nhwlterm.h"
 
 enum { SIDE_LEFT, SIDE_RIGHT };
@@ -129,6 +138,7 @@ glitnir_decor_colour_beneath (struct glyph_string *s, int side)
   return def ? def->background : s->face->background;
 }
 
+#ifdef NHWL_WAYLAND
 /* A rounded rectangle path; radii clockwise from the top left.  */
 
 static void
@@ -357,6 +367,78 @@ kernel_box (cairo_t *cr, struct frame *f, struct face *face, GlitnirRectF r,
     }
   return true;
 }
+#else /* HAVE_NHMAC */
+
+/* The ring of FACE's box on X, Y, W, H as draw_ring has it: radius RAD at
+   the ROUNDED corners (1 top left, then clockwise), lines HW high and VW
+   wide on the SIDES that have one (1 top, 2 right, 4 bottom, 8 left).  */
+
+static void
+records_ring (struct frame *f, struct face *face, int x, int y, int w, int h,
+	      int hw, int vw, double rad, unsigned rounded, unsigned sides)
+{
+  unsigned long fg = face->box_color, bg = 0;
+  bool relief = face->box != FACE_SIMPLE_BOX;
+  if (relief)
+    {
+      /* Raised/sunken: the relief colours, split along the anti-diagonal.  */
+      struct nhwl_output *o = FRAME_X_OUTPUT (f);
+      bool raised = face->box == FACE_RAISED_BOX;
+      fg = (raised ? o->white_relief : o->black_relief).xgcv.foreground;
+      bg = (raised ? o->black_relief : o->white_relief).xgcv.foreground;
+    }
+  nhmac_draw_ring (f, x, y, w, h, hw, vw, rad, rounded | sides << 4, fg, bg,
+		   relief);
+}
+
+/* glitnir_decor_draw_box on Naglfar, from the keys K: the open bands, the
+   corners outside the arcs in the colour beneath, then the ring.  */
+
+static bool
+records_box (struct glyph_string *s, struct box_keys *k, int left_x,
+	     int top_y, int right_x, int bottom_y, int hwidth, int vwidth,
+	     bool left_p, bool right_p, XRectangle *clip)
+{
+  struct frame *f = s->f;
+  int x = left_x, y = top_y, w = right_x + 1 - left_x;
+  int h = bottom_y + 1 - top_y;
+  double rad = fmin (k->radius, fmin (h / 2.0, w / 2.0));
+  bool tl = left_p && !k->open_top && !k->open_left;
+  bool bl = left_p && !k->open_bottom && !k->open_left;
+  bool tr = right_p && !k->open_top && !k->open_right;
+  bool br = right_p && !k->open_bottom && !k->open_right;
+  nhwl_cr *cr = nhwl_begin_cr_clip (f);
+
+  nhwl_set_clip_rectangles (f, cr, clip, 1);
+  bool ht = s->face->box_horizontal_line_width > 0;
+  bool vt = s->face->box_vertical_line_width > 0;
+  unsigned long bgc = s->xgcv.background;
+  if (k->open_top && ht)
+    nhwl_fill_rectangle (f, bgc, x, y, w, hwidth, true);
+  if (k->open_bottom && ht)
+    nhwl_fill_rectangle (f, bgc, x, y + h - hwidth, w, hwidth, true);
+  if (k->open_left && left_p && vt)
+    nhwl_fill_rectangle (f, bgc, x, y, vwidth, h, true);
+  if (k->open_right && right_p && vt)
+    nhwl_fill_rectangle (f, bgc, x + w - vwidth, y, vwidth, h, true);
+  /* nhwl_erase_corners_for_relief's corners: 1 bottom right, 2 bottom
+     left, 4 top left, 8 top right.  */
+  if (rad > 0 && (tl || bl))
+    nhwl_erase_corners_for_relief (f,
+				   glitnir_decor_colour_beneath (s, SIDE_LEFT),
+				   x, y, w, h, rad, 0, tl << 2 | bl << 1);
+  if (rad > 0 && (tr || br))
+    nhwl_erase_corners_for_relief (f,
+				   glitnir_decor_colour_beneath (s, SIDE_RIGHT),
+				   x, y, w, h, rad, 0, tr << 3 | br);
+  records_ring (f, s->face, x, y, w, h, hwidth, vwidth, rad,
+		tl | tr << 1 | br << 2 | bl << 3,
+		(!k->open_top | (right_p && !k->open_right) << 1
+		 | (!k->open_bottom) << 2 | (left_p && !k->open_left) << 3));
+  nhwl_end_cr_clip (f);
+  return true;
+}
+#endif /* HAVE_NHMAC */
 
 /* The box of S with Glitnir's keys (nhwl_draw_glyph_string_box's hook);
    false when S's face has none, and the stock box draws.  */
@@ -382,6 +464,10 @@ glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
       bottom_y = min (bottom_y, s->ybase + FONT_DESCENT (s->font) + line - 1);
     }
 
+#ifdef HAVE_NHMAC
+  return records_box (s, &k, left_x, top_y, right_x, bottom_y, hwidth, vwidth,
+		      left_p, right_p, clip);
+#else
   cairo_t *cr = nhwl_begin_cr_clip (f);
   double sx = 1, sy = 1;
   cairo_surface_get_device_scale (cairo_get_target (cr), &sx, &sy);
@@ -455,6 +541,7 @@ glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
 
   nhwl_end_cr_clip (f);
   return true;
+#endif
 }
 
 /* Repaint the corners of the rounded run end that the glyph on S's row
@@ -521,6 +608,33 @@ repaint_neighbour_end (struct glyph_string *s, struct glyph *nb, int side)
   if (!face_bg (f, beside, &beneath))
     beneath = s->face->background;
 
+#ifdef HAVE_NHMAC
+  /* Naglfar: the corner squares and the ring as records, clipped to the
+     run's end facing S.  */
+  double nrad = fmin (k.radius, fmin (h / 2.0, w / 2.0));
+  bool ntop = !k.open_top, nbot = !k.open_bottom;
+  bool nl = left_p && !k.open_left, nr = right_p && !k.open_right;
+  bool ctl = nl && ntop, cbl = nl && nbot, ctr = nr && ntop, cbr = nr && nbot;
+  int ew = (int) ceil (nrad);
+  NativeRectangle gclip;
+  get_glyph_string_clip_rect (s, &gclip);
+  XRectangle edge = { side == SIDE_LEFT ? left_x + w - ew : left_x, gclip.y,
+		      ew, gclip.height };
+  nhwl_cr *ncr = nhwl_begin_cr_clip (f);
+  nhwl_set_clip_rectangles (f, ncr, &edge, 1);
+  /* nhwl_erase_corners_for_relief's corners: 1 bottom right, 2 bottom
+     left, 4 top left, 8 top right.  */
+  nhwl_erase_corners_for_relief (f, beneath, left_x, top_y, w, h, nrad, 0,
+				 side == SIDE_LEFT ? ctr << 3 | cbr
+				 : ctl << 2 | cbl << 1);
+  records_ring (f, face, left_x, top_y, w, h,
+		eabs (face->box_horizontal_line_width),
+		eabs (face->box_vertical_line_width), nrad,
+		ctl | ctr << 1 | cbr << 2 | cbl << 3,
+		ntop | nr << 1 | nbot << 2 | nl << 3);
+  nhwl_end_cr_clip (f);
+  nhwl_damage (f, edge.x, edge.y, edge.width, edge.height);
+#else
   cairo_t *cr = nhwl_begin_cr_clip (f);
   double sx = 1, sy = 1;
   cairo_surface_get_device_scale (cairo_get_target (cr), &sx, &sy);
@@ -582,6 +696,7 @@ repaint_neighbour_end (struct glyph_string *s, struct glyph *nb, int side)
 
   nhwl_damage (f, side == SIDE_LEFT ? (int) (r.x + r.w - rad) : left_x,
 	       clip.y, (int) ceil (rad) + 1, clip.height);
+#endif
 }
 
 /* Called before S is drawn (nhwl_damage_glyphs): a row neighbour of S
@@ -607,6 +722,7 @@ glitnir_decor_after_glyphs (struct glyph_string *s)
     repaint_neighbour_end (s, last + 1, SIDE_RIGHT);
 }
 
+#ifdef NHWL_WAYLAND
 /* Labels.  A face whose :box has :label STRING floats a pill with STRING
    above the first glyph of each run of that face.  This file keeps Glitnir's
    anchors true to the pixels (every glyph string drops the anchors of what it
@@ -904,4 +1020,5 @@ glitnir_decor_scrolled (struct frame *f, struct window *w, int x, int y,
 			local_rect (sx, sy, ox, oy, x, y, width, height), dy);
 }
 
+#endif /* NHWL_WAYLAND */
 #endif /* HAVE_NHWL */

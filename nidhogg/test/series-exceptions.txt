@@ -1,3 +1,4 @@
 04ce2c406096cb71df9ac8a5760e07b0574aab93 commit misfiled: Glitnir-created Lisp edited under a non-flag subject; the release rebuild re-subjects it as glitnir: and removes this line
 ba6b4ef18087dc9debabab6a1994b66c80ddf0c7 commit misfiled: same; removed by the release rebuild
 39c820f726eae91dbf58d431d109ceb51d152cce commit misfiled: Naglfar-created Lisp (nhmac-win.el) edited under a test: subject; the release rebuild re-subjects it as naglfar: and removes this line
+dd4fc05b83defff9dfd78b2495874385e3ba2769 commit misfiled: a HAVE_NHWL change (default fringes) under an nhwl: subject; the release rebuild re-subjects it as shell: and removes this line

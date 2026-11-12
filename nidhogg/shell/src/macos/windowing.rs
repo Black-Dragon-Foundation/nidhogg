@@ -37,8 +37,14 @@ pub fn fullscreen(w: &mut Win, on: bool, native: bool) {
     if on == is_fullscreen(w) {
         return;
     }
-    if native {
+    if native && w.fs_busy {
+        // AppKit drops a toggle inside a transition: the transition's end applies it
+        w.fs_want = Some(on);
+    } else if native {
+        // the transition starts now; its will-notification reaches `fullscreen_transition` only at the next pump,
+        // and a request made before that would be dropped by AppKit (NS's `in_fullscreen_transition`)
         w.window.toggleFullScreen(None);
+        w.fs_busy = true;
     } else if on {
         w.saved = Some((w.window.frame(), w.window.styleMask()));
         if let Some(screen) = w.window.screen() {
@@ -51,8 +57,40 @@ pub fn fullscreen(w: &mut Win, on: bool, native: bool) {
     }
 }
 
-/// Zoom (maximize) on or off.
-pub fn maximize(w: &Win, on: bool) {
+/// A native transition started (`busy`) or ended: at its end, the state asked for during it, unless the window is
+/// in that state already.  A delegate's event: the AppKit calls go to `effects`, made once the backend's borrow is
+/// put back.
+pub fn fullscreen_transition(w: &mut Win, busy: bool, effects: &mut Vec<Box<dyn FnOnce()>>) {
+    w.fs_busy = busy;
+    if !busy
+        && let Some(on) = w.fs_want.take()
+        && on != is_fullscreen(w)
+    {
+        let window = w.window.clone();
+        effects.push(Box::new(move || window.toggleFullScreen(None)));
+        w.fs_busy = true;
+    }
+    if !w.fs_busy
+        && !w.window.styleMask().contains(NSWindowStyleMask::FullScreen)
+        && let Some(on) = w.zoom_want.take()
+    {
+        let window = w.window.clone();
+        effects.push(Box::new(move || {
+            if window.isZoomed() != on {
+                window.zoom(None);
+            }
+        }));
+    }
+}
+
+/// Zoom (maximize) on or off.  In native full screen or during a transition it waits for the window to be out of full
+/// screen: a full-screen window reads as zoomed, and the glue's `fullscreen nil` asks for both full screen and zoom
+/// off, so a zoom then would land on the exit's transition (NS's `ns_fullscreen_hook` never zooms there).
+pub fn maximize(w: &mut Win, on: bool) {
+    if w.fs_busy || w.window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        w.zoom_want = Some(on);
+        return;
+    }
     if w.window.isZoomed() != on {
         w.window.zoom(None);
     }

@@ -163,12 +163,14 @@ pub fn applescript(script: &str) -> String {
     else {
         return error();
     };
-    let mut info = None;
-    // SAFETY: the script runs on the calling (main) thread; `info` is a writable slot for the error dictionary.
-    let result = unsafe { s.executeAndReturnError(Some(&mut info)) };
-    if info.is_some() {
+    let mut info: Option<Retained<AnyObject>> = None;
+    // SAFETY: the script runs on the main thread (`app_query` refuses any other); `info` is a writable slot for the error dictionary.  The
+    // result is nil when the script fails (the generated binding says never, and would panic on it)
+    let result: Option<Retained<NSAppleEventDescriptor>> =
+        unsafe { msg_send![&*s, executeAndReturnError: Some(&mut info)] };
+    let Some(result) = result.filter(|_| info.is_none()) else {
         return error();
-    }
+    };
     // SAFETY: `descriptorType` and `coerceToDescriptorType:` of the result descriptor (a four-character code each;
     // the generated bindings leave them out with Core Services' types)
     let (kind, text) = unsafe {

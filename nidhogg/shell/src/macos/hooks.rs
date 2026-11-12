@@ -62,6 +62,21 @@ fn numbers(arg: &str) -> ShellResult<Vec<f64>> {
 /// the first number): Core Text's own advances of the glyphs in the open font of FAMILY at SIZE pixels
 /// (`CTFontGetAdvancesForGlyphs`, unrounded), a list; nil when no such font is open.
 fn ct_advances(arg: &str) -> ShellResult<String> {
+    let Some((handle, glyphs)) = open_font_and_numbers(arg)? else {
+        return Ok("nil".into());
+    };
+    let glyphs: Vec<u16> = glyphs.iter().map(|&g| g as u16).collect();
+    let mut b = vec![[0.0f64; 5]; glyphs.len()];
+    if !super::super::fonts::bounds_for(handle, &glyphs, &mut b) {
+        return Ok("nil".into());
+    }
+    let xs: Vec<String> = b.iter().map(|x| format!("{:?}", x[0])).collect();
+    Ok(format!("({})", xs.join(" ")))
+}
+
+/// `(FAMILY SIZE N...)`: the open font of FAMILY at SIZE pixels (FAMILY is the words before the first number) and the
+/// numbers after SIZE; `None` when no such font is open.
+fn open_font_and_numbers(arg: &str) -> ShellResult<Option<(u64, Vec<f64>)>> {
     let words: Vec<&str> = arg
         .trim()
         .trim_start_matches('(')
@@ -74,17 +89,144 @@ fn ct_advances(arg: &str) -> ShellResult<String> {
         .ok_or(ShellError::Arg)?;
     let family = words[..at].join(" ");
     let n = numbers(&words[at..].join(" "))?;
-    let (&size, glyphs) = n.split_first().ok_or(ShellError::Arg)?;
-    let Some(handle) = super::super::fonts::find(&family, size) else {
+    let (&size, rest) = n.split_first().ok_or(ShellError::Arg)?;
+    Ok(super::super::fonts::find(&family, size).map(|h| (h, rest.to_vec())))
+}
+
+/// Each character's UTF-16 units, and where each starts.
+fn utf16(chars: &[f64]) -> ShellResult<(Vec<u16>, Vec<usize>)> {
+    let (mut units, mut starts) = (Vec::new(), Vec::new());
+    for &c in chars {
+        let c = char::from_u32(c as u32).ok_or(ShellError::Arg)?;
+        starts.push(units.len());
+        let mut b = [0u16; 2];
+        units.extend_from_slice(c.encode_utf16(&mut b));
+    }
+    Ok((units, starts))
+}
+
+/// `(FAMILY SIZE CHAR...)`: Core Text's own answers for the open font of FAMILY at SIZE pixels, unrounded, device
+/// pixels, y up: `(:ascent A :descent D :leading L :underline-position P :underline-thickness T :glyphs ((CHAR GLYPH
+/// ADVANCE LEFT RIGHT TOP BOTTOM) ...))` after its `:size` and `:family`, GLYPH 0 for a character the font lacks; nil
+/// when no such font is open.  The
+/// GUI rows' oracle: they apply the driver's stated rounding rules to these numbers themselves.
+fn ct_font(arg: &str) -> ShellResult<String> {
+    use super::super::fonts;
+    let Some((handle, chars)) = open_font_and_numbers(arg)? else {
         return Ok("nil".into());
     };
-    let glyphs: Vec<u16> = glyphs.iter().map(|&g| g as u16).collect();
-    let mut b = vec![[0.0f64; 5]; glyphs.len()];
-    if !super::super::fonts::bounds_for(handle, &glyphs, &mut b) {
+    let Some(m) = fonts::raw(handle) else {
+        return Ok("nil".into());
+    };
+    let (units, starts) = utf16(&chars)?;
+    let mut all = vec![0u16; units.len()];
+    if !fonts::glyphs_for(handle, &units, &mut all) {
         return Ok("nil".into());
     }
-    let xs: Vec<String> = b.iter().map(|x| format!("{:?}", x[0])).collect();
-    Ok(format!("({})", xs.join(" ")))
+    let glyphs: Vec<u16> = starts.iter().map(|&s| all[s]).collect();
+    let mut b = vec![[0.0f64; 5]; glyphs.len()];
+    if !fonts::bounds_for(handle, &glyphs, &mut b) {
+        return Ok("nil".into());
+    }
+    let rows: Vec<String> = chars
+        .iter()
+        .zip(&glyphs)
+        .zip(&b)
+        .map(|((c, g), x)| {
+            format!(
+                "({} {g} {:?} {:?} {:?} {:?} {:?})",
+                *c as u32, x[0], x[1], x[2], x[3], x[4]
+            )
+        })
+        .collect();
+    Ok(format!(
+        "(:size {:?} :family {} :mono {} :ascent {:?} :descent {:?} :leading {:?} :underline-position {:?} \
+         :underline-thickness {:?} :glyphs ({}))",
+        m.size,
+        crate::pasteboard::lisp_string(&m.family),
+        // kCTFontMonoSpaceTrait
+        if m.symbolic & (1 << 10) != 0 {
+            "t"
+        } else {
+            "nil"
+        },
+        m.ascent,
+        m.descent,
+        m.leading,
+        m.underline_position,
+        m.underline_thickness,
+        rows.join(" ")
+    ))
+}
+
+/// `(FILE)`: ImageIO's own decode of FILE's first frame in sRGB, premultiplied ARGB words (`images::decode`, the
+/// GUI rows' oracle for what an image puts on the surface): `(W H [PIXELS...])`, rows top down; nil when ImageIO
+/// cannot read it.  FILE is the rest of the argument list (a path without blanks).
+fn imageio_pixels(arg: &str) -> ShellResult<String> {
+    let path = arg
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .trim();
+    let bytes = std::fs::read(path).map_err(|_| ShellError::Arg)?;
+    Ok(match super::super::images::decode(&bytes, 0) {
+        Some(d) => {
+            let px: Vec<String> = d.argb.iter().map(u32::to_string).collect();
+            format!("({} {} [{}])", d.width, d.height, px.join(" "))
+        }
+        None => "nil".into(),
+    })
+}
+
+/// `(FAMILY SIZE CHAR...)`: for each character, the family of the font Core Text's cascade picks for it from the open
+/// font of FAMILY at SIZE (`CTFontCreateForString`), a string, or nil; nil when no such font is open.
+fn ct_cascade(arg: &str) -> ShellResult<String> {
+    let Some((handle, chars)) = open_font_and_numbers(arg)? else {
+        return Ok("nil".into());
+    };
+    let names: Vec<String> = chars
+        .iter()
+        .map(|&c| {
+            super::super::text::cascade_family(handle, c as u32)
+                .map_or_else(|| "nil".into(), |f| crate::pasteboard::lisp_string(&f))
+        })
+        .collect();
+    Ok(format!("({})", names.join(" ")))
+}
+
+/// `(FAMILY SIZE CHAR...)`: the characters laid out by Core Text in the open font of FAMILY at SIZE, kerning off (the
+/// driver's line), its runs in storage order: `((RTL (INDEX GLYPH X Y WIDTH) ...) ...)`, INDEX the glyph's character
+/// (not its UTF-16 unit), X and Y its position from the line's origin, WIDTH its typographic width, unrounded; nil when
+/// no such font is open or Core Text needed another font.
+fn ct_shape(arg: &str) -> ShellResult<String> {
+    let Some((handle, chars)) = open_font_and_numbers(arg)? else {
+        return Ok("nil".into());
+    };
+    let (units, starts) = utf16(&chars)?;
+    let Some(line) = super::super::text::shape(handle, &units) else {
+        return Ok("nil".into());
+    };
+    let char_of = |u: usize| starts.iter().rposition(|&s| s <= u).unwrap_or(0);
+    let runs: Vec<String> = line
+        .runs
+        .iter()
+        .map(|r| {
+            let gs: Vec<String> = (0..r.glyphs.len())
+                .map(|i| {
+                    format!(
+                        "({} {} {:?} {:?} {:?})",
+                        char_of(r.indices[i]),
+                        r.glyphs[i],
+                        r.positions[i].0,
+                        r.positions[i].1,
+                        r.widths[i]
+                    )
+                })
+                .collect();
+            format!("({} {})", if r.rtl { "t" } else { "nil" }, gs.join(" "))
+        })
+        .collect();
+    Ok(format!("({})", runs.join(" ")))
 }
 
 impl MacShell {
@@ -245,6 +387,24 @@ impl MacShell {
                 self.win(w)?.window.zoom(None);
                 Ok(())
             })),
+            // "(FROM X Y TO X Y DELAY-MS)": a real left drag through the window server from device pixel X, Y of window
+            // FROM to X, Y of window TO (from each frame's top left), the moves after DELAY-MS (`inject::real_drag`)
+            "test-real-drag" => Some(numbers(arg).and_then(|n| match n[..] {
+                [a, ax, ay, b, bx, by, ms] => {
+                    let at = |w: &Win, x: f64, y: f64| {
+                        let (px, py) = w.scale().view_point(x, y, w.view.bounds().size.height);
+                        let p = w
+                            .view
+                            .convertPoint_toView(objc2_foundation::NSPoint::new(px, py), None);
+                        let s = w.window.convertPointToScreen(p);
+                        (s.x, s.y)
+                    };
+                    let from = at(self.win(a as WindowId)?, ax, ay);
+                    let to = at(self.win(b as WindowId)?, bx, by);
+                    inject::real_drag(self.mtm, from, to, Duration::from_millis(ms as u64), 15)
+                }
+                _ => Err(ShellError::Arg),
+            })),
             // "(WINDOW KIND BOTTOM OUT DX DY)": a real left press (KIND 0), release (1) or drag (2) through the window
             // server, OUT points outside WINDOW's right edge (and its bottom edge with BOTTOM 1), moved by DX, DY
             // points (y up)
@@ -312,13 +472,24 @@ impl MacShell {
             "test-window-state" => first_number(arg).and_then(|w| {
                 let w = self.win(w)?;
                 Ok(format!(
-                    "(:fullscreen {} :zoomed {} :miniaturized {} :tabbing-disallowed {} :titlebar-transparent {} :dark {})",
+                    "(:fullscreen {} :zoomed {} :miniaturized {} :tabbing-disallowed {} :titlebar-transparent {} :dark {} :fs-busy {} :fs-want {} :app-running {} :style-full {} :fs-notes ({}))",
                     if super::super::windowing::is_fullscreen(w) { "t" } else { "nil" },
                     if w.window.isZoomed() { "t" } else { "nil" },
                     if w.window.isMiniaturized() { "t" } else { "nil" },
                     if w.window.tabbingMode() == objc2_app_kit::NSWindowTabbingMode::Disallowed { "t" } else { "nil" },
                     if w.window.titlebarAppearsTransparent() { "t" } else { "nil" },
                     if w.window.effectiveAppearance().name().to_string().contains("Dark") { "t" } else { "nil" },
+                    if w.fs_busy { "t" } else { "nil" },
+                    match w.fs_want { Some(true) => "on", Some(false) => "off", None => "nil" },
+                    // whether AppKit counts the application as running (`[NSApp run]`, which the pumps never call)
+                    if self.app.isRunning() { "t" } else { "nil" },
+                    if w.window.styleMask().contains(objc2_app_kit::NSWindowStyleMask::FullScreen) { "t" } else { "nil" },
+                    // a Lisp list: will-enter will-exit did-enter did-exit fail-enter fail-exit applied
+                    super::super::runloop::FS_NOTES
+                        .iter()
+                        .map(|n| n.load(std::sync::atomic::Ordering::Relaxed).to_string())
+                        .collect::<Vec<_>>()
+                        .join(" "),
                 ))
             }),
             "test-menu-dump" => Ok(format!("{:?}", super::super::menus::test_dump(&self.app))),
@@ -389,6 +560,14 @@ impl MacShell {
                 _ => Err(ShellError::Arg),
             }),
             "test-ct-advances" => ct_advances(arg),
+            "test-ct-font" => ct_font(arg),
+            "test-ct-cascade" => ct_cascade(arg),
+            "test-ct-shape" => ct_shape(arg),
+            "test-imageio-pixels" => imageio_pixels(arg),
+            // "(ID)": select the input source ID (an empty ID only reports)
+            "test-input-source" => super::super::ime::test_input_source(
+                super::super::nsapp::text_arg(arg.trim()).trim(),
+            ),
             _ => return None,
         })
     }
@@ -521,7 +700,7 @@ impl MacShell {
                 let t = |b: bool| if b { "t" } else { "nil" };
                 format!(
                     "(:id {id} :points ({cw} {ch}) :scale {} :visible {} :occluded {} :key {})",
-                    w.window.backingScaleFactor(),
+                    crate::macos::scale::of_window(&w.window).factor(),
                     t(w.window.isVisible()),
                     t(occluded),
                     t(w.window.isKeyWindow())
@@ -556,7 +735,7 @@ impl MacShell {
             .view
             .layer()
             .is_some_and(|l| std::ptr::eq(Retained::as_ptr(&l), Retained::as_ptr(&w.layer)));
-        let scale = w.window.backingScaleFactor();
+        let scale = crate::macos::scale::of_window(&w.window);
         let (cw, ch) = w.content_size();
         let screen = screens::outputs(self.mtm).first().map_or(0, |o| o.w);
         // where AppKit has the window: its frame (points, y up from the main screen's bottom), the screen it is on
@@ -570,7 +749,7 @@ impl MacShell {
                 f.origin.y,
                 f.size.width,
                 f.size.height,
-                sc.backingScaleFactor()
+                crate::macos::scale::of_screen(&sc).factor()
             )
         });
         let occluded = !w
@@ -585,8 +764,8 @@ impl MacShell {
             if layer_ours { "t" } else { "nil" },
             if w.view.wantsLayer() { "t" } else { "nil" },
             w.view.subviews().len(),
-            (f64::from(cw) * scale).round() as i64,
-            (f64::from(ch) * scale).round() as i64,
+            i64::from(scale.px_i(cw)),
+            i64::from(scale.px_i(ch)),
             fr.origin.x,
             fr.origin.y,
             fr.size.width,

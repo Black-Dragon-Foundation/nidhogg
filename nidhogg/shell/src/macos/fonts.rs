@@ -181,6 +181,26 @@ pub fn open(
     Some((handle, m))
 }
 
+/// The open font `handle`'s raw metrics, read from Core Text again (`None`: not open): the test hooks' oracle.
+pub fn raw(handle: u64) -> Option<RawMetrics> {
+    with_font(handle, |f| {
+        // SAFETY: a live font; the family name's copy is +1.
+        unsafe {
+            RawMetrics {
+                ascent: CTFontGetAscent(f),
+                descent: CTFontGetDescent(f),
+                leading: CTFontGetLeading(f),
+                underline_position: CTFontGetUnderlinePosition(f),
+                underline_thickness: CTFontGetUnderlineThickness(f),
+                size: CTFontGetSize(f),
+                symbolic: CTFontGetSymbolicTraits(f),
+                family: Cf::new(CTFontCopyFamilyName(f))
+                    .map_or_else(String::new, |s| string(s.get())),
+            }
+        }
+    })
+}
+
 /// The open font `handle`'s synthesised italic and bold, and its size (`None`: not open).
 pub fn synthetic(handle: u64) -> Option<(bool, bool, f64)> {
     let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());

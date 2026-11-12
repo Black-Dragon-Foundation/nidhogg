@@ -6,7 +6,7 @@
 
 use crate::backing::NhgRect;
 use glitnir::geom::Rect;
-use nhshell::shapes::{Paint, Shape};
+use nhshell::shapes::{Paint, RRect, Shape};
 
 /// `r` filled with `fg`; `NHG_DRAW_COPY` replaces the pixels, alpha included.
 pub const NHG_DRAW_FILL: u32 = 1;
@@ -31,12 +31,18 @@ pub const NHG_DRAW_GLYPHS: u32 = 8;
 /// An image (`nhg_draw_image`): the part of the container from (`a`, `b`) drawn into `r`, over `bg` unless
 /// `NHG_DRAW_OVERLAY`; an 8-bit container is `fg` through it.
 pub const NHG_DRAW_IMAGE: u32 = 9;
+/// A box's ring on `r` (glitnir-decor.c's draw_ring): radius `a`, the horizontal lines `b & 0xff` high and the
+/// vertical ones `b >> 8 & 0xff` wide; the flags' low four bits name the rounded corners (top left, then clockwise),
+/// the next four the sides with a line (top, right, bottom, left; an open side or a run's continuation has none).
+/// `NHG_DRAW_RELIEF`: `fg` above the anti-diagonal, `bg` below (raised or sunken), else all `fg`.
+pub const NHG_DRAW_RING: u32 = 10;
 
 pub const NHG_DRAW_COPY: u32 = 1 << 0;
 pub const NHG_DRAW_TOP: u32 = 1 << 3;
 pub const NHG_DRAW_BACKGROUND: u32 = 1 << 4;
 pub const NHG_DRAW_PADDING: u32 = 1 << 5;
 pub const NHG_DRAW_OVERLAY: u32 = 1 << 7;
+pub const NHG_DRAW_RELIEF: u32 = 1 << 8;
 
 /// One record (`NhgDrawRec`).  Rectangles have the native area's origin, as damage has.
 #[repr(C)]
@@ -116,6 +122,7 @@ pub fn decode(rec: &NhgDrawRec, bits: &[u16]) -> Result<Paint, Bad> {
             corners: rec.flags & 0xf,
             argb: rec.fg,
         }],
+        NHG_DRAW_RING => vec![ring(rec, r)?],
         NHG_DRAW_WAVE => wave(r, rec.a.max(1), rec.fg),
         NHG_DRAW_DASH => {
             let y = f64::from(r.y) + f64::from(r.h) / 2.0;
@@ -210,6 +217,42 @@ pub fn decode_image(
             to: crate::image::drawn(matrix),
             smooth,
         }],
+    })
+}
+
+/// An `NHG_DRAW_RING` record on `r` as glitnir-decor.c's draw_ring has it: the outer path with the radius (at most
+/// half the box) at the rounded corners, the inner one inset by the lines on the sides that have one, its radii less
+/// the wider line.
+fn ring(rec: &NhgDrawRec, r: Rect) -> Result<Shape, Bad> {
+    if rec.a < 0 || !(0..1 << 16).contains(&rec.b) {
+        return Err(Bad::Size);
+    }
+    let (x, y, w, h) = (
+        f64::from(r.x),
+        f64::from(r.y),
+        f64::from(r.w),
+        f64::from(r.h),
+    );
+    let (hw, vw) = (f64::from(rec.b & 0xff), f64::from(rec.b >> 8));
+    let rad = f64::from(rec.a).min(h / 2.0).min(w / 2.0);
+    let radii: [f64; 4] = std::array::from_fn(|i| if rec.flags & 1 << i != 0 { rad } else { 0.0 });
+    let side = |i: u32| rec.flags & 1 << (4 + i) != 0;
+    let lw = hw.max(vw);
+    let x0 = if side(3) { x + vw } else { x };
+    let x1 = if side(1) { x + w - vw } else { x + w };
+    let y0 = if side(0) { y + hw } else { y };
+    let y1 = if side(2) { y + h - hw } else { y + h };
+    Ok(Shape::Ring {
+        outer: RRect { x, y, w, h, radii },
+        inner: RRect {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+            radii: radii.map(|q| (q - lw).max(0.0)),
+        },
+        argb: rec.fg,
+        relief: (rec.flags & NHG_DRAW_RELIEF != 0).then_some(rec.bg),
     })
 }
 
@@ -371,6 +414,64 @@ mod tests {
                 argb: 0xff20_4060
             }]
         );
+    }
+
+    #[test]
+    fn a_ring_is_the_box_outline_less_its_lines() {
+        // a 40 x 20 box at (10, 5), radius 8, lines 2 high and 3 wide; rounded at the top left and bottom right,
+        // lines on all four sides
+        let mut c = rec(NHG_DRAW_RING, 0b0101 | 0xf << 4, (10, 5, 40, 20));
+        c.a = 8;
+        c.b = 2 | 3 << 8;
+        let p = decode(&c, &[]).unwrap();
+        assert_eq!(
+            p.shapes,
+            vec![Shape::Ring {
+                outer: RRect {
+                    x: 10.0,
+                    y: 5.0,
+                    w: 40.0,
+                    h: 20.0,
+                    radii: [8.0, 0.0, 8.0, 0.0]
+                },
+                // inside the lines, the radii less the wider line
+                inner: RRect {
+                    x: 13.0,
+                    y: 7.0,
+                    w: 34.0,
+                    h: 16.0,
+                    radii: [5.0, 0.0, 5.0, 0.0]
+                },
+                argb: 0xff20_4060,
+                relief: None
+            }]
+        );
+        // open at the top and the left (a run's continuation): the inner edge lies on the outer one there; a
+        // relief's second colour; the radius at most half the height
+        let mut c = rec(
+            NHG_DRAW_RING,
+            0b0110 | 0b0110 << 4 | NHG_DRAW_RELIEF,
+            (0, 0, 40, 10),
+        );
+        c.a = 9;
+        c.b = 1 | 1 << 8;
+        c.bg = 0xff00_0000;
+        let Shape::Ring {
+            outer,
+            inner,
+            relief,
+            ..
+        } = decode(&c, &[]).unwrap().shapes[0]
+        else {
+            panic!()
+        };
+        assert_eq!(outer.radii, [0.0, 5.0, 5.0, 0.0]);
+        assert_eq!((inner.x, inner.y, inner.w, inner.h), (0.0, 0.0, 39.0, 9.0));
+        assert_eq!(inner.radii, [0.0, 4.0, 4.0, 0.0]);
+        assert_eq!(relief, Some(0xff00_0000));
+        // line widths past a byte each are refused
+        c.b = 1 << 16;
+        assert_eq!(decode(&c, &[]), Err(Bad::Size));
     }
 
     #[test]

@@ -1036,6 +1036,27 @@ pub fn card_overlay(scene: &[Placed], id: u64, scale: f64) -> Option<(Rect, Vec<
     Some((b, data))
 }
 
+/// A window's blocks drawn alone over `clip` (its text area, root px), for a shell that shows them on a layer of its
+/// own over the frame's pixels: on a transparent image, what compose draws over the rows (a ring and its corners in the
+/// colour beneath, or a rule), so the image put over the frame is the composed blocks.  Its premultiplied ARGB pixels,
+/// row by row; empty for an empty `clip`.
+pub fn block_overlay(clip: Rect, blocks: &[crate::scene::Block], scale: f64) -> Vec<u32> {
+    if clip.is_empty() {
+        return Vec::new();
+    }
+    let mut data = vec![0u32; clip.w as usize * clip.h as usize];
+    let mut t = TargetView {
+        data: &mut data,
+        stride: clip.w as usize,
+        rect: clip,
+        scale,
+    };
+    for b in blocks {
+        draw_block(crate::kernels::kernels(), &mut t, b, clip);
+    }
+    data
+}
+
 /// A root's composes since its last frame-time record.
 #[derive(Debug, Default, Clone, Copy)]
 struct Tally {
