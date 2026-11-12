@@ -525,6 +525,11 @@ pub fn layout(
         strip: c.strip,
         on: u32::from(c.on),
     };
+    // a configure being applied that changed the border (the decoration answer it brought framed the window, at the
+    // same size and states) changes what the window shows: its ack goes with the new picture
+    if let Some(ack) = f.ack.as_mut().filter(|_| changed) {
+        ack.content = true;
+    }
     // the native area moved inside the surface: the child frames follow
     if changed {
         crate::child::follow_parent(state, window);
