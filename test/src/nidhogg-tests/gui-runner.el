@@ -584,16 +584,25 @@ The recorder keeps its session store.  Signals an error when the script fails or
       (unless (and (eq rc 0) (string-match-p "^READY$" (buffer-string)))
         (error "gui-runner: the restart script failed (%S): %s" rc (buffer-string))))))
 
+(defun glitnir-gui--macos-only-p (file)
+  "Whether FILE holds macOS rows only: the NS port's and Naglfar's, an `ns' or `nhmac' part in its name."
+  (string-match-p "\\(\\`\\|-\\)\\(ns\\|nhmac\\)-.*gui-tests\\.el\\'" (file-name-nondirectory file)))
+
 (defun glitnir-gui--load-tests ()
-  (let ((dir (or (getenv "GLITNIR_GUI_TESTS") glitnir-gui--dir)))
-    (dolist (f (let ((glob (getenv "GLITNIR_GUI_FILES")))
-                 (if (and glob (not (string-empty-p glob)))
-                     ;; each glob in turn, its files sorted: the order the rows run in
-                     (mapcan (lambda (g) (sort (file-expand-wildcards (expand-file-name g dir) t) #'string<))
-                             (split-string glob))
-                   (seq-remove (lambda (f)
-                                 (and (not (featurep 'ns)) (string-match-p "\\(-ns\\|nhmac\\)-gui-tests\\.el\\'" f)))
-                               (directory-files dir t "-gui\\(-[a-z0-9]+\\)?-tests\\.el\\'")))))
+  "Load the row files (GLITNIR_GUI_FILES' globs, or every row file); off macOS the macOS-only files are left out,
+by a glob too, and the log says how many."
+  (let* ((dir (or (getenv "GLITNIR_GUI_TESTS") glitnir-gui--dir))
+         (glob (getenv "GLITNIR_GUI_FILES"))
+         (files (if (and glob (not (string-empty-p glob)))
+                    ;; each glob in turn, its files sorted: the order the rows run in
+                    (mapcan (lambda (g) (sort (file-expand-wildcards (expand-file-name g dir) t) #'string<))
+                            (split-string glob))
+                  (directory-files dir t "-gui\\(-[a-z0-9]+\\)?-tests\\.el\\'")))
+         (left (and (not (eq system-type 'darwin)) (seq-filter #'glitnir-gui--macos-only-p files))))
+    (when left
+      (glitnir-gui--say "gui-runner: %d macOS-only row files not loaded off macOS: %s" (length left)
+                        (mapconcat #'file-name-nondirectory left " ")))
+    (dolist (f (seq-difference files left))
       (load f nil t))))
 
 ;; The known-differences file holds entries (TEST-NAME COMPOSITOR REASON . OPTIONS): the test is expected to fail on that
