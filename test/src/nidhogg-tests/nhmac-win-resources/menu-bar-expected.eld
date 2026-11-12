@@ -1,9 +1,10 @@
 ;; -*- lexical-binding: t -*-
-;; The menu bar NS built from `global-map' under `emacs -Q' at the Naglfar base
-;; (Nidhogg 38ed0a65eb4, the stock NS build, *scratch* current), as `mac-counts-menu-dump'
-;; wrote it (test row `nhmac-ns-menu-dump').  The app menu NS adds itself (11 rows) is left out.
-;; Each entry: (DEPTH KIND LABEL KEY ENABLED STATE), KIND 0 item, 1 submenu, 2 separator
-;; (NS does not say toggle or radio).  Never edited by hand: take the dump again.
+;; The expected menu bar: what Mac users of Emacs see built from `global-map' under `emacs -Q'
+;; (*scratch* current).  It came from a dump of the stock macOS build at the Naglfar base
+;; (Nidhogg 38ed0a65eb4, written by `mac-counts-menu-dump'); that dump row is gone, so a change
+;; to the menus in `global-map' is made here by hand.  The app menu macOS adds itself (11 rows)
+;; is left out.  Each entry: (DEPTH KIND LABEL KEY ENABLED STATE), KIND 0 item, 1 submenu,
+;; 2 separator (the dump did not say toggle or radio).
 (
 (0 1 "File" "" 1 0)
 (1 0 "Visit New File..." "C-x C-f" 1 0)
