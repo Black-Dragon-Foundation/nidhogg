@@ -611,9 +611,14 @@ impl MacShell {
                 .checked_add(length)
                 .unwrap_or_else(Instant::now);
             let mut rounds = 0u64;
+            // why a session ran few rounds (round 2, s1: one): each round's length and the last response
+            let (mut longest, mut response) = (Duration::ZERO, NSModalResponseContinue);
             while Instant::now() < deadline {
+                let t0 = Instant::now();
                 // SAFETY: the session is the one begun above, and not ended yet.
                 let r = unsafe { app.runModalSession(session) };
+                longest = longest.max(t0.elapsed());
+                response = r;
                 rounds += 1;
                 if let (1, Some(t)) = (rounds, &test) {
                     grow(&t.window, 40.0);
@@ -626,10 +631,15 @@ impl MacShell {
             // SAFETY: the session begun above, ended once.
             unsafe { app.endModalSession(session) };
             panel.orderOut(None);
-            rounds
+            (rounds, longest, response)
         });
+        let (rounds, longest, response) = rounds;
         // counted before the test window goes: its closing events wait for the next pump
-        let r = format!("(:rounds {rounds} {})", stats_delta(before, scope_stats()));
+        let r = format!(
+            "(:rounds {rounds} :longest-round-ms {} :last-response {response} {})",
+            longest.as_millis(),
+            stats_delta(before, scope_stats())
+        );
         drop(test);
         r
     }
