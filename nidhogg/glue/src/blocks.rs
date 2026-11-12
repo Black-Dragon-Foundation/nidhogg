@@ -33,6 +33,8 @@ pub const NHG_BLOCK_RULE: u32 = 1;
 pub const NHG_BLOCK_OPEN_TOP: u32 = 2;
 /// [`NhgBlock::flags`]: the block goes on below the window's last text row: no bottom side.
 pub const NHG_BLOCK_OPEN_BOTTOM: u32 = 4;
+/// [`NhgBlock::flags`]: a bar (the whole rectangle filled in the line's colour), not a ring.
+pub const NHG_BLOCK_BAR: u32 = 8;
 
 /// One block of one Emacs window as C resolves it at publish.  Layout equals `NhgBlock`.
 #[repr(C)]
@@ -106,7 +108,9 @@ pub fn plan(
         let rgb = |c: i32| u32::try_from(c).ok().map(|c| c & 0xff_ffff);
         let block = Block {
             rect,
-            kind: if b.flags & NHG_BLOCK_RULE != 0 {
+            kind: if b.flags & NHG_BLOCK_BAR != 0 {
+                BlockKind::Bar
+            } else if b.flags & NHG_BLOCK_RULE != 0 {
                 BlockKind::Rule
             } else {
                 BlockKind::Ring

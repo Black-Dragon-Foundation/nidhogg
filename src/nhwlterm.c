@@ -720,7 +720,8 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
   int x1 = clip_to_bounds (x0, nhwl_block_int (v, 4, clip.w), clip.w);
   int y0 = WINDOW_TO_FRAME_PIXEL_Y (w, top->y);
   int y1 = WINDOW_TO_FRAME_PIXEL_Y (w, last->y) + last->height;
-  uint32_t flags = (EQ (AREF (v, 0), make_fixnum (1)) ? NHG_BLOCK_RULE : 0);
+  uint32_t flags = (EQ (AREF (v, 0), make_fixnum (1)) ? NHG_BLOCK_RULE
+		    : EQ (AREF (v, 0), make_fixnum (2)) ? NHG_BLOCK_BAR : 0);
   if (top == first && MATRIX_ROW_START_CHARPOS (top) > start)
     flags |= NHG_BLOCK_OPEN_TOP;
   if (!stopped && MATRIX_ROW_END_CHARPOS (last) < end)

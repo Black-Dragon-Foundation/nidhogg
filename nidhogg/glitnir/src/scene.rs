@@ -170,6 +170,9 @@ pub enum BlockKind {
     Ring,
     /// Only the bottom side: a hairline on the rectangle's last pixel rows, its full width, no corners.
     Rule,
+    /// The whole rectangle filled in the line's colour, square (a selected row's accent bar: its x0..x1 the bar's
+    /// width).
+    Bar,
 }
 
 /// A block of rows inside a window ([`Scene::set_blocks`]), drawn OVER the frame's pixels: a ring inside its rectangle
