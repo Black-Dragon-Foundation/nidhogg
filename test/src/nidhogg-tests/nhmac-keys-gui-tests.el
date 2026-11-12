@@ -59,4 +59,21 @@
           (should (eq (nhmac-keys--read ?é nhmac-keys--option ?e) ?é)))
       (setq ns-alternate-modifier 'meta))))
 
+(ert-deftest nhmac-keys-command-shift ()
+  "Command+Shift+letter arrives as the capital letter with Command alone (s-P, not S-s-p), as the NS port sent it
+and drgnx's `drgnx-keys--mac-cmd' binds it; on a named key Shift stays (S-s-<right>)."
+  (skip-unless (nhmac-keys--naglfar-p))
+  (let ((ns-command-modifier ns-command-modifier)
+        (shift #x20000)                 ; `NSEventModifierFlagShift'
+        (arrow (logior #x800000 nhmac-keys--keypad))) ; an arrow's Function and NumericPad flags
+    (unwind-protect
+        (progn
+          (setq ns-command-modifier 'super)
+          ;; AppKit's charactersIgnoringModifiers keeps Shift: the key is P
+          (should (eq (nhmac-keys--read ?P (logior nhmac-keys--command shift)) ?\s-P))
+          (should (eq (nhmac-keys--read ?p nhmac-keys--command) ?\s-p))
+          ;; NSRightArrowFunctionKey
+          (should (eq (nhmac-keys--read #xF703 (logior nhmac-keys--command shift arrow)) 'S-s-right)))
+      (setq ns-command-modifier 'super))))
+
 ;;; nhmac-keys-gui-tests.el ends here
