@@ -122,6 +122,25 @@ many faces; only the copies differ."
     (should (> spec 0))
     (should (<= (- cells-three cells-one) (* 2 spec)))))
 
+(ert-deftest glitnir-faces-gui/a-redisplay-copies-no-font-spec ()
+  "Workers: a redisplay of faces that set font attributes copies no font spec.
+Each merge of such a face clears an attribute from the font spec it is
+merged into, and each clear copied the spec: at every face run, and at
+every face lookup in a buffer whose `default' is remapped to such a
+face.  The copies are kept (font_clear_prop's cache): 80 runs of a face
+with a float :height, `default' remapped to another, cost a redisplay
+no more vector cells than 80 runs of a face with no font attribute,
+`default' not remapped, and one font spec."
+  (let* ((tall (glitnir-faces-gui--face 'glitnir-faces-gui--tall :height 0.889 :weight 'bold))
+         (remap (glitnir-faces-gui--face 'glitnir-faces-gui--remap-tall :height 0.963))
+         (plain (glitnir-faces-gui--face 'glitnir-faces-gui--plain :underline t))
+         (spec (glitnir-faces-gui--cells #'font-spec))
+         (cells-tall (glitnir-faces-gui--redisplay-cells tall remap))
+         (cells-plain (glitnir-faces-gui--redisplay-cells plain nil)))
+    (glitnir-gui--say "font-spec copies: tall %d, plain %d, a font spec %d" cells-tall cells-plain spec)
+    (should (> spec 0))
+    (should (<= (- cells-tall cells-plain) spec))))
+
 (defun glitnir-faces-gui--taller (height)
   "HEIGHT and 7 more: a :height function."
   (+ height 7))
