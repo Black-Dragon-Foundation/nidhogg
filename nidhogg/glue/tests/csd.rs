@@ -881,6 +881,34 @@ mod csd {
         close(d);
     }
 
+    /// [C] A configure that brings the compositor's decoration answer at the same size, where the answer frames the
+    /// window (sway answering client-side to an undecorated ask), changes what the window shows: a content ack, so it
+    /// goes out with the frame's new picture.  A bare one went out alone with a frame callback the compositor did not
+    /// answer (the window shows nothing new), and the new picture was held.
+    #[test]
+    fn a_decoration_answer_that_frames_the_window_is_a_content_ack() {
+        let rec = Recorder::start("sway");
+        let d = open(&rec);
+        let id = window(d);
+        configured(d, id);
+        assert_eq!(
+            lay(d, id, 120, 0),
+            (0, bare([0, 0, 0, 0])),
+            "decorated by sway"
+        );
+        rec.control_ok(r#"{"cmd":"decoration","mode":"client"}"#);
+        // SAFETY: a live display.
+        assert_eq!(unsafe { nhg_window_undecorated(d, id, 1) }, NHG_OK);
+        apply_undecorated(d, id);
+        assert_ne!(
+            lay(d, id, 120, NHG_CSD_UNDECORATED).1,
+            bare([0, 0, 0, 0]),
+            "framed now"
+        );
+        assert_eq!(last_ack(d, id).map(|(_, f)| f), Some(NHSHELL_ACK_CONTENT));
+        close(d);
+    }
+
     /// [C] With the look's chrome the margins make room for the shadow: the geometry excludes them, the input region
     /// is the window and the resize margins around it, the shadow lies below the window.  Corners alone keep the
     /// resize margins, and outside the arc the corner is transparent.

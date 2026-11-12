@@ -4,8 +4,9 @@
 //!
 //! The ack (acks are recorded and go out with the commit that carries them).  It carries `NHSHELL_ACK_CONTENT` (only a buffer carries it) for the window's
 //! first configure, under a client-side title bar for a change of activated, maximized or tiled (on a framed
-//! undecorated window, of maximized or tiled: its margins and chrome), and when the configure gives the frame a new
-//! size.  Whether it does is C's to say: the size the suggestion gives depends on the
+//! undecorated window, of maximized or tiled: its margins and chrome), when C lays the border out anew while it
+//! applies the configure (`csd::layout`: the decoration answer it brought framed the window or unframed it), and when
+//! the configure gives the frame a new size.  Whether it does is C's to say: the size the suggestion gives depends on the
 //! title bar's layout, which C recomputes from the new states when it applies `RESIZE` (the rule: a decision
 //! that reads state an earlier action changed is made where that action is applied).  C says it by pushing the new
 //! size (`nhg_frame_resized`) while it applies `RESIZE`, and the ack is recorded then, as content; otherwise it is
