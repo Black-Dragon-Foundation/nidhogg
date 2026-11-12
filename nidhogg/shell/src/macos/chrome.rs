@@ -172,7 +172,10 @@ pub fn apply(
     }
     let has = chrome.is_some_and(Chrome::has_shadow);
     if !has {
-        if shown.image.take().is_some() || shown.frame.take().is_some() {
+        // both forgotten: a frame kept here would match the one a shadow coming back gets, and the layer would stay
+        // hidden (round 6: a child undecorated again had no shadow)
+        let (image, frame) = (shown.image.take(), shown.frame.take());
+        if image.is_some() || frame.is_some() {
             shadow.setHidden(true);
             // SAFETY: nil contents.
             unsafe { shadow.setContents(None) };
