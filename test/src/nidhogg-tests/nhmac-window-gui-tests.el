@@ -26,6 +26,29 @@
     st))
 
 ;; Task 32: window behaviours, full screen, Spaces, appearance
+(ert-deftest nhmac-fullscreen-app-running ()
+  "AppKit counts the application as running (`[NSApp isRunning]') before a native full-screen transition, and the
+transition ends: `windowDidEnterFullScreen:' reaches the delegate and is applied, so the window is not left busy.
+It tells the two causes of a transition that never ends apart: not running (the pumps never call `[NSApp run]'), or
+the notification lost after it came (FS notes: will-enter will-exit did-enter did-exit fail-enter fail-exit applied)."
+  (skip-unless (nhmac-win-gui--naglfar-p))
+  (let ((ns-use-native-fullscreen t))
+    (nhmac--call 'variable 'ns-use-native-fullscreen t)
+    (let ((before (nhmac-win-gui--state)))
+      (glitnir-gui--say "nhmac-fullscreen-app-running: before %S" before)
+      (unwind-protect
+          (progn
+            (set-frame-parameter nil 'fullscreen 'fullboth)
+            (let ((after (nhmac-win-gui--wait :fs-busy nil)))
+              (glitnir-gui--say "nhmac-fullscreen-app-running: after entering %S" after)
+              (should (eq (plist-get before :app-running) t))
+              (should (> (nth 2 (plist-get after :fs-notes)) (nth 2 (plist-get before :fs-notes))))
+              (should (> (nth 6 (plist-get after :fs-notes)) (nth 6 (plist-get before :fs-notes))))
+              (should (null (plist-get after :fs-busy)))
+              (should (eq (plist-get after :style-full) t))))
+        (set-frame-parameter nil 'fullscreen nil)
+        (glitnir-gui--say "nhmac-fullscreen-app-running: after leaving %S" (nhmac-win-gui--wait :fullscreen nil))))))
+
 (ert-deftest nhmac-fullscreen-native ()
   "Full screen is AppKit's own with `ns-use-native-fullscreen' on."
   (skip-unless (nhmac-win-gui--naglfar-p))
