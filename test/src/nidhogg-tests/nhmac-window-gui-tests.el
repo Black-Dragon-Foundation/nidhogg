@@ -25,55 +25,81 @@
       (glitnir-gui--say "nhmac-win-gui--wait: %S never %S: %S" key want st))
     st))
 
+(defun nhmac-win-gui--settle ()
+  "Leave the window out of full screen with no transition running, so the next row starts from a plain window: a
+native transition takes seconds on a CI runner and outlives a row that only waited for the style mask."
+  (nhmac-win-gui--wait :fs-busy nil)
+  (when (plist-get (nhmac-win-gui--state) :fullscreen)
+    (set-frame-parameter nil 'fullscreen nil)
+    (nhmac-win-gui--wait :fullscreen nil)
+    (nhmac-win-gui--wait :fs-busy nil)))
+
 ;; Task 32: window behaviours, full screen, Spaces, appearance
 (ert-deftest nhmac-fullscreen-app-running ()
-  "AppKit counts the application as running (`[NSApp isRunning]') before a native full-screen transition, and the
-transition ends: `windowDidEnterFullScreen:' reaches the delegate and is applied, so the window is not left busy.
-It tells the two causes of a transition that never ends apart: not running (the pumps never call `[NSApp run]'), or
-the notification lost after it came (FS notes: will-enter will-exit did-enter did-exit fail-enter fail-exit applied)."
+  "A native full-screen transition ends both ways: `windowDidEnterFullScreen:' and `windowDidExitFullScreen:' reach
+the delegate and are applied, so the window is not left busy (FS notes: will-enter will-exit did-enter did-exit
+fail-enter fail-exit applied).  `[NSApp isRunning]' is logged, not judged: round 2 showed both transitions end with
+it nil (the pumps' `nextEventMatchingMask:' turns the run loop the transitions finish on), and it is nil under NS
+too whenever Lisp runs, since `ns_select's `[NSApp run]' has returned by then."
   (skip-unless (nhmac-win-gui--naglfar-p))
   (let ((ns-use-native-fullscreen t))
     (nhmac--call 'variable 'ns-use-native-fullscreen t)
+    (nhmac-win-gui--settle)
     (let ((before (nhmac-win-gui--state)))
       (glitnir-gui--say "nhmac-fullscreen-app-running: before %S" before)
       (unwind-protect
           (progn
             (set-frame-parameter nil 'fullscreen 'fullboth)
+            (nhmac-win-gui--wait :fullscreen t)
             (let ((after (nhmac-win-gui--wait :fs-busy nil)))
               (glitnir-gui--say "nhmac-fullscreen-app-running: after entering %S" after)
-              (should (eq (plist-get before :app-running) t))
               (should (> (nth 2 (plist-get after :fs-notes)) (nth 2 (plist-get before :fs-notes))))
               (should (> (nth 6 (plist-get after :fs-notes)) (nth 6 (plist-get before :fs-notes))))
               (should (null (plist-get after :fs-busy)))
-              (should (eq (plist-get after :style-full) t))))
-        (set-frame-parameter nil 'fullscreen nil)
-        (glitnir-gui--say "nhmac-fullscreen-app-running: after leaving %S" (nhmac-win-gui--wait :fullscreen nil))))))
+              (should (eq (plist-get after :style-full) t)))
+            (set-frame-parameter nil 'fullscreen nil)
+            (nhmac-win-gui--wait :fullscreen nil)
+            (let ((after (nhmac-win-gui--wait :fs-busy nil)))
+              (glitnir-gui--say "nhmac-fullscreen-app-running: after leaving %S" after)
+              (should (> (nth 3 (plist-get after :fs-notes)) (nth 3 (plist-get before :fs-notes))))
+              (should (null (plist-get after :fs-busy)))
+              (should (null (plist-get after :style-full)))))
+        (nhmac-win-gui--settle)))))
 
 (ert-deftest nhmac-fullscreen-native ()
   "Full screen is AppKit's own with `ns-use-native-fullscreen' on."
   (skip-unless (nhmac-win-gui--naglfar-p))
   (let ((ns-use-native-fullscreen t))
     (nhmac--call 'variable 'ns-use-native-fullscreen t)
-    (set-frame-parameter nil 'fullscreen 'fullboth)
-    (should (eq (plist-get (nhmac-win-gui--wait :fullscreen t) :fullscreen) t))
-    (set-frame-parameter nil 'fullscreen nil)
-    (should (null (plist-get (nhmac-win-gui--wait :fullscreen nil) :fullscreen)))))
+    (nhmac-win-gui--settle)
+    (unwind-protect
+        (progn
+          (set-frame-parameter nil 'fullscreen 'fullboth)
+          (should (eq (plist-get (nhmac-win-gui--wait :fullscreen t) :fullscreen) t))
+          (nhmac-win-gui--wait :fs-busy nil)
+          (set-frame-parameter nil 'fullscreen nil)
+          (should (null (plist-get (nhmac-win-gui--wait :fullscreen nil) :fullscreen))))
+      (nhmac-win-gui--settle))))
 
 (ert-deftest nhmac-fullscreen-non-native ()
   "With `ns-use-native-fullscreen' off, full screen is the screen's frame without the title bar."
   (skip-unless (nhmac-win-gui--naglfar-p))
+  (nhmac-win-gui--settle)
   (nhmac--call 'variable 'ns-use-native-fullscreen nil)
   (unwind-protect
       (progn
         (set-frame-parameter nil 'fullscreen 'fullboth)
+        (should (null (plist-get (nhmac-win-gui--state) :fs-busy)))
         (should (eq (plist-get (nhmac-win-gui--wait :fullscreen t) :fullscreen) t))
         (set-frame-parameter nil 'fullscreen nil)
         (should (null (plist-get (nhmac-win-gui--wait :fullscreen nil) :fullscreen))))
-    (nhmac--call 'variable 'ns-use-native-fullscreen t)))
+    (nhmac--call 'variable 'ns-use-native-fullscreen t)
+    (nhmac-win-gui--settle)))
 
 (ert-deftest nhmac-miniaturize ()
   "`iconify-frame' miniaturizes the window and `make-frame-visible' brings it back."
   (skip-unless (nhmac-win-gui--naglfar-p))
+  (nhmac-win-gui--settle)
   (iconify-frame)
   (should (eq (plist-get (nhmac-win-gui--wait :miniaturized t) :miniaturized) t))
   (make-frame-visible)

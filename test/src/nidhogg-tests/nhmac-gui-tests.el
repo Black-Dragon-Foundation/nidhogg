@@ -973,12 +973,15 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
 
 (ert-deftest nhmac-commit-shows-without-spin ()
   "After `redisplay' and Lisp that runs on for 20 ms the layer shows the newest surface, read back in the process,
-with no run-loop turn: the commit's deadline commits it."
+with no run-loop turn: the commit's deadline commits it.  The redisplay is forced: an event still queued from an
+earlier row makes a plain `redisplay' return at once (round 2: 0 commits, 0 deadline commits), which is not the case
+judged here; whether one was pending is logged."
   :tags '(draws)
   (nhmac-gui--typing-buffer "shows")
   (let ((before (nhmac-stats)))
     (insert "y")
-    (redisplay)
+    (nhmac-gui--say "nhmac-commit-shows-without-spin: input pending %S" (input-pending-p))
+    (redisplay t)
     (let ((end (+ (float-time) 0.02)))
       (while (< (float-time) end)))
     (let ((s (nhmac-gui--surface)))
@@ -2740,12 +2743,14 @@ Core Text's own cascade picks for it from Menlo (`CTFontCreateForString')."
 (ert-deftest nhmac-font-shaping ()
   "Arabic and Devanagari runs are shaped as Core Text lays them out in the same font (`test-ct-shape', the driver's
 line: kerning off): the same glyph ids in the same order, each glyph's cluster holding the character Core Text maps it
-from, and the run's width Core Text's typographic widths each rounded (rule: a glyph's width is its rounded advance)."
+from, and the run's width Core Text's typographic widths each rounded (rule: a glyph's width is its rounded advance).
+Rule: Core Text gives a right-to-left run's glyphs in display order, Emacs's glyph string is in logical order, so
+`mac_font_shape' reverses such a run; the row compares in logical order."
   :tags '(parity)
   (dolist (td nhmac-gui--shaping-texts)
     (pcase-let* ((`(,family ,size ,glyphs) (nhmac-gui--shaping-facts (car td) (cdr td)))
                  (runs (apply #'nhmac--query 'test-ct-shape family size (append (car td) nil)))
-                 (ct (apply #'append (mapcar #'cdr runs))))
+                 (ct (apply #'append (mapcar (lambda (r) (if (car r) (reverse (cdr r)) (cdr r))) runs))))
       (nhmac-gui--say "nhmac-font-shaping: %s %s %s: Emacs %S, Core Text %S" (cdr td) family size glyphs runs)
       (should glyphs)
       (should runs)

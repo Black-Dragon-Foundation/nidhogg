@@ -15,6 +15,8 @@
 ;;   GLITNIR_GUI_ONLY        one row's name: the run is that row alone, when the selector takes it
 ;;   GLITNIR_GUI_DONE        a file of row names, one per line, that a previous session of the same run already
 ;;                           reported: they are not run again (a lane that ended a hung row starts a new session)
+;;   GLITNIR_GUI_FONTS       font files, separated by `:', registered for this session before any row (macOS:
+;;                           Core Text's process scope, through the shell's test hook), then listed
 ;; The rows run in a fixed order: by file in GLITNIR_GUI_FILES's order (a space-separated list of globs), then by
 ;; name; rows tagged `runs-last' after every other.  Rows tagged `parity' (compared with another build's output)
 ;; are counted apart in the summary line.
@@ -71,6 +73,16 @@ frame stays where it is."
       (pcase-let ((`(,left ,top ,cols ,lines) (mapcar #'string-to-number (split-string spec))))
         (set-frame-size nil cols lines)
         (set-frame-position nil left top)))))
+
+(defun glitnir-gui--register-fonts ()
+  "On macOS, register GLITNIR_GUI_FONTS's files for this session and list the faces again; each file is logged."
+  (let ((files (split-string (or (getenv "GLITNIR_GUI_FONTS") "") ":" t)))
+    (when (and files (fboundp 'nhmac--query))
+      (dolist (f files)
+        (glitnir-gui--say "gui-runner: font %s registered %S" f
+                          (condition-case err (nhmac--query 'test-font-probe 'register f) (error err))))
+      (nhmac--query 'test-font-probe 'relist)
+      (clear-font-cache))))
 
 (defun glitnir-gui--say-frame (when)
   "On Naglfar, log WHEN: the selected frame as Emacs has it (visible, position, size) and as the shell has it
@@ -718,6 +730,7 @@ The rows without the tag (locks, fds, threads) still run."
 
 (defun glitnir-gui--run ()
   (glitnir-gui--place-frame)
+  (glitnir-gui--register-fonts)
   (glitnir-gui--say-frame "placed")
   (glitnir-gui--wait-for-scale)
   (glitnir-gui--wait-for-first-paint)

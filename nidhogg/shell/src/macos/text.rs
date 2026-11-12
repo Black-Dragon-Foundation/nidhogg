@@ -347,6 +347,23 @@ fn family_faces(family: CFRef, exact: bool) -> Vec<Face> {
 
 /// Set when Core Text says the registered fonts changed: the next `listing` lists them again.
 static STALE: AtomicBool = AtomicBool::new(false);
+/// How many registered-fonts notifications have come (`font_changes`).
+static NOTES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The registered-fonts notifications so far, the current listing's generation, and whether a new listing is due.
+pub fn font_changes() -> (u32, usize, bool) {
+    let generation = listings().len().saturating_sub(1);
+    (
+        NOTES.load(Ordering::Acquire),
+        generation,
+        STALE.load(Ordering::Acquire),
+    )
+}
+
+/// List the faces again at the next `listing`, as a registered-fonts notification does.
+pub fn relist() {
+    STALE.store(true, Ordering::Release);
+}
 
 extern "C" fn fonts_changed(
     _c: CFRef,
@@ -355,6 +372,7 @@ extern "C" fn fonts_changed(
     _obj: *const c_void,
     _info: CFRef,
 ) {
+    NOTES.fetch_add(1, Ordering::AcqRel);
     STALE.store(true, Ordering::Release);
 }
 
