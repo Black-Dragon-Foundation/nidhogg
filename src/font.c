@@ -3117,6 +3117,123 @@ font_spec_from_name (Lisp_Object font_name)
 static bool font_clear_in_place;
 
 #endif
+#ifdef HAVE_NIDHOGG_WORKERS
+/* The cleared copies font_clear_prop made: FONT_CLEAR_CACHE_SIZE
+   entries of (SPEC PROP COPY), replaced in turn.  Redisplay merges the
+   same faces at every face run: a float :height, a family or a weight
+   of a face's own clears that attribute from the font spec it is merged
+   into, and each clear copied the spec (a pseudovector and its extra
+   alist) again.  A copy is shared only after a check that its contents
+   are still what clearing PROP from SPEC gives, so a spec or a copy
+   changed in place since is copied anew.  */
+enum { FONT_CLEAR_CACHE_SIZE = 16 };
+static Lisp_Object font_clear_copies;
+static int font_clear_copies_next;
+
+/* Store in V (FONT_EXTRA_INDEX slots, SPEC's) what font_clear_prop
+   clears for PROP; false when it would clear nothing (and copy
+   nothing to clear).  */
+static bool
+font_clear_expected (Lisp_Object spec, enum font_property_index prop,
+		     Lisp_Object *v)
+{
+  for (int i = 0; i < FONT_EXTRA_INDEX; i++)
+    v[i] = AREF (spec, i);
+  v[FONT_TYPE_INDEX] = Qnil;
+  if (NILP (v[prop])
+      && prop != FONT_FAMILY_INDEX
+      && prop != FONT_FOUNDRY_INDEX
+      && prop != FONT_WIDTH_INDEX
+      && prop != FONT_SIZE_INDEX)
+    return false;
+  v[prop] = Qnil;
+  if (prop == FONT_FAMILY_INDEX || prop == FONT_FOUNDRY_INDEX)
+    {
+      if (prop == FONT_FAMILY_INDEX)
+	{
+	  v[FONT_FOUNDRY_INDEX] = Qnil;
+	  v[FONT_WIDTH_INDEX] = Qnil;
+	}
+      v[FONT_ADSTYLE_INDEX] = Qnil;
+      v[FONT_REGISTRY_INDEX] = Qnil;
+      v[FONT_SIZE_INDEX] = Qnil;
+      v[FONT_DPI_INDEX] = Qnil;
+      v[FONT_SPACING_INDEX] = Qnil;
+      v[FONT_AVGWIDTH_INDEX] = Qnil;
+    }
+  else if (prop == FONT_SIZE_INDEX)
+    {
+      v[FONT_DPI_INDEX] = Qnil;
+      v[FONT_SPACING_INDEX] = Qnil;
+      v[FONT_AVGWIDTH_INDEX] = Qnil;
+    }
+  else if (prop == FONT_WIDTH_INDEX)
+    v[FONT_AVGWIDTH_INDEX] = Qnil;
+  return true;
+}
+
+/* True when COPY holds what font_clear_prop makes of SPEC for PROP:
+   the expected properties, and SPEC's extra alist without
+   `:font-entity' and `:name' (each pair copied, so compared by its
+   key and value).  */
+static bool
+font_clear_copy_valid (Lisp_Object spec, enum font_property_index prop,
+		       Lisp_Object copy)
+{
+  Lisp_Object v[FONT_EXTRA_INDEX];
+
+  if (!FONT_SPEC_P (copy) || !font_clear_expected (spec, prop, v))
+    return false;
+  for (int i = 0; i < FONT_EXTRA_INDEX; i++)
+    if (!EQ (AREF (copy, i), v[i]))
+      return false;
+  Lisp_Object tail = AREF (spec, FONT_EXTRA_INDEX);
+  Lisp_Object mine = AREF (copy, FONT_EXTRA_INDEX);
+  for (; CONSP (tail); tail = XCDR (tail))
+    {
+      Lisp_Object key = CAR (XCAR (tail));
+      if (EQ (key, QCfont_entity) || EQ (key, QCname))
+	continue;
+      if (!CONSP (mine) || !CONSP (XCAR (mine))
+	  || !EQ (XCAR (XCAR (mine)), key)
+	  || !EQ (XCDR (XCAR (mine)), CDR (XCAR (tail))))
+	return false;
+      mine = XCDR (mine);
+    }
+  return NILP (mine);
+}
+
+/* The cached copy of SPEC cleared of PROP, or nil.  */
+static Lisp_Object
+font_clear_cache_get (Lisp_Object spec, enum font_property_index prop)
+{
+  for (int i = 0; i < FONT_CLEAR_CACHE_SIZE; i++)
+    if (EQ (AREF (font_clear_copies, 3 * i), spec)
+	&& EQ (AREF (font_clear_copies, 3 * i + 1), make_fixnum (prop)))
+      {
+	Lisp_Object copy = AREF (font_clear_copies, 3 * i + 2);
+	return font_clear_copy_valid (spec, prop, copy) ? copy : Qnil;
+      }
+  return Qnil;
+}
+
+static void
+font_clear_cache_put (Lisp_Object spec, enum font_property_index prop,
+		      Lisp_Object copy)
+{
+  int i = font_clear_copies_next;
+  for (int j = 0; j < FONT_CLEAR_CACHE_SIZE; j++)
+    if (EQ (AREF (font_clear_copies, 3 * j), spec)
+	&& EQ (AREF (font_clear_copies, 3 * j + 1), make_fixnum (prop)))
+      i = j;
+  if (i == font_clear_copies_next)
+    font_clear_copies_next = (i + 1) % FONT_CLEAR_CACHE_SIZE;
+  ASET (font_clear_copies, 3 * i, spec);
+  ASET (font_clear_copies, 3 * i + 1, make_fixnum (prop));
+  ASET (font_clear_copies, 3 * i + 2, copy);
+}
+
+#endif
 void
 font_clear_prop (Lisp_Object *attrs, enum font_property_index prop)
 {
@@ -3128,6 +3245,20 @@ font_clear_prop (Lisp_Object *attrs, enum font_property_index prop)
 
   if (! FONTP (font))
     return;
+#ifdef HAVE_NIDHOGG_WORKERS
+  Lisp_Object spec = font;
+# ifdef HAVE_GLITNIR
+  if (!in_place)
+# endif
+    {
+      Lisp_Object copy = font_clear_cache_get (spec, prop);
+      if (!NILP (copy))
+	{
+	  attrs[LFACE_FONT_INDEX] = copy;
+	  return;
+	}
+    }
+#endif
 
   if (! NILP (Ffont_get (font, QCname)))
     {
@@ -3175,6 +3306,14 @@ font_clear_prop (Lisp_Object *attrs, enum font_property_index prop)
   else if (prop == FONT_WIDTH_INDEX)
     ASET (font, FONT_AVGWIDTH_INDEX, Qnil);
   attrs[LFACE_FONT_INDEX] = font;
+#ifdef HAVE_NIDHOGG_WORKERS
+  if (!EQ (font, spec)
+# ifdef HAVE_GLITNIR
+      && !in_place
+# endif
+      )
+    font_clear_cache_put (spec, prop, font);
+#endif
 }
 #ifdef HAVE_GLITNIR
 
@@ -3193,7 +3332,13 @@ font_merge_clear_prop (Lisp_Object *attrs, enum font_property_index prop,
 
   font_clear_in_place = FONTP (font) && EQ (font, fresh);
   font_clear_prop (attrs, prop);
+#ifdef HAVE_NIDHOGG_WORKERS
+  /* Every copy is font_clear_prop's cached one now, which nothing may
+     clear in place: the merge's next clear looks its own copy up.  */
+  return Qnil;
+#else
   return EQ (attrs[LFACE_FONT_INDEX], font) ? fresh : attrs[LFACE_FONT_INDEX];
+#endif
 }
 #endif
 
@@ -5941,6 +6086,10 @@ syms_of_font (void)
 
   Vfont_log_deferred = make_nil_vector (3);
   staticpro (&Vfont_log_deferred);
+#ifdef HAVE_NIDHOGG_WORKERS
+  font_clear_copies = make_nil_vector (3 * FONT_CLEAR_CACHE_SIZE);
+  staticpro (&font_clear_copies);
+#endif
 
 #if 0
 #ifdef HAVE_LIBOTF
