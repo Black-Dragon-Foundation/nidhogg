@@ -726,7 +726,7 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
   ;; The size and the frame data of every corpus image come from the header
   ;; path, equal to what the loaders compute (the GUI row compares with the
   ;; loaders themselves).  A type the header path does not know in this
-  ;; build (any, on NS) is never answered: today's path computes it.
+  ;; build is never answered: today's path computes it.
   (dolist (c workers-image-tests--corpus)
     (pcase-let ((`(,file ,type ,w ,h) c))
       (let ((spec (workers-image-tests--spec file type)))
@@ -809,7 +809,7 @@ unibyte strings; CHUNKS, each (TYPE . BODY), go before the image data."
   ;; A 100000 x 100000 header is refused by `max-image-size' before any
   ;; decode: the header path does not answer, so today's path reports the
   ;; error.  Only the limit refuses it: without one the header is trusted
-  ;; (where the header path knows PNG; on NS nothing is answered).
+  ;; (where the header path knows PNG; elsewhere nothing is answered).
   (let ((spec (list 'image :type 'png :data
                     (workers-image-tests--png-header 100000 100000)))
         (trusted (and (workers-image-tests--header-p 'png)
