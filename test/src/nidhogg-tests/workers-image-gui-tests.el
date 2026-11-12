@@ -727,3 +727,42 @@ Return the window."
                        file t)
             (should (equal (image-multi-frame-p spec) before))))
       (delete-directory dir t))))
+
+(defun workers-image-gui--relayout-conses (items)
+  "Conses one forced redisplay takes for a window showing ITEMS.
+An item is an image spec or a string, shown ten to a line."
+  (let ((buf (get-buffer-create " *workers-image-gui*")))
+    (with-current-buffer buf
+      (erase-buffer)
+      (setq-local mode-line-format nil)
+      (setq-local header-line-format nil)
+      (let ((i 0))
+        (dolist (item items)
+          (insert (if (stringp item) item (propertize "x" 'display item))
+                  (if (zerop (% (cl-incf i) 10)) "\n" " "))))
+      (goto-char (point-min)))
+    (delete-other-windows)
+    (switch-to-buffer buf)
+    (let ((forced (lambda ()
+                    (force-window-update (selected-window))
+                    (redisplay t))))
+      (funcall forced)
+      (funcall forced)
+      (let ((before (car (memory-use-counts))))
+        (funcall forced)
+        (- (car (memory-use-counts)) before)))))
+
+(ert-deftest workers-gui/image-lookup-conses-nothing ()
+  ;; The image cache hashes a spec in place: a window of 40 images lays
+  ;; out again with no more conses than one of 40 characters (upstream's
+  ;; filtered copy of the spec took two per property per image).
+  (skip-unless (display-graphic-p))
+  (let* ((nidhogg-image-defer nil)
+         (spec (append (workers-image-gui--spec "palette.png" nil nil)
+                       '(:ascent center :scale 1)))
+         (images (workers-image-gui--relayout-conses (make-list 40 spec)))
+         (text (workers-image-gui--relayout-conses (make-list 40 "x"))))
+    (message "workers-gui/image-lookup-conses-nothing: images %d, text %d"
+             images text)
+    (ert-info ((format "images %d, text %d" images text) :prefix "conses: ")
+      (should (< (- images text) 40)))))
