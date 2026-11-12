@@ -115,6 +115,32 @@ nhmac_spec_record (Lisp_Object spec, NhgFontSpec *r)
   v = assq_no_quit (QClang, extra);
   if (CONSP (v))
     r->language = nhmac_name_id (XCDR (v));
+  v = assq_no_quit (QCnhmac_cascade, extra);
+  if (CONSP (v) && FIXNATP (XCDR (v)))
+    r->cascade = XFIXNAT (XCDR (v));
+}
+
+/* SPEC as fontset.c's fallback for FACE lists it: when SPEC names no
+   family and FACE's ASCII font is this driver's, a copy whose
+   `:nhmac-cascade' is that font's handle, so the listing's preferred
+   family is the one Core Text's cascade from that font picks (a native
+   app's fallback), and the font cache keeps each font's answer apart.
+   Otherwise SPEC itself.  */
+Lisp_Object
+nhmac_cascade_spec (Lisp_Object spec, struct face *face)
+{
+  struct font *font = face && face->ascii_face ? face->ascii_face->font : NULL;
+  Lisp_Object copy;
+
+  if (!font || font->driver != &nhmacfont_driver
+      || !NILP (AREF (spec, FONT_FAMILY_INDEX)))
+    return spec;
+  copy = copy_font_spec (spec);
+  ASET (copy, FONT_EXTRA_INDEX,
+	Fcons (Fcons (QCnhmac_cascade,
+		      make_uint (((struct nhmac_font_info *) font)->handle)),
+	       AREF (copy, FONT_EXTRA_INDEX)));
+  return copy;
 }
 
 /* The glue's entity E as a font entity of this driver.  The face's id
@@ -519,6 +545,7 @@ syms_of_nhmacfont (void)
 {
   DEFSYM (Qnaglfar, "naglfar");
   DEFSYM (QCminspace, ":minspace");
+  DEFSYM (QCnhmac_cascade, ":nhmac-cascade");
   nhmac_font_cache = list1 (Qnil);
   staticpro (&nhmac_font_cache);
 }
