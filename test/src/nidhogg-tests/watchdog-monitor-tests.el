@@ -63,6 +63,7 @@ model condition variable."
 
 (ert-deftest watchdog/monitor-start-stop ()
   "Starting makes one more task, named nh-watchdog; stopping removes it."
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (let ((before (length (watchdog-monitor-tests--tasks))))
     (should-not (watchdog-monitor-tests--task "nh-watchdog"))
     (unwind-protect
@@ -82,6 +83,7 @@ model condition variable."
   "The monitor thread blocks every signal it can block.
 The kernel never shows SIGKILL and SIGSTOP blocked, and glibc keeps
 its two internal signals (32 and 33) out of any mask."
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (unwind-protect
       (progn
         (nidhogg-watchdog--start 100 2000 nil)
@@ -106,6 +108,7 @@ A wake-up is a return from the monitor's condition-variable wait
 that finds no busy span: at most the end of the span before the
 wait (its T/2 deadline) and none while the wait lasts."
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (unwind-protect
       (progn
         (nidhogg-watchdog--start 100 2000 nil)
@@ -119,6 +122,7 @@ wait (its T/2 deadline) and none while the wait lasts."
 (ert-deftest watchdog/monitor-never-arms-on-the-test-clock ()
   "While the virtual clock is set, a real 300 ms spin raises no request."
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (unwind-protect
       (progn
         (nidhogg-watchdog--start 100 2000 nil)

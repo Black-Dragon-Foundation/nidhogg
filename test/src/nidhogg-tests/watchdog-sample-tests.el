@@ -84,6 +84,7 @@ Return the stalls taken after the span ended."
   (and (symbolp f) (string-prefix-p "ert-" (symbol-name f))))
 
 (ert-deftest watchdog/stats-count-samples ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; `--stats' counts the samples the handler kept (`:samples'), so a
   ;; reader can set `:missed' against them.
   (wdtest-sampling
@@ -93,6 +94,7 @@ Return the stalls taken after the span ended."
       (should (= (1+ before) (plist-get (nidhogg-watchdog--stats) :samples))))))
 
 (ert-deftest watchdog/sample-attribution ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Interpreted, then byte-compiled: the frames are the same symbols.
   (eval '(progn
            (defun wdtest-inner () (nidhogg-watchdog--test-sample))
@@ -138,6 +140,7 @@ Return the stalls taken after the span ended."
       (should (= 1 (cl-count-if #'identity hooks))))))
 
 (ert-deftest watchdog/guards ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (wdtest-sampling
     ;; The specpdl is being reallocated: no walk, the metadata is kept.
     (nidhogg-watchdog--test-set-unstable t)
@@ -161,6 +164,7 @@ Return the stalls taken after the span ended."
                                     :frames))))))
 
 (ert-deftest watchdog/raw-word-validation ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (wdtest-sampling
     (let* ((live (let ((n 0)) (lambda () (setq n (1+ n)))))
            (planted (list #x5a5a5a5a5a5a5a58  ; a symbol-tagged pattern
@@ -185,6 +189,7 @@ Return the stalls taken after the span ended."
         (should (eq (symbol-function 'car) (aref frames 6)))))))
 
 (ert-deftest watchdog/thinning ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; 256 requests: thinned at 64 and 128 kept, every 4th request kept.
   (wdtest-sampling
     (should (= 256 (nidhogg-watchdog--test-raw-samples 256)))
@@ -207,6 +212,7 @@ Return the stalls taken after the span ended."
                      (append (plist-get acc :seq) nil))))))
 
 (ert-deftest watchdog/deep-mode ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (wdtest-sampling
     (nidhogg-watchdog--deep 1)
     (let ((s (wdtest--recurse 60)))
@@ -221,6 +227,7 @@ Return the stalls taken after the span ended."
                 32))))
 
 (ert-deftest watchdog/span-isolation ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A 70 ms span with 70 samples (thinned once: stride 2) ends below
   ;; the threshold; the next span's 150 ms stall holds only its own 3
   ;; samples, taken at stride 1.
@@ -240,6 +247,7 @@ Return the stalls taken after the span ended."
       (should (= 64 (plist-get rec :thinned))))))
 
 (ert-deftest watchdog/late-request-is-stale ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A request raised for a span that has ended lands in the wait.
   (wdtest-sampling
     (nidhogg-watchdog--test-sample)     ; the span has an accumulator
@@ -252,6 +260,7 @@ Return the stalls taken after the span ended."
                                       :samples)))))))
 
 (ert-deftest watchdog/signal-is-ignored-elsewhere ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A SIGURG sent to the process, with no request pending.
   (wdtest-sampling
     (nidhogg-watchdog--test-sample)
@@ -264,6 +273,7 @@ Return the stalls taken after the span ended."
                                     :samples)))))))
 
 (ert-deftest watchdog/handler-sa-restart ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (wdtest-sampling
     (let ((sa-restart (nidhogg-watchdog--test-handler-flags t)))
       (should (< 0 sa-restart))
@@ -271,6 +281,7 @@ Return the stalls taken after the span ended."
                             sa-restart))))))
 
 (ert-deftest watchdog/handler-allocates-nothing ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (wdtest-sampling
     (let* ((a (memory-use-counts))
            (b (progn (identity 1000) (memory-use-counts)))

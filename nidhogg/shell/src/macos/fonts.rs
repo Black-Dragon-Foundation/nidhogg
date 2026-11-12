@@ -65,6 +65,13 @@ unsafe extern "C" {
     fn CTFontGetUnderlineThickness(font: *const c_void) -> f64;
     fn CTFontGetSymbolicTraits(font: *const c_void) -> u32;
     fn CTFontCopyFamilyName(font: *const c_void) -> *const c_void;
+    fn CTFontCopyTable(font: *const c_void, tag: u32, options: u32) -> *const c_void;
+    #[cfg(feature = "test-hooks")]
+    fn CTFontManagerRegisterFontsForURL(
+        url: *const c_void,
+        scope: u32,
+        error: *mut *const c_void,
+    ) -> bool;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -75,6 +82,8 @@ unsafe extern "C" {
         app: *const c_void,
         valid: *mut u8,
     ) -> isize;
+    fn CFDataGetLength(d: *const c_void) -> isize;
+    fn CFDataGetBytePtr(d: *const c_void) -> *const u8;
 }
 
 /// `AppleAntiAliasingThreshold` (`macfont_update_antialias_threshold`): text this size or smaller is drawn without
@@ -116,6 +125,8 @@ struct OpenFont {
     /// The family and size, for the test hooks.
     family: String,
     size: f64,
+    /// The font's `cmap` table, read the first time a variation sequence is asked of it.
+    cmap: OnceLock<Option<Vec<u8>>>,
 }
 
 fn open_fonts() -> &'static Mutex<(u64, HashMap<u64, OpenFont>)> {
@@ -176,6 +187,7 @@ pub fn open(
             synthetic_bold,
             family: m.family.clone(),
             size: m.size,
+            cmap: OnceLock::new(),
         },
     );
     Some((handle, m))
@@ -231,6 +243,34 @@ pub fn close(handle: u64) {
 pub fn with_font<R>(handle: u64, f: impl FnOnce(*const c_void) -> R) -> Option<R> {
     let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
     open.1.get(&handle).map(|o| f(o.font.get()))
+}
+
+/// `f` on the open font `handle`'s `cmap` table (`CTFontCopyTable`, read once; empty when it has none); `None`: not
+/// open.
+pub fn with_cmap<R>(handle: u64, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+    let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
+    let o = open.1.get(&handle)?;
+    let cmap = o.cmap.get_or_init(|| {
+        // SAFETY: a live font; the table's copy is +1, owned by `Cf`.
+        let t = Cf::new(unsafe { CTFontCopyTable(o.font.get(), u32::from_be_bytes(*b"cmap"), 0) })?;
+        // SAFETY: a live CFData.
+        let (p, n) = unsafe { (CFDataGetBytePtr(t.get()), CFDataGetLength(t.get())) };
+        // SAFETY: its `n` bytes, copied before `t` is released.
+        (!p.is_null() && n > 0)
+            .then(|| unsafe { std::slice::from_raw_parts(p, n as usize) }.to_vec())
+    });
+    Some(f(cmap.as_deref().unwrap_or(&[])))
+}
+
+/// Test hook: register the font file at `path` for this process (`CTFontManagerRegisterFontsForURL`, process scope),
+/// as an app installing a font while Emacs runs.  Core Text then posts its registered-fonts notification.
+#[cfg(feature = "test-hooks")]
+pub fn register(path: &str) -> bool {
+    let url = objc2_foundation::NSURL::fileURLWithPath(&NSString::from_str(path));
+    // SAFETY: a live file URL (toll-free bridged to CFURL); kCTFontManagerScopeProcess is 1; no error asked for.
+    unsafe {
+        CTFontManagerRegisterFontsForURL(Retained::as_ptr(&url).cast(), 1, std::ptr::null_mut())
+    }
 }
 
 /// The glyph of each UTF-16 unit of `units` into `out` (0: none; a surrogate pair's glyph at its first unit), one

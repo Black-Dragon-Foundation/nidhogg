@@ -526,11 +526,13 @@ mod coretext {
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    /// The scripts' characters (`nhg_font_start`), and each script's preferred family once asked.
+    /// The scripts' characters (`nhg_font_start`), and each script's preferred family in a language once asked.
     #[derive(Default)]
     struct Scripts {
         chars: HashMap<String, ScriptChars>,
-        preferred: HashMap<String, Option<String>>,
+        preferred: HashMap<(String, String), Option<String>>,
+        /// The listing `preferred` was asked under (`text::listing`).
+        generation: usize,
     }
 
     fn scripts() -> MutexGuard<'static, Scripts> {
@@ -552,7 +554,10 @@ mod coretext {
             id: i as u64 + 1,
             family: f.family.clone(),
             foundry: "apple".into(),
-            weight: crate::fontspec::weight_from_trait(f.weight),
+            weight: crate::fontspec::weight_from_trait(crate::fontspec::adjusted_weight(
+                f.weight,
+                || f.appkit_weight(),
+            )),
             slant: crate::fontspec::slant_from_trait(f.slant),
             width: crate::fontspec::width_from_trait(f.width),
             spacing: spacing(f.symbolic & text::TRAIT_MONO != 0),
@@ -570,10 +575,11 @@ mod coretext {
 
     impl FontSource for CoreText {
         fn faces(&self) -> Vec<FontFace> {
-            text::faces()
+            let (generation, listed) = text::listing();
+            listed
                 .iter()
                 .enumerate()
-                .map(|(i, f)| font_face(i, f))
+                .map(|(i, f)| font_face(text::key(generation, i), f))
                 .collect()
         }
 
@@ -594,9 +600,16 @@ mod coretext {
             names.iter().map(|s| (*s).to_string()).collect()
         }
 
-        fn preferred(&self, script: &str) -> Option<String> {
+        fn preferred(&self, script: &str, language: &str) -> Option<String> {
+            // a new listing (fonts installed or removed) may lay the characters out in another family
+            let generation = text::listing().0;
             let mut s = scripts();
-            if let Some(p) = s.preferred.get(script) {
+            if s.generation != generation {
+                s.preferred.clear();
+                s.generation = generation;
+            }
+            let key = (script.to_owned(), language.to_owned());
+            if let Some(p) = s.preferred.get(&key) {
                 return p.clone();
             }
             // macfont asks only for a list's characters, not a vector's
@@ -606,8 +619,8 @@ mod coretext {
                 .filter(|c| !c.any && !c.chars.is_empty())?
                 .chars
                 .clone();
-            let p = text::preferred_family(&chars);
-            s.preferred.insert(script.to_owned(), p.clone());
+            let p = text::preferred_family_in(&chars, language);
+            s.preferred.insert(key, p.clone());
             p
         }
 
@@ -800,6 +813,23 @@ mod coretext {
 
     pub fn note_call() {
         ct::STATS.calls.fetch_add(1, Relaxed);
+    }
+
+    /// `macfont_variation_glyphs` on the font's own `cmap` (format 14): `None` when the font is not open.
+    pub fn variation_glyphs(handle: u64, c: u32, out: &mut [u32; 256]) -> Option<u32> {
+        let mut base = [0u16; 2];
+        let mut glyph = [0u16; 2];
+        let units = char::from_u32(c)?.encode_utf16(&mut base).len();
+        // a default sequence is the base character's own glyph (`macfont_get_glyph_for_character`); asked first, as
+        // `with_cmap` holds the open fonts
+        ct::glyphs_for(handle, &base[..units], &mut glyph[..units]);
+        ct::with_cmap(handle, |cmap| match crate::uvs::subtable(cmap) {
+            Some(uvs) => crate::uvs::glyphs(uvs, c, u32::from(glyph[0]), out),
+            None => {
+                out.fill(0);
+                0
+            }
+        })
     }
 
     pub fn close(handle: u64) {
@@ -1141,6 +1171,19 @@ pub fn shape(handle: u64, chars: &[u32]) -> Option<Vec<NhgShaped>> {
     #[cfg(not(all(feature = "macos", target_os = "macos")))]
     {
         let _ = (handle, chars);
+        None
+    }
+}
+
+/// Each of the 256 variation selectors' glyph for `c` in the open font `handle` into `out` (`macfont_variation_glyphs`:
+/// 0 for a sequence the font lacks, the base glyph for a default one), and how many it has.  `None` without Core Text
+/// or for a font that is not open.
+pub fn variation_glyphs(handle: u64, c: u32, out: &mut [u32; 256]) -> Option<u32> {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    return coretext::variation_glyphs(handle, c, out);
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    {
+        let _ = (handle, c, out);
         None
     }
 }

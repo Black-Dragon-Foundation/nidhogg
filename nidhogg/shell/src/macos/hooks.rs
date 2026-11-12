@@ -568,6 +568,7 @@ impl MacShell {
             "test-input-source" => super::super::ime::test_input_source(
                 super::super::nsapp::text_arg(arg.trim()).trim(),
             ),
+            "test-font-probe" => super::super::font_probe::query(arg).ok_or(ShellError::Arg),
             _ => return None,
         })
     }
