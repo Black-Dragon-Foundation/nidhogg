@@ -416,16 +416,12 @@ into the root's layer once the blur is off."
           (should-not (plist-get i :blur)))
       (delete-frame c t))))
 
-(ert-deftest nhmac-blur-pair ()
-  "Typing under a blurred child, timed in the process: 50 typed keys, each a command and a redisplay, written to
-GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line), and the same with the blur off, logged.  Both builds run
-it in turn (--pair, ABAB); nidhogg/test/nhmac-pair.sh --row nhmac-blur-pair compares the pairs: not slower than NS's
-blurred child."
-  :tags '(draws)
-  (let* ((build (if (nhmac-gui--ns-build-p) "ns" "naglfar"))
-         (file (expand-file-name (format "pair-%s.txt" build)
-                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
-         (c (nhmac-gui--child '((alpha-background . 0.6) (backdrop-blur . 12) (corner-radius . 12)
+(ert-deftest nhmac-blur-typing ()
+  "Typing under a blurred child, timed in the process: 50 typed keys, each a command, a redisplay and its commit.  The
+bar is drgnx's typing budget: p95 under 16 ms, max under 50 ms.  The same keys with the blur off are logged beside it."
+  :tags '(draws timing)
+  (nhmac-gui--timing-build)
+  (let* ((c (nhmac-gui--child '((alpha-background . 0.6) (backdrop-blur . 12) (corner-radius . 12)
                                 (width . 30) (height . 8))
                               80 120))
          (time-keys (lambda ()
@@ -440,7 +436,7 @@ blurred child."
          on off)
     (unwind-protect
         (progn
-          (switch-to-buffer (generate-new-buffer " *nhmac-blur-pair*"))
+          (switch-to-buffer (generate-new-buffer " *nhmac-blur*"))
           (insert "typing under a blurred child")
           (redisplay t)
           (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
@@ -449,12 +445,8 @@ blurred child."
           (glitnir-refresh c)
           (redisplay t)
           (setq off (funcall time-keys))
-          (nhmac-gui--say "nhmac-blur-pair: %s median %d us blurred, %d us without" build
-                          (funcall median on) (funcall median off))
-          (with-temp-buffer
-            (dolist (us on) (insert (format "%d\n" us)))
-            (write-region (point-min) (point-max) file t 'silent))
-          (should (file-exists-p file)))
+          (nhmac-gui--say "nhmac-blur-typing: median %d us blurred, %d us without" (funcall median on) (funcall median off))
+          (nhmac-gui--within-budget "nhmac-blur-typing" on 16 50))
       (kill-buffer)
       (delete-frame c t))))
 

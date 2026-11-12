@@ -4,10 +4,11 @@
 #   files GLOB...     the files of the lane's main session, in this order (each glob's files sorted); their rows run
 #                     by file, then by name (gui-runner.el), the fresh rows left out
 # A file that matches no line is not run: a new nhmac-*gui-tests.el is added here, in its place.
-fresh nhmac-pair-stages
-fresh nhmac-paired-key-to-commit
-fresh nhmac-paired-cjk-emoji-scroll
-fresh nhmac-paired-cpu-per-key
+fresh nhmac-key-stages
+fresh nhmac-key-to-commit
+fresh nhmac-cjk-emoji-scroll
+fresh nhmac-cpu-per-key
+fresh nhmac-blur-typing
 files glitnir-nhmac-gui-tests.el
 files nhmac-gui-tests.el
 files nhmac-ns-gui-tests.el nhmac-window-gui-tests.el nhmac-resize-gui-tests.el nhmac-keys-gui-tests.el

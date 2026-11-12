@@ -90,11 +90,13 @@ leaves by a throw from a timer, as `with-timeout' does."
                              :filter (lambda (_p _s) (setq made (float-time)) (get-buffer-create name))))
          listed
          (builds nil)
-         ;; when each build ran and how long (from the filter): where the time between the filter and the listing goes
+         ;; when each build ran, how long, and its collections' count and time (from the filter): where the time
+         ;; between the filter and the listing goes
          (watch (lambda (f &rest args)
-                  (let ((t0 (float-time)))
+                  (let ((t0 (float-time)) (gcs gcs-done) (gct gc-elapsed))
                     (prog1 (apply f args)
-                      (when made (push (list (- t0 made) (- (float-time) t0)) builds)))))))
+                      (when made (push (list (- t0 made) (- (float-time) t0) (- gcs-done gcs) (- gc-elapsed gct))
+                                       builds)))))))
     (advice-add 'nhmac-menu-build :around watch)
     (unwind-protect
         (progn
@@ -104,7 +106,7 @@ leaves by a throw from a timer, as `with-timeout' does."
                                           (float-time)))))
           (should made)
           ;; the build's own time: the listing waits `nhmac-menu-delay' of idleness, then one build
-          (glitnir-gui--say "nhmac-menu-buffers-after-filter: listed %s; delay %s, a build %.3f s; builds (start took) %S"
+          (glitnir-gui--say "nhmac-menu-buffers-after-filter: listed %s; delay %s, a build %.3f s; builds (start took gcs gc-time) %S"
                             (if listed (format "%.2f s after the filter" (- listed made)) "never")
                             nhmac-menu-delay (car (benchmark-run 1 (nhmac-menu-flatten-bar-with-paths)))
                             (reverse builds))
