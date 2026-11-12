@@ -788,6 +788,10 @@ names it."
         ;; the text area's left edge in the window (its left margin and fringe)
         (inset (- (nth 0 (window-body-pixel-edges w)) (nth 0 (window-pixel-edges w)))))
     (nhmac-gui--say "%s: ring %S in %S, text area %d px in, rows %d px" row r box inset height)
+    ;; what puts the ring's left edge where it is: the window's edges, fringes, margins and scale, and the block
+    (nhmac-gui--say "%s: window %S body %S fringes %S margins %S scroll-bars %S scale %S block %S" row
+                    (window-pixel-edges w) (window-body-pixel-edges w) (window-fringes w) (window-margins w)
+                    (window-scroll-bars w) (frame-scale-factor (window-frame w)) (window-parameter w 'glitnir-blocks))
     (should (and r box))
     (should (<= (abs (- (nth 0 r) (+ (nth 0 box) inset))) 3))
     (should (<= (abs (- (nth 2 r) (nth 2 box))) 3))
@@ -1207,7 +1211,13 @@ shadow layer once more."
                    5))
           (should-not (glitnir--chrome c))
           (set-frame-parameter c 'undecorated t)
-          (should-not (glitnir-nhmac--layers-settled c)))
+          (let ((problem (glitnir-nhmac--layers-settled c)))
+            ;; round 2 (s1 only): no shadow layer here.  Whether C resolved the chrome again (glitnir--chrome) and
+            ;; the shell kept none, or C has none to give
+            (nhmac-gui--say "glitnir-nhmac/layer-follows-undecorated-toggle: undecorated again: %S; chrome %S, params %S"
+                            problem (glitnir--chrome c)
+                            (mapcar (lambda (p) (cons p (frame-parameter c p))) '(undecorated shadow corner-radius)))
+            (should-not problem)))
       (delete-frame c t))))
 
 (ert-deftest glitnir-nhmac/layer-follows-delete ()
@@ -1394,7 +1404,9 @@ child living in a blur panel.  The system's Reduce transparency setting, if on, 
 (ert-deftest glitnir-nhmac/blur-off-identical ()
   "A blur without a translucent background, or with Glitnir off, is the plain frame: an opaque child with
 `backdrop-blur' is pixel for pixel the one without (tolerance 0), and a translucent, blurred, rounded child with
-`glitnir-enable' nil is the opaque square child, with no panel and no blur."
+`glitnir-enable' nil is the square child of the same `alpha-background', with no panel and no blur.
+`alpha-background' is Emacs's own (NS and pgtk honour it with no Glitnir), so Glitnir off keeps it; round 2 compared
+with an opaque child and found the translucency (22736 pixels)."
   :tags '(draws)
   (glitnir-nhmac--with-pattern
    (lambda ()
@@ -1417,13 +1429,14 @@ child living in a blur panel.  The system's Reduce transparency setting, if on, 
                  (should-not (plist-get i :blur))
                  (should-not (plist-get i :panel)))
                (setq off (glitnir-nhmac--grab "blur-off-glitnir-off")))
-             (modify-frame-parameters c '((corner-radius . 0) (backdrop-blur . nil) (alpha-background . nil)))
+             (modify-frame-parameters c '((corner-radius . 0) (backdrop-blur . nil)))
              (glitnir-refresh c)
              (setq stock (glitnir-nhmac--grab "blur-off-stock"))
              (should (equal (glitnir-nhmac--diff off stock rect) '(0 0)))
-             (should-not (nhmac-gui--far (glitnir-nhmac--px stock (/ (+ (nth 0 box) (nth 2 box)) 2)
-                                                           (/ (+ (nth 1 box) (nth 3 box)) 2))
-                                         glitnir-nhmac--cyan 8)))
+             ;; translucent: its middle is not the opaque cyan (the child itself was found above: `box')
+             (should (nhmac-gui--far (glitnir-nhmac--px stock (/ (+ (nth 0 box) (nth 2 box)) 2)
+                                                       (/ (+ (nth 1 box) (nth 3 box)) 2))
+                                     glitnir-nhmac--cyan 8)))
          (delete-frame c t))))))
 
 (defun glitnir-nhmac--fixture-run ()
@@ -1488,7 +1501,15 @@ A leg left by an earlier row ends first: the same value would not be a new reque
   (glitnir-nhmac--leg-end)
   (set-window-parameter nil 'glitnir-layout-capture t)
   (redisplay t)
-  (should (gui-runner-wait #'glitnir-layout-captured-p 5)))
+  (let ((ok (gui-runner-wait #'glitnir-layout-captured-p 5)))
+    (unless ok
+      ;; round 2: never captured.  Which step stops: Lisp sent no leg (leg-sent, reduced motion), or the shell
+      ;; answers another serial than the one sent (nil: no legs on this frame; 0: no capture taken)
+      (let ((sent (window-parameter nil 'glitnir--leg-sent)))
+        (nhmac-gui--say "glitnir-nhmac--leg-capture: not captured: to-send %S, reduced motion %S, sent (cap mot serial edges moved) %S, shell's serial %S"
+                        (glitnir--leg-to-send (selected-window)) (glitnir--reduced-motion-p)
+                        (seq-take sent 5) (glitnir--layout-leg (selected-window) (nth 5 sent)))))
+    (should ok)))
 
 (defun glitnir-nhmac--leg-scroll ()
   "Show the next line first: the pattern's two kinds of line trade places."
