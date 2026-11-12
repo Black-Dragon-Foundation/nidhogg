@@ -43,6 +43,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef DARWIN_OS
+# include <dlfcn.h>
+#endif
 
 #include "nidhogg-watchdog.h"
 #include "nidhogg-watchdog-phase.h"
@@ -401,14 +404,29 @@ usage: (nidhogg-watchdog--start THRESHOLD-MS HANG-MS HANG-FILE &rest FLAGS)  */)
 	 its handler is a function (round 4 failed here with no clue).  */
       struct sigaction cur;
       int got = sigaction (NIDHOGG_WATCHDOG_SIGNAL, NULL, &cur);
+      /* Round 6 (macOS): a siginfo handler with SA_RESTART that neither
+	 Emacs nor the shell installs: the image and symbol that hold it.  */
+      const char *sym = "?", *image = "?";
+#ifdef DARWIN_OS
+      Dl_info info;
+      if (got == 0 && (cur.sa_flags & SA_SIGINFO)
+	  && dladdr ((void *) cur.sa_sigaction, &info))
+	{
+	  if (info.dli_sname)
+	    sym = info.dli_sname;
+	  if (info.dli_fname)
+	    image = info.dli_fname;
+	}
+#endif
       wd_free ();
       error ("nidhogg-watchdog: cannot install the signal handler"
-	     " (sigaction %d, flags 0x%x, handler %s)", got,
+	     " (sigaction %d, flags 0x%x, handler %s, %s in %s)", got,
 	     got == 0 ? (unsigned) cur.sa_flags : 0u,
 	     got != 0 ? "?"
 	     : (cur.sa_flags & SA_SIGINFO) ? "siginfo"
 	     : cur.sa_handler == SIG_DFL ? "default"
-	     : cur.sa_handler == SIG_IGN ? "ignored" : "function");
+	     : cur.sa_handler == SIG_IGN ? "ignored" : "function",
+	     sym, image);
     }
   span_open (nh_wd_now_ns ());
   wd_in_select = wd_runloop_asleep = false;

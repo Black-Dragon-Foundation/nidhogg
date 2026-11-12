@@ -547,6 +547,16 @@ impl MacShell {
                         .join(" ")
                 )
             }),
+            // "(W ID Y X0 N)": card ID's image row Y from column X0, N pixels (round 6: its ring's left side blended)
+            "test-card-row" => numbers(arg).and_then(|n| match n[..] {
+                [w, id, y, x0, k] => self
+                    .cards
+                    .get(&(w as WindowId))
+                    .and_then(|c| c.row(id as u64, y as u32, x0 as u32, k as u32))
+                    .map(|r| format!("({})", r.iter().map(|p| format!("\"{p:06x}\"")).collect::<Vec<_>>().join(" ")))
+                    .ok_or(ShellError::State),
+                _ => Err(ShellError::Arg),
+            }),
             "test-windows" => Ok(self.window_numbers()),
             "test-captures" => Ok(format!(
                 "({})",
@@ -604,7 +614,11 @@ impl MacShell {
             ),
             "test-font-probe" => super::super::font_probe::query(arg).ok_or(ShellError::Arg),
             "test-zoom-log" => Ok(super::super::ax::test_zoom_log()),
-            "test-drag-log" => Ok(DRAG_LOG.with(|l| l.borrow().clone())),
+            "test-drag-log" => Ok(format!(
+                "{} {}",
+                DRAG_LOG.with(|l| l.borrow().clone()),
+                super::super::dnd::START_LOG.with(|l| l.borrow().clone())
+            )),
             "test-chrome-log" => Ok(format!(
                 "({})",
                 super::child::CHROME_LOG.with(|l| l.borrow().join(" "))

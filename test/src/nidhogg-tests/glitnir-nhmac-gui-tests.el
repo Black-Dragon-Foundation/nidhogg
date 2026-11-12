@@ -798,7 +798,17 @@ names it."
       (let ((y (/ (+ (nth 1 r) (nth 3 r)) 2)))
         (nhmac-gui--say "%s: middle row %d from x %d: %S" row y (nth 0 box)
                         (cl-loop for x from (nth 0 box) to (min (+ (nth 0 r) 3) (1- (nth 0 img)))
-                                 collect (format "%06x" (glitnir-nhmac--px img x y))))))
+                                 collect (format "%06x" (glitnir-nhmac--px img x y))))
+        ;; round 6: #xff1919 on the ring's left side, red on its right.  The cards' places and each one's own image
+        ;; on that row (whether the glue drew the blend, or the screen made it)
+        (let ((cards (plist-get (nhmac--test-cards (window-frame w)) :cards)))
+          (nhmac-gui--say "%s: cards %S, rows %S" row cards
+                          (mapcar (lambda (c)
+                                    (condition-case e
+                                        (nhmac--query 'test-card-row (window-frame w) (nth 0 c)
+                                                      (- y (nth 2 c)) 0 12)
+                                      (error (list 'error e))))
+                                  cards)))))
     (should (and r box))
     (should (<= (abs (- (nth 0 r) (+ (nth 0 box) inset))) 3))
     (should (<= (abs (- (nth 2 r) (nth 2 box))) 3))
@@ -1560,6 +1570,15 @@ at its moving place, so a whole-area move would show the new layout from the sta
               (shown (glitnir-nhmac--diff before during rect)) (new (glitnir-nhmac--diff during after rect)))
          (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: during vs before %S, after vs during %S, legs %S"
                          shown new (glitnir-nhmac--legs))
+         ;; round 6 (scale 2): the leg ended and the screen still showed the old picture.  Whether the new one
+         ;; comes late (a commit after the grab) or never (the root's contents not the newest picture)
+         (when (<= (car new) 100)
+           (let ((stats (nhmac-stats)))
+             (sit-for 2)
+             (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: 2 s later vs during %S, window start %S, surface %S, stats then %S now %S"
+                             (glitnir-nhmac--diff during (glitnir-nhmac--grab "leg-later") rect)
+                             (window-start) (nhmac--test-surface 0 0)
+                             stats (nhmac-stats))))
          (should (<= (cadr shown) 2))
          (should (> (car new) 100)))))))
 

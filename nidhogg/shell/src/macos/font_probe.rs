@@ -8,8 +8,11 @@
 //! - `(preferred "LANG" C...)`: the family Core Text lays the characters out in, in language LANG ("": none).
 //! - `(ultralight)`: every listed face whose weight trait is -0.40, as `(ID "FAMILY" "POSTSCRIPT" APPKIT)`: ID the one
 //!   its entities carry (`:font-entity`), APPKIT `weightOfFont:` (nil when it does not open).
-//! - `(variation "FAMILY" SIZE C VS)`: the glyph Core Text lays the sequence C VS out with in the open font FAMILY at
-//!   SIZE pixels (one line, that font); nil when the font is not open or Core Text needs another font.
+//! - `(variation FAMILY SIZE C VS)`: the glyph Core Text lays the sequence C VS out with in the open font FAMILY at
+//!   SIZE pixels (one line, that font); nil when the font is not open or Core Text needs another font.  FAMILY comes
+//!   unquoted, as the call prints a string: every word before the three numbers.
+//! - `(glyph-rows FAMILY SIZE C FG BG)`: C's glyph painted alone as the surface paints a run, `FG` on `BG`: `(BASE
+//!   ROW...)`, each row's pixel furthest from BG, top down, the baseline BASE rows down.
 
 use super::{fonts, text};
 
@@ -97,15 +100,21 @@ pub fn query(arg: &str) -> Option<String> {
                     lisp_string(&format!("{w:?}"))
                 ))
             };
-            let (Some(family), Some(size), Some(c), Some(vs)) = (
-                w.get(1),
-                num(2),
-                num(3).and_then(|c| char::from_u32(c as u32)),
-                num(4).and_then(|c| char::from_u32(c as u32)),
+            // the call's text prints a string without its quotes (`nhmac--call'), so a family of several words
+            // arrives as several (round 6: "Hiragino Mincho ProN"): the family is every word before the 3 numbers
+            let n = w.len();
+            if n < 5 {
+                return bad();
+            }
+            let family = w[1..n - 3].join(" ");
+            let (Some(size), Some(c), Some(vs)) = (
+                num(n - 3),
+                num(n - 2).and_then(|c| char::from_u32(c as u32)),
+                num(n - 1).and_then(|c| char::from_u32(c as u32)),
             ) else {
                 return bad();
             };
-            let Some(handle) = fonts::find(family, size) else {
+            let Some(handle) = fonts::find(&family, size) else {
                 return Some("nil".into());
             };
             let mut units = Vec::new();
@@ -116,6 +125,44 @@ pub fn query(arg: &str) -> Option<String> {
             text::shape(handle, &units)
                 .and_then(|l| l.runs.first().and_then(|r| r.glyphs.first().copied()))
                 .map_or_else(|| "nil".into(), |g| g.to_string())
+        }
+        "glyph-rows" => {
+            // (glyph-rows FAMILY SIZE C FG BG): C's glyph painted alone as a run is, its baseline 2 SIZE rows down a
+            // 3 SIZE tall column: (BASE ROW...), each row's pixel furthest from BG (round 6: ink a row above the
+            // glyph's bounds at scale 1)
+            let n = w.len();
+            if n < 6 {
+                return Some(format!("(bad-arg {})", lisp_string(arg)));
+            }
+            let family = w[1..n - 4].join(" ");
+            let (Some(size), Some(c), Some(fg), Some(bg)) = (
+                num(n - 4),
+                num(n - 3).and_then(|c| char::from_u32(c as u32)),
+                num(n - 2),
+                num(n - 1),
+            ) else {
+                return Some(format!("(bad-arg {})", lisp_string(arg)));
+            };
+            let Some(handle) = fonts::find(&family, size) else {
+                return Some("nil".into());
+            };
+            let mut b = [0u16; 2];
+            let units = c.encode_utf16(&mut b);
+            let mut g = [0u16; 2];
+            if !fonts::glyphs_for(handle, units, &mut g[..units.len()]) {
+                return Some("nil".into());
+            }
+            let s = size.ceil() as i32;
+            let base = 2 * s;
+            super::draw::glyph_rows(handle, g[0], fg as u32, bg as u32, 4 * s, 3 * s, base)
+                .map_or_else(
+                    || "nil".into(),
+                    |rows| {
+                        let rows: Vec<String> =
+                            rows.iter().map(|p| format!("\"{p:06x}\"")).collect();
+                        format!("({base} {})", rows.join(" "))
+                    },
+                )
         }
         // an unknown probe is said with the text the hook got (a "variation" that arrived as something else)
         _ => format!("(unknown-probe {})", lisp_string(arg)),

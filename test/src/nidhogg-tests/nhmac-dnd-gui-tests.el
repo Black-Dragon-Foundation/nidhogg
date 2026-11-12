@@ -73,7 +73,11 @@ pumps' scope never takes inside a take (`:overlapping-takes' stays 0)."
           (select-frame-set-input-focus a)
           (sit-for 0.3)
           (while (read-event nil nil 0.1))
-          (nhmac--call 'test-real-drag a 40 40 b 60 40 300)
+          ;; from A's text to B's (round 6: 40, 40 was A's tool bar)
+          (let ((ea (window-inside-pixel-edges (frame-selected-window a)))
+                (eb (window-inside-pixel-edges (frame-selected-window b))))
+            (nhmac--call 'test-real-drag a (+ (nth 0 ea) 40) (+ (nth 1 ea) 10)
+                         b (+ (nth 0 eb) 60) (+ (nth 1 eb) 10) 300))
           ;; the press reaches the view first: it is the event the drag starts from
           ;; round 2: result nil, no drop.  The events read here and after the drag say which step stopped: no press
           ;; (the drag had nothing to start from), or a press and no drag session
@@ -93,6 +97,9 @@ pumps' scope never takes inside a take (`:overlapping-takes' stays 0)."
             (glitnir-gui--say "nhmac-dnd-drag-out: after the drag, events %S" (nreverse seen)))
           (glitnir-gui--say "nhmac-dnd-drag-out: result %S, drop %S, overlapping %S -> %S" result drop overlap
                             (plist-get (nhmac-stats) :overlapping-takes))
+          ;; round 6: a press on A's tool bar, a session begun and no move seen in it: the press's age and the
+          ;; buttons down when the session began
+          (glitnir-gui--say "nhmac-dnd-drag-out: at the start %s" (nhmac--query 'test-drag-log))
           (should (eq result 'XdndActionCopy))
           (should drop)
           (should (eq (posn-window (event-start drop)) (frame-selected-window b)))

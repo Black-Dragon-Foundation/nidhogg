@@ -7,6 +7,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 
 (defvar mouse-sensor-gui--log nil "What the sensors were called with: (NAME DIR POS), newest first.")
 
@@ -132,6 +133,11 @@ mouse face of its own lights only itself."
             (overlay-put o 'mouse-face 'highlight)
             (overlay-put o 'after-string (propertize "  y" 'mouse-face 'region)))
           (redisplay t)
+          ;; round 6 (macOS, scale 1): a note found no run.  What places the rows, and the posns of the places noted
+          (glitnir-gui--say "mouse-sensor-gui/an-overlay-string: header %S tab %S edges %S inside %S scale %S posns %S"
+                            (window-header-line-height) (window-tab-line-height) (window-pixel-edges)
+                            (window-inside-pixel-edges) (frame-scale-factor)
+                            (mapcar (lambda (p) (cons p (mouse-sensor-gui--xy p))) '(2 7 12)))
           ;; each note from nothing lit: inside a lit run a motion keeps the run it has
           (let* ((off (mouse-sensor-gui--xy (point-max)))
                  (cw (frame-char-width))
@@ -146,7 +152,10 @@ mouse face of its own lights only itself."
             (should (equal on-string on-text))
             (should (= 0 (nth 1 on-string)))
             ;; the string's own mouse face: the string alone
-            (should (= 5 (nth 1 (funcall note 7 6))))))
+            (let ((own (funcall note 7 6)))
+              (glitnir-gui--say "mouse-sensor-gui/an-overlay-string: on the string %S, on the text %S, own %S"
+                                on-string on-text own)
+              (should (= 5 (nth 1 own))))))
       (nidhogg--note-mouse nil 'leave nil)
       (kill-buffer buf))))
 
