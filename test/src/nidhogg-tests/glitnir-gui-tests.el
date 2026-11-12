@@ -153,6 +153,7 @@ that read none of it run on every backend."
 
 (ert-deftest glitnir-gui/a-bar-block-fills-its-rows ()
   "A `bar' block over a window's first two rows: its x0..x1 filled in the line's colour on those rows only."
+  (glitnir-gui--skip-unless-tree)
   (let ((buf (glitnir-gui--text-buffer "*glitnir-bar*" 10)) (w (selected-window)))
     (unwind-protect
         (progn

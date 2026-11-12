@@ -30,8 +30,8 @@
 #   --drgnx DIR      drgnx's fit-check row instead of Nidhogg's rows: DIR is drgnx at the commit Nidhogg pins; its hub
 #                    is built here (cargo build --locked --release, aarch64-apple-darwin, with drgnx's test hooks and
 #                    ratatoskr-mock beside it, as drgnx's build-test-bins action builds them) and named by
-#                    DRGNX_RATATOSKR_BIN, the fixture fonts (DIR/test/fixtures/fonts) go to ~/Library/Fonts before
-#                    Emacs starts (Core Text may not see a font added to a running process), and
+#                    DRGNX_RATATOSKR_BIN, the fixture fonts (DIR/test/fixtures/fonts) are registered for each session
+#                    (GLITNIR_GUI_FONTS: gui-runner, Core Text's process scope; nothing is installed), and
 #                    DIR/test/ui/rows-fit-gui-test.el runs with drgnx's harness, core and wb on the load path
 #                    (default scale 2).  Until that commit has the file, the
 #                    row is reported skipped, with that reason; --drgnx-strict makes a missing file red (the combined
@@ -156,11 +156,10 @@ if [ -n "$drgnx" ]; then
   for b in "$DRGNX_RATATOSKR_BIN" "${DRGNX_RATATOSKR_BIN%/*}/ratatoskr-mock"; do
     [ -x "$b" ] || { echo "nhmac-gui.sh: no $b" >&2; exit 1; }
   done
-  # the fixture fonts, known to Core Text before Emacs starts
-  mkdir -p "$HOME/Library/Fonts"
-  for f in "$drgnx"/test/fixtures/fonts/*.ttf "$drgnx"/test/fixtures/fonts/*.otf; do
-    [ -f "$f" ] && [ ! -e "$HOME/Library/Fonts/${f##*/}" ] && { cp "$f" "$HOME/Library/Fonts/" || exit 1; }
-  done
+  # the fixture fonts, registered for each session by gui-runner (Core Text's process scope; nothing is installed)
+  GLITNIR_GUI_FONTS=$(ls "$drgnx"/test/fixtures/fonts/*.ttf "$drgnx"/test/fixtures/fonts/*.otf 2>/dev/null | paste -sd: -)
+  [ -n "$GLITNIR_GUI_FONTS" ] || { echo "nhmac-gui.sh: no fixture fonts in $drgnx/test/fixtures/fonts" >&2; exit 1; }
+  export GLITNIR_GUI_FONTS
   # drgnx's test helpers, then Emacs's own directories (the empty element)
   export EMACSLOADPATH=$drgnx/harness:$drgnx/core:$drgnx/wb:
 fi

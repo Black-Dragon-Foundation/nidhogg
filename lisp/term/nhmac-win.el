@@ -427,10 +427,16 @@ A string field has its line breaks and those two characters turned into blanks.
     (cons vec paths)))
 
 (defun nhmac-menu-build ()
-  "Build the deep tree now and send it when it changed.  Quits at input."
+  "Build the deep tree now and send it when it changed.  Quits at input.
+A build allocates about 1 MB (a byte-compiled build of the default menu bar:
+19k conses and 84k vector cells), which crosses the default
+`gc-cons-threshold' and collected twice in round 2's lane (0.16 s of a
+0.19 s build): no collection starts inside the build and its send, so the
+tree reaches the shell first and the next allocation after it collects."
   (setq nhmac-menu--timer nil)
   (when (and (fboundp 'nhmac--call) (display-graphic-p))
-    (let ((r (while-no-input (nhmac-menu-flatten-bar-with-paths))))
+    (let* ((gc-cons-threshold (max gc-cons-threshold (* 8 1024 1024)))
+           (r (while-no-input (nhmac-menu-flatten-bar-with-paths))))
       (when (consp r)
         (cl-incf nhmac-menu-builds)
         (unless (equal (car r) nhmac-menu--last)
