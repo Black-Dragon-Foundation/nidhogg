@@ -807,20 +807,110 @@ mod coretext {
         ct::close(handle);
     }
 
-    /// The NS font oracle (the architecture review's A4): NS's own answers for the fonts, glyphs and shaping runs of
-    /// `tests/fixtures/ns-font-oracle.tsv` (written by the NS lane's `nhmac-ns-font-oracle-dump` at scale 1), asked
-    /// of this driver on the same Mac, every difference listed at once.  The fallback lines need the fontset (C) and
-    /// are the GUI rows'.
+    /// The Core Text oracle (the architecture review's A4, judged on Core Text since the 2026-11-12 ruling): for a
+    /// fixed corpus of fonts, sizes and characters, this driver's metrics and glyph extents against Core Text's own
+    /// raw answers (`ct::raw`, `ct::glyphs_for`, `ct::bounds_for`) put through the stated rules below, written here a
+    /// second time on purpose, apart from `font_metrics` and `extents`; and each shaping run's glyphs against Core
+    /// Text's line.  Every difference is listed at once.  The fallback is the fontset's (C), judged by the GUI rows.
     #[cfg(test)]
     mod oracle {
         use super::*;
-        use std::collections::BTreeMap;
 
-        const ORACLE: &str = include_str!("../tests/fixtures/ns-font-oracle.tsv");
+        /// The corpus: each family with the characters whose glyphs are judged.
+        const FONTS: &[(&str, &str)] = &[
+            ("Menlo", "Hg.W|_~"),
+            ("Monaco", "Hg.W"),
+            ("Courier", "Hg.W"),
+            ("Courier New", "Hg.W"),
+            ("Helvetica", "Hg.W"),
+            ("Helvetica Neue", "Hg.W"),
+            ("Times", "Hg.W"),
+            ("Lucida Grande", "Hg.Wα"),
+            ("PingFang SC", "中文字。"),
+            ("Hiragino Sans", "あア漢"),
+            ("Apple SD Gothic Neo", "한글"),
+            ("Apple Color Emoji", "😀🐉"),
+            ("Geeza Pro", "مرحبا"),
+            ("Kohinoor Devanagari", "नमस्ते"),
+            ("Thonburi", "กขค"),
+            ("Arial Hebrew", "אבג"),
+        ];
+        const SIZES: &[i32] = &[10, 12, 13, 16, 24];
+        const SHAPING: &[(&str, &str)] = &[
+            ("Geeza Pro", "مرحبا بالعالم"),
+            ("Kohinoor Devanagari", "नमस्ते दुनिया"),
+            ("Apple Color Emoji", "👩‍👩‍👧🇬🇧"),
+            ("Menlo", "é fi"),
+        ];
 
-        /// The face NS's `find-font` opened for FAMILY: of WEIGHT (Emacs's numeric weight) when the oracle says, else
-        /// the family's upright regular face (Core Text's order); a family the listing leaves out is found by name.
-        fn face_of(family: &str, weight: Option<i32>) -> Option<u64> {
+        /// Rule: C's `round` (halves away from zero), as macfont rounds advances.
+        fn round(x: f64) -> i32 {
+            x.round() as i32
+        }
+        /// Rule: a font's metrics are C's truncation of x + 0.5.
+        fn c_round(x: f64) -> i32 {
+            (x + 0.5) as i32
+        }
+        /// Rule (AppKit's taller line): these families' ascent grows by 15% of ascent + descent.
+        const TALL: &[&str] = &["Courier", "Helvetica", "Times"];
+        const TALL_FACTOR: f64 = 0.15f32 as f64;
+        /// Rule (macfont): a Hiragino family's leading is quartered and the quarter moves into the ascent.
+        const HIRAGINO_LEADING: f64 = 0.25;
+        /// Rule (macfont's glyph cache): a width's fraction is kept in 14ths.
+        const FRAC: f64 = 14.0;
+        /// Rule (macfont): LCD smoothing's margin pads a glyph with ink on each side.
+        const MARGIN: f64 = 0.396f32 as f64;
+
+        /// Rule: a glyph of `adv` as (width, fraction in 14ths); with `mono`, a whole number (2 or more) of cells of
+        /// `space` is that many cells.
+        fn parts(mono: bool, space: i32, adv: f64) -> (i32, i32) {
+            if mono && space > 0 {
+                let m = round(adv / f64::from(space));
+                if m > 1 && round(adv / f64::from(m)) == space {
+                    return (
+                        space * m,
+                        round((adv / f64::from(m) - f64::from(space)) * FRAC),
+                    );
+                }
+                return (round(adv), 0);
+            }
+            let int = round(adv);
+            (
+                int,
+                if mono {
+                    0
+                } else {
+                    round((adv - f64::from(int)) * FRAC)
+                },
+            )
+        }
+
+        /// Rule: Core Text's advance and bounds (left, right, top, bottom; y up) as Emacs's (width, lbearing,
+        /// rbearing, ascent, descent).
+        fn glyph(mono: bool, space: i32, b: [f64; 5]) -> [i32; 5] {
+            let [adv, left, right, top, bottom] = b;
+            let (int, frac) = parts(mono, space, adv);
+            let (mut x, mut w) = (left, right - left);
+            if !mono {
+                x -= f64::from(frac) / (2.0 * FRAC);
+            } else if frac != 0 && space > 0 {
+                x -= f64::from(frac) / (2.0 * FRAC) * f64::from(int / space);
+            }
+            if w > 0.0 {
+                x -= MARGIN;
+                w += 2.0 * MARGIN;
+            }
+            [
+                int,
+                x.floor() as i32,
+                (x + w).ceil() as i32,
+                top.ceil() as i32,
+                -(bottom.floor() as i32),
+            ]
+        }
+
+        /// The upright regular face of `family` (Core Text's order), or the face found by name.
+        fn face_of(family: &str) -> Option<u64> {
             text::faces()
                 .iter()
                 .enumerate()
@@ -830,172 +920,149 @@ mod coretext {
                         .filter_map(|i| text::face_at(i).map(|f| (i, f))),
                 )
                 .filter(|(_, f)| f.family == family)
-                .filter(|(_, f)| {
-                    weight.is_none_or(|w| crate::fontspec::weight_from_trait(f.weight) == w)
-                })
-                .min_by(|(_, a), (_, b)| {
-                    let key = |f: &text::Face| {
-                        (
-                            f.symbolic & (text::TRAIT_BOLD | text::TRAIT_ITALIC) != 0,
-                            (f.weight.abs() * 1000.0) as i64,
-                        )
-                    };
-                    key(a).cmp(&key(b))
+                .min_by_key(|(_, f)| {
+                    (
+                        f.symbolic & (text::TRAIT_BOLD | text::TRAIT_ITALIC) != 0,
+                        ((f.weight).abs() * 1000.0) as i64,
+                    )
                 })
                 .map(|(i, _)| i as u64 + 1)
         }
 
-        /// The families Core Text lists (this driver's faces) whose names hold `family`'s first word: what a family
-        /// the driver does not have is listed as instead.
-        fn near(family: &str) -> Vec<String> {
-            let word = family.split(' ').next().unwrap_or(family).to_lowercase();
-            let mut v: Vec<String> = text::faces()
+        /// Core Text's glyph and raw advance and bounds for each of `chars` in the open font `handle`.
+        fn ct_glyphs(handle: u64, chars: &[char]) -> Vec<(u16, [f64; 5])> {
+            chars
                 .iter()
-                .filter(|f| f.family.to_lowercase().contains(&word))
-                .map(|f| format!("{} ({})", f.family, f.postscript))
-                .collect();
-            v.dedup();
-            v
-        }
-
-        fn nums(s: &str) -> Vec<i64> {
-            s.split(',').filter_map(|x| x.parse().ok()).collect()
+                .map(|c| {
+                    let mut u = [0u16; 2];
+                    let units = c.encode_utf16(&mut u);
+                    let mut g = [0u16; 2];
+                    ct::glyphs_for(handle, units, &mut g);
+                    let mut b = [[0.0f64; 5]];
+                    ct::bounds_for(handle, &g[..1], &mut b);
+                    (g[0], b[0])
+                })
+                .collect()
         }
 
         #[test]
         fn font_oracle() {
-            let mut open_fonts: BTreeMap<(String, i32), Option<NhgFontMetrics>> = BTreeMap::new();
-            let mut weights: BTreeMap<String, i32> = BTreeMap::new();
-            for line in ORACLE.lines() {
-                let f: Vec<&str> = line.split('\t').collect();
-                if let ["font", family, _, _, _, _, _, _, _, w] = f.as_slice()
-                    && let Ok(w) = w.parse()
-                {
-                    weights.insert((*family).to_owned(), w);
-                }
-            }
-            let mut opened = |family: &str, px: i32| {
-                *open_fonts
-                    .entry((family.to_owned(), px))
-                    .or_insert_with(|| {
-                        face_of(family, weights.get(family).copied()).and_then(|id| open(id, px, 0))
-                    })
-            };
             let (mut gaps, mut checked) = (Vec::new(), 0);
-            for line in ORACLE
-                .lines()
-                .filter(|l| !l.starts_with('#') && !l.starts_with(' '))
-            {
-                let f: Vec<&str> = line.split('\t').collect();
-                match f.as_slice() {
-                    ["font", family, px, asc, desc, space, avg, _max, _, ..] => {
-                        let px: i32 = px.parse().unwrap();
-                        let Some(m) = opened(family, px) else {
-                            gaps.push(format!(
-                                "{family} {px}: not opened; listed near it: {:?}",
-                                near(family)
-                            ));
-                            continue;
-                        };
-                        let ns: Vec<i32> = [asc, desc, space, avg]
-                            .iter()
-                            .map(|v| v.parse().unwrap())
-                            .collect();
-                        let ours = vec![m.ascent, m.descent, m.space_width, m.average_width];
-                        checked += 1;
-                        if ns != ours {
-                            gaps.push(format!(
-                                "{family} {px}: ascent descent space average NS {ns:?}, Naglfar {ours:?}"
-                            ));
-                        }
+            for &(family, chars) in FONTS {
+                let Some(id) = face_of(family) else {
+                    gaps.push(format!("{family}: no such face on this machine"));
+                    continue;
+                };
+                for &px in SIZES {
+                    let Some(m) = open(id, px, 0) else {
+                        gaps.push(format!("{family} {px}: not opened"));
+                        continue;
+                    };
+                    let raw = ct::raw(m.handle).expect("an open font");
+                    let mono = raw.symbolic & text::TRAIT_MONO != 0;
+                    let printable: Vec<char> = (' '..='~').collect();
+                    let pg = ct_glyphs(m.handle, &printable);
+                    let space = round(pg[0].1[0]);
+                    let (mut a, d, mut l) = (raw.ascent, raw.descent, raw.leading);
+                    if TALL.contains(&raw.family.as_str()) {
+                        a += (a + d) * TALL_FACTOR;
+                    } else if raw.family.starts_with("Hiragino") {
+                        l *= HIRAGINO_LEADING;
+                        a += l;
                     }
-                    ["glyph", family, px, c, code, w, lb, rb, a, d] => {
-                        let px: i32 = px.parse().unwrap();
-                        let Some(m) = opened(family, px) else {
-                            continue;
-                        };
-                        let c: u32 = c.parse().unwrap();
+                    let average = if pg[1..].iter().all(|(g, _)| *g != 0) {
+                        (space
+                            + pg[1..]
+                                .iter()
+                                .map(|(_, b)| glyph(mono, space, *b)[0])
+                                .sum::<i32>())
+                            / 95
+                    } else {
+                        space
+                    };
+                    let want = [c_round(a), c_round(d + l), space, average];
+                    let ours = [m.ascent, m.descent, m.space_width, m.average_width];
+                    checked += 1;
+                    if want != ours {
+                        gaps.push(format!(
+                            "{family} {px}: ascent descent space average: Core Text under the rules {want:?}, \
+                             the driver {ours:?}"
+                        ));
+                    }
+                    let cs: Vec<char> = chars.chars().collect();
+                    for (c, (g, b)) in cs.iter().zip(ct_glyphs(m.handle, &cs)) {
                         let mut t = tables();
                         let Some(t) = t.get_mut(&m.handle) else {
                             continue;
                         };
                         let src = Source(m.handle);
+                        let c = *c as u32;
                         t.fill(c / NHG_FONT_PAGE as u32, &src);
-                        let g = t.char_glyph(c).flatten();
-                        let gm = g.map(|g| {
-                            t.fill(NHG_FONT_FILL_GLYPHS | (g / NHG_FONT_PAGE as u32), &src);
-                            t.metrics(g).unwrap_or_default()
+                        let ours = t.char_glyph(c).flatten().map(|og| {
+                            t.fill(NHG_FONT_FILL_GLYPHS | (og / NHG_FONT_PAGE as u32), &src);
+                            let gm = t.metrics(og).unwrap_or_default();
+                            (
+                                og,
+                                [gm.width, gm.lbearing, gm.rbearing, gm.ascent, gm.descent],
+                            )
                         });
-                        let ns: Vec<i64> = [code, w, lb, rb, a, d]
-                            .iter()
-                            .map(|v| v.parse().unwrap())
-                            .collect();
-                        let ours: Vec<i64> = match (g, gm) {
-                            (Some(g), Some(m)) => vec![
-                                i64::from(g),
-                                i64::from(m.width),
-                                i64::from(m.lbearing),
-                                i64::from(m.rbearing),
-                                i64::from(m.ascent),
-                                i64::from(m.descent),
-                            ],
-                            _ => Vec::new(),
-                        };
+                        let want = (g != 0).then(|| (u32::from(g), glyph(mono, space, b)));
                         checked += 1;
-                        if ns != ours {
+                        if want != ours {
                             gaps.push(format!(
-                                "{family} {px} U+{c:04X}: code width lbearing rbearing ascent descent NS {ns:?}, \
-                                 Naglfar {ours:?}"
+                                "{family} {px} U+{c:04X}: (glyph, width lbearing rbearing ascent descent): Core Text \
+                                 under the rules {want:?}, the driver {ours:?}"
                             ));
                         }
                     }
-                    ["shape", family, px, _dir, chars, glyphs] => {
-                        let px: i32 = px.parse().unwrap();
-                        let Some(m) = opened(family, px) else {
-                            continue;
-                        };
-                        let chars: Vec<u32> = nums(chars).iter().map(|&c| c as u32).collect();
-                        let ns: Vec<Vec<i64>> = if *glyphs == "nil" {
-                            Vec::new()
-                        } else {
-                            glyphs.split(';').map(nums).collect()
-                        };
-                        let ours: Vec<Vec<i64>> = shape(m.handle, &chars)
-                            .unwrap_or_default()
-                            .iter()
-                            .map(|s| {
-                                let adj = s.adjust != 0;
-                                vec![
-                                    i64::from(s.from),
-                                    i64::from(s.to),
-                                    i64::from(s.c),
-                                    i64::from(s.code),
-                                    i64::from(s.m.width),
-                                    i64::from(s.m.lbearing),
-                                    i64::from(s.m.rbearing),
-                                    i64::from(s.m.ascent),
-                                    i64::from(s.m.descent),
-                                    if adj { i64::from(s.xoff) } else { 0 },
-                                    if adj { i64::from(s.yoff) } else { 0 },
-                                    if adj { i64::from(s.wadjust) } else { 0 },
-                                ]
-                            })
-                            .collect();
-                        checked += 1;
-                        if ns != ours {
-                            gaps.push(format!("{family} {px} shaping {chars:?}:\n  NS      {ns:?}\n  Naglfar {ours:?}"));
-                        }
-                    }
-                    _ => {}
+                    close(m.handle);
                 }
             }
-            for m in open_fonts.values().flatten() {
-                close(m.handle);
+            for &(family, s) in SHAPING {
+                let Some(id) = face_of(family) else {
+                    continue;
+                };
+                for px in [12, 24] {
+                    let Some(m) = open(id, px, 0) else {
+                        continue;
+                    };
+                    let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
+                    let units: Vec<u16> = s.encode_utf16().collect();
+                    let line = text::shape(m.handle, &units);
+                    let ours = shape(m.handle, &chars).unwrap_or_default();
+                    checked += 1;
+                    match line {
+                        None => gaps.push(format!(
+                            "{family} {px} shaping {s:?}: Core Text needed another font"
+                        )),
+                        Some(line) => {
+                            let ct_glyphs: Vec<u32> = line
+                                .runs
+                                .iter()
+                                .flat_map(|r| r.glyphs.iter().map(|&g| u32::from(g)))
+                                .collect();
+                            let ct_width: i32 = line
+                                .runs
+                                .iter()
+                                .flat_map(|r| r.widths.iter().map(|&w| round(w)))
+                                .sum();
+                            let our_glyphs: Vec<u32> = ours.iter().map(|g| g.code).collect();
+                            let our_width: i32 = ours.iter().map(|g| g.m.width).sum();
+                            if ct_glyphs != our_glyphs || ct_width != our_width {
+                                gaps.push(format!(
+                                    "{family} {px} shaping {s:?}: glyphs and width: Core Text {ct_glyphs:?} \
+                                     {ct_width}, the driver {our_glyphs:?} {our_width}"
+                                ));
+                            }
+                        }
+                    }
+                    close(m.handle);
+                }
             }
-            assert!(checked > 0, "the oracle has no lines");
+            assert!(checked > 0, "nothing was checked");
             assert!(
                 gaps.is_empty(),
-                "{} of {checked} answers differ from NS's:\n{}",
+                "{} of {checked} answers differ from Core Text's under the rules:\n{}",
                 gaps.len(),
                 gaps.join("\n")
             );
