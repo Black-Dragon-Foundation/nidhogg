@@ -173,7 +173,13 @@ nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
   nhwl_end_cr_clip (f);
 }
 
-/* Stipples are not drawn yet: the face's background, as with no stipple.  */
+/* The face's background, then its stipple in its foreground where the
+   stipple's bits are set, tiled from the frame's origin as X fills with
+   a FillOpaqueStippled GC (and NS with a pattern colour): NHG_DRAW_BITMAP
+   records of at most 16 bits a row, each bit a logical pixel (the frame's
+   whole scale, as fringe bitmaps), cut to the area.  A narrow stipple is
+   repeated across its record and down 64 rows, so a line takes a few
+   records.  */
 void
 nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
 			      int y, int width, int height)
@@ -182,6 +188,56 @@ nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
   nhmac_rect (f, NHG_DRAW_FILL, NHG_DRAW_COPY,
 	      nhmac_argb (f, face->background, true), x, y, width, height,
 	      0, 0);
+  Display_Info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  struct nhwl_bitmap_record *bm
+    = (face->stipple > 0 && face->stipple <= dpyinfo->bitmaps_last
+       ? &dpyinfo->bitmaps[face->stipple - 1] : NULL);
+  if (bm && bm->bits && bm->width > 0 && bm->height > 0
+      && width > 0 && height > 0)
+    {
+      XRectangle area = { x, y, width, height };
+      int k = clip_to_bounds (1, FRAME_NHWL_OUTPUT (f)->scale120 / 120, 8);
+      int bw = bm->width, bh = bm->height, stride = (bw + 7) / 8;
+      int reps = bw <= 16 ? 16 / bw : 1;
+      int vreps = max (1, 64 / bh);
+      int rows = bh * vreps;
+      uint32_t fg = nhmac_argb (f, face->foreground, true);
+      USE_SAFE_ALLOCA;
+      uint16_t *bits;
+      SAFE_NALLOCA (bits, 1, rows);
+      nhmac_clip_to (&area, 1);
+      for (int cx = 0; cx < bw; cx += 16)
+	{
+	  int cw = bw <= 16 ? bw * reps : min (16, bw - cx);
+	  int step = (bw <= 16 ? cw : bw) * k;
+	  for (int r = 0; r < rows; r++)
+	    {
+	      const unsigned char *row
+		= (const unsigned char *) bm->bits + (r % bh) * stride;
+	      uint16_t v = 0;
+	      for (int i = 0; i < cw; i++)
+		{
+		  int b = (cx + i) % bw;
+		  if (row[b / 8] >> (b % 8) & 1)
+		    v |= 1u << (cw - 1 - i);
+		}
+	      bits[r] = v;
+	    }
+	  int x0 = x - ((x - cx * k) % step + step) % step;
+	  int y0 = y - (y % (rows * k) + rows * k) % (rows * k);
+	  for (int ty = y0; ty < y + height; ty += rows * k)
+	    for (int tx = x0; tx < x + width; tx += step)
+	      {
+		NhgDrawRec r = { NHG_DRAW_BITMAP, NHG_DRAW_OVERLAY,
+				 { tx, ty, cw, rows }, fg, 0, k };
+		r.bits = bits;
+		nhmac_emit (f, &r);
+	      }
+	  if (bw <= 16)
+	    break;
+	}
+      SAFE_FREE ();
+    }
   nhwl_end_cr_clip (f);
 }
 

@@ -69,6 +69,12 @@ struct nhwl_bitmap_record
 #ifdef NHWL_WAYLAND
   cairo_pattern_t *pattern;
 #endif
+#ifdef HAVE_NHMAC
+  /* The XBM bits (rows of (WIDTH + 7) / 8 bytes, the leftmost pixel
+     in each byte's low bit), xmalloc'd; Naglfar draws stipples from
+     them.  */
+  char *bits;
+#endif
 };
 
 #define RGB_TO_ULONG(r, g, b) (((r) << 16) | ((g) << 8) | (b))

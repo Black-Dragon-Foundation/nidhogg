@@ -736,6 +736,14 @@ image_create_bitmap_from_data (struct frame *f, char *bits,
     = f->background_pixel & 0xffffffff;
 #endif
 
+#ifdef HAVE_NHMAC
+  /* Naglfar keeps the bits: its stipples are drawn from them
+     (nhmacdraw.c).  */
+  dpyinfo->bitmaps[id - 1].depth = 1;
+  dpyinfo->bitmaps[id - 1].bits = xmalloc (height * ((width + 7) / 8));
+  memcpy (dpyinfo->bitmaps[id - 1].bits, bits, height * ((width + 7) / 8));
+#endif
+
   dpyinfo->bitmaps[id - 1].file = NULL;
   dpyinfo->bitmaps[id - 1].height = height;
   dpyinfo->bitmaps[id - 1].width = width;
@@ -774,6 +782,13 @@ typedef int image_fd;
 
 #if defined HAVE_HAIKU || defined HAVE_NS || defined HAVE_PGTK	\
   || defined HAVE_ANDROID || defined HAVE_NTGUI
+static char *slurp_file (image_fd, ptrdiff_t *);
+static Lisp_Object image_find_image_fd (Lisp_Object, image_fd *);
+static bool xbm_read_bitmap_data (struct frame *, char *, char *,
+				  int *, int *, char **, bool);
+#endif
+#ifdef HAVE_NHMAC
+/* Naglfar reads an XBM file's bits for its stipples.  */
 static char *slurp_file (image_fd, ptrdiff_t *);
 static Lisp_Object image_find_image_fd (Lisp_Object, image_fd *);
 static bool xbm_read_bitmap_data (struct frame *, char *, char *,
@@ -911,6 +926,35 @@ image_create_bitmap_from_file (struct frame *f, Lisp_Object file)
     = image_bitmap_to_cr_pattern (data, width, height);
   xfree (contents);
   xfree (data);
+  return id;
+#endif
+
+#ifdef HAVE_NHMAC
+  /* Naglfar: an XBM file's bits, kept as image_create_bitmap_from_data
+     keeps them.  */
+  ptrdiff_t id, size;
+  int fd, width, height;
+  char *contents, *data;
+
+  if (!STRINGP (image_find_image_fd (file, &fd)))
+    return -1;
+  contents = slurp_file (fd, &size);
+  if (!contents)
+    return -1;
+  if (!xbm_read_bitmap_data (f, contents, contents + size,
+			     &width, &height, &data, 0))
+    {
+      xfree (contents);
+      return -1;
+    }
+  xfree (contents);
+  id = image_allocate_bitmap_record (f);
+  dpyinfo->bitmaps[id - 1].refcount = 1;
+  dpyinfo->bitmaps[id - 1].file = xlispstrdup (file);
+  dpyinfo->bitmaps[id - 1].height = height;
+  dpyinfo->bitmaps[id - 1].width = width;
+  dpyinfo->bitmaps[id - 1].depth = 1;
+  dpyinfo->bitmaps[id - 1].bits = data;
   return id;
 #endif
 
@@ -1156,6 +1200,11 @@ free_bitmap_record (Display_Info *dpyinfo, Bitmap_Record *bm)
   DeleteObject (bm->pixmap);
   DeleteObject (bm->stipple);
 #endif /* HAVE_NTGUI */
+
+#ifdef HAVE_NHMAC
+  xfree (bm->bits);
+  bm->bits = NULL;
+#endif
 
 #ifdef HAVE_NS
   ns_release_object (bm->img);
