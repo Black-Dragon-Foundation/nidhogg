@@ -36,6 +36,11 @@ fn matches(m: &Model, id: &Id, q: &str) -> bool {
     })
 }
 
+/// What the classes of an instance follow from: the model's generation, the selection, the search, the lit list and
+/// the ticks.  `classes` with the basis it last reported from has nothing to report and runs no pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Basis(u64, Option<Id>, Option<String>, Option<String>, u64);
+
 /// What a class decision needs, computed once per call (the chain and the matches are cached on the instance by the
 /// model's generation).
 struct Ctx {
@@ -141,6 +146,18 @@ impl View {
         let Some(inst) = self.insts.get_mut(&h) else {
             return Vec::new();
         };
+        let basis = Basis(
+            m.generation,
+            sel.clone(),
+            inst.search.clone(),
+            inst.lit.clone(),
+            inst.ticks,
+        );
+        if inst.classed.as_ref() == Some(&basis) {
+            return Vec::new();
+        }
+        inst.classed = Some(basis);
+        inst.passes += 1;
         let c = ctx(m, inst, sel);
         let mut now: HashMap<Id, u8> = HashMap::new();
         if sparse(&c) {

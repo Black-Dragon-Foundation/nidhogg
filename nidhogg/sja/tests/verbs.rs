@@ -606,3 +606,25 @@ fn no_chain_still_dims_a_search_and_off_a_lit_list() {
         "the sparse pass clears what the full one set"
     );
 }
+
+#[test]
+fn classes_with_nothing_changed_run_no_pass() {
+    // the editor asks twice per key (the key's step, then the draw's): the second, with nothing changed, is free
+    let mut v = chainless();
+    v.select(1, Some("a"));
+    v.set_search(1, Some("b"));
+    assert!(!v.classes(1).is_empty());
+    let passes = |v: &View| v.insts[&1].passes;
+    assert_eq!(passes(&v), 1);
+    assert!(v.classes(1).is_empty());
+    assert_eq!(passes(&v), 1, "nothing changed: no pass");
+    v.set_search(1, Some("c"));
+    assert_eq!(v.classes(1).len(), 2, "b and c swap match and dim");
+    assert_eq!(passes(&v), 2);
+    v.toggle(1, "b", true);
+    v.classes(1);
+    assert_eq!(passes(&v), 3, "a tick is a change");
+    v.select(1, Some("c"));
+    v.classes(1);
+    assert_eq!(passes(&v), 4, "a move is a change");
+}

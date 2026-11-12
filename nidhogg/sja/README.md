@@ -95,7 +95,8 @@ none. A view with neither (the Run and Debug view, the Explorer) has no chain to
 selection only cost the editor a face on every row. A class is its position in the descriptor's `classes`, which is the
 index into the face vector Lisp keeps. `classes` answers only the nodes whose class changed since the last call; when
 only the selection and the ticked nodes can have a class (no search, no lit list, no chain kinds) it looks at those,
-not at every node.
+not at every node, and a call with the model, the selection, the search, the lit list and the ticks as they were at the
+last one runs no pass at all (the editor asks twice per key: the key's step and the draw's).
 
 ## The C door
 
