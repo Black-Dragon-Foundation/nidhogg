@@ -873,6 +873,12 @@ jobs:
         run: |
           (cd nidhogg/shell && cargo test --locked --lib --no-default-features --features macos)
           (cd nidhogg/glue && cargo test --locked --lib --no-default-features --features macos,test-hooks)
+      # the lane's interposer (nidhogg/test/mac-interpose, test-only) under clippy, warnings as errors
+      - name: The lane's interposer (clippy)
+        if: ${{ !cancelled() && steps.brew.outcome == 'success' }}
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo-home
+        run: cd nidhogg/test/mac-interpose && cargo clippy --locked -- -D warnings
       - name: Naglfar's boundary check (nm-check)
         if: ${{ !cancelled() && steps.nbuild.outcome == 'success' }}
         run: bash nidhogg/glue/nm-check.sh "$RUNNER_TEMP/nbuild"
