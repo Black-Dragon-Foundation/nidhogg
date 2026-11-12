@@ -139,6 +139,34 @@ font at the size a frame opened now at that scale shows."
         (select-frame a)
         (nhwl-gui--pump)))))
 
+;;;; The default fringes
+
+(defun nhwl-gui-scale--fringes ()
+  "The selected window's fringes (left right) and what a default fringe of 8 logical pixels is at the frame's scale."
+  (let ((w (window-fringes)))
+    (list (list (nth 0 w) (nth 1 w))
+          (let ((px (round (* 8 (frame-scale-factor))))) (list px px)))))
+
+(ert-deftest nhwl-gui/default-fringe-follows-the-scale ()
+  "A frame's default fringes are 8 logical pixels, as on NS and pgtk: 8 device pixels times its scale, and again
+after the scale changes (the recorder: 1 → 2 → 1.25 → 1)."
+  (skip-unless (nhwl-gui--live-p))
+  (let ((old (list (frame-parameter nil 'left-fringe) (frame-parameter nil 'right-fringe))))
+    (unwind-protect
+        (progn
+          (modify-frame-parameters nil '((left-fringe) (right-fringe)))
+          (let ((f (nhwl-gui-scale--fringes)))
+            (glitnir-gui--say "fringe-probe: at %s fringes %S, want %S" (frame-scale-factor) (car f) (cadr f))
+            (should (equal (car f) (cadr f))))
+          (when (nhwl-gui--recorder-p)
+            (nhwl-gui-scale--keeping
+              (dolist (s '(240 150 120))
+                (nhwl-gui-scale--set s)
+                (let ((f (nhwl-gui-scale--fringes)))
+                  (glitnir-gui--say "fringe-probe: at %s fringes %S, want %S" (frame-scale-factor) (car f) (cadr f))
+                  (should (equal (car f) (cadr f))))))))
+      (modify-frame-parameters nil `((left-fringe . ,(car old)) (right-fringe . ,(cadr old)))))))
+
 ;;;; Fonts from their setting, per frame
 
 (ert-deftest nhwl-gui/scale-round-trip-from-1.25-keeps-the-font ()

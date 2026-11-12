@@ -2689,6 +2689,12 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
   FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = NHWL_DPI * scale120 / 120.0;
   nhwl_res_changed (f, was);
   nhwl_csd_layout (f);
+  /* Default fringes are 8 logical pixels (frame.c's
+     default_fringe_width): their device width follows the scale.  */
+  if (!FIXNUMP (get_frame_param (f, Qleft_fringe)))
+    gui_set_left_fringe (f, Qnil, Qnil);
+  if (!FIXNUMP (get_frame_param (f, Qright_fringe)))
+    gui_set_right_fringe (f, Qnil, Qnil);
   if (old && old != scale120)
     {
 #ifdef NHWL_WAYLAND
