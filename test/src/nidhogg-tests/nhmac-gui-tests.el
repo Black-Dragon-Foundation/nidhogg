@@ -1017,6 +1017,15 @@ judged here; whether one was pending is logged."
                       (mapcar (lambda (k) (cons k (nhmac-gui--delta before k)))
                               '(:draws :held :held-timeouts :pacer-arms :pacer-fires :deferred-commits :handed-pumps
                                        :takes :applied)))
+      ;; round 8: draws and no commit of either kind in the 20 ms (the deadline is 8 ms): how long the deadline
+      ;; took, Lisp still running on
+      (unless (plist-get s :contents-is-newest)
+        (let* ((t0 (float-time)) (end (+ t0 1.0)) newest)
+          (while (and (not (setq newest (plist-get (nhmac-gui--surface) :contents-is-newest)))
+                      (< (float-time) end)))
+          (nhmac-gui--say "nhmac-commit-shows-without-spin: newest %S after %.0f ms more; %d deadline commits"
+                          newest (* 1000 (- (float-time) t0))
+                          (- (plist-get (nhmac-stats) :deadline-flushes) (plist-get before :deadline-flushes)))))
       (should (eq (plist-get s :contents-is-newest) t))
       (should (equal (plist-get s :gravity) "topLeft"))
       (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
@@ -1737,7 +1746,9 @@ pixels on each side.  Returns (W H PIXELS) of that box."
   "Check the committed surface's ink for TEXT shown at START in the selected window, one font: each glyph's box is its
 position plus Core Text's bounds under the rules (`nhmac-gui--ct-glyph').  A list of failures, each naming the
 character, its expected box (X0 Y0 X1 Y1, device pixels) and what was found: a glyph box without ink, ink outside
-every box, or a glyph not where the widths before it put it."
+every box, or a glyph not where the widths before it put it.  Ink outside the boxes is the glyph's own when Core Text,
+painting the glyph of its column alone (the `glyph-rows' probe), puts ink on that row too: its antialiasing reaches a
+row past the bounds (round 8: \"6\" and \"?\" one row above, alone as on the surface)."
   (let* ((font (font-at start)) (size (font-get font :size)) (family (symbol-name (font-get font :family)))
          (ct (nhmac-gui--ct family size (concat " " text)))
          (mono (plist-get ct :mono))
@@ -1760,7 +1771,19 @@ every box, or a glyph not where the widths before it put it."
     (let* ((x0 (nth 0 edges)) (y0 top) (x1 (+ pen 4)) (y1 (+ top (line-pixel-height)))
            (w (- x1 x0)) (h (- y1 y0))
            (px (nhmac-gui--surface-rect x0 y0 w h))
-           (inside (lambda (x y b) (and (<= (nth 1 b) x) (< x (nth 3 b)) (<= (nth 2 b) y) (< y (nth 4 b))))))
+           (inside (lambda (x y b) (and (<= (nth 1 b) x) (< x (nth 3 b)) (<= (nth 2 b) y) (< y (nth 4 b)))))
+           (alone-cache nil)
+           (alone (lambda (c)
+                    (with-memoization (alist-get c alone-cache nil nil #'equal)
+                      (nhmac--query 'test-font-probe 'glyph-rows family size (string-to-char c) 0 bg))))
+           (alone-ink (lambda (x y)
+                        (cl-some (lambda (b)
+                                   (and (<= (nth 1 b) x) (< x (nth 3 b))
+                                        (let* ((rows (funcall alone (car b)))
+                                               (row (nth (+ 1 (car rows) (- y base)) rows)))
+                                          (and (stringp row)
+                                               (nhmac-gui--far (string-to-number row 16) bg 24)))))
+                                 boxes))))
       (dolist (b boxes)
         (unless (cl-loop for y from (max y0 (nth 2 b)) below (min y1 (nth 4 b))
                          thereis (cl-loop for x from (max x0 (nth 1 b)) below (min x1 (nth 3 b))
@@ -1769,7 +1792,8 @@ every box, or a glyph not where the widths before it put it."
       (dotimes (y h)
         (dotimes (x w)
           (when (and (nhmac-gui--ink-p (aref px (+ (* y w) x)) bg)
-                     (not (cl-some (lambda (b) (funcall inside (+ x x0) (+ y y0) b)) boxes)))
+                     (not (cl-some (lambda (b) (funcall inside (+ x x0) (+ y y0) b)) boxes))
+                     (not (funcall alone-ink (+ x x0) (+ y y0))))
             (push (list 'ink-outside-every-box :actual (list (+ x x0) (+ y y0))
                         :pixel (format "#x%08x" (aref px (+ (* y w) x)))
                         ;; the boxes of its column and the baseline, to tell a glyph's own ink from a stray
@@ -2692,8 +2716,8 @@ GLYPHS) for TEXT (`query-font', `line-pixel-height', `font-get-glyphs')."
 (defun nhmac-gui--ct-facts (family size text)
   "FAMILY at SIZE pixels as Core Text answers under the stated rules, in `nhmac-gui--font-facts''s form: the pixel
 size is the size asked for, the line height the taller ascent plus the taller descent of the font and the default
-face's font (`nhmac-gui--with-text' puts four spaces of the default face before the text), or the frame's character
-height when that is taller.  Nil when the font is not open."
+face's font (`nhmac-gui--with-text' puts four spaces of the default face before the text; called in its buffer), or
+the frame's character height when that is taller.  Nil when the font is not open."
   (let ((ct (nhmac-gui--ct family size (concat " " nhmac-gui--printable text))))
     (when ct
       (pcase-let* ((glyphs (plist-get ct :glyphs))
@@ -2702,8 +2726,10 @@ height when that is taller.  Nil when the font is not open."
                     (nhmac-gui--ct-metrics (plist-put (copy-sequence ct) :glyphs (take 95 glyphs))
                                            nhmac-gui--printable)))
         (list :info (list size a d space avg
-                          ;; the line also holds the default face's spaces: its ascent and descent each the taller
-                          (let ((q (font-info (face-font 'default))))
+                          ;; the line also holds the default face's spaces: its ascent and descent each the taller.
+                          ;; The spaces' own font: round 8 (scale 2) opened the default face's name with
+                          ;; `font-info', which gave its size in points (Menlo 12, not the 24 px the line shows)
+                          (let ((q (query-font (font-at (1+ (point-min))))))
                             (max (+ (max a (aref q 4)) (max d (aref q 5))) (frame-char-height))))
               :glyphs (mapcar (lambda (g) (cons (nth 1 g) (nhmac-gui--ct-glyph mono space g)))
                               (nthcdr 95 glyphs)))))))
@@ -3162,16 +3188,19 @@ a bare frame (`nhmac-gui--bare-frame')."
     ;; boxes and reliefs
     (pcase-let ((`(,x0 ,top ,_ ,_ ,bottom) (nhmac-gui--run-box "box")))
       (funcall note (nhmac-gui--probe-all "box (left line)" #x0000ff x0 (+ top k) (+ x0 k) (- bottom k))))
+    ;; the top is read one row in: a relief wider than 1 has its outermost top and left line in the bottom's colour
+    ;; (xterm.c's x_draw_relief_rect, as nhwl_draw_relief_rect; round 8 read that line once the box's top was the
+    ;; row's)
     (dolist (r '(("raised" . t) ("pressed" . nil)))
       (pcase-let* ((b (nhmac-gui--run-box (car r)))
                    (x (funcall mid b))
-                   (hi (logand (aref (nhmac-gui--surface-rect x (nth 1 b) 1 1) 0) #xffffff))
+                   (hi (logand (aref (nhmac-gui--surface-rect x (1+ (nth 1 b)) 1 1) 0) #xffffff))
                    (lo (logand (aref (nhmac-gui--surface-rect x (1- (nth 4 b)) 1 1) 0) #xffffff)))
         (unless (and (eq (cdr r) (nhmac-gui--lighter-p hi bg)) (eq (cdr r) (nhmac-gui--lighter-p bg lo)))
           (push (list (concat (car r) " relief") :expected (if (cdr r) "top lighter, bottom darker than the background"
                                                               "top darker, bottom lighter than the background")
                       :actual (list :top (format "#x%06x" hi) :bottom (format "#x%06x" lo) :background (format "#x%06x" bg))
-                      :backing (list :top (nhmac-gui--backing-colours x (nth 1 b) (1+ x) (1+ (nth 1 b)))
+                      :backing (list :top (nhmac-gui--backing-colours x (1+ (nth 1 b)) (1+ x) (+ 2 (nth 1 b)))
                                      :bottom (nhmac-gui--backing-colours x (1- (nth 4 b)) (1+ x) (nth 4 b))))
                 bad))))
     (pcase-let ((`(,x0 ,top ,x1 ,_ ,_) (nhmac-gui--run-box "inner")))

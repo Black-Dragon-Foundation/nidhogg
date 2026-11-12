@@ -45,6 +45,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <string.h>
 #ifdef DARWIN_OS
 # include <dlfcn.h>
+# include <mach/mach.h>
+# include <mach/mach_vm.h>
 #endif
 
 #include "nidhogg-watchdog.h"
@@ -407,26 +409,50 @@ usage: (nidhogg-watchdog--start THRESHOLD-MS HANG-MS HANG-FILE &rest FLAGS)  */)
       /* Round 6 (macOS): a siginfo handler with SA_RESTART that neither
 	 Emacs nor the shell installs: the image and symbol that hold it.  */
       const char *sym = "?", *image = "?";
+      /* Round 8: dladdr found no image.  The handler's address and the
+	 memory it sits in: unmapped (a library closed after claiming
+	 the signal), or a region of its own (generated code; its tag
+	 names the allocator).  */
+      char where[160] = "";
 #ifdef DARWIN_OS
       Dl_info info;
-      if (got == 0 && (cur.sa_flags & SA_SIGINFO)
-	  && dladdr ((void *) cur.sa_sigaction, &info))
+      if (got == 0 && (cur.sa_flags & SA_SIGINFO))
 	{
-	  if (info.dli_sname)
-	    sym = info.dli_sname;
-	  if (info.dli_fname)
-	    image = info.dli_fname;
+	  if (dladdr ((void *) cur.sa_sigaction, &info))
+	    {
+	      if (info.dli_sname)
+		sym = info.dli_sname;
+	      if (info.dli_fname)
+		image = info.dli_fname;
+	    }
+	  mach_vm_address_t at = (mach_vm_address_t) cur.sa_sigaction;
+	  mach_vm_size_t size = 0;
+	  vm_region_extended_info_data_t ext;
+	  mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
+	  mach_port_t object = MACH_PORT_NULL;
+	  kern_return_t kr
+	    = mach_vm_region (mach_task_self (), &at, &size,
+			      VM_REGION_EXTENDED_INFO, (vm_region_info_t) &ext,
+			      &count, &object);
+	  snprintf (where, sizeof where,
+		    ", at %p: region kr %d from 0x%llx size 0x%llx"
+		    " prot %d tag %u share %u",
+		    (void *) cur.sa_sigaction, (int) kr,
+		    (unsigned long long) at, (unsigned long long) size,
+		    kr == KERN_SUCCESS ? ext.protection : -1,
+		    kr == KERN_SUCCESS ? ext.user_tag : 0u,
+		    kr == KERN_SUCCESS ? (unsigned) ext.share_mode : 0u);
 	}
 #endif
       wd_free ();
       error ("nidhogg-watchdog: cannot install the signal handler"
-	     " (sigaction %d, flags 0x%x, handler %s, %s in %s)", got,
+	     " (sigaction %d, flags 0x%x, handler %s, %s in %s%s)", got,
 	     got == 0 ? (unsigned) cur.sa_flags : 0u,
 	     got != 0 ? "?"
 	     : (cur.sa_flags & SA_SIGINFO) ? "siginfo"
 	     : cur.sa_handler == SIG_DFL ? "default"
 	     : cur.sa_handler == SIG_IGN ? "ignored" : "function",
-	     sym, image);
+	     sym, image, where);
     }
   span_open (nh_wd_now_ns ());
   wd_in_select = wd_runloop_asleep = false;

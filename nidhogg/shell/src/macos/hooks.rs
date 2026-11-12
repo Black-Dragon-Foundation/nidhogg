@@ -63,6 +63,16 @@ fn numbers(arg: &str) -> ShellResult<Vec<f64>> {
         .collect()
 }
 
+/// [`numbers`] as whole numbers: a card's id is a u64 an f64 does not hold (round 8: every `test-card-row` was STATE).
+fn whole_numbers(arg: &str) -> ShellResult<Vec<u64>> {
+    arg.trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .split_whitespace()
+        .map(|n| n.parse().map_err(|_| ShellError::Arg))
+        .collect()
+}
+
 /// `(FAMILY SIZE GLYPH...)`, as `nhmac--call` prints its arguments (strings unquoted, so FAMILY is the words before
 /// the first number): Core Text's own advances of the glyphs in the open font of FAMILY at SIZE pixels
 /// (`CTFontGetAdvancesForGlyphs`, unrounded), a list; nil when no such font is open.
@@ -548,11 +558,11 @@ impl MacShell {
                 )
             }),
             // "(W ID Y X0 N)": card ID's image row Y from column X0, N pixels (round 6: its ring's left side blended)
-            "test-card-row" => numbers(arg).and_then(|n| match n[..] {
+            "test-card-row" => whole_numbers(arg).and_then(|n| match n[..] {
                 [w, id, y, x0, k] => self
                     .cards
-                    .get(&(w as WindowId))
-                    .and_then(|c| c.row(id as u64, y as u32, x0 as u32, k as u32))
+                    .get(&w)
+                    .and_then(|c| c.row(id, y as u32, x0 as u32, k as u32))
                     .map(|r| format!("({})", r.iter().map(|p| format!("\"{p:06x}\"")).collect::<Vec<_>>().join(" ")))
                     .ok_or(ShellError::State),
                 _ => Err(ShellError::Arg),

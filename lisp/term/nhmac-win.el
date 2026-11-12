@@ -995,6 +995,7 @@ space intended for badges.  If BADGE is nil, clear the app badge."
 
 (declare-function nhwl--drag-start "nhwlfns.c"
                   (frame items-fn offered preferred allow-current return-frame))
+(defvar nhwl--xdnd-value)
 
 (defun nhmac--drag-items (pboard)
   "The (MIME . BYTES) items of PBOARD, `ns-begin-drag''s pasteboard alist."
@@ -1023,7 +1024,10 @@ PBOARD is an alist of (TYPE . VALUE): TYPE `string' with a string, or
 performed, as `x-begin-drag'; RETURN-FRAME and ALLOW-SAME-FRAME are as
 there, and FOLLOW-TOOLTIP is ignored."
   (ignore follow-tooltip)
+  ;; the drag starts only from an owned `XdndSelection' (as `x-begin-drag''s does); PBOARD stands for it, and the
+  ;; bytes go from ITEMS-FN (round 8: unowned, every call returned nil at once)
   (let* ((move (eq action 'XdndActionMove))
+         (nhwl--xdnd-value pboard)
          (r (nhwl--drag-start (or frame (selected-frame))
                               (lambda () (nhmac--drag-items pboard))
                               (if move 3 1) (if move 2 1)
