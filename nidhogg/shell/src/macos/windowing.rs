@@ -32,15 +32,21 @@ pub fn is_fullscreen(w: &Win) -> bool {
     w.window.styleMask().contains(NSWindowStyleMask::FullScreen) || w.saved.is_some()
 }
 
-/// Full screen on or off: AppKit's own, or (non-native) the screen's frame without a title bar.
+/// Full screen on or off: AppKit's own, or (non-native) the screen's frame without a title bar.  A request made
+/// during a native transition, native or not, waits for the transition's end (`fullscreen_transition`), which
+/// compares it with the state the window ends in: the style mask changes when the transition starts, so it cannot be
+/// compared with now.  Leaving full screen leaves the kind the window is in, whatever `native` says now.
 pub fn fullscreen(w: &mut Win, on: bool, native: bool) {
+    if w.fs_busy {
+        // AppKit drops a toggle inside a transition
+        w.fs_want = Some(on);
+        return;
+    }
     if on == is_fullscreen(w) {
         return;
     }
-    if native && w.fs_busy {
-        // AppKit drops a toggle inside a transition: the transition's end applies it
-        w.fs_want = Some(on);
-    } else if native {
+    let in_native = w.window.styleMask().contains(NSWindowStyleMask::FullScreen);
+    if (on && native) || (!on && in_native) {
         // the transition starts now; its will-notification reaches `fullscreen_transition` only at the next pump,
         // and a request made before that would be dropped by AppKit (NS's `in_fullscreen_transition`)
         w.window.toggleFullScreen(None);
