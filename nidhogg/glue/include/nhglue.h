@@ -1260,6 +1260,11 @@ int32_t nhg_font_close (uint64_t handle);
 int32_t nhg_font_shape (uint64_t handle, const uint32_t *chars, size_t n, NhgShaped *out, size_t cap,
 			size_t *used);
 
+/* The glyph of each of the 256 variation sequences of character C in font HANDLE into OUT (macfont_variation_glyphs:
+   VS1-VS16, then VS17-VS256; 0 for one the font's cmap format-14 table lacks, the base glyph for a default one), how
+   many it has into *N.  NHG_E_STATE: not open.  */
+int32_t nhg_font_variation_glyphs (uint64_t handle, uint32_t c, uint32_t *out, uint32_t *n);
+
 #define NHG_FONT_PAGE 256
 #define NHG_FONT_CHAR_PAGES (0x110000 / NHG_FONT_PAGE)
 #define NHG_FONT_GLYPH_PAGES (0x10000 / NHG_FONT_PAGE)

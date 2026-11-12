@@ -3,8 +3,9 @@
 //!
 //! - **Faces** (`macfont_list`): the families of `CTFontManagerCopyAvailableFontFamilyNames` but the hidden ones (a
 //!   name starting with ".") and LastResort, each family's faces from its matching descriptors, with their symbolic
-//!   and numeric traits.  Listed once, off the main thread too; a face's character set and languages are read the
-//!   first time a script or language is asked of it.
+//!   and numeric traits.  Listed at the first ask, off the main thread too, and again after Core Text's
+//!   registered-fonts notification; a face's character set and languages are read the first time a script or language
+//!   is asked of it.
 //! - **The preferred family** (`mac_font_create_preferred_family_for_attributes`): the family of the one font a line of
 //!   the characters is laid out in, with no font asked for.
 //! - **A line** (`mac_font_shape`): the text in one font with kerning off, each glyph run's glyphs, string indices,
@@ -14,6 +15,7 @@
 use objc2_foundation::NSString;
 use std::ffi::c_void;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 type CFRef = *const c_void;
 
@@ -51,6 +53,8 @@ const NUMBER_FLOAT32: isize = 5;
 const NUMBER_FLOAT64: isize = 13;
 /// `kCTRunStatusRightToLeft`.
 const RUN_RTL: u32 = 1;
+/// `CFNotificationSuspensionBehaviorCoalesce`.
+const SUSPENSION_COALESCE: isize = 2;
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
@@ -78,6 +82,15 @@ unsafe extern "C" {
     fn CFStringCreateWithCharacters(alloc: CFRef, chars: *const u16, n: isize) -> CFRef;
     fn CFStringGetRangeOfComposedCharactersAtIndex(s: CFRef, i: isize) -> CFRange;
     fn CFAttributedStringCreate(alloc: CFRef, s: CFRef, attrs: CFRef) -> CFRef;
+    fn CFNotificationCenterGetLocalCenter() -> CFRef;
+    fn CFNotificationCenterAddObserver(
+        center: CFRef,
+        observer: *const c_void,
+        callback: extern "C" fn(CFRef, *mut c_void, CFRef, *const c_void, CFRef),
+        name: CFRef,
+        object: *const c_void,
+        behavior: isize,
+    );
 }
 
 #[link(name = "CoreText", kind = "framework")]
@@ -94,12 +107,14 @@ unsafe extern "C" {
     static kCTFontAttributeName: CFRef;
     static kCTLanguageAttributeName: CFRef;
     static kCTKernAttributeName: CFRef;
+    static kCTFontManagerRegisteredFontsChangedNotification: CFRef;
     fn CTFontManagerCopyAvailableFontFamilyNames() -> CFRef;
     fn CTFontManagerCompareFontFamilyNames(a: CFRef, b: CFRef, ctx: *mut c_void) -> isize;
     fn CTFontDescriptorCreateWithAttributes(attrs: CFRef) -> CFRef;
     fn CTFontDescriptorCreateMatchingFontDescriptors(d: CFRef, mandatory: CFRef) -> CFRef;
     fn CTFontDescriptorCopyAttribute(d: CFRef, attr: CFRef) -> CFRef;
     fn CTFontCopyPostScriptName(f: CFRef) -> CFRef;
+    fn CTFontCreateWithName(name: CFRef, size: f64, matrix: *const c_void) -> CFRef;
     fn CTFontCopyFamilyName(f: CFRef) -> CFRef;
     fn CTLineCreateWithAttributedString(s: CFRef) -> CFRef;
     fn CTLineGetGlyphRuns(l: CFRef) -> CFRef;
@@ -197,6 +212,7 @@ pub struct Face {
     desc: Cf,
     charset: OnceLock<Option<Cf>>,
     languages: OnceLock<Vec<String>>,
+    appkit_weight: OnceLock<Option<isize>>,
 }
 
 impl Face {
@@ -211,6 +227,28 @@ impl Face {
         // SAFETY: a live character set.
         cs.as_ref()
             .is_some_and(|cs| unsafe { CFCharacterSetIsLongCharacterMember(cs.get(), c) })
+    }
+
+    /// AppKit's weight of the face (`NSFontManager`'s `weightOfFont:`, 0–15, 5 regular; `mac_font_get_weight`), the
+    /// face opened at the default size to ask; read once.  `None` when it does not open.
+    pub fn appkit_weight(&self) -> Option<isize> {
+        *self.appkit_weight.get_or_init(|| {
+            let name = cf_string(&self.postscript)?;
+            // SAFETY: a live name; the font is +1, owned by `Cf`.
+            let font = Cf::new(unsafe { CTFontCreateWithName(name.get(), 0.0, std::ptr::null()) })?;
+            let manager = objc2::runtime::AnyClass::get(c"NSFontManager")?;
+            // SAFETY: the shared font manager, and a CTFont, toll-free bridged to the NSFont `weightOfFont:` takes.
+            unsafe {
+                let fm: *mut objc2::runtime::AnyObject =
+                    objc2::msg_send![manager, sharedFontManager];
+                if fm.is_null() {
+                    return None;
+                }
+                let f = font.get().cast::<objc2::runtime::AnyObject>();
+                let w: isize = objc2::msg_send![fm, weightOfFont: f];
+                Some(w)
+            }
+        })
     }
 
     /// The languages the face covers (`kCTFontLanguagesAttribute`).
@@ -260,6 +298,7 @@ fn face(d: CFRef) -> Option<Face> {
         desc: Cf::new(unsafe { CFRetain(d) })?,
         charset: OnceLock::new(),
         languages: OnceLock::new(),
+        appkit_weight: OnceLock::new(),
     })
 }
 
@@ -305,11 +344,77 @@ fn family_faces(family: CFRef, exact: bool) -> Vec<Face> {
         .collect()
 }
 
-/// Every face, in Core Text's family order (`mac_font_create_available_families`); listed on the first call and kept.
+/// Set when Core Text says the registered fonts changed: the next `listing` lists them again.
+static STALE: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn fonts_changed(
+    _c: CFRef,
+    _o: *mut c_void,
+    _n: CFRef,
+    _obj: *const c_void,
+    _info: CFRef,
+) {
+    STALE.store(true, Ordering::Release);
+}
+
+/// Watch Core Text's registered-fonts notification (`macfont_init_font_change_handler`), once.
+fn watch_font_changes() {
+    static WATCH: std::sync::Once = std::sync::Once::new();
+    WATCH.call_once(|| {
+        // SAFETY: the local center and Core Text's notification name live for the process; a null observer and
+        // object are allowed, and the callback is a plain function.
+        unsafe {
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetLocalCenter(),
+                std::ptr::null(),
+                fonts_changed,
+                kCTFontManagerRegisteredFontsChangedNotification,
+                std::ptr::null(),
+                SUSPENSION_COALESCE,
+            )
+        };
+    });
+}
+
+/// A face's key (what `face_at` takes): its listing's generation above bit 32, its index in that listing below; a
+/// face found by name after the listing is `NAMED_BASE` and up.  The first listing's keys are its plain indices.
+pub fn key(generation: usize, index: usize) -> usize {
+    (generation << 32) | index
+}
+const NAMED_BASE: usize = 1 << 31;
+
+/// Every listing made so far (leaked: a face's key, held in Emacs's entities, stays good for the session).
+fn listings() -> std::sync::MutexGuard<'static, Vec<&'static [Face]>> {
+    static L: OnceLock<std::sync::Mutex<Vec<&'static [Face]>>> = OnceLock::new();
+    L.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+}
+
+/// The current listing and its generation: every face, in Core Text's family order
+/// (`mac_font_create_available_families`).  Listed on the first call, and again after Core Text's
+/// registered-fonts notification (a font installed or removed while Emacs runs; macfont drops its family cache then).
 /// Faces of a family the listing leaves out follow it once asked for by name (`named`).
+pub fn listing() -> (usize, &'static [Face]) {
+    let mut l = listings();
+    if l.is_empty() || STALE.swap(false, Ordering::AcqRel) {
+        // watched before listing, so a change during the listing lists again
+        watch_font_changes();
+        let fresh: &'static [Face] = Box::leak(list_faces().into_boxed_slice());
+        l.push(fresh);
+        // a name not found before may be listed now, or found by name
+        named_store().asked.clear();
+    }
+    (l.len() - 1, l[l.len() - 1])
+}
+
+/// The current listing's faces (`listing`).
 pub fn faces() -> &'static [Face] {
-    static FACES: OnceLock<Vec<Face>> = OnceLock::new();
-    FACES.get_or_init(|| {
+    listing().1
+}
+
+fn list_faces() -> Vec<Face> {
+    {
         let mut out = Vec::new();
         // SAFETY: a +1 array of CFStrings.
         let Some(families) = Cf::new(unsafe { CTFontManagerCopyAvailableFontFamilyNames() }) else {
@@ -331,7 +436,7 @@ pub fn faces() -> &'static [Face] {
             }
         }
         out
-    })
+    }
 }
 
 /// The faces found by name after the listing (leaked: they live as long as the listing), and the names asked for.
@@ -353,15 +458,16 @@ fn named_store() -> std::sync::MutexGuard<'static, Named> {
         .unwrap_or_else(|p| p.into_inner())
 }
 
-/// Face `i` (zero-based) of the listing and the faces found by name after it.
-pub fn face_at(i: usize) -> Option<&'static Face> {
-    let listed = faces();
-    listed
-        .get(i)
-        .or_else(|| named_store().faces.get(i - listed.len()).copied())
+/// The face of key `k` (`key`): a face of the listing of its generation, or one found by name.
+pub fn face_at(k: usize) -> Option<&'static Face> {
+    let i = k & 0xffff_ffff;
+    if i >= NAMED_BASE {
+        return named_store().faces.get(i - NAMED_BASE).copied();
+    }
+    listings().get(k >> 32).and_then(|l| l.get(i))
 }
 
-/// The indices (for `face_at`) of `family`'s faces when the listing leaves it out: `macfont_list` matches a named
+/// The keys (for `face_at`) of `family`'s faces when the listing leaves it out: `macfont_list` matches a named
 /// family's descriptor directly, so a family Core Text hides from its list (Courier and Times on macOS 27) still
 /// opens.  Empty for a listed family, and for one Core Text does not have.
 pub fn named(family: &str) -> Vec<usize> {
@@ -383,7 +489,7 @@ pub fn named(family: &str) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter(|(_, f)| f.family.eq_ignore_ascii_case(family))
-        .map(|(j, _)| listed.len() + j)
+        .map(|(j, _)| NAMED_BASE + j)
         .collect()
 }
 
