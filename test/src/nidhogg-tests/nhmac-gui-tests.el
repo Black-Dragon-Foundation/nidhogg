@@ -253,18 +253,37 @@ and `mouse-pixel-position' follows motion."
 (defun nhmac-gui--feed (name type gaps)
   "Start NAME, writing 100 lines 10 ms apart through TYPE (`pipe' or `pty').
 Its filter keeps NAME's line count and longest gap between outputs in
-the hash table GAPS, as (LINES . GAP)."
+the hash table GAPS, as (LINES . GAP).  Its sentinel marks it `drained':
+Emacs runs a process's sentinel only after it read the output left in
+the process's fd (status_notify), so a drained process has given all."
   (let ((last (float-time)))
     (puthash name (cons 0 0.0) gaps)
     (make-process
      :name name :connection-type type :noquery t
      :command '("sh" "-c" "i=0; while [ $i -lt 100 ]; do echo $i; i=$((i+1)); sleep 0.01; done")
+     :sentinel (lambda (p _event) (unless (process-live-p p) (process-put p 'drained t)))
      :filter (lambda (_p s)
                (let ((now (float-time)) (r (gethash name gaps)))
                  (puthash name (cons (+ (car r) (cl-count ?\n s))
                                      (max (cdr r) (- now last)))
                           gaps)
                  (setq last now))))))
+
+(defun nhmac-gui--drain (procs secs &optional each tick)
+  "Wait (SECS at most from now) until every process of PROCS is drained (`nhmac-gui--feed'), each wait TICK seconds at
+most (default 5) and EACH called after it; then delete them.  Not `process-live-p': a process is dead from the
+SIGCHLD on, before Emacs has read what it left in its fd, and deleting it then throws those lines away (round 3:
+kq-pipe 97 of 100, its last lines in its pipe).  Logs each process's status and whether it drained."
+  (let ((start (float-time)))
+    (unwind-protect
+        (while (and (seq-remove (lambda (p) (process-get p 'drained)) procs)
+                    (< (- (float-time) start) secs))
+          (accept-process-output nil (or tick 5))
+          (when each (funcall each)))
+      (dolist (p procs)
+        (nhmac-gui--say "nhmac-gui--drain: %s %S, drained %S" (process-name p) (process-status p)
+                        (process-get p 'drained))
+        (delete-process p)))))
 
 (ert-deftest nhmac-kq-fds ()
   "A pipe, a pty and a pipe served by the helper, under load: every line arrives with no gap near the wait's 5 s
@@ -282,11 +301,8 @@ serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: w
     (accept-process-output nil 0.05)
     (nhmac--test-helper-next)
     (push (nhmac-gui--feed "kq-helper" 'pipe gaps) procs)
-    (unwind-protect
-        (while (and (seq-some #'process-live-p procs) (< (- (float-time) start) 30))
-          (accept-process-output nil 5)
-          (setq helper-fds (max helper-fds (plist-get (nhmac-stats) :helper-fds))))
-      (mapc #'delete-process procs))
+    (nhmac-gui--drain procs (- 30 (- (float-time) start))
+                      (lambda () (setq helper-fds (max helper-fds (plist-get (nhmac-stats) :helper-fds)))))
     (maphash (lambda (k v) (nhmac-gui--say "nhmac-kq-fds: %s %d lines, longest gap %.3f s" k (car v) (cdr v))) gaps)
     (nhmac-gui--say "nhmac-kq-fds: stats %S" (nhmac-stats))
     (maphash (lambda (_k v)
@@ -306,12 +322,7 @@ one pty alone, never sleeps through output (no gap near its 2 s timeout, three r
     (nhmac-gui--say "nhmac-kq-layers: kernel %S" layers)
     (dotimes (i 3)
       (dolist (type '(pipe pty))
-        (let ((p (nhmac-gui--feed (format "kq-%s-%d" type i) type gaps))
-              (start (float-time)))
-          (unwind-protect
-              (while (and (process-live-p p) (< (- (float-time) start) 20))
-                (accept-process-output nil 2))
-            (delete-process p)))))
+        (nhmac-gui--drain (list (nhmac-gui--feed (format "kq-%s-%d" type i) type gaps)) 20 nil 2)))
     (maphash (lambda (k v) (nhmac-gui--say "nhmac-kq-layers: %s %d lines, longest gap %.3f s" k (car v) (cdr v)))
              gaps)
     (should (equal layers '(:pipe-direct 0 :pipe-nested 0 :pty-direct 0 :pty-nested 0)))
@@ -3225,10 +3236,7 @@ any thread that does not block it: Emacs's SIGCHLD can reach the helper.)"
     (setq p (nhmac-gui--feed "kq-helper-signals" 'pipe gaps))
     (accept-process-output nil 0.05)
     (nhmac--test-signal-helper 40)
-    (unwind-protect
-        (while (and (process-live-p p) (< (- (float-time) start) 30))
-          (accept-process-output nil 5))
-      (delete-process p))
+    (nhmac-gui--drain (list p) (- 30 (- (float-time) start)))
     (let ((v (gethash "kq-helper-signals" gaps)))
       (nhmac-gui--say "nhmac-kq-helper-signals: %d lines, longest gap %.3f s, stats %S" (car v) (cdr v)
                       (nhmac-stats))
