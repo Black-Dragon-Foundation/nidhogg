@@ -162,6 +162,8 @@ or none; a weight or none; inheriting a face or not; in a buffer with
 `default' remapped or not.  Each case's merged attribute vector and
 realized font equal the ones recorded on the stock merge, and the font
 spec merged into stays as it was."
+  (when (eq system-type 'darwin)
+    (ert-skip "the recorded hashes hold Linux's realized fonts (fontconfig names), not Core Text's"))
   (glitnir-faces-gui--face 'glitnir-faces-gui--parent :slant 'italic :height 1.1 :weight 'semibold)
   (glitnir-faces-gui--face 'glitnir-faces-gui--remap :family "Monospace" :height 0.963 :weight 'light)
   (let* ((spec (font-spec :name "Monospace-14" :family "Monospace" :size 14 :weight 'normal
@@ -203,6 +205,8 @@ buffers lay out alike."
   "Pattern D (pure): the fonts after each change of a `default' remap are the stock merge's.
 The remap is added, redisplayed twice, its face's weight and height change, `text-scale-set' scales it and back, it
 is removed, and a property-list remap comes and goes."
+  (when (eq system-type 'darwin)
+    (ert-skip "the recorded hashes hold Linux's realized fonts (fontconfig names), not Core Text's"))
   (glitnir-faces-gui--face 'glitnir-faces-gui--step-remap :family "Monospace" :height 0.963 :weight 'light)
   (glitnir-faces-gui--face 'glitnir-faces-gui--step-run :height 0.889 :weight 'bold)
   (let ((buf (generate-new-buffer " *glitnir-faces-steps*"))

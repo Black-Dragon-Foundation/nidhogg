@@ -328,6 +328,18 @@ for r in nhmac-key-to-commit nhmac-cpu-per-key nhmac-cjk-emoji-scroll nhmac-blur
   grep -qx "fresh $r" nidhogg/test/nhmac-lane.txt || fail "$r is not a fresh row of the lane"
   grep -A12 'name: Naglfar timing rows' <<<"$rj" | grep -qF "$r" || fail "the timing step does not run $r"
 done
+# the lane's row floor: a whole-lane run under it is red, so a pass that ran one file or none cannot be green.  It stays
+# below the rows the lane's files hold (counted as nhmac-gui.sh's comment says) and is not a tiny number
+lane_floor=$(sed -nE 's/^lane_floor=([0-9]+)$/\1/p' nidhogg/test/nhmac-gui.sh)
+[ -n "$lane_floor" ] && [ "$lane_floor" -ge 100 ]                  || fail "nhmac-gui.sh has no lane_floor of at least 100"
+lane_rows=0
+for g in $(sed 's/#.*//' nidhogg/test/nhmac-lane.txt | awk '$1 == "files" { for (i = 2; i <= NF; i++) print $i }'); do
+  for f in test/src/nidhogg-tests/$g; do
+    [ -f "$f" ] || fail "nhmac-lane.txt lists $g, which is not in test/src/nidhogg-tests"
+    lane_rows=$((lane_rows + $(grep -c '^(ert-deftest' "$f")))
+  done
+done
+[ "$lane_floor" -le "$lane_rows" ]                                 || fail "the lane floor $lane_floor is above the $lane_rows rows the lane's files hold"
 job macos-naglfar | grep -qF -- "--exclude=glitnir-target"           || fail "the Naglfar build tree artifact carries the Rust target"
 job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "macos-naglfar does not follow the macOS path filter"
 job gate | grep -qF 'macos-naglfar macos-naglfar-rows " ;; esac'     || fail "the gate lets a filtered macOS run skip macos but not the Naglfar jobs"
