@@ -15,8 +15,9 @@ RUN dnf -y --setopt=install_weak_deps=False install \
     dnf clean all
 
 FROM norust AS full
-# the Rust packages of deps/fedora-45.build, then those of the recorder's, the shell's and the glue's check.sh
+# the Rust packages of deps/fedora-45.build, then those of the recorder's, the shell's and the glue's check.sh, and
+# rustup (its rustup-init: ci/target-std.sh's darwin std for test/mac-interpose/check.sh, on this image's rustc)
 RUN dnf -y --setopt=install_weak_deps=False install \
       $(sed 's/#.*//' /usr/share/nidhogg-image/fedora-45.build | grep -xE 'cargo|rust|rustc') \
-      clippy rustfmt cargo-deny binutils gawk openssl-devel cmake xkeyboard-config libX11-common pixman-devel && \
+      clippy rustfmt cargo-deny binutils gawk openssl-devel cmake xkeyboard-config libX11-common pixman-devel rustup && \
     dnf clean all
