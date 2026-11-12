@@ -598,7 +598,7 @@ OPTION_DEFAULT_OFF([glitnir],[build Glitnir (the compositor, Rust); needs cargo 
 dnl Nidhogg: the native Wayland shell (nidhogg/shell, Rust, with Glitnir inside) and the C glue src/nhwl*.c
 OPTION_DEFAULT_OFF([nidhogg-wayland],[use Nidhogg's own Wayland shell (no GTK); implies --with-glitnir; Linux only])
 dnl Nidhogg: the native macOS shell (Naglfar: nidhogg/shell's AppKit backend, Rust) over the same shared C
-OPTION_DEFAULT_OFF([nidhogg-macos],[use Nidhogg's own macOS shell (AppKit, Rust; no NS port); implies --with-glitnir; macOS only])
+OPTION_DEFAULT_OFF([nidhogg-macos],[use Nidhogg's own macOS shell (AppKit, Rust; no NS port); implies --with-glitnir; macOS only, and its default there])
 OPTION_DEFAULT_ON([xml2],[don't compile with XML parsing support])
 OPTION_DEFAULT_OFF([imagemagick],[compile with ImageMagick image support])
 OPTION_DEFAULT_ON([native-image-api], [don't use native image APIs (GDI+ on Windows)])
@@ -2671,7 +2671,14 @@ if test "${with_nidhogg_wayland}" = yes; then
   with_glitnir=yes
   with_ns=no
 fi
-dnl Nidhogg: --with-nidhogg-macos is the macOS window system, the same way: it replaces the NS port.
+dnl Nidhogg: --with-nidhogg-macos is the macOS window system, the same way: it replaces the NS port, whose sources stay
+dnl for clean merges and are never built.  On macOS it is the default.
+test "${with_ns}" != yes ||
+  AC_MSG_ERROR([--with-ns is not built by Nidhogg: macOS uses --with-nidhogg-macos])
+with_ns=no
+case "${host_os}" in
+  darwin*) test "${with_x}" = yes || with_nidhogg_macos=yes ;;
+esac
 if test "${with_nidhogg_macos}" = yes; then
   test "${with_x}" != yes && test "${with_ns}" != yes && test "${with_nidhogg_wayland}" != yes ||
     AC_MSG_ERROR([--with-nidhogg-macos cannot be combined with --with-x, --with-ns or --with-nidhogg-wayland])
