@@ -90,9 +90,12 @@ fallback), a form, a search, a lit list, expanded and ticked sets, and the class
 
 For an instance, in order: `selected`; `ticked` for the nodes of the instance's ticked set, when the descriptor names
 that class (the Explorer's marks; Search's ticks name none); while a search is set, `match` or `dim`; else `lit` for the
-lit list's nodes; else, while there is a selection, `chain` or `dim`; else none. A class is its position in the descriptor's `classes`,
-which is the index into the face vector Lisp keeps. `classes` answers only the nodes whose class changed since the
-last call.
+lit list's nodes; else, while there is a selection in a view with `chain_kinds` or a lit list, `chain` or `dim`; else
+none. A view with neither (the Run and Debug view, the Explorer) has no chain to dim off: dimming every node but the
+selection only cost the editor a face on every row. A class is its position in the descriptor's `classes`, which is the
+index into the face vector Lisp keeps. `classes` answers only the nodes whose class changed since the last call; when
+only the selection and the ticked nodes can have a class (no search, no lit list, no chain kinds) it looks at those,
+not at every node.
 
 ## The C door
 

@@ -1,8 +1,11 @@
 //! Classes: what each node looks like for an instance.  In order: `selected` for the selection; `ticked` for the nodes of
 //! the instance's ticked set (the Explorer's marks; a descriptor that doesn't name it, Search's, leaves it); while a
 //! search is set,
-//! `match` or `dim`; else `lit` for the nodes of the lit list; else, while there is a selection, `chain` (reachable
-//! from it over the descriptor's `chain_kinds`, either way) or `dim`; else none.  A class the descriptor doesn't name is
+//! `match` or `dim`; else `lit` for the nodes of the lit list; else, while there is a selection in a view with a chain
+//! (the descriptor's `chain_kinds`) or a lit list, `chain` (reachable from it over `chain_kinds`, either way) or `dim`;
+//! else none.  A view with neither has no chain to dim off: dimming every node but the selection would only cost the
+//! editor a face on every row.  `classes` reports the changes; when only the selection and the ticked nodes can have a
+//! class (no search, no lit list, no chain kinds) it looks at those, never at every node.  A class the descriptor doesn't name is
 //! none.  A class is the face index Lisp gave at open, the class's position in the descriptor.
 
 use std::collections::{HashMap, HashSet};
@@ -40,6 +43,8 @@ struct Ctx {
     sel: Option<Id>,
     searching: bool,
     lit: HashSet<Id>,
+    /// Whether the descriptor names chain kinds: only then is a node off the selection's chain dim.
+    chained: bool,
 }
 
 fn ctx(m: &Model, inst: &mut Inst, sel: Option<Id>) -> Ctx {
@@ -81,6 +86,7 @@ fn ctx(m: &Model, inst: &mut Inst, sel: Option<Id>) -> Ctx {
         searching: inst.search.is_some(),
         sel,
         lit,
+        chained: !m.desc.chain_kinds.is_empty(),
     }
 }
 
@@ -102,11 +108,16 @@ fn class(c: &Ctx, inst: &Inst, id: &Id) -> Option<u8> {
     if c.lit.contains(id) {
         return lit;
     }
-    if c.sel.is_some() {
+    if c.sel.is_some() && (c.chained || !c.lit.is_empty()) {
         let on = inst.chain.as_ref().is_some_and(|(_, _, s)| s.contains(id));
         return if on { chain } else { dim };
     }
     None
+}
+
+/// Whether only the selection and the ticked nodes can have a class under `c`: no search, no lit list, no chain.
+fn sparse(c: &Ctx) -> bool {
+    !c.searching && c.lit.is_empty() && !c.chained
 }
 
 impl View {
@@ -132,9 +143,21 @@ impl View {
         };
         let c = ctx(m, inst, sel);
         let mut now: HashMap<Id, u8> = HashMap::new();
-        for id in m.nodes.keys() {
-            if let Some(k) = class(&c, inst, id) {
-                now.insert(id.clone(), k);
+        if sparse(&c) {
+            // the selection and the ticked nodes: every other node has no class
+            let ticked: Vec<&str> = inst.ticked.iter().map(String::as_str).collect();
+            for id in c.sel.iter().map(|s| &**s).chain(ticked) {
+                if let Some((id, _)) = m.nodes.get_key_value(id)
+                    && let Some(k) = class(&c, inst, id)
+                {
+                    now.insert(id.clone(), k);
+                }
+            }
+        } else {
+            for id in m.nodes.keys() {
+                if let Some(k) = class(&c, inst, id) {
+                    now.insert(id.clone(), k);
+                }
             }
         }
         let mut out: Vec<(Id, Option<u8>)> = now

@@ -533,3 +533,76 @@ fn window_tells_from_length_and_total() {
     assert_eq!(view_with(&small_map()).window("team"), None, "a whole list");
     assert_eq!(v.window("missing"), None);
 }
+
+/// A tree with no chain kinds (the Run and Debug view's, the Explorer's): a, b, c in `order`, c in `hot`.
+fn chainless() -> View {
+    let n = |id: &str| json!({"id": id, "kind": "var", "fields": [["label", id]]});
+    view_with(&reset(
+        json!({"scheme": "tree", "chain_kinds": [], "match_fields": ["label"], "lists": ["order", "hot"],
+               "classes": ["selected", "match", "dim", "lit"], "flags": [], "forms": [], "start": "order"}),
+        vec![n("a"), n("b"), n("c")],
+        vec![],
+        vec![
+            json!({"name": "order", "ids": ["a", "b", "c"]}),
+            json!({"name": "hot", "ids": ["c"]}),
+        ],
+    ))
+}
+
+#[test]
+fn no_chain_no_dim_off_the_selection() {
+    let mut v = chainless();
+    v.select(1, Some("a"));
+    // classes: selected 0, match 1, dim 2, lit 3
+    let ch: Vec<(String, Option<u8>)> = v
+        .classes(1)
+        .into_iter()
+        .map(|(id, k)| (id.to_string(), k))
+        .collect();
+    assert_eq!(
+        ch,
+        vec![("a".to_string(), Some(0))],
+        "only the selection has a class"
+    );
+    assert_eq!(v.class_of(1, "b"), None);
+    v.select(1, Some("b"));
+    let ch: Vec<(String, Option<u8>)> = v
+        .classes(1)
+        .into_iter()
+        .map(|(id, k)| (id.to_string(), k))
+        .collect();
+    assert_eq!(
+        ch,
+        vec![("a".to_string(), None), ("b".to_string(), Some(0))]
+    );
+}
+
+#[test]
+fn no_chain_still_dims_a_search_and_off_a_lit_list() {
+    let mut v = chainless();
+    v.select(1, Some("a"));
+    v.set_search(1, Some("B"));
+    assert_eq!(v.class_of(1, "b"), Some(1), "the match");
+    assert_eq!(v.class_of(1, "c"), Some(2), "a non-match is dim");
+    assert_eq!(v.classes(1).len(), 3);
+    v.set_search(1, None);
+    v.set_lit(1, Some("hot"));
+    assert_eq!(v.class_of(1, "c"), Some(3), "lit");
+    assert_eq!(
+        v.class_of(1, "b"),
+        Some(2),
+        "off the lit list, with a selection: dim"
+    );
+    v.set_lit(1, None);
+    assert_eq!(v.class_of(1, "b"), None);
+    let ch: Vec<(String, Option<u8>)> = v
+        .classes(1)
+        .into_iter()
+        .map(|(id, k)| (id.to_string(), k))
+        .collect();
+    assert_eq!(
+        ch,
+        vec![("b".to_string(), None), ("c".to_string(), None)],
+        "the sparse pass clears what the full one set"
+    );
+}
