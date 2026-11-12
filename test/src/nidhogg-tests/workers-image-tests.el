@@ -45,7 +45,8 @@
     ("png" 'png) ("jpg" 'jpeg) ("gif" 'gif) ("webp" 'webp)))
 
 (defun workers-image-tests--core-p (file-or-type)
-  "Non-nil if a decoder library's core decodes FILE-OR-TYPE (a corpus file or type) in this build.
+  "Non-nil if a decoder library's core decodes FILE-OR-TYPE in this build.
+FILE-OR-TYPE is a corpus file or an image type.
 These rows hold the C cores to the loaders' recorded results and texts,
 which are the libraries' (libpng, libjpeg, giflib, libwebp).  Naglfar
 links none: its cores are ImageIO's, so those rows have nothing to run
