@@ -494,6 +494,25 @@ impl MacShell {
     }
 
     pub(super) fn kid_chrome(&mut self, id: WindowId, c: Option<Chrome>) -> ShellResult {
+        #[cfg(feature = "test-hooks")]
+        CHROME_LOG.with(|l| {
+            let mut l = l.borrow_mut();
+            if l.len() >= 16 {
+                l.remove(0);
+            }
+            l.push(format!(
+                "({id} {} {})",
+                c.map_or_else(
+                    || "nil".to_owned(),
+                    |c| format!("(:radius {} :blur {})", c.radius_px, c.blur_px)
+                ),
+                if self.kids.contains_key(&id) {
+                    "t"
+                } else {
+                    "nil"
+                }
+            ));
+        });
         let k = self.kids.get_mut(&id).ok_or(ShellError::State)?;
         if k.chrome != c {
             k.chrome = c;
@@ -1062,4 +1081,11 @@ impl MacShell {
             k.y,
         ))
     }
+}
+
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    /// The newest chrome requests as (WINDOW CHROME KNOWN) (`test-chrome-log`): whether the glue sent a child's chrome
+    /// again after it was made undecorated once more.
+    pub(super) static CHROME_LOG: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }

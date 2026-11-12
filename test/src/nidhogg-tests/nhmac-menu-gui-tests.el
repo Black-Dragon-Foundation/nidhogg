@@ -80,7 +80,8 @@ leaves by a throw from a timer, as `with-timeout' does."
     got))
 
 (ert-deftest nhmac-menu-buffers-after-filter ()
-  "During a long idle, a process filter creates a buffer, and within 0.5 s the Buffers menu lists it."
+  "During a long idle, a process filter creates a buffer, and within 0.5 s the Buffers menu lists it: the shell gets
+a tree that lists it (and the shell's menu then shows it)."
   (skip-unless (nhmac-menu-gui--naglfar-p))
   (nhmac-menu-gui--settle)
   (let* ((name "nhmac-menu-late-buffer")
@@ -90,6 +91,15 @@ leaves by a throw from a timer, as `with-timeout' does."
                              :filter (lambda (_p _s) (setq made (float-time)) (get-buffer-create name))))
          listed
          (builds nil)
+         ;; when the shell got a tree that lists the buffer: the listing's time.  The poll below only confirms it from
+         ;; the shell's side; its own time (a dump every 0.05 s, and the collection the build put off till after its
+         ;; send) is not the menu's (round 4: built 0.42 s after the filter, polled at 0.53 s after a 0.076 s collection)
+         (sent nil)
+         (send (lambda (f what &rest args)
+                 (prog1 (apply f what args)
+                   (when (and made (not sent) (eq what 'menu-bar)
+                              (cl-some (lambda (a) (and (stringp a) (string-match-p name a))) args))
+                     (setq sent (float-time))))))
          ;; when each build ran, how long, and its collections' count and time (from the filter): where the time
          ;; between the filter and the listing goes
          (watch (lambda (f &rest args)
@@ -98,12 +108,13 @@ leaves by a throw from a timer, as `with-timeout' does."
                       (when made (push (list (- t0 made) (- (float-time) t0) (- gcs-done gcs) (- gc-elapsed gct))
                                        builds)))))))
     (advice-add 'nhmac-menu-build :around watch)
+    (advice-add 'nhmac--call :around send)
     (unwind-protect
         (progn
-          (setq listed (nhmac-menu-gui--idle
-                        6 (lambda () (and made (cl-find-if (lambda (e) (string-match-p name (cadr e)))
-                                                           (nhmac-menu-gui--dump))
-                                          (float-time)))))
+          (setq listed (and (nhmac-menu-gui--idle
+                             6 (lambda () (and made (cl-find-if (lambda (e) (string-match-p name (cadr e)))
+                                                                (nhmac-menu-gui--dump)))))
+                            sent))
           (should made)
           ;; the build's own time: the listing waits `nhmac-menu-delay' of idleness, then one build
           (glitnir-gui--say "nhmac-menu-buffers-after-filter: listed %s; delay %s, a build %.3f s; builds (start took gcs gc-time) %S"
@@ -113,6 +124,7 @@ leaves by a throw from a timer, as `with-timeout' does."
           (should listed)
           (should (< (- listed made) 0.5)))
       (advice-remove 'nhmac-menu-build watch)
+      (advice-remove 'nhmac--call send)
       (delete-process proc)
       (when (get-buffer name) (kill-buffer name)))))
 

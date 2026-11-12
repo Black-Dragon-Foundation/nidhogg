@@ -708,6 +708,7 @@ extern void nhmac_glyph_run (struct glyph_string *, uint64_t, int, int,
 extern bool nhmac_image_stand_in (struct frame *, struct image *,
 				  struct image *);
 extern void nhmac_image_stand_drop (struct image *);
+extern void syms_of_nhmacdraw (void);
 #endif
 extern void syms_of_nhwlcsd (void);
 extern void nhwl_selection_clear_event (uint32_t, struct input_event *);

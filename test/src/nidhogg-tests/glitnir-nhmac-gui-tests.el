@@ -792,6 +792,13 @@ names it."
     (nhmac-gui--say "%s: window %S body %S fringes %S margins %S scroll-bars %S scale %S block %S" row
                     (window-pixel-edges w) (window-body-pixel-edges w) (window-fringes w) (window-margins w)
                     (window-scroll-bars w) (frame-scale-factor (window-frame w)) (window-parameter w 'glitnir-blocks))
+    ;; round 4 (scale 1): the ring 5 px right of the text area's edge.  The pixels across its left side on its middle
+    ;; row: a blended (half-pixel) side line, or a line where the ring was never drawn, are different causes
+    (when (and r box)
+      (let ((y (/ (+ (nth 1 r) (nth 3 r)) 2)))
+        (nhmac-gui--say "%s: middle row %d from x %d: %S" row y (nth 0 box)
+                        (cl-loop for x from (nth 0 box) to (min (+ (nth 0 r) 3) (1- (nth 0 img)))
+                                 collect (format "%06x" (glitnir-nhmac--px img x y))))))
     (should (and r box))
     (should (<= (abs (- (nth 0 r) (+ (nth 0 box) inset))) 3))
     (should (<= (abs (- (nth 2 r) (nth 2 box))) 3))
@@ -1217,6 +1224,10 @@ shadow layer once more."
             (nhmac-gui--say "glitnir-nhmac/layer-follows-undecorated-toggle: undecorated again: %S; chrome %S, params %S"
                             problem (glitnir--chrome c)
                             (mapcar (lambda (p) (cons p (frame-parameter c p))) '(undecorated shadow corner-radius)))
+            ;; round 4: C has the chrome and the shell none.  The requests the shell got: whether the glue sent the
+            ;; chrome again after the second toggle
+            (nhmac-gui--say "glitnir-nhmac/layer-follows-undecorated-toggle: chrome requests %S"
+                            (nhmac--query 'test-chrome-log))
             (should-not problem)))
       (delete-frame c t))))
 
@@ -1534,12 +1545,15 @@ at its moving place, so a whole-area move would show the new layout from the sta
      (lambda ()
        (setq before (glitnir-nhmac--grab "leg-before"))
        (glitnir-nhmac--leg-capture)
-       ;; the motion goes out with the redraw that draws the new layout
-       (set-window-parameter nil 'glitnir-layout-motion '(:duration 30 :step t :background "#000000"))
+       ;; the motion goes out with the redraw that draws the new layout; 8 s, as the glue takes at most 10 (round 4
+       ;; asked for 30: the glue refused the leg, and the new picture showed at once)
+       (set-window-parameter nil 'glitnir-layout-motion '(:duration 8 :step t :background "#000000"))
        (glitnir-nhmac--leg-scroll)
        (should (> (nth 2 (window-parameter nil 'glitnir--leg-sent)) 0))
        (setq during (glitnir-nhmac--grab "leg-during"))
        (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: legs during %S" (glitnir-nhmac--legs))
+       ;; the shell took the leg (a refused one leaves no line)
+       (should (string-match-p "started [0-9]+:" (format "%S" (glitnir-nhmac--legs))))
        (glitnir-nhmac--leg-end)
        (setq after (glitnir-nhmac--grab "leg-after"))
        (let* ((rect (glitnir-nhmac--root-rect before))

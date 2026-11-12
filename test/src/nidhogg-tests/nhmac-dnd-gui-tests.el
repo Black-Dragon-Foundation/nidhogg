@@ -81,7 +81,9 @@ pumps' scope never takes inside a take (`:overlapping-takes' stays 0)."
             (while (and (< (float-time) deadline)
                         (not (eq (event-basic-type (setq ev (read-event nil nil 0.2))) 'mouse-1)))
               (when ev (push ev seen)))
-            (glitnir-gui--say "nhmac-dnd-drag-out: press %S after %S" ev (nreverse seen)))
+            ;; round 4: no press.  Where the press was posted and which window (by number) is under it
+            (glitnir-gui--say "nhmac-dnd-drag-out: press %S after %S; drag %s" ev (nreverse seen)
+                              (nhmac--query 'test-drag-log)))
           (setq result (ns-begin-drag a `((string . ,text)) 'XdndActionCopy nil nil))
           (let ((deadline (+ (float-time) 3)) (seen nil) ev)
             (while (and (not drop) (< (float-time) deadline))

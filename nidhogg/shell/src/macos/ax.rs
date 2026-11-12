@@ -118,7 +118,9 @@ pub fn cursor_pushed(view: &NhView, id: WindowId) {
     if cursor[2] == 0 && cursor[3] == 0 {
         return;
     }
-    if !force && LAST.with(Cell::get) == cursor {
+    // a move is a new place: the same place with another width is the cursor redrawn (round 4: a move pushed 1 wide,
+    // then 7 wide when the cursor was drawn, and Zoom got two calls)
+    if !force && LAST.with(Cell::get)[..2] == cursor[..2] {
         return;
     }
     LAST.with(|l| l.set(cursor));

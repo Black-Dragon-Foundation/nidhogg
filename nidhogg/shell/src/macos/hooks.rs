@@ -29,6 +29,11 @@ fn stats_delta(before: ScopeStats, after: ScopeStats) -> String {
     )
 }
 
+thread_local! {
+    /// The last `test-real-drag`'s points and the windows under them (`test-drag-log`).
+    static DRAG_LOG: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
 /// Move `window`'s frame `by` points wider, through `setFrame:display:` (AppKit calls `windowDidResize:` inside).
 fn grow(window: &objc2_app_kit::NSWindow, by: f64) {
     let f = window.frame();
@@ -401,6 +406,27 @@ impl MacShell {
                     };
                     let from = at(self.win(a as WindowId)?, ax, ay);
                     let to = at(self.win(b as WindowId)?, bx, by);
+                    // which windows the press and the release land on (round 4: no press reached the view)
+                    let under = |(x, y): (f64, f64)| {
+                        objc2_app_kit::NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(
+                            objc2_foundation::NSPoint::new(x, y),
+                            0,
+                            self.mtm,
+                        )
+                    };
+                    let log = format!(
+                        "(:from ({} {}) :to ({} {}) :under-from {} :under-to {} :a {} :b {} :key {})",
+                        from.0,
+                        from.1,
+                        to.0,
+                        to.1,
+                        under(from),
+                        under(to),
+                        self.win(a as WindowId)?.window.windowNumber(),
+                        self.win(b as WindowId)?.window.windowNumber(),
+                        self.app.keyWindow().map_or(0, |k| k.windowNumber()),
+                    );
+                    DRAG_LOG.with(|l| *l.borrow_mut() = log);
                     inject::real_drag(self.mtm, from, to, Duration::from_millis(ms as u64), 15)
                 }
                 _ => Err(ShellError::Arg),
@@ -472,7 +498,7 @@ impl MacShell {
             "test-window-state" => first_number(arg).and_then(|w| {
                 let w = self.win(w)?;
                 Ok(format!(
-                    "(:fullscreen {} :zoomed {} :miniaturized {} :tabbing-disallowed {} :titlebar-transparent {} :dark {} :fs-busy {} :fs-want {} :app-running {} :style-full {} :fs-notes ({}))",
+                    "(:fullscreen {} :zoomed {} :miniaturized {} :tabbing-disallowed {} :titlebar-transparent {} :dark {} :fs-busy {} :fs-want {} :app-running {} :style-full {} :fs-notes ({}) :fs-log ({}))",
                     if super::super::windowing::is_fullscreen(w) { "t" } else { "nil" },
                     if w.window.isZoomed() { "t" } else { "nil" },
                     if w.window.isMiniaturized() { "t" } else { "nil" },
@@ -490,6 +516,14 @@ impl MacShell {
                         .map(|n| n.load(std::sync::atomic::Ordering::Relaxed).to_string())
                         .collect::<Vec<_>>()
                         .join(" "),
+                    // the newest notifications as (INDEX MS): how long each transition took
+                    super::super::runloop::FS_LOG.with(|l| l
+                        .borrow()
+                        .1
+                        .iter()
+                        .map(|(i, ms)| format!("({i} {ms})"))
+                        .collect::<Vec<_>>()
+                        .join(" ")),
                 ))
             }),
             "test-menu-dump" => Ok(format!("{:?}", super::super::menus::test_dump(&self.app))),
@@ -570,6 +604,11 @@ impl MacShell {
             ),
             "test-font-probe" => super::super::font_probe::query(arg).ok_or(ShellError::Arg),
             "test-zoom-log" => Ok(super::super::ax::test_zoom_log()),
+            "test-drag-log" => Ok(DRAG_LOG.with(|l| l.borrow().clone())),
+            "test-chrome-log" => Ok(format!(
+                "({})",
+                super::child::CHROME_LOG.with(|l| l.borrow().join(" "))
+            )),
             "test-legs" => first_number(arg).map(|w| {
                 self.legs.get(&w).map_or_else(|| "nil".to_owned(), |l| l.text())
             }),
