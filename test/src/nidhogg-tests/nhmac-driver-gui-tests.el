@@ -146,5 +146,75 @@ Text lays BASE + SELECTOR out with in that font, and one it does not list is lai
             (should (assq (car selectors) have))))))
     (should (> checked 0))))
 
+;;; Images
+
+(defun nhmac-driver--pixels (object points)
+  "Show OBJECT (an image or a propertized string) at the start of a fresh window-filling buffer and return the
+committed surface's premultiplied ARGB at each of POINTS, (DX . DY) device pixels from where OBJECT starts.  POINTS
+may be a function: called with where OBJECT starts, (X . Y) in the frame's device pixels, it returns the frame points."
+  (let ((buf (generate-new-buffer " *nhmac-driver*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer buf)
+          (setq-local cursor-type nil)
+          (if (stringp object) (insert object) (insert-image object))
+          (goto-char (point-max))
+          (redisplay t)
+          ;; the commit lands after redisplay: a moment for the pacer
+          (sleep-for 0.2)
+          (redisplay t)
+          (let* ((xy (posn-x-y (posn-at-point (point-min))))
+                 (edges (window-inside-pixel-edges))
+                 (origin (cons (+ (nth 0 edges) (car xy)) (+ (nth 1 edges) (cdr xy)))))
+            (mapcar (lambda (p) (plist-get (nhmac--test-surface (car p) (cdr p)) :pixel))
+                    (if (functionp points)
+                        (funcall points origin)
+                      (mapcar (lambda (p) (cons (+ (car origin) (car p)) (+ (cdr origin) (cdr p)))) points)))))
+      (kill-buffer buf))))
+
+(defun nhmac-driver--rgb (name)
+  "The opaque ARGB word of the colour NAME."
+  (pcase-let ((`(,r ,g ,b) (color-values name)))
+    (logior #xff000000 (ash (ash r -8) 16) (ash (ash g -8) 8) (ash b -8))))
+
+(ert-deftest nhmac-xpm-color-symbols ()
+  "An XPM's `:color-symbols' work as `xpm_load_image' reads them: a line's `s' symbol found there wins over its `c'
+colour, `None' there is transparent (the background shows), and a symbol not there leaves the `c' colour."
+  (skip-unless (nhmac-driver--naglfar-p))
+  (let* ((xpm (concat "/* XPM */\nstatic char *x[] = {\n\"24 8 3 1\",\n\"a c red s fg\",\n\"b c blue s mask\",\n"
+                      "\"c c #0000ff s other\",\n"
+                      (mapconcat (lambda (_) "\"aaaaaaaabbbbbbbbcccccccc\"") (number-sequence 1 8) ",\n")
+                      "};"))
+         (img (create-image xpm 'xpm t :scale 1
+                            :color-symbols '(("fg" . "#00ff00") ("mask" . "None")))))
+    (should (valid-image-p img))
+    (let* ((size (image-size img t))
+           (third (/ (car size) 3))
+           (mid (/ (cdr size) 2))
+           (px (nhmac-driver--pixels img (list (cons (/ third 2) mid) (cons (+ third (/ third 2)) mid)
+                                               (cons (+ third third (/ third 2)) mid)))))
+      (nhmac-driver--say "nhmac-xpm-color-symbols: size %S, pixels %S, background %s" size
+                         (mapcar (lambda (p) (format "#%08x" p)) px) (face-background 'default))
+      ;; 24 x 8 at scale 1, more where the display scales images
+      (should (and (>= (car size) 24) (= (* 3 (cdr size)) (car size))))
+      (should (= (nth 0 px) (nhmac-driver--rgb "#00ff00")))
+      (should (= (nth 1 px) (nhmac-driver--rgb (face-background 'default))))
+      (should (= (nth 2 px) (nhmac-driver--rgb "#0000ff"))))))
+
+(ert-deftest nhmac-svg-root-colour-wins ()
+  "`currentColor' is the foreground, inherited as librsvg's wrapper makes it: an SVG whose root sets `color' draws in
+that colour, one that sets none in the image's `:foreground'."
+  (skip-unless (and (nhmac-driver--naglfar-p) (image-type-available-p 'svg)))
+  (let* ((svg (lambda (root)
+                (format "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\"%s>\
+<rect width=\"16\" height=\"16\" fill=\"currentColor\"/></svg>" root)))
+         (own (nhmac-driver--pixels (create-image (funcall svg " color=\"#00ff00\"") 'svg t :foreground "#ff0000")
+                                    '((8 . 8))))
+         (fg (nhmac-driver--pixels (create-image (funcall svg "") 'svg t :foreground "#ff0000") '((8 . 8)))))
+    (nhmac-driver--say "nhmac-svg-root-colour: own #%08x, foreground #%08x" (car own) (car fg))
+    (should (= (car own) (nhmac-driver--rgb "#00ff00")))
+    (should (= (car fg) (nhmac-driver--rgb "#ff0000")))))
+
 (provide 'nhmac-driver-gui-tests)
 ;;; nhmac-driver-gui-tests.el ends here
