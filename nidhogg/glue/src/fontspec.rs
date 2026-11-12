@@ -413,11 +413,11 @@ fn candidates(src: &dyn FontSource, spec: &FontSpec) -> Vec<(usize, FontFace)> {
     } else {
         None
     };
-    if let Some(p) = preferred {
+    if let Some(p) = &preferred {
         // a stable move: the preferred family's faces first, in their order
         let (mut front, rest): (Vec<_>, Vec<_>) = order
             .into_iter()
-            .partition(|(_, f)| f.family.eq_ignore_ascii_case(&p));
+            .partition(|(_, f)| f.family.eq_ignore_ascii_case(p));
         front.extend(rest);
         order = front;
     }
@@ -430,7 +430,13 @@ fn candidates(src: &dyn FontSource, spec: &FontSpec) -> Vec<(usize, FontFace)> {
                     .iter()
                     .all(|&ch| src.has_char(f.id, ch) == Some(true))
             }))
-            && src.fits(f, script, language)
+            // the preferred family is Core Text's own pick for the language, so it needs only the script there:
+            // Hiragino Sans lays kana out in Simplified Chinese though its languages name only Japanese
+            && (src.fits(f, script, language)
+                || preferred
+                    .as_deref()
+                    .is_some_and(|p| f.family.eq_ignore_ascii_case(p))
+                    && src.fits(f, script, ""))
             && !(spec.spacing >= 0
                 && !synth_mono
                 && f.mono() != (spec.spacing >= NHG_FS_SPACING_MONO))
@@ -1155,6 +1161,50 @@ mod tests {
         assert_eq!(first("zh-Hans").as_deref(), Some("PingFang SC"));
         // no language: the source's own order
         assert_eq!(first("").as_deref(), Some("PingFang SC"));
+    }
+
+    /// A source whose preferred family for kana in Simplified Chinese is a Japanese family, as Core Text's is.
+    struct KanaInChinese(Vec<FontFace>);
+    impl FontSource for KanaInChinese {
+        fn faces(&self) -> Vec<FontFace> {
+            self.0.clone()
+        }
+        fn preferred(&self, script: &str, language: &str) -> Option<String> {
+            (script == "kana" && language == "zh-Hans").then(|| "Hiragino Sans".into())
+        }
+    }
+
+    #[test]
+    fn the_preferred_family_is_listed_though_its_languages_lack_the_spec_s() {
+        let mut arial = face(3, "Arial Unicode MS", 80, 100, 0, &["kana"]);
+        arial.languages = vec!["ja".to_string(), "zh-Hans".to_string()];
+        let mut hira = face(9, "Hiragino Sans", 80, 100, 0, &["kana"]);
+        hira.languages = vec!["ja".to_string()];
+        let mut other = face(11, "Osaka", 80, 100, 0, &["kana"]);
+        other.languages = vec!["ja".to_string()];
+        let src = KanaInChinese(vec![arial, hira, other]);
+        // each family once (a CJK language adds a synthetic monospaced variant after each face)
+        let families = |lang: &str| -> Vec<String> {
+            let mut f: Vec<String> = list(
+                &src,
+                &FontSpec {
+                    script: "kana".into(),
+                    language: lang.into(),
+                    ..spec()
+                },
+            )
+            .into_iter()
+            .map(|e| e.face.family)
+            .collect();
+            f.dedup();
+            f
+        };
+        // Core Text's pick first; another face without the language stays out
+        assert_eq!(families("zh-Hans"), ["Hiragino Sans", "Arial Unicode MS"]);
+        assert_eq!(
+            families("ja"),
+            ["Arial Unicode MS", "Hiragino Sans", "Osaka"]
+        );
     }
 
     #[test]
