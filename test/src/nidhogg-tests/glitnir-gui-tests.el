@@ -675,6 +675,31 @@ deleted counts graphical frames deleted while shown, N frames graphical frames (
                            (plist-get r :exited))
                      '(0 t nil 2 t))))))
 
+(ert-deftest glitnir-gui/daemon-frame-born-with-the-child-minibuffer ()
+  "A daemon's first graphical frame on a display, with the child-frame minibuffer asked for, leaves no other frame
+behind: the minibuffer frame C made for it to borrow from while it was made goes once it has its box."
+  (let* ((dir (make-temp-file "nh-daemon-frame" t))
+         (out (expand-file-name "out.eld" dir))
+         (emacs (expand-file-name invocation-name invocation-directory))
+         (name (format "nh-daemon-frame-%d" (emacs-pid))))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "early-init.el" dir)
+            (insert "(setf (alist-get 'minibuffer (alist-get 'pgtk window-system-default-frame-alist)) 'child-frame)\n"))
+          (with-temp-file (expand-file-name "init.el" dir)
+            (insert (format "(add-hook 'after-init-hook (lambda () (run-at-time 0.2 nil (lambda () (let* ((f (make-frame-on-display (getenv \"WAYLAND_DISPLAY\"))) (m (window-frame (minibuffer-window f)))) (with-temp-file %S (prin1 (list :box (and (not (eq m f)) (eq (frame-parent m) f)) :roots (length (seq-filter (lambda (x) (and (display-graphic-p x) (not (frame-parent x)))) (frame-list)))) (current-buffer))) (kill-emacs 0))))))\n" out)))
+          (let* ((log (generate-new-buffer " *nh-daemon-frame*"))
+                 (p (start-process "nh-daemon-frame" log emacs (concat "--fg-daemon=" name) "--init-directory" dir)))
+            (set-process-query-on-exit-flag p nil)
+            (unwind-protect
+                (let ((r (and (gui-runner-wait (lambda () (file-exists-p out)) 60)
+                              (with-temp-buffer (insert-file-contents out) (read (current-buffer))))))
+                  (ert-info ((format "%S" (or r (with-current-buffer log (buffer-string)))))
+                    (should (equal r '(:box t :roots 1)))))
+              (delete-process p)
+              (kill-buffer log))))
+      (delete-directory dir t))))
+
 (ert-deftest glitnir-gui/first-frame-stock-settings ()
   "Asked for nothing, the first frame has its own minibuffer, as in stock Emacs."
   (let ((r (glitnir-gui--first-frame "")))
