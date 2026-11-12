@@ -39,7 +39,12 @@
 # rows skip (glitnir-no-capture) and the rest run.  HOME is a temporary directory; nothing of the caller's is touched.
 # The rows of nhmac-lane.txt's `fresh' lines run first, each alone in a fresh Emacs (the timing and heap rows: no row
 # before them leaves anything live); then one session runs the files' rows, in the fixed order (gui-runner.el).
-# Exit 0 all rows as expected, 1 a failure, too few rows, a timeout or a display that did not come up, 2 usage.
+# Before any row, one Emacs opens a frame, redisplays and exits (bounded at 60 s): when it cannot, the lane stops at
+# once with its output and the macOS crash report, never running sessions that each die before a row.  A session that
+# ends on a signal prints the crash reports written meanwhile (~/Library/Logs/DiagnosticReports/*.ips, the caller's
+# real home: ReportCrash ignores HOME), which name the faulting thread, its frames and an abort's message.
+# Exit 0 all rows as expected, 1 a failure, too few rows, a timeout, a display that did not come up or a first frame
+# that did not open, 2 usage.
 set -u
 
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -138,7 +143,24 @@ if [ -n "$drgnx" ]; then
   export EMACSLOADPATH=$drgnx/harness:$drgnx/core:$drgnx/wb:
 fi
 
+# the crash reports macOS wrote after marker file $1 (at most 2, each cut at 40 KB), waiting up to 10 s for the first
+reports_dir="$HOME/Library/Logs/DiagnosticReports"
+crash_reports() {
+  local found= _
+  for _ in $(seq 1 20); do
+    found=$(find "$reports_dir" -maxdepth 1 -name '*.ips' -newer "$1" 2>/dev/null | head -n 2)
+    [ -n "$found" ] && break
+    sleep 0.5
+  done
+  [ -n "$found" ] || { echo "nhmac-gui.sh: no crash report in $reports_dir"; return; }
+  while IFS= read -r f; do
+    echo "nhmac-gui.sh: crash report $f:"
+    head -c 40000 "$f"; echo
+  done <<<"$found"
+}
+
 status=0
+smoked=0
 for scale in "${scales[@]}"; do
   log=$out/nhmac-gui-scale$scale.log
   ready=$work/display-$scale
@@ -158,6 +180,28 @@ for scale in "${scales[@]}"; do
   echo "nhmac-gui.sh: display $dx,$dy ${dw}x${dh} scale $dscale"
   mkdir -p "$work/home-$scale"
   : >"$log"
+  # the first frame, once per lane: a build that cannot open one stops everything now, with the reason
+  if [ "$smoked" = 0 ]; then
+    smoked=1
+    : >"$work/crash-mark"
+    env HOME="$work/home-$scale" RUST_BACKTRACE=1 \
+      "$emacs" -Q --eval '(progn (redisplay t) (sit-for 0.5) (kill-emacs 0))' >"$work/first-frame.log" 2>&1 &
+    pid=$! rc=
+    for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rc=timeout
+    else
+      rc=0; wait "$pid" 2>/dev/null || rc=$?
+    fi
+    if [ "$rc" != 0 ]; then
+      echo "nhmac-gui.sh: the first frame did not open (exit $rc); the lane stops:" | tee -a "$log"
+      tee -a "$log" <"$work/first-frame.log"
+      crash_reports "$work/crash-mark" | tee -a "$log"
+      kill "$display_pid" 2>/dev/null; wait "$display_pid" 2>/dev/null
+      exit 1
+    fi
+    echo "nhmac-gui.sh: the first frame opened"
+  fi
   done_file=$work/done-$scale
   : >"$done_file"
   # the fresh rows first, each in its own session; then the main session, again after a row that hung or ended Emacs
@@ -171,10 +215,11 @@ for scale in "${scales[@]}"; do
     [ -n "$only" ] || [ ${#fresh[@]} = 0 ] || printf '%s\n' "${fresh[@]}" >>"$done_file"
     slog=$work/session.log
     : >"$slog"
+    : >"$work/crash-mark"
     # perl execs Emacs, so $! is Emacs's pid (perl is a system binary: dyld strips DYLD_* from its environment, so
     # DYLD_INSERT_LIBRARIES is set here, after it started).  The time limits are the watch loop's below, never an
     # alarm: Emacs handles SIGALRM itself (its atimers), so an alarm inherited through exec never ends it
-    env HOME="$work/home-$scale" \
+    env HOME="$work/home-$scale" RUST_BACKTRACE=1 \
       GLITNIR_GUI_SCALE=$scale GLITNIR_GUI_COMPOSITOR=windowserver \
       GLITNIR_GUI_KNOWN=$checkout/test/src/nidhogg-tests/gui-known-differences.eld \
       GLITNIR_GUI_TESTS=$tests GLITNIR_GUI_FILES="$files" GLITNIR_GUI_SELECT=$select \
@@ -224,6 +269,8 @@ for scale in "${scales[@]}"; do
         echo "  (Emacs ended inside the row: exit $rc)" >>"$slog"
       fi
     fi
+    # a session that ended on a signal (exit 128 + N, not the lane's own kill): what macOS recorded
+    [ "$rc" -gt 128 ] && [ -z "$hung" ] && crash_reports "$work/crash-mark" >>"$slog"
     cat "$slog" | tee -a "$log"
     reported "$slog" >>"$done_file"
     # the session's own end: the next fresh row or the main session; an unfinished main session runs again
