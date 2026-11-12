@@ -397,6 +397,7 @@ impl MacShell {
                 _ => Err(ShellError::Arg),
             }),
             "test-ct-advances" => ct_advances(arg),
+            "test-font-probe" => super::super::font_probe::query(arg).ok_or(ShellError::Arg),
             _ => return None,
         })
     }
