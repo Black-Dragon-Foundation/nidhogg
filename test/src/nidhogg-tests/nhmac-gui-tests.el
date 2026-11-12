@@ -2959,7 +2959,7 @@ scene's rows have one font's descent)."
 
 (defun nhmac-gui--backing-colours (x0 y0 x1 y1 &optional raw)
   "The backing's colours in X0 Y0 to X1 Y1 (device pixels, end exclusive), the commonest first, at most 4, as
-"#xRRGGBB xN"; RAW is a `glitnir-snapshot' raw picture (taken when nil).  The backing holds what the draw records
+\"#xRRGGBB xN\"; RAW is a `glitnir-snapshot' raw picture (taken when nil).  The backing holds what the draw records
 painted before the surface copy: a record found here and not on the surface was painted but not copied.  Same origin
 as the surface; a rect outside it, or no backing, gives a string saying so."
   (condition-case err
