@@ -2396,15 +2396,31 @@ DEFUN ("nidhogg-workers--test-image-decode-finish",
 DEFUN ("nidhogg-workers--test-image-cores", Fnidhogg_workers__test_image_cores,
        Snidhogg_workers__test_image_cores, 0, 0, 0,
        doc: /* The image types this build's cores decode; for tests.
-Value: a list of (TYPE . HEADER), one for each of `png', `jpeg', `gif'
-and `webp' whose decoder library the build has, HEADER non-nil if the
-header path answers TYPE too (not where the loaders are the native
-image API's).  */)
+Value: a list of (TYPE HEADER LIBRARY), one for each of `png', `jpeg',
+`gif' and `webp' that a core decodes, HEADER non-nil if the header path
+answers TYPE too (not where the loaders are the native image API's),
+LIBRARY non-nil if the core is the decoder library's (libpng, libjpeg,
+giflib, libwebp), nil where it is the native image API's (Naglfar's
+ImageIO, which links no image library).  */)
   (void)
 {
   static char const *const names[NH_IMG_FMT_N] = {
     [NH_IMG_PNG] = "png", [NH_IMG_JPEG] = "jpeg",
     [NH_IMG_GIF] = "gif", [NH_IMG_WEBP] = "webp"
+  };
+  static bool const library[NH_IMG_FMT_N] = {
+#ifdef HAVE_PNG
+    [NH_IMG_PNG] = true,
+#endif
+#ifdef HAVE_JPEG
+    [NH_IMG_JPEG] = true,
+#endif
+#if defined HAVE_GIF && GIFLIB_MAJOR >= 5
+    [NH_IMG_GIF] = true,
+#endif
+#ifdef HAVE_WEBP
+    [NH_IMG_WEBP] = true,
+#endif
   };
   Lisp_Object r = Qnil;
   for (int fmt = NH_IMG_FMT_N - 1; fmt >= 0; fmt--)
@@ -2416,7 +2432,8 @@ image API's).  */)
 	header = (nh_img_spec_format (list3 (Qimage, QCtype, type))
 		  != NH_IMG_F_NONE);
 #endif
-	r = Fcons (Fcons (type, header ? Qt : Qnil), r);
+	r = Fcons (list3 (type, header ? Qt : Qnil,
+			  library[fmt] ? Qt : Qnil), r);
       }
   return r;
 }
