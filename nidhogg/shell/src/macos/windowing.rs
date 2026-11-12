@@ -68,10 +68,22 @@ pub fn fullscreen_transition(w: &mut Win, busy: bool) {
         w.window.toggleFullScreen(None);
         w.fs_busy = true;
     }
+    if !w.fs_busy
+        && !w.window.styleMask().contains(NSWindowStyleMask::FullScreen)
+        && let Some(on) = w.zoom_want.take()
+    {
+        maximize(w, on);
+    }
 }
 
-/// Zoom (maximize) on or off.
-pub fn maximize(w: &Win, on: bool) {
+/// Zoom (maximize) on or off.  In native full screen or during a transition it waits for the window to be out of full
+/// screen: a full-screen window reads as zoomed, and the glue's `fullscreen nil` asks for both full screen and zoom
+/// off, so a zoom then would land on the exit's transition (NS's `ns_fullscreen_hook` never zooms there).
+pub fn maximize(w: &mut Win, on: bool) {
+    if w.fs_busy || w.window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        w.zoom_want = Some(on);
+        return;
+    }
     if w.window.isZoomed() != on {
         w.window.zoom(None);
     }
