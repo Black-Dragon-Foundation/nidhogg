@@ -1710,7 +1710,10 @@ every box, or a glyph not where the widths before it put it."
           (when (and (nhmac-gui--ink-p (aref px (+ (* y w) x)) bg)
                      (not (cl-some (lambda (b) (funcall inside (+ x x0) (+ y y0) b)) boxes)))
             (push (list 'ink-outside-every-box :actual (list (+ x x0) (+ y y0))
-                        :pixel (format "#x%08x" (aref px (+ (* y w) x))))
+                        :pixel (format "#x%08x" (aref px (+ (* y w) x)))
+                        ;; the boxes of its column and the baseline, to tell a glyph's own ink from a stray
+                        :column (seq-filter (lambda (b) (and (<= (nth 1 b) (+ x x0)) (< (+ x x0) (nth 3 b)))) boxes)
+                        :base base)
                   bad)))))
     (nreverse bad)))
 
@@ -1747,19 +1750,20 @@ frame's text still reaches the surface."
       (when (= (% i 7) 6)
         (clear-font-cache)))
     (nhmac-gui--with-font-scene
-      ;; some pixel of the text line is dark
+      ;; some pixel of the text line is dark: the "Hello" line, below the marker line and a blank one
       (let* ((edges (window-inside-pixel-edges))
-             (y0 (+ (nth 1 edges) (frame-char-height)))
+             (start (save-excursion (goto-char (point-min)) (search-forward "Hello") (match-beginning 0)))
+             (y0 (+ (nth 1 edges) (cdr (posn-x-y (posn-at-point start)))))
              (dark nil))
         (cl-loop for y from y0 below (+ y0 (frame-char-height)) until dark do
                  (cl-loop for x from (nth 0 edges) below (+ (nth 0 edges) (* 20 (frame-char-width))) until dark do
                           (let ((p (nhmac-gui--pixel-at x y)))
                             (when (and p (< (logand (ash p -8) 255) 64))
                               (setq dark (list x y p))))))
-        (nhmac-gui--say "nhmac-font-open-close: a text pixel %S; searched from %S, the first pixel %S, line 2 %S; stats %S"
+        (nhmac-gui--say "nhmac-font-open-close: a text pixel %S; searched from %S, the first pixel %S, the line %S; stats %S"
                         dark (list (nth 0 edges) y0) (nhmac-gui--pixel-at (nth 0 edges) y0)
-                        (save-excursion (goto-char (window-start)) (forward-line 1)
-                                        (buffer-substring-no-properties (point) (line-end-position)))
+                        (save-excursion (goto-char start)
+                                        (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
                         (nhmac-stats))
         (should dark)))))
 
@@ -2612,7 +2616,8 @@ GLYPHS) for TEXT (`query-font', `line-pixel-height', `font-get-glyphs')."
 
 (defun nhmac-gui--ct-facts (family size text)
   "FAMILY at SIZE pixels as Core Text answers under the stated rules, in `nhmac-gui--font-facts''s form: the pixel
-size is the size asked for, the line height ascent + descent (one font on the line).  Nil when the font is not open."
+size is the size asked for, the line height ascent + descent, or the frame's character height when that is taller
+\(`nhmac-gui--with-text' puts four spaces of the default face before the text).  Nil when the font is not open."
   (let ((ct (nhmac-gui--ct family size (concat " " nhmac-gui--printable text))))
     (when ct
       (pcase-let* ((glyphs (plist-get ct :glyphs))
@@ -2620,7 +2625,7 @@ size is the size asked for, the line height ascent + descent (one font on the li
                    (`(,a ,d ,avg ,space)
                     (nhmac-gui--ct-metrics (plist-put (copy-sequence ct) :glyphs (take 95 glyphs))
                                            nhmac-gui--printable)))
-        (list :info (list size a d space avg (+ a d))
+        (list :info (list size a d space avg (max (+ a d) (frame-char-height)))
               :glyphs (mapcar (lambda (g) (cons (nth 1 g) (nhmac-gui--ct-glyph mono space g)))
                               (nthcdr 95 glyphs)))))))
 
