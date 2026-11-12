@@ -73,7 +73,7 @@ pub fn frames_text(mtm: MainThreadMarker) -> String {
                 "({} {} {})",
                 rect(s.frame()),
                 rect(s.visibleFrame()),
-                s.backingScaleFactor()
+                super::scale::of_screen(&s).factor()
             )
         })
         .collect();
