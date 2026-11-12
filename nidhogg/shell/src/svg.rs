@@ -1,6 +1,6 @@
 //! SVG (design §5.5): resvg renders an image the way `image.c`'s librsvg route (`svg_load_image`) does.  The style
-//! sheet names the face's font and adds the image's `:css`.  `currentColor` is the foreground (a `color` rule on the
-//! `svg` elements, where librsvg's wrapper sets it on an outer element).  The image is stretched to the size Emacs
+//! sheet names the face's font and adds the image's `:css`.  `currentColor` is the foreground, inherited as librsvg's
+//! wrapper makes it (an attribute on the root, which a `color` of the image's own overrides).  The image is stretched to the size Emacs
 //! computed, without keeping its aspect ratio, over an opaque background.  Pure Rust, so it is tested on Linux too.
 
 use resvg::{tiny_skia, usvg};
@@ -30,9 +30,9 @@ fn fonts() -> Arc<usvg::fontdb::Database> {
     .clone()
 }
 
-/// The style sheet `svg_load_image` gives librsvg, with the foreground as `color`.
+/// The style sheet `svg_load_image` gives librsvg (the face's font, then the image's `:css`).
 fn style_sheet(style: &Style) -> String {
-    let mut css = format!("svg{{color:#{:06x};", style.foreground & 0xff_ffff);
+    let mut css = String::from("svg{");
     if !style.font_family.is_empty() {
         css += &format!(
             "font-family:\"{}\";",
@@ -45,7 +45,96 @@ fn style_sheet(style: &Style) -> String {
     css + "}" + &style.css
 }
 
+/// Where the root `svg` element's start tag is in `d`, after the prolog, comments and a document type.
+fn root_start(d: &[u8]) -> Option<usize> {
+    let find = |h: &[u8], n: &[u8]| h.windows(n.len()).position(|w| w == n);
+    let mut i = 0;
+    loop {
+        i += d[i..].iter().position(|&b| b == b'<')?;
+        let r = &d[i..];
+        if r.starts_with(b"<?") {
+            i += find(r, b"?>")? + 2;
+        } else if r.starts_with(b"<!--") {
+            i += find(r, b"-->")? + 3;
+        } else if r.starts_with(b"<!") {
+            // a document type, its internal subset in brackets
+            let mut depth = 0;
+            let mut j = 2;
+            loop {
+                match r.get(j)? {
+                    b'[' => depth += 1,
+                    b']' => depth -= 1,
+                    b'>' if depth <= 0 => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            i += j + 1;
+        } else {
+            let after = r.get(4).copied().unwrap_or(b'>');
+            return (r.starts_with(b"<svg")
+                && (after.is_ascii_whitespace() || after == b'>' || after == b'/'))
+                .then_some(i);
+        }
+    }
+}
+
+/// Whether the attributes `t` (a start tag's, after its name) name `name`; the scan stops at the tag's end.
+fn has_attribute(mut t: &[u8], name: &[u8]) -> bool {
+    loop {
+        t = t.trim_ascii_start();
+        let n = t
+            .iter()
+            .position(|&b| b == b'=' || b == b'>' || b == b'/' || b.is_ascii_whitespace())
+            .unwrap_or(t.len());
+        if n == 0 {
+            return false;
+        }
+        let (key, rest) = t.split_at(n);
+        let Some(rest) = rest.trim_ascii_start().strip_prefix(b"=") else {
+            return false;
+        };
+        let rest = rest.trim_ascii_start();
+        let Some(&q) = rest.first().filter(|&&q| q == b'"' || q == b'\'') else {
+            return false;
+        };
+        let Some(close) = rest[1..].iter().position(|&b| b == q) else {
+            return false;
+        };
+        if key == name {
+            return true;
+        }
+        t = &rest[close + 2..];
+    }
+}
+
+/// `data` (decompressed when it is SVGZ) with the foreground as the root `svg` element's `color` attribute, as
+/// librsvg's wrapper gives it (`style="color: …"` on an outer element): inherited, so a `color` the image sets itself
+/// (the root's attribute or style, any element's, a rule of its own) wins.  `None`: use `data` as it is (the root
+/// names a `color`, or no root `svg` start tag is found).
+fn with_foreground(data: &[u8], foreground: u32) -> Option<Vec<u8>> {
+    let plain;
+    let data = if data.starts_with(&[0x1f, 0x8b]) {
+        plain = usvg::decompress_svgz(data).ok()?;
+        &plain[..]
+    } else {
+        data
+    };
+    let at = root_start(data)? + 4;
+    if has_attribute(&data[at..], b"color") {
+        return None;
+    }
+    let attr = format!(" color=\"#{:06x}\"", foreground & 0xff_ffff);
+    let mut out = Vec::with_capacity(data.len() + attr.len());
+    out.extend_from_slice(&data[..at]);
+    out.extend_from_slice(attr.as_bytes());
+    out.extend_from_slice(&data[at..]);
+    Some(out)
+}
+
 fn tree(data: &[u8], style: &Style) -> Option<usvg::Tree> {
+    let coloured = with_foreground(data, style.foreground);
+    let data = coloured.as_deref().unwrap_or(data);
     let mut opts = usvg::Options {
         resources_dir: style.base.clone(),
         fontdb: fonts(),
@@ -141,6 +230,64 @@ mod tests {
         let px = render(HALF, &s, 0x000000, 4, 2).unwrap();
         assert_eq!(px[0], 0xff00_ff00);
         assert_eq!(px[3], 0xff00_0000);
+    }
+
+    /// librsvg's wrapper only makes the foreground inherited: a `color` the image sets wins, at the root or below.
+    #[test]
+    fn the_images_own_colour_wins_over_the_foreground() {
+        let s = Style {
+            foreground: 0xff0000,
+            ..Style::default()
+        };
+        let rect = r#"<rect width="2" height="2" fill="currentColor"/>"#;
+        let attr = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" color="#00ff00" width="2" height="2">{rect}</svg>"##
+        );
+        assert_eq!(
+            render(attr.as_bytes(), &s, 0, 2, 2).unwrap()[0],
+            0xff00_ff00
+        );
+        let style = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" style="color:#0000ff" width="2" height="2">{rect}</svg>"##
+        );
+        assert_eq!(
+            render(style.as_bytes(), &s, 0, 2, 2).unwrap()[0],
+            0xff00_00ff
+        );
+        let group = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><g color="#00ff00">{rect}</g></svg>"##
+        );
+        assert_eq!(
+            render(group.as_bytes(), &s, 0, 2, 2).unwrap()[0],
+            0xff00_ff00
+        );
+        // a nested svg inherits the foreground: no rule sets it on every svg
+        let nested = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2" color="#00ff00"><svg width="2" height="2">{rect}</svg></svg>"##
+        );
+        assert_eq!(
+            render(nested.as_bytes(), &s, 0, 2, 2).unwrap()[0],
+            0xff00_ff00
+        );
+    }
+
+    #[test]
+    fn the_foreground_reaches_the_root_past_a_prolog_comments_and_a_doctype() {
+        let s = Style {
+            foreground: 0xff0000,
+            ..Style::default()
+        };
+        let doc = br#"<?xml version="1.0"?>
+<!-- a comment, <svg> in it -->
+<!DOCTYPE svg [ <!ENTITY e "x"> ]>
+<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="currentColor"/></svg>"#;
+        assert_eq!(render(doc, &s, 0, 2, 2).unwrap()[0], 0xffff_0000);
+        assert_eq!(root_start(b"<svgx/>"), None);
+        assert!(has_attribute(br#" a="1" color='red'>"#, b"color"));
+        assert!(!has_attribute(
+            br#" style="color:red" data-color="x">"#,
+            b"color"
+        ));
     }
 
     #[test]
