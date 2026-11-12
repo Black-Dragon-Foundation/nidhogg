@@ -43,7 +43,7 @@ fn lisp_string(s: &str) -> String {
     format!("{s:?}")
 }
 
-/// The answer to `arg`; `None` when it is not a probe this knows.
+/// The answer to `arg`; an unknown probe answers `(unknown-probe "ARG")`, and `None` is an empty or unreadable `arg`.
 pub fn query(arg: &str) -> Option<String> {
     let w = words(arg);
     let num = |i: usize| w.get(i).and_then(|x| x.parse::<f64>().ok());
@@ -89,19 +89,35 @@ pub fn query(arg: &str) -> Option<String> {
             format!("({})", rows.join(" "))
         }
         "variation" => {
-            let (size, c, vs) = (num(2)?, num(3)? as u32, num(4)? as u32);
-            let Some(handle) = fonts::find(w.get(1)?, size) else {
+            // an argument that does not read is said, as the hook got it and as words (round 4 had only the hook's -2)
+            let bad = || {
+                Some(format!(
+                    "(bad-arg {} {})",
+                    lisp_string(arg),
+                    lisp_string(&format!("{w:?}"))
+                ))
+            };
+            let (Some(family), Some(size), Some(c), Some(vs)) = (
+                w.get(1),
+                num(2),
+                num(3).and_then(|c| char::from_u32(c as u32)),
+                num(4).and_then(|c| char::from_u32(c as u32)),
+            ) else {
+                return bad();
+            };
+            let Some(handle) = fonts::find(family, size) else {
                 return Some("nil".into());
             };
             let mut units = Vec::new();
             for ch in [c, vs] {
                 let mut b = [0u16; 2];
-                units.extend_from_slice(char::from_u32(ch)?.encode_utf16(&mut b));
+                units.extend_from_slice(ch.encode_utf16(&mut b));
             }
             text::shape(handle, &units)
                 .and_then(|l| l.runs.first().and_then(|r| r.glyphs.first().copied()))
                 .map_or_else(|| "nil".into(), |g| g.to_string())
         }
-        _ => return None,
+        // an unknown probe is said with the text the hook got (a "variation" that arrived as something else)
+        _ => format!("(unknown-probe {})", lisp_string(arg)),
     })
 }
