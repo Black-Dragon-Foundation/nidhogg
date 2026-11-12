@@ -335,6 +335,9 @@ run -- --dry-run --container fedora-45 --naglfar --dry-config
 rcis 0; has "--with-nidhogg-macos"; has "--build=aarch64-apple-darwin"; has 'dry config: $B/obj/src/config.h'
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --naglfar --without-glitnir
 rcis 1; has "--naglfar needs Glitnir"
+# the macOS release tarball is Naglfar's bundle: a release --naglfar build packs nextstep/Emacs.app as Nidhogg.app
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --naglfar --stage pack --out /tmp/n/nidhogg-macos.tar.xz
+rcis 0; has "--with-nidhogg-macos"; hasnt "--with-ns "; has 'mv nextstep/Emacs.app "$pk/Nidhogg.app"'; has 'tar -C "$B/pkg" -cJf'
 # naglfar-config (build-test.sh --config; real configures in podman, through the heavy slot): the Wayland configure
 # defines NHWL_WAYLAND; the macOS one (configured on Linux for a darwin host) the shared C and HAVE_NHMAC, and none of
 # Wayland, Cairo, fontconfig, FreeType, HarfBuzz or an image library; the workers and Glitnir stay on
