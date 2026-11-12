@@ -39,6 +39,15 @@ pub enum MacEv {
     FullScreen(WindowId, bool),
 }
 
+/// How many of AppKit's full-screen notifications reached the window delegates, in the order will enter, will exit,
+/// did enter, did exit, failed to enter, failed to exit, then how many of them the backend applied (test diagnostics).
+pub static FS_NOTES: [std::sync::atomic::AtomicU32; 7] =
+    [const { std::sync::atomic::AtomicU32::new(0) }; 7];
+
+fn fs_note(i: usize) {
+    FS_NOTES[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 thread_local! {
     /// The main thread's scope; only the main thread runs AppKit.
     pub static SCOPE: Scope<MacShell, MacEv> = const { Scope::new() };
@@ -97,31 +106,37 @@ define_class!(
 
         #[unsafe(method(windowWillEnterFullScreen:))]
         fn will_enter_full_screen(&self, _n: &NSNotification) {
+            fs_note(0);
             deliver(MacEv::FullScreen(*self.ivars(), true));
         }
 
         #[unsafe(method(windowWillExitFullScreen:))]
         fn will_exit_full_screen(&self, _n: &NSNotification) {
+            fs_note(1);
             deliver(MacEv::FullScreen(*self.ivars(), true));
         }
 
         #[unsafe(method(windowDidEnterFullScreen:))]
         fn did_enter_full_screen(&self, _n: &NSNotification) {
+            fs_note(2);
             deliver(MacEv::FullScreen(*self.ivars(), false));
         }
 
         #[unsafe(method(windowDidExitFullScreen:))]
         fn did_exit_full_screen(&self, _n: &NSNotification) {
+            fs_note(3);
             deliver(MacEv::FullScreen(*self.ivars(), false));
         }
 
         #[unsafe(method(windowDidFailToEnterFullScreen:))]
         fn did_fail_to_enter_full_screen(&self, _w: &objc2_app_kit::NSWindow) {
+            fs_note(4);
             deliver(MacEv::FullScreen(*self.ivars(), false));
         }
 
         #[unsafe(method(windowDidFailToExitFullScreen:))]
         fn did_fail_to_exit_full_screen(&self, _w: &objc2_app_kit::NSWindow) {
+            fs_note(5);
             deliver(MacEv::FullScreen(*self.ivars(), false));
         }
     }

@@ -289,6 +289,7 @@ impl MacShell {
             }
             MacEv::Resize(id, frame) => self.resize_step(id, frame),
             MacEv::FullScreen(id, busy) => {
+                super::runloop::FS_NOTES[6].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if let Some(w) = self.windows.get_mut(&id) {
                     super::windowing::fullscreen_transition(w, busy);
                 }
