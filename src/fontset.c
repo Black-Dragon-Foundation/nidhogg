@@ -657,8 +657,17 @@ fontset_find_font (Lisp_Object fontset, int c, struct face *face,
 	     the support of the character C.  That checking is costly,
 	     and even without the checking, the found font supports C
 	     in high possibility.  */
+#ifdef HAVE_NHMAC
+	  /* Naglfar: a familyless spec's fonts in the order of the
+	     face font's own cascade (nhmacfont.c).  */
+	  font_entity = font_find_for_lface (f, face->lface,
+					     nhmac_cascade_spec
+					     (FONT_DEF_SPEC (font_def), face),
+					     -1);
+#else
 	  font_entity = font_find_for_lface (f, face->lface,
 					     FONT_DEF_SPEC (font_def), -1);
+#endif
 	  if (NILP (font_entity))
 	    {
 	      /* Record that no font matches the spec.  */
@@ -703,8 +712,15 @@ fontset_find_font (Lisp_Object fontset, int c, struct face *face,
 	}
 
       /* Find a font-entity with the current spec and supporting C.  */
+#ifdef HAVE_NHMAC
+      font_entity = font_find_for_lface (f, face->lface,
+					 nhmac_cascade_spec
+					 (FONT_DEF_SPEC (font_def), face),
+					 c);
+#else
       font_entity = font_find_for_lface (f, face->lface,
 					 FONT_DEF_SPEC (font_def), c);
+#endif
       if (! NILP (font_entity))
 	{
 	  /* We found a font.  Open it and insert a new element for

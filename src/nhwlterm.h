@@ -673,6 +673,7 @@ extern int nhmac_menu_choice (const NhgAction *, struct input_event *);
 /* nhmacfont.c */
 extern void syms_of_nhmacfont (void);
 extern struct font_driver const nhmacfont_driver;
+extern Lisp_Object nhmac_cascade_spec (Lisp_Object, struct face *);
 /* nhmacdraw.c: the primitives under nhwldraw.c's shared geometry,
    emitting draw records (their Cairo twins are nhwldraw.c's own).  */
 extern void nhwl_fill_rectangle (struct frame *, unsigned long, int, int,
