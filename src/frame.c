@@ -5817,6 +5817,20 @@ gui_set_font_backend (struct frame *f, Lisp_Object new_value, Lisp_Object old_va
     }
 }
 
+#ifdef HAVE_NHWL
+/* The width of F's fringes when its parameter names none: 8 logical
+   pixels, as on NS and pgtk.  A native-shell frame is in device pixels,
+   so it is 8 times the frame's scale (nhwl_scale_changed sets it again
+   when the scale changes).  */
+static int
+default_fringe_width (struct frame *f)
+{
+  if (FRAME_NHWL_P (f))
+    return (int) (8 * nhwl_frame_scale_factor (f) + 0.5);
+  return 8;
+}
+#endif
+
 void
 gui_set_left_fringe (struct frame *f, Lisp_Object new_value, Lisp_Object old_value)
 {
@@ -5825,7 +5839,11 @@ gui_set_left_fringe (struct frame *f, Lisp_Object new_value, Lisp_Object old_val
   int new_width;
 
   new_width = (RANGED_FIXNUMP (-INT_MAX, new_value, INT_MAX)
+#ifdef HAVE_NHWL
+	       ? eabs (XFIXNUM (new_value)) : default_fringe_width (f));
+#else
 	       ? eabs (XFIXNUM (new_value)) : 8);
+#endif
 
   if (new_width != old_width)
     {
@@ -5849,7 +5867,11 @@ gui_set_right_fringe (struct frame *f, Lisp_Object new_value, Lisp_Object old_va
   int new_width;
 
   new_width = (RANGED_FIXNUMP (-INT_MAX, new_value, INT_MAX)
+#ifdef HAVE_NHWL
+	       ? eabs (XFIXNUM (new_value)) : default_fringe_width (f));
+#else
 	       ? eabs (XFIXNUM (new_value)) : 8);
+#endif
 
   if (new_width != old_width)
     {
