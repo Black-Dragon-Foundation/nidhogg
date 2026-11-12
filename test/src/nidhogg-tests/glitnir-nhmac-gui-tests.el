@@ -1578,7 +1578,14 @@ at its moving place, so a whole-area move would show the new layout from the sta
              (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: 2 s later vs during %S, window start %S, surface %S, stats then %S now %S"
                              (glitnir-nhmac--diff during (glitnir-nhmac--grab "leg-later") rect)
                              (window-start) (nhmac--test-surface 0 0)
-                             stats (nhmac-stats))))
+                             stats (nhmac-stats))
+             ;; round 8 (scale 2): still the old picture 2 s on, the root's contents the newest surface and the leg
+             ;; ended.  Which layers sit over the root (a leg's layer left behind), and the surface's own row beside
+             ;; the screen's: the drawing behind, or a layer over it
+             (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: own layers %S (nhwl-scroll-layers %S); surface row %d: %S"
+                             (nhwl--scroll-layers) nhwl-scroll-layers (/ (frame-pixel-height) 2)
+                             (cl-loop for p across (nhmac--test-surface-region 0 (/ (frame-pixel-height) 2) 64 1)
+                                      collect (format "%06x" (logand p #xffffff))))))
          (should (<= (cadr shown) 2))
          (should (> (car new) 100)))))))
 

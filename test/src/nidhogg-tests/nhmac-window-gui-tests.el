@@ -16,15 +16,17 @@
   (nhmac--query 'test-window-state (selected-frame)))
 
 (defun nhmac-win-gui--wait (key want)
-  "Wait for the window state KEY to be WANT; the state.  Up to 4 s, or 12 s for `:fs-busy': that waits for AppKit's
-own full-screen animation to end (its did-notification), which round 6's runner took 2.6 to 4.8 s to enter and 4.0
-to 6.0 s to leave, and a toggle sent during one runs after it (FS log step 8)."
-  (let* ((start (float-time)) (deadline (+ start (if (eq key :fs-busy) 12 4))) st)
+  "Wait for the window state KEY to be WANT; the state.  Up to 4 s, or 12 s for `:fs-busy' and `:miniaturized':
+those wait for AppKit's own animations to end.  Round 6's runner took 2.6 to 4.8 s to enter full screen and 4.0 to
+6.0 s to leave it (a toggle sent during one runs after it, FS log step 8); round 7's took 4 s to miniaturize, and
+round 8's longer."
+  (let* ((start (float-time)) (slow (memq key '(:fs-busy :miniaturized)))
+         (deadline (+ start (if slow 12 4))) st)
     (while (and (progn (setq st (nhmac-win-gui--state)) (not (eq (plist-get st key) want)))
                 (< (float-time) deadline))
       (sit-for 0.2))
     (if (eq (plist-get st key) want)
-        (when (eq key :fs-busy)
+        (when slow
           (glitnir-gui--say "nhmac-win-gui--wait: %S %S after %.1f s" key want (- (float-time) start)))
       (glitnir-gui--say "nhmac-win-gui--wait: %S never %S: %S" key want st))
     st))
@@ -105,9 +107,11 @@ too whenever Lisp runs, since `ns_select's `[NSApp run]' has returned by then."
   (skip-unless (nhmac-win-gui--naglfar-p))
   (nhmac-win-gui--settle)
   (iconify-frame)
-  (should (eq (plist-get (nhmac-win-gui--wait :miniaturized t) :miniaturized) t))
-  (make-frame-visible)
-  (should (null (plist-get (nhmac-win-gui--wait :miniaturized nil) :miniaturized))))
+  ;; round 8: the Dock took over 4 s, and the window left there failed the 13 rows after this one
+  (unwind-protect
+      (should (eq (plist-get (nhmac-win-gui--wait :miniaturized t) :miniaturized) t))
+    (make-frame-visible)
+    (should (null (plist-get (nhmac-win-gui--wait :miniaturized nil) :miniaturized)))))
 
 (ert-deftest nhmac-appearance-dark ()
   "A change of the system appearance records it in `ns-system-appearance' and runs the hook with `dark'."
