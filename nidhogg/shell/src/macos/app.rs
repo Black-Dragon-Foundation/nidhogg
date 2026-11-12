@@ -844,7 +844,8 @@ impl ShellBackend for MacShell {
     }
 
     fn set_maximized(&mut self, window: WindowId, on: bool) -> ShellResult {
-        windowing::maximize(self.win(window)?, on);
+        let w = self.windows.get_mut(&window).ok_or(ShellError::State)?;
+        windowing::maximize(w, on);
         Ok(())
     }
 

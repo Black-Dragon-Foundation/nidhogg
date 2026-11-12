@@ -41,6 +41,8 @@ pub struct Win {
     /// asked for meanwhile, applied when it ends.
     pub fs_busy: bool,
     pub fs_want: Option<bool>,
+    /// Zoom asked for in native full screen or during a transition: applied once the window is out of full screen.
+    pub zoom_want: Option<bool>,
     /// Our own edge-drag resize: the frame the host is drawing for, and the newest one asked for since.
     pub resize: Pending,
 }
@@ -112,6 +114,7 @@ impl Win {
             saved: None,
             fs_busy: false,
             fs_want: None,
+            zoom_want: None,
             resize: Pending::default(),
         }
     }
