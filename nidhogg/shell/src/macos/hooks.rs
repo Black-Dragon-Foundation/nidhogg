@@ -569,6 +569,7 @@ impl MacShell {
                 super::super::nsapp::text_arg(arg.trim()).trim(),
             ),
             "test-font-probe" => super::super::font_probe::query(arg).ok_or(ShellError::Arg),
+            "test-zoom-log" => Ok(super::super::ax::test_zoom_log()),
             _ => return None,
         })
     }

@@ -75,14 +75,20 @@ pumps' scope never takes inside a take (`:overlapping-takes' stays 0)."
           (while (read-event nil nil 0.1))
           (nhmac--call 'test-real-drag a 40 40 b 60 40 300)
           ;; the press reaches the view first: it is the event the drag starts from
-          (let ((deadline (+ (float-time) 2)))
+          ;; round 2: result nil, no drop.  The events read here and after the drag say which step stopped: no press
+          ;; (the drag had nothing to start from), or a press and no drag session
+          (let ((deadline (+ (float-time) 2)) (seen nil) ev)
             (while (and (< (float-time) deadline)
-                        (not (eq (event-basic-type (read-event nil nil 0.2)) 'mouse-1)))))
+                        (not (eq (event-basic-type (setq ev (read-event nil nil 0.2))) 'mouse-1)))
+              (when ev (push ev seen)))
+            (glitnir-gui--say "nhmac-dnd-drag-out: press %S after %S" ev (nreverse seen)))
           (setq result (ns-begin-drag a `((string . ,text)) 'XdndActionCopy nil nil))
-          (let ((deadline (+ (float-time) 3)) ev)
+          (let ((deadline (+ (float-time) 3)) (seen nil) ev)
             (while (and (not drop) (< (float-time) deadline))
               (setq ev (read-event nil nil 0.3))
-              (when (eq (car-safe ev) 'drag-n-drop) (setq drop ev))))
+              (when ev (push (car-safe ev) seen))
+              (when (eq (car-safe ev) 'drag-n-drop) (setq drop ev)))
+            (glitnir-gui--say "nhmac-dnd-drag-out: after the drag, events %S" (nreverse seen)))
           (glitnir-gui--say "nhmac-dnd-drag-out: result %S, drop %S, overlapping %S -> %S" result drop overlap
                             (plist-get (nhmac-stats) :overlapping-takes))
           (should (eq result 'XdndActionCopy))
