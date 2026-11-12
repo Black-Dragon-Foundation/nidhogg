@@ -32,10 +32,12 @@ while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
 printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --ready ] && r=$2; shift; done\necho 0 0 800 600 1 > "$r"\nexec sleep 600\n' > "$out"
 chmod +x "$out"
 EOF
-# the Emacs: the rows p1 p2 a b c d e, skipping those GLITNIR_GUI_DONE lists; c hangs, e ends Emacs; every row it
-# starts is logged to $d/ran
+# the Emacs: the lane's first-frame session (-Q --eval, before any row) logs `first-frame' and exits 0; a row session
+# runs the rows p1 p2 a b c d e, skipping those GLITNIR_GUI_DONE lists; c hangs, e ends Emacs; every row it starts is
+# logged to $d/ran
 cat > "$d/emacs" <<EOF
 #!/bin/bash
+[ "\$2" = --eval ] && { echo first-frame >> "$d/ran"; exit 0; }
 rows="p1 p2 a b c d e f"
 [ -z "\$GLITNIR_GUI_ONLY" ] || rows=\$GLITNIR_GUI_ONLY
 n=0
@@ -55,8 +57,8 @@ PATH=$d/bin:$PATH TMPDIR=$d timeout 120 bash "$d/co/nidhogg/test/nhmac-gui.sh" -
   --row-timeout 3 --out "$d/out" > "$d/lane.log" 2>&1
 st=$?
 [ "$st" = 1 ] || fail "the lane's exit is $st, not 1 (two red rows)"
-[ "$(cat "$d/ran" 2>/dev/null | tr '\n' ' ')" = "p1 p1 p2 p2 a main b main c main d main e main f main " ] ||
-  fail "the rows ran as: $(cat "$d/ran" 2>/dev/null | tr '\n' ' ') (want p1 and p2 alone, then a to f once each)"
+[ "$(cat "$d/ran" 2>/dev/null | tr '\n' ' ')" = "first-frame p1 p1 p2 p2 a main b main c main d main e main f main " ] ||
+  fail "the rows ran as: $(cat "$d/ran" 2>/dev/null | tr '\n' ' ') (want the first frame once, p1 and p2 alone, then a to f once each)"
 grep -qx 'FAILED c' "$d/lane.log" || fail "the hung row c is not FAILED"
 grep -q "c.*row ran past the lane's bound of 3 s\|row ran past the lane's bound of 3 s" "$d/lane.log" ||
   fail "the hung row's reason is missing"
