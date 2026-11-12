@@ -101,6 +101,7 @@ flag_rule() {
   lowest=$(git merge-base --octopus "${gbase[@]}")
   while IFS= read -r sha; do
     c=$(git log -1 --format=%s "$sha")
+    series_exception "$sha" && continue   # misfiled: the release rebuild re-subjects it into its group
     for g in "${gname[@]}"; do case $c in "nidhogg: $g:"*) continue 2 ;; esac; done
     [ -z "$(git diff-tree --no-commit-id --name-only -r "$sha" -- src)" ] ||
       fail "$sha belongs to no flag group; it goes below the groups"
@@ -229,6 +230,11 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
   putf "nidhogg: pgtk: p" src/nhwl.c 'int s;\nint t;\n'
   expect "another commit editing a C file a group created" "belongs to no flag group; it goes below the groups"
+  fixture; put "nidhogg: shell: s" 'int a;\n#ifdef HAVE_NHWL\nint s;\n#endif\n'
+  put "nidhogg: nhwl: misfiled" 'int a;\n#ifdef HAVE_NHWL\nint s;\nint t;\n#endif\n'
+  expect "a misfiled commit inside a group's define" "belongs to no flag group; it goes below the groups"
+  echo "$(git -C "$self/r" rev-parse HEAD) a listed exception" > "$self/exc"
+  SERIES_EXCEPTIONS="$self/exc" expect "the same commit listed as an exception" ""
   fixture; putf "nidhogg: shell: s" src/x.c 'int x;\n'; put "nidhogg: glitnir: g" "$in"; putf "nidhogg: shell: s2" src/x.c 'int x;\nint y;\n'
   expect "a shell commit editing an unguarded C file the shell group created" ""
   fixture; putf "nidhogg: shell: s" src/x.c 'int x;\n'; put "nidhogg: glitnir: g" "${in}int out;\n"
@@ -258,7 +264,7 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; put "pgtk change without the prefix" "int a;\n/* p */\n"
   RULE=subj expect "a non-merge commit with a non-nidhogg subject" "commit subject does not start with 'nidhogg: '"
   unset RULE
-  echo "tree self-test: 38 cases ok"
+  echo "tree self-test: 40 cases ok"
   exit 0
 fi
 
