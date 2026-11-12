@@ -1914,6 +1914,8 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
                (t0 (float-time))
                (inline (nhmac-gui--image-screen f))
                (landed (plist-get (nidhogg-workers--test-image-info) :landed))
+               (rust (and (string-suffix-p ".gif" name) (fboundp 'nidhogg-workers--test-image-rust)
+                          (nidhogg-workers--test-image-rust t)))
                (off (unwind-protect
                         (progn (nidhogg-workers--test-decide 'offload)
                                (nhmac-gui--image-screen f t))
@@ -1923,6 +1925,11 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
                ;; is told apart from one the worker makes
                (again (and (string-suffix-p ".jpg" name) (nhmac-gui--image-screen f)))
                (worst 0) (off-pixels 0) (first-row nil))
+          ;; a GIF's transparent index is the frame background on both paths (gif_load, Glitnir's gif.rs): which
+          ;; decoder the worker used, and the background both should show
+          (when rust
+            (nhmac-gui--say "nhmac-images-worker: %s on the worker: %S; frame background %s"
+                            name (nidhogg-workers--test-image-rust) (frame-parameter nil 'background-color)))
           ;; the worker took it: one more landing
           (should (> (plist-get (nidhogg-workers--test-image-info) :landed) landed))
           (should (equal (take 2 off) (take 2 inline)))
