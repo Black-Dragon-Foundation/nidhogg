@@ -228,7 +228,8 @@ the frames' own pixels: no chrome, no shadows, no scene.
 FORMAT is `png' (the default; the value is a unibyte string holding a PNG)
 or `raw' (the value is (WIDTH HEIGHT BYTES), BYTES a unibyte string of
 ARGB32 pixels in the machine's byte order, device pixels, rows tightly
-packed).  */)
+packed).  On macOS (Naglfar) only `raw', and the root's backing: the
+pixels its draw records painted, before they are copied to the window.  */)
   (Lisp_Object frame, Lisp_Object format)
 {
   struct frame *f = decode_live_frame (frame);
@@ -267,6 +268,28 @@ packed).  */)
       xfree (sink.data);
     }
   return result;
+#elif defined HAVE_NHMAC
+  /* Naglfar: the root's backing, the pixels its draw records painted
+     (child frames are layers, not in it), RAW only: a row that finds a
+     record missing on the committed surface tells by it whether the record
+     was painted but not copied, or not painted.  */
+  if (!EQ (format, intern_c_string ("raw")))
+    error ("glitnir-snapshot: only `raw' on macOS");
+  if (!FRAME_NHWL_P (f) || redisplaying_p)
+    error ("glitnir-snapshot: no image surface");
+  struct frame *r = nhwl_tree_root (f);
+  NhgBacking b;
+  Lisp_Object bytes = Qnil;
+  block_input ();
+  if (NHG (nhg_snapshot (FRAME_NHG (r), FRAME_NHWL_OUTPUT (r)->glitnir_id,
+			 &b)) >= 0
+      && b.w > 0 && b.h > 0 && b.stride == 4 * b.w)
+    bytes = make_unibyte_string ((char *) b.pixels,
+				 (ptrdiff_t) b.stride * b.h);
+  unblock_input ();
+  if (NILP (bytes))
+    error ("glitnir-snapshot: the frame has no picture yet");
+  return list3 (make_fixnum (b.w), make_fixnum (b.h), bytes);
 #else
   (void) f;
   error ("glitnir-snapshot: no image surface");

@@ -529,16 +529,32 @@ nhwl_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
       if (k > 1)
 	{
 	  /* NS draws a bitmap in points: at a scale, K pixels a bit while
-	     it fits its fringe, the whole bitmap centred on where it sits
-	     unscaled, cut to the fringe's column (the Wayland shell's
-	     nhwl_draw_fringe_scaled rule).  */
+	     it fits its fringe, centred across the fringe's column and cut
+	     to it (the Wayland shell's nhwl_draw_fringe_scaled rule).
+	     Down the row it keeps the bitmap's alignment, as a bitmap drawn
+	     in points does: fringe.c put a top-aligned one (up-arrow, the
+	     top angles) at the row's top, a bottom-aligned one at its
+	     bottom, and centred the rest; centring a top-aligned one put
+	     its first rows above the row, where the row's clip cut them
+	     (round 2: up-arrow 22 of 28 bits at scale 2).  */
+	  int top = (WINDOW_TO_FRAME_PIXEL_Y (w, row->y)
+		     + (left ? row->left_fringe_offset
+			: row->right_fringe_offset));
+	  int dy = p->y - p->dh - top;
+	  int y0 = p->y - p->dh + (bh - k * bh) / 2;
+	  if (dy == 0 && (row->height - bh) / 2 != 0)
+	    y0 = p->y - p->dh;
+	  else if (dy == row->visible_height - bh
+		   && dy != (row->height - bh) / 2)
+	    y0 = p->y - p->dh + bh - k * bh;
 	  XRectangle col = { left ? p->x - (fw - p->wd) / 2
 			     : p->x - (fw - p->wd + 1) / 2,
 			     p->y - p->dh - bh * k, fw, 3 * bh * k };
-	  r.r = (NhgRect) { p->x + (p->wd - k * p->wd) / 2,
-			    p->y - p->dh + (bh - k * bh) / 2, p->wd, bh };
+	  r.r = (NhgRect) { p->x + (p->wd - k * p->wd) / 2, y0, p->wd, bh };
 	  r.bits = p->bits;
 	  nhmac_clip_to (&col, 1);
+	  /* what it covers, inside the row's clip, reaches the surface */
+	  nhwl_damage (f, col.x, y0, fw, k * bh);
 	}
       nhmac_emit (f, &r);
     }

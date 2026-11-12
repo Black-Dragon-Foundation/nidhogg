@@ -1332,6 +1332,25 @@ colours, tolerance 0 for fills and box lines."
   (let* ((o (nhmac-gui--draw-scene))
          (x (car o)) (y (cdr o)) (h (frame-char-height)))
     (nhmac-gui--say "nhmac-draw-fills-boxes-cursors: origin %S, stats %S" o (nhmac-stats))
+    ;; where each colour runs along the middle row, on the surface and in the backing, and the stretches' places:
+    ;; a failure below then says whether a stretch or a box line has another width at this scale, or was not copied
+    (let ((runs (lambda (px)
+                  (let (out)
+                    (cl-loop for p across px for i from 0
+                             do (let ((c (logand p #xffffff)))
+                                  (if (and out (= (caar out) c)) (cl-incf (cdar out)) (push (cons c 1) out))))
+                    (mapcar (lambda (r) (format "#x%06x x%d" (car r) (cdr r))) (nreverse out))))))
+      (nhmac-gui--say "nhmac-draw-fills-boxes-cursors: row y+h/2 from x: surface %S; backing %S; stretches at %S"
+                      (funcall runs (nhmac-gui--surface-rect x (+ y (/ h 2)) 40 1))
+                      (condition-case err
+                          (pcase-let ((`(,w ,_ ,bytes) (glitnir-snapshot nil 'raw)))
+                            (funcall runs (vconcat (cl-loop for i from 0 below 40
+                                                            for o = (* 4 (+ (* (+ y (/ h 2)) w) x i))
+                                                            collect (logior (ash (aref bytes (+ o 2)) 16)
+                                                                            (ash (aref bytes (1+ o)) 8)
+                                                                            (aref bytes o))))))
+                        (error err))
+                      (mapcar (lambda (pos) (car (posn-x-y (posn-at-point pos)))) '(1 2 3 4))))
     (should (> (plist-get (nhmac-stats) :draws) 0))
     ;; the plain stretch's middle
     (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff336699))
@@ -2930,6 +2949,29 @@ scene's rows have one font's descent)."
   (let ((c (color-values hex)))
     (logior (ash (/ (nth 0 c) 257) 16) (ash (/ (nth 1 c) 257) 8) (/ (nth 2 c) 257))))
 
+(defun nhmac-gui--backing-colours (x0 y0 x1 y1 &optional raw)
+  "The backing's colours in X0 Y0 to X1 Y1 (device pixels, end exclusive), the commonest first, at most 4, as
+"#xRRGGBB xN"; RAW is a `glitnir-snapshot' raw picture (taken when nil).  The backing holds what the draw records
+painted before the surface copy: a record found here and not on the surface was painted but not copied.  Same origin
+as the surface; a rect outside it, or no backing, gives a string saying so."
+  (condition-case err
+      (pcase-let* ((`(,w ,h ,bytes) (or raw (glitnir-snapshot nil 'raw)))
+                   (seen (make-hash-table)))
+        (if (or (< x0 0) (< y0 0) (> x1 w) (> y1 h))
+            (format "outside the %dx%d backing" w h)
+          (cl-loop for y from y0 below (max (1+ y0) y1)
+                   do (cl-loop for x from x0 below (max (1+ x0) x1)
+                               for i = (* 4 (+ (* y w) x))
+                               ;; ARGB32 in the machine's (little-endian) order: B G R A
+                               do (cl-incf (gethash (logior (ash (aref bytes (+ i 2)) 16) (ash (aref bytes (1+ i)) 8)
+                                                            (aref bytes i))
+                                                    seen 0))))
+          (seq-take (mapcar (lambda (e) (format "#x%06x x%d" (car e) (cdr e)))
+                            (sort (let (l) (maphash (lambda (k v) (push (cons k v) l)) seen) l)
+                                  (lambda (a b) (> (cdr a) (cdr b)))))
+                    4)))
+    (error (format "no backing: %S" err))))
+
 (defun nhmac-gui--probe (record want x0 y0 x1 y1 &optional tol)
   "Probe RECORD: the surface's pixels in X0 Y0 to X1 Y1 (device pixels, end exclusive) hold the colour WANT
 \(#xRRGGBB, within TOL in each channel, default 24).  Nil when they do, else the failure (RECORD :expected (WANT RECT)
@@ -2943,7 +2985,8 @@ scene's rows have one font's descent)."
             :actual (seq-take (mapcar (lambda (e) (format "#x%06x x%d" (car e) (cdr e)))
                                       (sort (let (l) (maphash (lambda (k v) (push (cons k v) l)) seen) l)
                                             (lambda (a b) (> (cdr a) (cdr b)))))
-                              4)))))
+                              4)
+            :backing (nhmac-gui--backing-colours x0 y0 x1 y1)))))
 
 (defun nhmac-gui--probe-all (record want x0 y0 x1 y1 &optional tol)
   "As `nhmac-gui--probe', but every pixel of the rect must be WANT."
@@ -2954,7 +2997,8 @@ scene's rows have one font's descent)."
       (list record :expected (list (format "#x%06x" want) (list x0 y0 x1 y1))
             :actual (format "%d of %d pixels off, first #x%06x" off (length px)
                             (logand (seq-find (lambda (p) (nhmac-gui--far (logand p #xffffff) want (or tol 0))) px)
-                                    #xffffff))))))
+                                    #xffffff))
+            :backing (nhmac-gui--backing-colours x0 y0 x1 y1)))))
 
 (defun nhmac-gui--lighter-p (a b)
   "Whether colour A is lighter than B (#xRRGGBB, by the sum of the channels)."
@@ -3053,7 +3097,9 @@ a bare frame (`nhmac-gui--bare-frame')."
         (unless (and (eq (cdr r) (nhmac-gui--lighter-p hi bg)) (eq (cdr r) (nhmac-gui--lighter-p bg lo)))
           (push (list (concat (car r) " relief") :expected (if (cdr r) "top lighter, bottom darker than the background"
                                                               "top darker, bottom lighter than the background")
-                      :actual (list :top (format "#x%06x" hi) :bottom (format "#x%06x" lo) :background (format "#x%06x" bg)))
+                      :actual (list :top (format "#x%06x" hi) :bottom (format "#x%06x" lo) :background (format "#x%06x" bg))
+                      :backing (list :top (nhmac-gui--backing-colours x (nth 1 b) (1+ x) (1+ (nth 1 b)))
+                                     :bottom (nhmac-gui--backing-colours x (1- (nth 4 b)) (1+ x) (nth 4 b))))
                 bad))))
     (pcase-let ((`(,x0 ,top ,x1 ,_ ,_) (nhmac-gui--run-box "inner")))
       (funcall note (nhmac-gui--probe "inner box" (nhmac-gui--rgb "dark green") x0 top x1 (+ top (* 2 k)))))
