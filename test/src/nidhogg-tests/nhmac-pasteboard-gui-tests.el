@@ -5,6 +5,7 @@
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).
 
 (require 'ert)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 (require 'cl-lib)
 
 (defun nhmac-pb--naglfar-p ()
@@ -55,7 +56,7 @@
     (nhmac--call 'test-service-request "open-selection" text)
     (let* ((keys (vector (read-event nil nil 2) (read-event nil nil 2)))
            (cmd (key-binding keys)))
-      (message "nhmac-services-provide: read %S" keys)
+      (glitnir-gui--say "nhmac-services-provide: read %S" keys)
       (should (eq cmd 'nhmac-service))
       (save-window-excursion (call-interactively cmd)))
     (let ((made (seq-filter (lambda (b) (not (memq b before))) (buffer-list))))

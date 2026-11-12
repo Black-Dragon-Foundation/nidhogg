@@ -859,6 +859,11 @@ it does not.  The pacer's request for the publish comes as a shell event (`nhmac
         (while (and (plist-get (nhmac-gui--surface) :held) (< (float-time) end))
           (nhmac-gui--read-shell)
           (accept-process-output nil 0.01))
+      (when (plist-get (nhmac-gui--surface) :held)
+        ;; what could keep the shell's events from being read: an event still pending, or the taken ones
+        (nhmac-gui--say "nhmac-gui--wait-unheld: held after %s s; pending %S, unread %S, taken %S" secs
+                        (input-pending-p) unread-command-events
+                        (mapcar (lambda (e) (or (car-safe e) e)) nhmac-gui--taken)))
       (nhmac-gui--put-back))
     (not (plist-get (nhmac-gui--surface) :held))))
 
@@ -1912,16 +1917,20 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
                ;; a control: the inline load again, so a difference between two inline loads (ImageIO)
                ;; is told apart from one the worker makes
                (again (and (string-suffix-p ".jpg" name) (nhmac-gui--image-screen f)))
-               (worst 0))
+               (worst 0) (off-pixels 0) (first-row nil))
           ;; the worker took it: one more landing
           (should (> (plist-get (nidhogg-workers--test-image-info) :landed) landed))
           (should (equal (take 2 off) (take 2 inline)))
           (dotimes (i (length (nth 2 inline)))
             (let ((a (aref (nth 2 inline) i)) (b (aref (nth 2 off) i)))
+              (unless (= a b)
+                (cl-incf off-pixels)
+                (unless first-row (setq first-row (/ i (car inline)))))
               (dolist (sh '(16 8 0))
                 (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
-          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d%s; reads %.1f s, compare %.1f s"
-                          name (car inline) (nth 1 inline) worst
+          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d (%d pixels, from row %S)%s; \
+reads %.1f s, compare %.1f s"
+                          name (car inline) (nth 1 inline) worst off-pixels first-row
                           (if again
                               (format " (inline against inline: %d)"
                                       (let ((m 0))
@@ -2537,14 +2546,14 @@ metrics from the font's glyph table.  A character on a page not read yet makes c
           (dotimes (_ 2) (redraw-frame) (redisplay t))
           (let ((before (nhmac-stats)))
             (dotimes (_ 5) (redraw-frame) (redisplay t))
-            (message "nhmac-font-calls-per-glyph: warm %S" (nhmac-stats))
+            (nhmac-gui--say "nhmac-font-calls-per-glyph: warm %S" (nhmac-stats))
             (should (= (nhmac-gui--delta before :font-calls) 0)))
           ;; Greek: a page no glyph above is on
           (let ((before (nhmac-stats)))
             (goto-char (point-min))
             (insert "αβγ\n")
             (redisplay t)
-            (message "nhmac-font-calls-per-glyph: a miss %S" (nhmac-stats))
+            (nhmac-gui--say "nhmac-font-calls-per-glyph: a miss %S" (nhmac-stats))
             (should (> (nhmac-gui--delta before :font-calls) 0))
             (should (> (nhmac-gui--delta before :font-fills) 0))))
       (kill-buffer buf)
@@ -2659,7 +2668,7 @@ its fallback fonts for nhmac-font-fallback-same; its shaping for nhmac-font-shap
   (nhmac-gui--lane-write "font-fallback" (nhmac-gui--fallback-facts))
   (nhmac-gui--lane-write "font-shaping" (nhmac-gui--shaping-facts))
   (let ((facts (nhmac-gui--parity-facts)))
-    (message "nhmac-ns-font-parity-dump: %S" facts)
+    (nhmac-gui--say "nhmac-ns-font-parity-dump: %S" facts)
     (nhmac-gui--lane-write "font-parity" facts)
     (should (cl-some (lambda (r) (nth 2 r)) facts))))
 
@@ -2762,7 +2771,7 @@ reported and skipped; one NS has and Naglfar does not is a failure."
     (dolist (row ns)
       (pcase-let ((`(,family ,height ,want) row))
         (if (not want)
-            (message "nhmac-font-metrics-parity: %s is not on this machine (NS), skipped" family)
+            (nhmac-gui--say "nhmac-font-metrics-parity: %s is not on this machine (NS), skipped" family)
           (let ((got (nhmac-gui--font-facts family height (cdr (assoc family nhmac-gui--parity-fonts)))))
             (cl-incf compared)
             (nhmac-gui--say "nhmac-font-metrics-parity: %s %d: NS %S, Naglfar %S" family height want got)
@@ -2903,14 +2912,14 @@ difference in drgnx's fit row is then the fitter's, not the driver's."
       (nhmac-gui--with-text (list :family (car f) :height 120) (cdr f)
         (let ((font (font-at (point))))
           (if (not (string-equal-ignore-case (symbol-name (font-get font :family)) (car f)))
-              (message "nhmac-advances-for-fit: %s is not on this machine, skipped" (car f))
+              (nhmac-gui--say "nhmac-advances-for-fit: %s is not on this machine, skipped" (car f))
             (let* ((glyphs (font-get-glyphs font 0 (length (cdr f)) (cdr f)))
                    (codes (mapcar (lambda (g) (aref g 3)) glyphs))
                    (widths (mapcar (lambda (g) (aref g 4)) glyphs))
                    (ct (apply #'nhmac--query 'test-ct-advances (symbol-name (font-get font :family))
                               (font-get font :size) codes)))
               (cl-incf compared)
-              (message "nhmac-advances-for-fit: %s: widths %S, Core Text %S" (car f) widths ct)
+              (nhmac-gui--say "nhmac-advances-for-fit: %s: widths %S, Core Text %S" (car f) widths ct)
               (unless (and ct (equal widths (mapcar (lambda (a) (floor (+ a 0.5))) ct)))
                 (push (car f) bad)))))))
     (should (> compared 0))

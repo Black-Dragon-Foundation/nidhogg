@@ -24,14 +24,16 @@
 (defun nhmac-app--run (program args secs)
   "Run PROGRAM with ARGS for at most SECS seconds; (EXIT-STATUS . OUTPUT), EXIT-STATUS `timeout' when it ran over."
   (let* ((buf (generate-new-buffer " *nhmac-app*"))
+         (done nil)
+         ;; the sentinel runs after the last output is read; `process-live-p' turns nil at the exit, before that
          (proc (make-process :name "nhmac-app" :buffer buf :command (cons program args)
-                             :connection-type 'pipe :noquery t :sentinel #'ignore))
+                             :connection-type 'pipe :noquery t :sentinel (lambda (_p _e) (setq done t))))
          (deadline (+ (float-time) secs)))
     (unwind-protect
         (progn
-          (while (and (process-live-p proc) (< (float-time) deadline))
+          (while (and (not done) (< (float-time) deadline))
             (accept-process-output proc 0.2))
-          (let ((live (process-live-p proc)))
+          (let ((live (not done)))
             (when live (delete-process proc))
             (cons (if live 'timeout (process-exit-status proc))
                   (with-current-buffer buf (buffer-string)))))
@@ -49,10 +51,10 @@
          (out (make-temp-file "nhmac-open"))
          (form (format "(progn (write-region (prin1-to-string (list invocation-directory data-directory window-system)) nil %S) (kill-emacs))" out))
          (r (nhmac-app--run "open" (list "-n" "-W" "-a" app "--args" "-Q" "--eval" form) 90)))
-    (message "nhmac-bundle-open: %S" r)
+    (nhmac-app--say "nhmac-bundle-open: %S" r)
     (should (eq (car r) 0))
     (let ((got (read (with-temp-buffer (insert-file-contents out) (buffer-string)))))
-      (message "nhmac-bundle-open: %S" got)
+      (nhmac-app--say "nhmac-bundle-open: %S" got)
       (should (string-prefix-p app (file-truename (nth 0 got))))
       (should (string-prefix-p app (file-truename (nth 1 got))))
       (should (eq (nth 2 got) 'ns)))))
@@ -96,7 +98,7 @@
   (skip-unless (nhmac-app--dir))
   (let* ((process-environment (nhmac-app--without-locale))
          (r (nhmac-app--run (nhmac-app--emacs) (list "--batch" "--eval" "(princ (getenv \"LANG\"))") 60)))
-    (message "nhmac-locale-from-system: %S" r)
+    (nhmac-app--say "nhmac-locale-from-system: %S" r)
     (should (eq (car r) 0))
     (should (string-match-p "[a-z]+\\(_[A-Za-z]+\\)?\\.UTF-8\\'" (string-trim (cdr r))))))
 

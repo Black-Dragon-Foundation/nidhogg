@@ -6,6 +6,7 @@
 ;; the NSWindow's own state.
 
 (require 'ert)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 (require 'cl-lib)
 
 (defun nhmac-win-gui--naglfar-p ()
@@ -21,7 +22,7 @@
                 (< (float-time) deadline))
       (sit-for 0.2))
     (unless (eq (plist-get st key) want)
-      (message "nhmac-win-gui--wait: %S never %S: %S" key want st))
+      (glitnir-gui--say "nhmac-win-gui--wait: %S never %S: %S" key want st))
     st))
 
 ;; Task 32: window behaviours, full screen, Spaces, appearance
