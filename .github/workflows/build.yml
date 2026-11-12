@@ -167,7 +167,8 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - run: sudo apt-get update && sudo apt-get install -y unifdef
+      # emacs-nox: ci-test.sh reads every file the macOS lane loads
+      - run: sudo apt-get update && sudo apt-get install -y unifdef emacs-nox
       - run: TREE_TEST_SELF=1 bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/ci-test.sh

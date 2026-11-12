@@ -340,6 +340,21 @@ for g in $(sed 's/#.*//' nidhogg/test/nhmac-lane.txt | awk '$1 == "files" { for 
   done
 done
 [ "$lane_floor" -le "$lane_rows" ]                                 || fail "the lane floor $lane_floor is above the $lane_rows rows the lane's files hold"
+# every file the lane loads reads to its end: one unbalanced form makes gui-runner skip the whole lane (0 rows ran)
+lane_files=(test/src/nidhogg-tests/gui-runner.el)
+for g in $(sed 's/#.*//' nidhogg/test/nhmac-lane.txt | awk '$1 == "files" { for (i = 2; i <= NF; i++) print $i }'); do
+  for f in test/src/nidhogg-tests/$g; do [ -f "$f" ] && lane_files+=("$f"); done
+done
+if ! command -v emacs >/dev/null; then fail "no emacs to read the lane's files with"
+elif ! out=$(emacs -Q --batch --eval '(dolist (f command-line-args-left)
+                 (with-temp-buffer
+                   (insert-file-contents f)
+                   (emacs-lisp-mode)
+                   (condition-case err (check-parens)
+                     (error (error "%s does not read at line %d: %s" f (line-number-at-pos)
+                                   (error-message-string err))))))' "${lane_files[@]}" 2>&1); then
+  fail "a lane file does not read: $(grep -m 1 'does not read' <<<"$out" || tail -n 1 <<<"$out")"
+fi
 job macos-naglfar | grep -qF -- "--exclude=glitnir-target"           || fail "the Naglfar build tree artifact carries the Rust target"
 job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "macos-naglfar does not follow the macOS path filter"
 job gate | grep -qF 'macos-naglfar macos-naglfar-rows " ;; esac'     || fail "the gate lets a filtered macOS run skip macos but not the Naglfar jobs"

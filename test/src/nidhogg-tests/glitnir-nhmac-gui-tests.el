@@ -1301,7 +1301,7 @@ above it moves down by one, and the window server lists no window more or less."
           (unless (eql p q)
             (setq n (1+ n))
             (dolist (sh '(16 8 0))
-              (setq mx (max mx (abs (- (logand (ash p (- sh)) 255) (logand (ash q (- sh)) 255)))))))))
+              (setq mx (max mx (abs (- (logand (ash p (- sh)) 255) (logand (ash q (- sh)) 255))))))))))
     (list n mx)))
 
 (defun glitnir-nhmac--root-rect (img)
