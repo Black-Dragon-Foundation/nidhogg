@@ -397,8 +397,18 @@ usage: (nidhogg-watchdog--start THRESHOLD-MS HANG-MS HANG-FILE &rest FLAGS)  */)
 
   if (nh_wd_handler_install () != 0)
     {
+      /* Who holds the signal: a claimed one names its flags and whether
+	 its handler is a function (round 4 failed here with no clue).  */
+      struct sigaction cur;
+      int got = sigaction (NIDHOGG_WATCHDOG_SIGNAL, NULL, &cur);
       wd_free ();
-      error ("nidhogg-watchdog: cannot install the signal handler");
+      error ("nidhogg-watchdog: cannot install the signal handler"
+	     " (sigaction %d, flags 0x%x, handler %s)", got,
+	     got == 0 ? (unsigned) cur.sa_flags : 0u,
+	     got != 0 ? "?"
+	     : (cur.sa_flags & SA_SIGINFO) ? "siginfo"
+	     : cur.sa_handler == SIG_DFL ? "default"
+	     : cur.sa_handler == SIG_IGN ? "ignored" : "function");
     }
   span_open (nh_wd_now_ns ());
   wd_in_select = wd_runloop_asleep = false;

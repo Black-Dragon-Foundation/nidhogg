@@ -327,6 +327,11 @@ impl MacShell {
                     super::windowing::fullscreen_transition(w, busy, &mut self.effects);
                 }
             }
+            MacEv::FullScreenWant(id) => {
+                if let Some(w) = self.windows.get_mut(&id) {
+                    super::windowing::want(w, &mut self.effects);
+                }
+            }
         }
     }
 

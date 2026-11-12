@@ -105,6 +105,22 @@ nhmac_argb (struct frame *f, unsigned long color, bool respect)
   return a << 24 | (color & 0xffffff);
 }
 
+/* Test diagnostics: the records whose rectangle meets a watched one, in
+   the order they were painted (`nhmac--test-draw-watch').  */
+static NhgRect nhmac_watch;
+static NhgDrawRec nhmac_watched[64];
+static int nhmac_nwatched;
+
+static void
+nhmac_watch_note (const NhgDrawRec *r)
+{
+  const NhgRect *a = &r->r, *w = &nhmac_watch;
+  if (w->w > 0 && nhmac_nwatched < ARRAYELTS (nhmac_watched)
+      && a->x < w->x + w->w && w->x < a->x + a->w
+      && a->y < w->y + w->h && w->y < a->y + a->h)
+    nhmac_watched[nhmac_nwatched++] = *r;
+}
+
 /* Paint record R into F's backing under the clip in force.  */
 static void
 nhmac_emit (struct frame *f, NhgDrawRec *r)
@@ -112,6 +128,7 @@ nhmac_emit (struct frame *f, NhgDrawRec *r)
   struct nhmac_clip *c = nhmac_top ();
   r->nclip = c->n;
   memcpy (r->clip, c->r, sizeof r->clip);
+  nhmac_watch_note (r);
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		NHG (nhg_draw (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id,
 			       r, 1)));
@@ -484,6 +501,7 @@ nhmac_glyph_run (struct glyph_string *s, uint64_t font, int from, int to,
   nhwl_begin_cr_clip (f);
   r.nclip = nhmac_top ()->n;
   memcpy (r.clip, nhmac_top ()->r, sizeof r.clip);
+  nhmac_watch_note (&r);
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		NHG (nhg_draw_glyphs (FRAME_NHG (f),
 				      FRAME_NHWL_OUTPUT (f)->glitnir_id,
@@ -612,4 +630,49 @@ nhwl_draw_window_divider (struct window *w, int x0, int x1, int y0, int y1)
     }
   else
     nhwl_fill_rectangle (f, c, x0, y0, x1 - x0, y1 - y0, a);
+}
+
+DEFUN ("nhmac--test-draw-watch", Fnhmac__test_draw_watch,
+       Snhmac__test_draw_watch, 4, 4, 0,
+       doc: /* Test only: log the draw records that meet a rectangle.
+X, Y, W and H are device pixels of the frame's backing; W 0 stops.  The
+log starts empty; `nhmac--test-draw-log' reads it.  */)
+  (Lisp_Object x, Lisp_Object y, Lisp_Object w, Lisp_Object h)
+{
+  nhmac_watch = (NhgRect) { check_integer_range (x, INT_MIN, INT_MAX),
+			    check_integer_range (y, INT_MIN, INT_MAX),
+			    check_integer_range (w, 0, INT_MAX),
+			    check_integer_range (h, 0, INT_MAX) };
+  nhmac_nwatched = 0;
+  return Qnil;
+}
+
+DEFUN ("nhmac--test-draw-log", Fnhmac__test_draw_log, Snhmac__test_draw_log,
+       0, 0, 0,
+       doc: /* Test only: the draw records logged since `nhmac--test-draw-watch'.
+Each is (KIND FLAGS (X Y W H) FG BG CLIPS), CLIPS a list of (X Y W H),
+in the order they were painted (at most 64).  */)
+  (void)
+{
+  Lisp_Object out = Qnil;
+  for (int i = nhmac_nwatched - 1; i >= 0; i--)
+    {
+      NhgDrawRec *r = &nhmac_watched[i];
+      Lisp_Object clips = Qnil;
+      for (int j = min (r->nclip, 2) - 1; j >= 0; j--)
+	clips = Fcons (list4i (r->clip[j].x, r->clip[j].y, r->clip[j].w,
+			       r->clip[j].h), clips);
+      out = Fcons (list (make_fixnum (r->kind), make_fixnum (r->flags),
+			 list4i (r->r.x, r->r.y, r->r.w, r->r.h),
+			 make_uint (r->fg), make_uint (r->bg), clips),
+		   out);
+    }
+  return out;
+}
+
+void
+syms_of_nhmacdraw (void)
+{
+  defsubr (&Snhmac__test_draw_watch);
+  defsubr (&Snhmac__test_draw_log);
 }

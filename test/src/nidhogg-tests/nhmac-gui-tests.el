@@ -3197,6 +3197,18 @@ image.  Each failure names the record, the expected colour and rect, and what wa
           (records (nhmac-gui--draw-probes k))
           (cursors (nhmac-gui--cursor-probes k)))
       (nhmac-gui--say "nhmac-draw-all-records: scale %d: geometry %S; records %S; cursors %S" k geometry records cursors)
+      ;; round 4: the overline, the strike-through and the raised relief's bottom were in neither the backing nor the
+      ;; surface.  The records C paints over each run when the frame is drawn again, in order: none, one that
+      ;; misses, or one painted over later are different causes
+      (when (and records (fboundp 'nhmac--test-draw-watch))
+        (dolist (name '("over" "strike" "raised"))
+          (pcase-let ((`(,x0 ,top ,x1 ,_ ,bottom) (nhmac-gui--run-box name)))
+            (nhmac--test-draw-watch x0 top (- x1 x0) (- bottom top))
+            (redraw-frame)
+            (redisplay t)
+            (nhmac-gui--say "nhmac-draw-all-records: %s at %S: records %S" name (list x0 top x1 bottom)
+                            (nhmac--test-draw-log))))
+        (nhmac--test-draw-watch 0 0 0 0))
       (should-not geometry)
       (should-not records)
       (should-not cursors))))
