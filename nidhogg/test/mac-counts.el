@@ -11,7 +11,6 @@
 
 (declare-function mac-counts--read-raw "mac-interpose")
 (declare-function mac-counts--mark "mac-interpose")
-(declare-function mac-counts--menu-dump "mac-interpose")
 
 (defvar mac-counts--loaded nil "Non-nil once the interposer's module is loaded.")
 
@@ -46,11 +45,6 @@
   "Mark the command loop's redisplays too: in at `pre-redisplay-functions', out at `post-command-hook'."
   (add-hook 'pre-redisplay-functions #'mac-counts--in)
   (add-hook 'post-command-hook #'mac-counts--out))
-
-(defun mac-counts-menu-dump (file)
-  "On NS: send menuNeedsUpdate: to every submenu of the main menu, then write one tab-separated line per item to FILE
-(depth, title, enabled, state, key equivalent, separator).  Without the interposer FILE is not written."
-  (when (mac-counts--load) (mac-counts--menu-dump file)))
 
 (provide 'mac-counts)
 ;;; mac-counts.el ends here

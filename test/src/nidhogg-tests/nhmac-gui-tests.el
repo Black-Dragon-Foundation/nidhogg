@@ -14,10 +14,6 @@
   "Print FMT with ARGS as a line of the lane's log (stderr), not to *Messages*."
   (princ (concat (apply #'format fmt args) "\n") #'external-debugging-output))
 
-(defun nhmac-gui--ns-build-p ()
-  "The stock NS port (not Naglfar): the baselines are measured here."
-  (and (eq window-system 'ns) (not (featurep 'nidhogg-macos))))
-
 ;; Timing rows are judged on the bars of drgnx's test/perf/budgets.eld (a key's p95 within one 60 Hz frame, 16 ms, its
 ;; max 50 ms), font rows on Core Text's own answers, image rows on ImageIO's: no row compares Naglfar with NS.
 (defun nhmac-gui--rank (xs q)
@@ -37,7 +33,6 @@
 (ert-deftest nhmac-window-system-is-ns ()
   "`window-system', `initial-window-system' and the terminal's type read `ns', and the shell provides
 `nidhogg-macos' and `ns'."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (featurep 'nidhogg-macos))
   (should (featurep 'ns))
   (should (eq window-system 'ns))
@@ -49,7 +44,6 @@
   "`make-frame' gives a visible NSWindow whose root view hosts the shell's layer (no subviews), sized in device
 pixels; the display's width is the main screen's."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((f (make-frame '((width . 60) (height . 20)))))
     (unwind-protect
         (let ((info (progn (redisplay t) (sit-for 0.2) (nhmac--window-info f))))
@@ -68,7 +62,6 @@ pixels; the display's width is the main screen's."
 `setFrame:' and `makeKeyAndOrderFront:' with the scope free are applied at once; inside a borrow (with a modal session
 and a nested event loop) they queue, and each queued event is applied once when the lend ends; a deferred effect runs
 with the borrow put back.  No two borrows are ever live."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((before (nhmac-stats))
          (r (nhmac--test-reentry))
          (after (nhmac-stats)))
@@ -85,7 +78,6 @@ with the borrow put back.  No two borrows are ever live."
   "A query that runs a modal session, with a window resized inside it: the delegate takes the lent state, nothing
 is left queued, and the display is not poisoned."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   ;; a frame deleted with no pump after it (at scale 2, its window's callbacks queue outside a lend): what waits from
   ;; before the session is not the session's
   (delete-frame (make-frame '((width . 20) (height . 5))) t)
@@ -117,7 +109,6 @@ is left queued, and the display is not poisoned."
 (ert-deftest nhmac-keys-basic ()
   "Plain characters, the named keys and control chords posted as AppKit key events arrive as NS reads them; C-g
 ends a `sit-for' early."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--flush)
   (let ((plain "abcdefghijklmnopqrstuvwxyz0123"))
     (mapc #'nhmac--test-post-key plain)
@@ -157,7 +148,6 @@ ends a `sit-for' early."
   "The menu bar is the system's (as NS's): `menu-bar-lines' 1 leaves the frame's text at its top, with no strip above
 the root window, and turning it off and on changes no size."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (mb (frame-parameter f 'menu-bar-lines))
          (tb (frame-parameter f 'tool-bar-lines)) (tab (frame-parameter f 'tab-bar-lines))
          (top (lambda () (nth 1 (window-pixel-edges (frame-root-window f))))))
@@ -183,7 +173,6 @@ the root window, and turning it off and on changes no size."
   "The pointer moved onto a mouse sensor's text, then off the frame's window: the sensor is entered, then left (the
 view's `mouseExited:', which gives the frame a leave: note_mouse_sensor_leave), as on Wayland."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((log nil) (mouse-sensor-enabled t))
     (switch-to-buffer (generate-new-buffer " *nhmac-sensor*"))
     (insert (propertize "aaaa" 'mouse-sensor-functions (list (lambda (_w _pos dir) (push dir log))))
@@ -211,7 +200,6 @@ view's `mouseExited:', which gives the frame a leave: note_mouse_sensor_leave), 
 (ert-deftest nhmac-mouse-basic ()
   "A click posted as AppKit mouse events lands on its character, a drag spans its region, a wheel notch scrolls,
 and `mouse-pixel-position' follows motion."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (with-current-buffer (get-buffer-create " *nhmac-mouse*")
     (erase-buffer)
     (dotimes (i 200) (insert (format "line %03d of the mouse buffer\n" i)))
@@ -282,7 +270,6 @@ the hash table GAPS, as (LINES . GAP)."
   "A pipe, a pty and a pipe served by the helper, under load: every line arrives with no gap near the wait's 5 s
 timeout (0 missed), the kqueue's source never ends a sleep with nothing ready (0 empty wake-ups), and the helper
 serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: which kqueue refuses (EINVAL)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (p (append '("/dev/null" "/dev/tty") (file-expand-wildcards "/dev/cu.*")))
     (nhmac-gui--say "nhmac-kq-probe: %s %S" p (nhmac--test-kq-probe p)))
   (let* ((gaps (make-hash-table :test #'equal))
@@ -314,7 +301,6 @@ serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: w
   "No layer under the wait loses a readiness: the kernel's kqueue, directly and through a second kqueue (the run
 loop's source's shape), on a pipe and on a pty (0 misses in 2000 bytes each); and the whole wait, with one pipe or
 one pty alone, never sleeps through output (no gap near its 2 s timeout, three rounds each)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((layers (nhmac--test-kq-layers 2000))
         (gaps (make-hash-table :test #'equal)))
     (nhmac-gui--say "nhmac-kq-layers: kernel %S" layers)
@@ -338,7 +324,6 @@ one pty alone, never sleeps through output (no gap near its 2 s timeout, three r
   "Under a `yes' flood, 50 keys posted one at a time each reach Lisp at once and in order: the pump that begins
 every wait stores a key before the wait reads the flood, so keys never wait behind output, and none takes the
 helper's hop (`:helper-hops-keys' 0)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   ;; each phase's seconds, so a slow row names the phase it spent them in
   (let ((phases nil) (t0 (float-time)))
     (nhmac-gui--flush)
@@ -405,7 +390,6 @@ Each round takes the mutex, notifies a condition (ALL t and nil in turn) and yie
 rounds, through `acquire_global_lock', the condition's return, `condition-notify' with ALL nil and t, and
 `thread-join': every round completes, no park outlives a waiter (`:parks-with-waiters' 0), and the count is 0 at the
 end.  The lock waits over 2 ms are logged, not gated."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((before (nhmac-stats))
          (stop (list nil))
          (c (nhmac-gui--contenders 4 stop))
@@ -422,7 +406,6 @@ end.  The lock waits over 2 ms are logged, not gated."
 (ert-deftest nhmac-lock-handoff-signal ()
   "3 waiters on one condition, one `condition-notify' with ALL nil per round: exactly one proceeds each round, and the
 lock-waiter count is back to 0 after each (a signal marks one waiter, not all)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((m (make-mutex)) (c (make-condition-variable m))
          (tickets 0) (taken 0) (stop nil)
          (waiters (cl-loop for i below 3 collect
@@ -489,7 +472,6 @@ lock-waiter count is back to 0 after each (a signal marks one waiter, not all)."
 (ert-deftest nhmac-quit-reaches-busy-loop ()
   "A C-g queued in AppKit while Lisp runs a busy loop (no input read, no redisplay, no wait) quits it: the loop's
 input polls pump AppKit.  The loop ends itself after 5 s, failing the row."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--flush)
   (let ((start (float-time)) quit)
     (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
@@ -505,7 +487,6 @@ input polls pump AppKit.  The loop ends itself after 5 s, failing the row."
 (ert-deftest nhmac-keys-under-yield-loop ()
   "While a Lisp thread spins on `thread-yield', and again under 4-thread contention, keys, a process's output, a
 timer and C-g all reach Lisp: the main thread's yield loop pumps and polls, it never parks with waiters."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((stop (list nil))
          (spinner (make-thread (lambda () (while (not (car stop)) (thread-yield))) "nhmac-spin")))
     (unwind-protect (nhmac-gui--live-under-load)
@@ -521,7 +502,6 @@ timer and C-g all reach Lisp: the main thread's yield loop pumps and polls, it n
 (ert-deftest nhmac-thread-input-hands-the-pump ()
   "A Lisp thread that reads input (its `read_socket' asks for a pump) never pumps AppKit itself: the pump is handed
 to the main thread, the display lives and keys still arrive."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--flush)
   (let* ((before (nhmac-stats))
          (th (make-thread (lambda () (dotimes (_ 20) (input-pending-p) (thread-yield))) "nhmac-input")))
@@ -533,7 +513,6 @@ to the main thread, the display lives and keys still arrive."
 (ert-deftest nhmac-thread-wakes-idle-main ()
   "A thread waiting on a condition is woken by another Lisp thread's notify while the main thread idles in its
 wait, with no AppKit event: the notifier's want of the lock ends the main thread's park."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--flush)
   (let* ((m (make-mutex)) (c (make-condition-variable m))
          (go nil) (woken nil) (notified nil)
@@ -560,7 +539,6 @@ wait, with no AppKit event: the notifier's want of the lock ends the main thread
 abort.  With its only display gone Emacs ends with status 70 (nhwl_connection_lost, as xterm does), so the exception
 is raised in a child Emacs on the same window server, never in the runner; the child has 30 s."
   :tags '(runs-last)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((buf (generate-new-buffer " *nhmac-poison*"))
          (proc (make-process
                 :name "nhmac-poison" :buffer buf :connection-type 'pipe
@@ -604,7 +582,6 @@ second later prints whether the frame is visible, its draws, the shell's startup
 its frame, each become visible and draw.  Guards the start that once drew nothing at scale 1; a failing start's facts
 (its configure waits, the startup trace, the shell's view) are the message.  Each child has 30 s."
   :tags '(runs-last)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (skip-unless (= (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")) 1))
   (let ((emacs (expand-file-name invocation-name invocation-directory))
         (bad nil))
@@ -703,7 +680,6 @@ without, back to back."
 most, in the three §5.4 cases (end of line, mid-line, the worst plain key); never a whole surface.  The keys come
 at the fastest key repeat, on a ring that has made all its slots."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (let ((row (nhmac-gui--row-bytes))
         (keys 10))
@@ -732,7 +708,6 @@ at the fastest key repeat, on a ring that has made all its slots."
 (ert-deftest nhmac-commits-per-redisplay ()
   "A redisplay after a key commits the frame's tree at most once."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "commits")
   (let ((d (nhmac-gui--type 20)))
     (nhmac-gui--say "nhmac-commits-per-redisplay: 20 keys: %d commits" (plist-get d :commits))
@@ -742,7 +717,6 @@ at the fastest key repeat, on a ring that has made all its slots."
 
 (ert-deftest nhmac-no-spins-in-redisplay ()
   "Redisplay turns no run loop: 0 passes of the main run loop outside the pumps while typing."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "spins")
   (let ((d (nhmac-gui--type 20)))
     (nhmac-gui--say "nhmac-no-spins-in-redisplay: 20 keys: %d spins outside the pumps" (plist-get d :spins-in-redisplay))
@@ -751,7 +725,6 @@ at the fastest key repeat, on a ring that has made all its slots."
 
 (ert-deftest nhmac-no-implicit-transaction ()
   "No implicit Core Animation transaction is left open when a publish ends, while typing."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "implicit")
   (should (= (plist-get (nhmac-gui--type 20) :implicit-open-at-update-end) 0))
   (kill-buffer))
@@ -762,7 +735,6 @@ Each key comes once the window server has handed back a surface, as a typed key 
 a key posted while it still composites the last commits is held by the pacer, whose release is the run loop's
 \(`nhmac-surface-busy-burst' is that row)."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "key")
   ;; the blinking cursor's timer redraws the cursor on its own (one commit of the cursor's cell); the row counts the
   ;; key's commits
@@ -805,7 +777,6 @@ free after %.3f s)"
 (ert-deftest nhmac-surface-busy-typing ()
   "While typing (keys at the fastest key repeat) the ring always has a surface the window server does not hold."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer "busy")
   (let ((d (nhmac-gui--type 30 nil t)))
@@ -869,7 +840,6 @@ not hold, at most SECS; how many seconds that took, or nil if it never did."
 commit pacer holds a commit while every other surface is held, so no held surface is drawn into (0 busy), and no hold
 reaches its bound on a composited window (0 held timeouts)."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer "burst")
   (let ((d (nhmac-gui--type 30)))
@@ -898,7 +868,6 @@ The surfaces read as free again when it returns; the held commit is owed."
 Emacs sits in its wait (the pacer's timer asks for it): the layer then shows the newest surface, and the hold ended
 without reaching its bound."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "last")
   (let ((before (nhmac-stats)))
     (nhmac-gui--hold-one)
@@ -917,7 +886,6 @@ without reaching its bound."
   "After a held commit shows, the pacer's timer is disarmed: it was armed for the hold (its release may come from a
 pump's check before the timer fires), and does not fire over 2 s of idle after."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "idle")
   (let ((before (nhmac-stats)))
     (nhmac-gui--hold-one)
@@ -935,7 +903,6 @@ pump's check before the timer fires), and does not fire over 2 s of idle after."
   "A commit held past the pacer's bound (every surface forced to read as held throughout) is drawn into the oldest
 anyway, counted as a held timeout and a busy surface, so a stuck window server never freezes the frame."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "bound")
   ;; the buffer's own commit first (the commit is off the redisplay path): the row's commit is the one held
   (nhmac-gui--redisplay)
@@ -964,7 +931,6 @@ anyway, counted as a held timeout and a busy surface, so a stuck window server n
   "The typing rows measure on a ring that has made all its slots: right after the ring starts over (the colour space
 changed) it has fewer, which their check sees, and the warm-up fills it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (let ((srgb ns-use-srgb-colorspace))
     (switch-to-buffer (generate-new-buffer " *nhmac-fill*"))
@@ -988,7 +954,6 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
 (ert-deftest nhmac-scroll-bytes ()
   "Scrolling a window by a line copies the scrolled rows, not the surface."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer (mapconcat #'number-to-string (number-sequence 1 300) "\n"))
   (goto-char (point-min))
@@ -1010,7 +975,6 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
   "After `redisplay' and Lisp that runs on for 20 ms the layer shows the newest surface, read back in the process,
 with no run-loop turn: the commit's deadline commits it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "shows")
   (let ((before (nhmac-stats)))
     (insert "y")
@@ -1037,7 +1001,6 @@ with no run-loop turn: the commit's deadline commits it."
   "The commit is off the redisplay path (as NS's, Core Animation's at the run loop's turn): a redisplay that drew
 commits nothing and flushes nothing inside it; the next wait commits it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "no-flush")
   (redisplay t)
   (sit-for 0.05)
@@ -1058,7 +1021,6 @@ commits nothing and flushes nothing inside it; the next wait commits it."
   "Lisp that keeps running after a redisplay, waiting for nothing, still has its frame shown: the commit's deadline
 flushes it within a few milliseconds, without a pump."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "busy-shows")
   (redisplay t)
   (sit-for 0.05)
@@ -1079,7 +1041,6 @@ flushes it within a few milliseconds, without a pump."
 (ert-deftest nhmac-colour-tagged ()
   "The surfaces' colour space follows `ns-use-srgb-colorspace': sRGB, else Generic RGB."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (unwind-protect
       (progn
         (setq ns-use-srgb-colorspace nil)
@@ -1156,7 +1117,6 @@ median at most 4 ms, a quarter of a 60 Hz frame, and p95 at most 8 ms, so a slow
   "A key's time split by stage, medians in microseconds, written to GLITNIR_GUI_OUT/stages-naglfar.txt.
 It measures; it asserts only that it ran."
   :tags '(timing)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((naglfar t)
          (build "naglfar")
          (file (expand-file-name (format "stages-%s.txt" build)
@@ -1343,7 +1303,6 @@ Returns the frame position of the first stretch's top left."
 nor its background (it shows what is beneath), while the middle of its top edge is the box's colour.  A square box,
 the shell drawing no rounded path, fails here."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (switch-to-buffer (generate-new-buffer " *nhmac-rounded*"))
   (setq-local cursor-type nil)
   (insert (propertize " " 'display '(space :width (40))
@@ -1367,7 +1326,6 @@ the shell drawing no rounded path, fails here."
   "Fills, a box and a bar cursor reach the committed surface with their exact colours (sRGB, opaque): the faces'
 colours, tolerance 0 for fills and box lines."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((o (nhmac-gui--draw-scene))
          (x (car o)) (y (cdr o)) (h (frame-char-height)))
     (nhmac-gui--say "nhmac-draw-fills-boxes-cursors: origin %S, stats %S" o (nhmac-stats))
@@ -1400,7 +1358,6 @@ colours, tolerance 0 for fills and box lines."
 (ert-deftest nhmac-draw-other-thread ()
   "A Lisp thread's redisplay paints, but its commit waits for the main thread's next pump."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((o (nhmac-gui--draw-scene))
          (x (car o)) (y (cdr o)) (h (frame-char-height))
          (before (nhmac-stats))
@@ -1762,7 +1719,6 @@ every box, or a glyph not where the widths before it put it."
 rules (`nhmac-gui--ct-metrics'); on the committed surface each glyph of the line has ink, all of it inside the glyph
 boxes (`nhmac-gui--ink-boxes')."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--with-font-scene
     (let* ((start (save-excursion (goto-char (point-min)) (search-forward "Hello") (match-beginning 0)))
            (font (font-at start))
@@ -1782,7 +1738,6 @@ boxes (`nhmac-gui--ink-boxes')."
   "Fonts open at many sizes and close when the font cache is cleared, again and again; each opens at its size and the
 frame's text still reaches the surface."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
     (dotimes (i 30)
       (let* ((pt (+ 9 (% i 7)))
@@ -1866,7 +1821,6 @@ are put back after."
 pixels are device pixels there) each opaque image's pixels on the committed surface are within 2/255 of ImageIO's own
 decode of the file in sRGB (`test-imageio-pixels')."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (type '(png jpeg gif tiff webp heic))
     (should (image-type-available-p type)))
   (dolist (f (nhmac-gui--image-files))
@@ -1956,7 +1910,7 @@ screen capture are not in the comparison."
   "PNG, JPEG, GIF and WebP decoded off the main thread by the image worker (Glitnir's decoders, ImageIO behind them
 and for JPEG) land and draw the pixels the inline load draws, within 2/255."
   :tags '(draws)
-  (skip-unless (and (not (nhmac-gui--ns-build-p)) (equal (getenv "GLITNIR_GUI_SCALE") "1")))
+  (skip-unless (equal (getenv "GLITNIR_GUI_SCALE") "1"))
   (should (fboundp 'nidhogg-workers--test-decide))
   (dolist (type '(png jpeg gif webp))
     (should (nidhogg-workers--deferrable-p type)))
@@ -2014,7 +1968,6 @@ first pixel inline #x%06x, worker #x%06x)%s; reads %.1f s, compare %.1f s"
   "While a zoomed image's decode is parked on the worker, the picture it replaces draws scaled into the new box (the
 glue's stand-in), and the stand-in goes when the decode lands."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((file (expand-file-name "../../data/image/black.jpg" (getenv "GLITNIR_GUI_TESTS")))
          (old `(image :type jpeg :file ,file :scale 1))
          (new `(image :type jpeg :file ,file :scale 2))
@@ -2077,7 +2030,6 @@ glue's stand-in), and the stand-in goes when the decode lands."
     (nhmac-gui--say "nhmac-images-builtin: messages: %S"
                     (with-current-buffer (messages-buffer)
                       (buffer-substring-no-properties (max (point-min) (- (point-max) 600)) (point-max)))))
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((xy (posn-x-y (posn-at-point (point-min))))
         (edges (window-inside-pixel-edges)))
     (let ((x (+ (nth 0 edges) (car xy))) (y (+ (nth 1 edges) (cdr xy))))
@@ -2094,7 +2046,6 @@ glue's stand-in), and the stand-in goes when the decode lands."
   "Scales, quarter turns and flips draw through the image's matrix: the sizes follow the spec, and an 8x8 XBM's lit
 top row lands where the turn puts it, its pixels doubled (not smoothed) when scaled up."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (equal (image-transforms-p) '(scale rotate90)))
   (let ((png (expand-file-name "../../data/image/blank-100x200.png" (getenv "GLITNIR_GUI_TESTS"))))
     (should (equal (image-size (create-image png nil nil :scale 2) t) '(200 . 400)))
@@ -2144,7 +2095,6 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
   "SVG through resvg with svg_load_image's keywords: the size from the image and :scale, currentColor the
 :foreground over the :background, the image's :css after Emacs's, and the splash screen's SVG."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (image-type-available-p 'svg))
   (let ((svg "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"4\">\
 <rect width=\"4\" height=\"4\" fill=\"currentColor\"/></svg>"))
@@ -2165,7 +2115,6 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
   "XPM through the glue's reader: the splash screen's XPM at the size its header gives, and None transparent over
 the background beside a named colour."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (image-type-available-p 'xpm))
   (let* ((file (image-search-load-path "splash.xpm"))
          (head (with-temp-buffer
@@ -2180,7 +2129,6 @@ the background beside a named colour."
 
 (ert-deftest nhmac-images-image-tests ()
   "test/src/image-tests.el passes on Naglfar."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (load (expand-file-name "../image-tests" (getenv "GLITNIR_GUI_TESTS")) nil t)
   (let ((stats (ert-run-tests "\\`image-tests-" #'ignore)))
     (nhmac-gui--say "nhmac-images-image-tests: %d run, %d unexpected, %d skipped"
@@ -2203,7 +2151,6 @@ the background beside a named colour."
 (ert-deftest nhmac-images-no-homebrew ()
   "The binary links no image library outside the system: otool -L names none outside /System and /usr/lib.
 The filter checks itself first on a Homebrew libpng line (caught), the system ImageIO and a Homebrew gnutls (not)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (equal (nhmac-gui--outside-image-libs
                   '("\t/opt/homebrew/opt/libpng/lib/libpng16.16.dylib (compatibility version 61.0.0)"
                     "\t/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO (compatibility version 1.0.0)"
@@ -2275,7 +2222,6 @@ else (no contents, so no shadow render either), in one commit, with no picture d
 The root's cursor is off meanwhile: every redisplay draws the selected window's cursor again (xdisp.c's
 `display_and_set_cursor' does not check `phys_cursor_on_p'), with or without a move, which would count as draws."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((c (nhmac-gui--child))
         (root-buf (window-buffer (frame-selected-window (selected-frame)))))
     (unwind-protect
@@ -2314,7 +2260,6 @@ The root's cursor is off meanwhile: every redisplay draws the selected window's 
 parent.  On Core Animation the shadow is a layer beside the content, not a margin of the surface (as on Wayland):
 the surface is the native area, all of it takes input."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (c (nhmac-gui--child '((shadow . (:blur 16 :offset (0 . 6) :opacity 0.35))) 100 100)))
     (unwind-protect
@@ -2364,7 +2309,6 @@ settle (no configure took it back), and the content size times the scale is the 
   "The tool bar turned off and on again: the window shows the frame's surface at the surface's size (its points times
 the scale), and a later `set-frame-size' (smaller: a larger one may pass the screen) is followed."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (tb (frame-parameter f 'tool-bar-lines))
          (fits (lambda (what)
                  (nhmac-gui--settle)
@@ -2391,7 +2335,6 @@ the scale), and a later `set-frame-size' (smaller: a larger one may pass the scr
   "A frame sized taller than its screen: AppKit keeps the window on the screen, and the frame takes the height its
 window got (as NS's does), so the window shows the frame's surface at the surface's size."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (w (frame-text-width f)) (h (frame-text-height f)))
     (unwind-protect
         (progn
@@ -2410,7 +2353,6 @@ window got (as NS's does), so the window shows the frame's surface at the surfac
   "`set-frame-size', `set-frame-width' and `set-frame-height' on a top-level frame: its window takes the size of
 the surface the frame draws at its new size, and no configure takes the frame back to the old one."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame))
          (size (lambda () (cons (frame-pixel-width f) (frame-pixel-height f))))
          (w (frame-text-width f))
@@ -2432,7 +2374,6 @@ the surface the frame draws at its new size, and no configure takes the frame ba
   "A child moved across its root's right edge goes into an overhang panel once per crossing and comes back once,
 with no picture drawn; captures across the switch show exactly one copy of it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (rw (frame-pixel-width root))
          (c (nhmac-gui--child nil 40 40))
@@ -2472,7 +2413,6 @@ with no picture drawn; captures across the switch show exactly one copy of it."
   "`parent-frame' changed all three ways with no picture drawn: a child becomes a top-level window, the top-level
 a child again, and the child moves to another root."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (other (make-frame '((width . 40) (height . 10))))
          (c nil)
@@ -2535,7 +2475,6 @@ a child again, and the child moves to another root."
   "A child frame moved under a root of another scale takes that scale and re-opens its font at it once, as a frame
 the window server moves to such a screen does (`nidhogg-frame-scale-change-functions' run once)."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (other (make-frame '((width . 40) (height . 10))))
          (c nil) (reopens 0)
@@ -2571,7 +2510,6 @@ the window server moves to such a screen does (`nidhogg-frame-scale-change-funct
 (ert-deftest nhmac-one-window-per-root ()
   "The window server lists one window per root frame: child frames add none, an overhanging one adds its panel."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (windows (length (nhmac--test-windows)))
          (a (nhmac-gui--child nil 20 20))
@@ -2595,7 +2533,6 @@ the window server moves to such a screen does (`nidhogg-frame-scale-change-funct
   "After warm-up, redisplaying a window of 1,000 glyphs in Menlo 12 makes no `nhg_font_*' call: C reads glyphs and
 metrics from the font's glyph table.  A character on a page not read yet makes calls (the fill), so the counter counts."
   :tags '(parity)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((font (frame-parameter nil 'font))
         (buf (generate-new-buffer " *nhmac-glyphs*")))
     (unwind-protect
@@ -2723,7 +2660,6 @@ the stated rules (`nhmac-gui--ct-facts'); at :height 120 the underline on the su
 \(`nhmac-gui--underline-rule').  A font this machine lacks is reported and skipped.  Each difference names the font,
 the height, the fact, and the expected and actual values."
   :tags '(parity)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((bad nil) (compared 0))
     (dolist (f nhmac-gui--parity-fonts)
       (dolist (height nhmac-gui--parity-heights)
@@ -2776,7 +2712,6 @@ Text's cascade picks for it from the frame's font (`test-ct-cascade'): ((CHAR SH
   "With Menlo 12 as the frame's font, CJK, emoji, Greek, Hebrew, Thai and the euro sign are each shown in the family
 Core Text's own cascade picks for it from Menlo (`CTFontCreateForString')."
   :tags '(parity)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((facts (nhmac-gui--fallback-facts)))
     (nhmac-gui--say "nhmac-font-fallback-same: (char shown cascade) %S" facts)
     (should (cl-every #'cadr facts))
@@ -2802,7 +2737,6 @@ Core Text's own cascade picks for it from Menlo (`CTFontCreateForString')."
 line: kerning off): the same glyph ids in the same order, each glyph's cluster holding the character Core Text maps it
 from, and the run's width Core Text's typographic widths each rounded (rule: a glyph's width is its rounded advance)."
   :tags '(parity)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (td nhmac-gui--shaping-texts)
     (pcase-let* ((`(,family ,size ,glyphs) (nhmac-gui--shaping-facts (car td) (cdr td)))
                  (runs (apply #'nhmac--query 'test-ct-shape family size (append (car td) nil)))
@@ -2820,7 +2754,6 @@ from, and the run's width Core Text's typographic widths each rounded (rule: a g
   "Each shaping text shown in the default face has a font: `font-at' gives a font object at its first character, as
 on NS.  Logged: what `font-at' gave, the character's script and how many fonts `list-fonts' finds for the script."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (td nhmac-gui--shaping-texts)
     (nhmac-gui--with-text 'default (car td)
       (let* ((font (font-at (point)))
@@ -2869,7 +2802,6 @@ paint, fill and commit, the font driver's calls and fills, the collections)."
   "For the parity fonts at :height 120, each glyph's `font-get-glyphs' width is Core Text's own advance
 (CTFontGetAdvancesForGlyphs, test-ct-advances) rounded, at the frame's device scale: a skrifa-vs-Core Text
 difference in drgnx's fit row is then the fitter's, not the driver's."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((bad nil) (compared 0))
     (dolist (f nhmac-gui--parity-fonts)
       (nhmac-gui--with-text (list :family (car f) :height 120) (cdr f)
@@ -3176,7 +3108,6 @@ colours; the box's line, the reliefs (raised: top lighter, bottom darker), the i
 face's background; the stretches exactly; glyphless characters' ink; the image's cells; each cursor kind over the
 image.  Each failure names the record, the expected colour and rect, and what was found."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--with-draw-scene
     (let ((geometry (nhmac-gui--line-geometry))
           (records (nhmac-gui--draw-probes k))
@@ -3194,7 +3125,6 @@ image.  Each failure names the record, the expected colour and rect, and what wa
   "Fringe bitmaps scale with the UI scale: each bit is K by K device pixels at scale K, so each fringe's dark pixels
 on the scene's first two rows are the bitmap's set bits (`nhmac-gui--fringe-bits') times K squared."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--with-fringe-scene
     (let* ((edges (window-inside-pixel-edges))
            (fr (window-fringes))
@@ -3224,7 +3154,6 @@ on the scene's first two rows are the bitmap's set bits (`nhmac-gui--fringe-bits
   "A signal that lands on the wait's helper thread while it watches a fd does not stop the watch: a pipe the helper
 serves, interrupted 40 times while its 100 lines come, gets every line with no gap near a second.  (A signal lands on
 any thread that does not block it: Emacs's SIGCHLD can reach the helper.)"
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((gaps (make-hash-table :test #'equal))
         (start (float-time))
         p)
@@ -3271,7 +3200,6 @@ fonts, and the move-frame event) have run when this returns; `accept-process-out
   "The root frame moved to a monitor of another scale and back: its font is re-opened at each scale's device size
 \(a point is 1/72 inch, so the pixel size is the height in points times the scale), and comes back to the size it had."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (s0 (frame-scale-factor f))
          (other (nhmac-gui--other-monitor (lambda (m) (/= (alist-get 'scale-factor m 1.0) s0))))
          (home (frame-monitor-attributes f)) (pos (frame-position f))
@@ -3297,7 +3225,6 @@ fonts, and the move-frame event) have run when this returns; `accept-process-out
   "The root frame moved to a monitor of another scale keeps its size in points, as an AppKit window (and NS's
 frame) does: its device-pixel size follows the scale, and the window shows its surface whole."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (s0 (frame-scale-factor f))
          (other (nhmac-gui--other-monitor (lambda (m) (/= (alist-get 'scale-factor m 1.0) s0))))
          (home (frame-monitor-attributes f)) (pos (frame-position f))
@@ -3325,7 +3252,6 @@ frame) does: its device-pixel size follows the scale, and the window shows its s
 (ert-deftest nhmac-no-session-calls ()
   "A Naglfar frame names no compositor session: making a frame calls none of the Wayland shell's session functions
 \(they are not loaded here, so each call would only log a void-function error)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((f (make-frame '((width . 20) (height . 5)))))
     (unwind-protect
         (progn
@@ -3342,7 +3268,6 @@ it started at.  Either way the font's pixel size is its height in points times t
 the size on the screen (points) it was made with: the text follows.  (Each re-open runs
 `nidhogg-frame-scale-change-functions'.)"
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame)) (f nil) (made nil) (reopens 0) (monitors 0) (moves 0)
          (on-scale (lambda (frame) (when (eq frame f) (cl-incf reopens))))
          (on-monitors (lambda (_) (cl-incf monitors)))
@@ -3383,7 +3308,6 @@ the size on the screen (points) it was made with: the text follows.  (Each re-op
 (ert-deftest nhmac-glyphs-measured-once ()
   "Redrawing text already shown makes no font driver call: its glyphs and their metrics are in the glyph tables."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (switch-to-buffer (generate-new-buffer " *nhmac-glyphs*"))
   (unwind-protect
       (progn
@@ -3403,7 +3327,6 @@ the size on the screen (points) it was made with: the text follows.  (Each re-op
   "A new frame AppKit puts on a screen of another scale shows the columns and lines it was made with: the window keeps
 its points, and everything in it (font, fringes, borders) scales with it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((f nil))
     (unwind-protect
         (progn
@@ -3428,7 +3351,6 @@ first draw on, with no size change after it: nothing is measured at a size or sc
 position it opens beside the selected frame, at its scale (the lane's root sits on its scale's screen); with `left'
 and `top' it opens there, at the scale of the screen there (the main screen, the lane's other scale)."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((root (selected-frame)))
     (pcase-dolist (`(,case ,params ,want)
                    `((beside nil ,(frame-scale-factor root))
@@ -3454,7 +3376,6 @@ and `top' it opens there, at the scale of the screen there (the main screen, the
 (ert-deftest nhmac-monitor-change-runs-move-frame-functions ()
   "A root frame moved to another monitor runs `move-frame-functions' with it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (other (nhmac-gui--other-monitor #'always))
          (home (frame-monitor-attributes f)) (pos (frame-position f)) (ran nil)
          (hook (lambda (frame) (when (eq frame f) (push (frame-monitor-attributes frame) ran)))))

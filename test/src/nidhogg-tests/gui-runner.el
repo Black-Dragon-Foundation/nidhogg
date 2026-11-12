@@ -62,7 +62,10 @@ trace line could land inside a verdict and hide it from the rigs that grep for i
       (kill-emacs 1))))
 
 (defun glitnir-gui--place-frame ()
-  "On NS, move the selected frame onto the display ns-gui.sh made (GLITNIR_GUI_FRAME is \"LEFT TOP COLS LINES\")."
+  "On macOS, move the selected frame onto the display nhmac-gui.sh made.
+GLITNIR_GUI_FRAME is \"LEFT TOP COLS LINES\" (nhmac-gui.sh: 20 and 40 points
+in from the display's corner, 100 columns, 35 lines); unset or empty, the
+frame stays where it is."
   (let ((spec (getenv "GLITNIR_GUI_FRAME")))
     (when (and spec (not (string-empty-p spec)))
       (pcase-let ((`(,left ,top ,cols ,lines) (mapcar #'string-to-number (split-string spec))))
