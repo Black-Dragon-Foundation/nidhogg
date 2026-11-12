@@ -241,5 +241,50 @@ from the frame's origin as X and NS tile it, each bit a logical pixel (the frame
                        (car bad))
     (should-not bad)))
 
+(ert-deftest nhmac-one-pixel-lines-are-points ()
+  "The drawing's one-pixel constants are points, as on NS: a `:box 1' face adds one point a side, an overline is one
+point thick, and the default bar cursor (2) two points wide, so twice the device pixels at scale 2."
+  (skip-unless (nhmac-driver--naglfar-p))
+  (let ((k (max 1 (round (frame-scale-factor)))))
+    ;; the box: in the layout
+    (with-temp-buffer
+      (set-window-buffer nil (current-buffer))
+      ;; whole lines: the box's right line goes on the glyph after the run
+      (insert "xxx\nx" (propertize "x" 'face '(:box 1)) "x\n")
+      (let ((side (/ (- (car (window-text-pixel-size nil 5 8)) (car (window-text-pixel-size nil 1 4))) 2)))
+        (nhmac-driver--say "nhmac-one-pixel: scale %s, box side %d" k side)
+        (should (= side k))))
+    ;; the overline: K rows of its colour, then the background
+    (let ((px (nhmac-driver--pixels (propertize "    " 'face '(:overline "#ff0000" :background "#0000ff"))
+                                    (list (cons 4 (1- k)) (cons 4 k)))))
+      (nhmac-driver--say "nhmac-one-pixel: overline rows %d and %d: %S" (1- k) k
+                         (mapcar (lambda (p) (format "#%08x" p)) px))
+      (should (= (nth 0 px) (nhmac-driver--rgb "#ff0000")))
+      (should (= (nth 1 px) (nhmac-driver--rgb "#0000ff"))))
+    ;; the bar cursor: 2K columns of the cursor's colour at point
+    (let ((buf (generate-new-buffer " *nhmac-driver-cursor*"))
+          (blink (bound-and-true-p blink-cursor-mode)))
+      (unwind-protect
+          (progn
+            (blink-cursor-mode -1)
+            (delete-other-windows)
+            (switch-to-buffer buf)
+            (setq-local cursor-type 'bar)
+            (insert (propertize "    " 'face '(:background "#0000ff")))
+            (goto-char (point-min))
+            (redisplay t) (sleep-for 0.2) (redisplay t)
+            (let* ((xy (posn-x-y (posn-at-point (point))))
+                   (e (window-inside-pixel-edges))
+                   (x (+ (nth 0 e) (car xy)))
+                   (y (+ (nth 1 e) (cdr xy) (/ (line-pixel-height) 2)))
+                   (in (plist-get (nhmac--test-surface (+ x (* 2 k) -1) y) :pixel))
+                   (out (plist-get (nhmac--test-surface (+ x (* 2 k)) y) :pixel)))
+              (nhmac-driver--say "nhmac-one-pixel: bar columns %d and %d: #%08x #%08x, cursor %s" (1- (* 2 k)) (* 2 k)
+                                 in out (frame-parameter nil 'cursor-color))
+              (should (= in (nhmac-driver--rgb (frame-parameter nil 'cursor-color))))
+              (should (= out (nhmac-driver--rgb "#0000ff")))))
+        (kill-buffer buf)
+        (when blink (blink-cursor-mode 1))))))
+
 (provide 'nhmac-driver-gui-tests)
 ;;; nhmac-driver-gui-tests.el ends here
