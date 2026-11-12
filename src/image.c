@@ -735,8 +735,8 @@ image_create_bitmap_from_data (struct frame *f, char *bits,
   dpyinfo->bitmaps[id - 1].stipple_background
     = f->background_pixel & 0xffffffff;
 #endif
-
 #ifdef HAVE_NHMAC
+
   /* Naglfar keeps the bits: its stipples are drawn from them
      (nhmacdraw.c).  */
   dpyinfo->bitmaps[id - 1].depth = 1;
@@ -928,8 +928,8 @@ image_create_bitmap_from_file (struct frame *f, Lisp_Object file)
   xfree (data);
   return id;
 #endif
-
 #ifdef HAVE_NHMAC
+
   /* Naglfar: an XBM file's bits, kept as image_create_bitmap_from_data
      keeps them.  */
   ptrdiff_t id, size;
@@ -1200,8 +1200,8 @@ free_bitmap_record (Display_Info *dpyinfo, Bitmap_Record *bm)
   DeleteObject (bm->pixmap);
   DeleteObject (bm->stipple);
 #endif /* HAVE_NTGUI */
-
 #ifdef HAVE_NHMAC
+
   xfree (bm->bits);
   bm->bits = NULL;
 #endif
@@ -8251,8 +8251,8 @@ static const struct image_keyword native_image_format[NATIVE_IMAGE_LAST] =
 };
 
 /* Return true if OBJECT is a valid native API image specification.  */
-
 #ifdef HAVE_NHMAC
+
 /* Naglfar: OBJECT is an XPM spec (xpm_image_p's keywords): the native
    ones and a :color-symbols list of (NAME . COLOR) strings.  */
 static bool
