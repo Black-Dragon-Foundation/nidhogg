@@ -36,6 +36,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "frame.h"
 #include "keyboard.h"
 #include "character.h"
+#include "coding.h"
 #include "composite.h"
 #include "font.h"
 
@@ -367,6 +368,16 @@ nhmacfont_open (struct frame *f, Lisp_Object entity, int pixel_size)
   font->default_ascent = 0;
   font->vertical_centering = 0;
   font->props[FONT_NAME_INDEX] = Ffont_xlfd_name (font_object, Qnil, Qt);
+  /* font-info's FILENAME, as ftfont gives it: the file Core Text reads
+     the face from (drgnx's hub reads its advances there instead of
+     asking the editor for each character; macfont gives none).  */
+  {
+    char path[4096];
+    size_t len;
+    if (NHG (nhg_font_file (m.handle, path, sizeof path, &len)) == NHG_OK)
+      font->props[FONT_FILE_INDEX]
+	= DECODE_FILE (make_unibyte_string (path, len));
+  }
   unblock_input ();
   return font_object;
 }

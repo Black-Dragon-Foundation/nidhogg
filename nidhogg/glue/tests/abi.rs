@@ -1376,8 +1376,8 @@ PROTO (nhg_relocate, int32_t (const char *, char *, size_t, size_t *));";
     #[test]
     fn font_header_matches() {
         use nhglue::ffi::{
-            nhg_font_changes, nhg_font_close, nhg_font_fill, nhg_font_open, nhg_font_shape,
-            nhg_font_start, nhg_font_table, nhg_font_variation_glyphs,
+            nhg_font_changes, nhg_font_close, nhg_font_file, nhg_font_fill, nhg_font_open,
+            nhg_font_shape, nhg_font_start, nhg_font_table, nhg_font_variation_glyphs,
         };
         use nhglue::font::*;
         use nhglue::glyphs::*;
@@ -1445,6 +1445,7 @@ PROTO (nhg_font_changes, int32_t (uint32_t *));
 PROTO (nhg_font_open, int32_t (uint64_t, int32_t, uint32_t, NhgFontMetrics *));
 PROTO (nhg_font_shape, int32_t (uint64_t, const uint32_t *, size_t, NhgShaped *, size_t, size_t *));
 PROTO (nhg_font_close, int32_t (uint64_t));
+PROTO (nhg_font_file, int32_t (uint64_t, char *, size_t, size_t *));
 PROTO (nhg_font_table, int32_t (uint64_t, const NhgFontTable **));
 PROTO (nhg_font_fill, int32_t (uint64_t, uint32_t));
 PROTO (nhg_font_variation_glyphs, int32_t (uint64_t, uint32_t, uint32_t *, uint32_t *));";
@@ -1468,6 +1469,11 @@ PROTO (nhg_font_variation_glyphs, int32_t (uint64_t, uint32_t, uint32_t *, uint3
             *mut usize,
         ) -> i32 = nhg_font_shape;
         let _: unsafe extern "C" fn(u64) -> i32 = nhg_font_close;
+        let _: unsafe extern "C" fn(u64, *mut std::ffi::c_char, usize, *mut usize) -> i32 =
+            nhg_font_file;
+        // no Core Text here: no font has a file
+        // SAFETY: null buffer and length, which the call accepts.
+        assert!(unsafe { nhg_font_file(1, std::ptr::null_mut(), 0, std::ptr::null_mut()) } < 0);
         let _: unsafe extern "C" fn(u64, *mut *const NhgFontTable) -> i32 = nhg_font_table;
         let _: unsafe extern "C" fn(u64, u32) -> i32 = nhg_font_fill;
         let _: unsafe extern "C" fn(u64, u32, *mut u32, *mut u32) -> i32 =

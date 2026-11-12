@@ -2763,6 +2763,35 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// The file font `handle` is read from into `buf` (`cap` bytes, NUL-terminated), its length into `*len` (may be
+    /// NULL): `font-info`'s FILENAME.  `NHG_E_TOO_SMALL` when `cap` is not above the length; `NHG_E_STATE` for a font
+    /// that is not open or has no file; `NHG_E_UNSUPPORTED` without Core Text.
+    ///
+    /// # Safety
+    /// `buf` is null or holds `cap` writable bytes; `len` is null or writable.
+    unlocked fn nhg_font_file(handle: u64, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 {
+        crate::font::note_call();
+        if !cfg!(all(feature = "macos", target_os = "macos")) {
+            return Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED));
+        }
+        let path = crate::font::file(handle).ok_or(GlueError::State)?;
+        if !len.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { len.write(path.len()) };
+        }
+        if buf.is_null() || cap <= path.len() {
+            return Err(GlueError::Code(crate::abi::NHG_E_TOO_SMALL));
+        }
+        // SAFETY: `buf` holds `cap` > `path.len()` writable bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(path.as_ptr(), buf.cast::<u8>(), path.len());
+            buf.add(path.len()).write(0);
+        }
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Fill page `page` of font `handle`'s glyph table: a character page, or a glyph page with `NHG_FONT_FILL_GLYPHS`
     /// set; a page filled already is left alone.  C calls it holding Emacs's global lock, on a miss.  `NHG_E_STATE`
     /// for a font that is not open, `NHG_E_ARG` for a page past the table.
