@@ -3627,7 +3627,9 @@ nh_img_spec_format (Lisp_Object spec)
 	  : NH_IMG_F_NONE);
 #endif
 #ifndef HAVE_NATIVE_IMAGE_API
-  Lisp_Object type = image_spec_value (spec, QCtype, NULL);
+  /* The plist, as Naglfar's branch: SPEC may name only its type, and
+     image_spec_value asserts a valid spec.  */
+  Lisp_Object type = plist_get (XCDR (spec), QCtype);
 # ifdef HAVE_PNG
   if (EQ (type, Qpng))
     return NH_IMG_F_PNG;
