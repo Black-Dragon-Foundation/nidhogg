@@ -13,6 +13,8 @@ files glitnir-nhmac-gui-tests.el
 files nhmac-gui-tests.el
 files nhmac-driver-gui-tests.el
 files nhmac-watchdog-gui-tests.el
+# the focus rows before the window rows: each goes through its own transition, and one runs after every row
+files nhmac-focus-gui-tests.el
 files nhmac-ns-gui-tests.el nhmac-window-gui-tests.el nhmac-resize-gui-tests.el nhmac-keys-gui-tests.el
 files nhmac-ime-gui-tests.el nhmac-menu-gui-tests.el nhmac-pasteboard-gui-tests.el nhmac-dnd-gui-tests.el
 files nhmac-ax-gui-tests.el nhmac-lifecycle-gui-tests.el nhmac-app-gui-tests.el

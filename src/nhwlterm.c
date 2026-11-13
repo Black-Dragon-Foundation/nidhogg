@@ -4859,6 +4859,31 @@ tests.  */)
   return states;
 }
 
+DEFUN ("nhwl--focus-frames", Fnhwl__focus_frames, Snhwl__focus_frames,
+       0, 1, 0,
+       doc: /* Return the frames FRAME's display holds for focus, a plist.
+FRAME defaults to the selected frame.  `:focus' is the frame with the
+keyboard focus, `:highlight' the one whose cursor is drawn active (the
+focus frame, or the frame its focus is redirected to), `:event' the
+frame of the last focus event; each a frame or nil.  For tests.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  struct nhwl_display_info *dpyinfo;
+  Lisp_Object focus = Qnil, highlight = Qnil, event = Qnil;
+
+  if (!FRAME_NHWL_P (f))
+    error ("Not a Nidhogg shell frame");
+  dpyinfo = FRAME_DISPLAY_INFO (f);
+  if (dpyinfo->x_focus_frame)
+    XSETFRAME (focus, dpyinfo->x_focus_frame);
+  if (dpyinfo->highlight_frame)
+    XSETFRAME (highlight, dpyinfo->highlight_frame);
+  if (dpyinfo->x_focus_event_frame)
+    XSETFRAME (event, dpyinfo->x_focus_event_frame);
+  return listn (6, QCfocus, focus, QChighlight, highlight, QCevent, event);
+}
+
 #ifdef ENABLE_CHECKING
 DEFUN ("nhwl--test-glue-panic", Fnhwl__test_glue_panic,
        Snhwl__test_glue_panic, 0, 1, 0,
@@ -4888,6 +4913,10 @@ syms_of_nhwlterm (void)
   defsubr (&Snhwl_glue_panics);
   defsubr (&Snhwl__scroll_layers);
   defsubr (&Snhwl__frame_states);
+  defsubr (&Snhwl__focus_frames);
+  DEFSYM (QCfocus, ":focus");
+  DEFSYM (QChighlight, ":highlight");
+  DEFSYM (QCevent, ":event");
   DEFSYM (Qnidhogg_scale, "nidhogg-scale");
   DEFSYM (Qnidhogg_text_zoom, "nidhogg-text-zoom");
 #ifdef ENABLE_CHECKING

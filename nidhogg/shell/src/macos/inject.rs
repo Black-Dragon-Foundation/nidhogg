@@ -286,18 +286,31 @@ pub fn app_state(app: &NSApplication, w: &Win) -> String {
     let class = responder
         .as_ref()
         .map_or_else(|| "nil".to_owned(), |r| format!("{:?}", r.class().name()));
-    // SAFETY: NSTextInputContext's class property, read on the main thread.
-    let context: Option<Retained<objc2::runtime::AnyObject>> =
-        unsafe { msg_send![objc2::class!(NSTextInputContext), currentInputContext] };
+    // SAFETY: NSTextInputContext's class property and NSResponder's `inputContext`, read on the main thread.
+    let (context, own): (
+        Option<Retained<objc2::runtime::AnyObject>>,
+        Option<Retained<objc2::runtime::AnyObject>>,
+    ) = unsafe {
+        (
+            msg_send![objc2::class!(NSTextInputContext), currentInputContext],
+            msg_send![&*w.view, inputContext],
+        )
+    };
+    // the current context is the view's own: AppKit routes the text input system's keys through it
+    let current_is_own = matches!((&context, &own), (Some(c), Some(o))
+        if Retained::as_ptr(c) == Retained::as_ptr(o));
     format!(
         "(:active {} :key {} :frontmost {front:?} :frontmost-pid {front_pid} :pid {} :ax-trusted {} \
-         :first-responder {class} :responder-is-view {} :input-context {} :key-window-number {} :window-number {})",
+         :first-responder {class} :responder-is-view {} :input-context {} :view-context {} :current-is-view-context {} \
+         :key-window-number {} :window-number {})",
         b(app.isActive()),
         b(key),
         std::process::id(),
         b(super::nsapp::ax_trusted()),
         b(is_view),
         b(context.is_some()),
+        b(own.is_some()),
+        b(current_is_own),
         app.keyWindow().map_or(-1, |k| k.windowNumber()),
         w.window.windowNumber()
     )

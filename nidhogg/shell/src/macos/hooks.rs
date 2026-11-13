@@ -600,6 +600,14 @@ impl MacShell {
             // "(W)": whether the application is active and W key, who is frontmost, the AX grant
             "test-app-state" => first_number(arg).and_then(|w| Ok(inject::app_state(&self.app, self.win(w)?))),
             // "(W)": activate through Accessibility, then W key and front; the AX error
+            // the window's focus and transition notifications since the start, oldest first
+            "test-key-log" => Ok(format!(
+                "({})",
+                super::runloop::KEY_LOG
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .join(" ")
+            )),
             "test-ax-activate" => {
                 first_number(arg).and_then(|w| Ok(inject::ax_activate(&self.app, self.win(w)?).to_string()))
             }
