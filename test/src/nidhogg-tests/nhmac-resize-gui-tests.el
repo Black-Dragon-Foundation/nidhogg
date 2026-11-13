@@ -67,8 +67,10 @@ BUSY.  The settled state."
     (nhmac-resize--settle)))
 
 (defun nhmac-resize--reset (w h)
-  "Content W x H points, settled."
-  (set-frame-size nil w h t)
+  "Text area W x H points, settled.  Emacs's pixels are device pixels: at scale 2, 600 of them were 300 points, and
+band-outside's drag never grew the frame past 600 points (the live session, 2026-11-13)."
+  (let ((s (frame-scale-factor)))
+    (set-frame-size nil (round (* w s)) (round (* h s)) t))
   (nhmac-resize--settle))
 
 (defun nhmac-resize--fullscreen (value)
