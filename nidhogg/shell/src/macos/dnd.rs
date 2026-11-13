@@ -251,9 +251,11 @@ pub fn start(
     items: &[(&str, &[u8])],
     actions: u32,
 ) -> ShellResult {
-    let press = PRESS
-        .with(|p| p.borrow().clone())
-        .ok_or(ShellError::State)?;
+    let Some(press) = PRESS.with(|p| p.borrow().clone()) else {
+        #[cfg(feature = "test-hooks")]
+        start_log("(:no-press)".into());
+        return Err(ShellError::State);
+    };
     let item = NSPasteboardItem::new();
     for (mime, bytes) in items {
         item.setData_forType(
@@ -292,21 +294,25 @@ pub fn start(
         ProtocolObject::from_ref(&*source),
     );
     #[cfg(feature = "test-hooks")]
-    START_LOG.with(|l| {
-        *l.borrow_mut() = format!(
-            "(:press-age-ms {:.0} :buttons {buttons} :press-type {})",
-            age * 1000.0,
-            press.r#type().0
-        )
-    });
+    start_log(format!(
+        "(:press-age-ms {:.0} :buttons {buttons} :press-type {})",
+        age * 1000.0,
+        press.r#type().0
+    ));
     SOURCE.with(|s| *s.borrow_mut() = Some(source));
     Ok(())
 }
 
+/// The last drag start: the press's age and the buttons held then, or that no press was held (`test-drag-log`).  Not
+/// a thread-local: round 9's start ran (the call returned 0, no drop) and the hook read an empty one.
 #[cfg(feature = "test-hooks")]
-thread_local! {
-    /// The last drag start: the press's age and the buttons held then (`test-drag-log`).
-    pub static START_LOG: RefCell<String> = const { RefCell::new(String::new()) };
+pub static START_LOG: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+#[cfg(feature = "test-hooks")]
+fn start_log(s: String) {
+    *START_LOG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = s;
 }
 
 /// `ShellBackend::drag_cancel`.

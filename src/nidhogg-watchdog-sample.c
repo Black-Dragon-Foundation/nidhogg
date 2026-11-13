@@ -458,11 +458,14 @@ nh_wd_handler_install (void)
 
   /* A library that claimed the signal keeps it: the watchdog refuses
      rather than break it (a survey of common libraries found none that
-     uses it).  */
+     uses it).  Claimed is a handler that is neither the default nor
+     ignore, whatever the flags: sa_handler and sa_sigaction share their
+     storage, and macOS reports SIGURG's default with SA_SIGINFO and
+     SA_RESTART set (round 9: flags 0x42, handler 0), which is no
+     claim.  */
   struct sigaction old;
   if (sigaction (NIDHOGG_WATCHDOG_SIGNAL, NULL, &old) != 0
-      || ((old.sa_flags & SA_SIGINFO)
-	  || (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN)))
+      || (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN))
     return -1;
 
   nh_wd_main_state = current_thread;

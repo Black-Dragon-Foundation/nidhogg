@@ -1138,9 +1138,12 @@ impl ShellBackend for MacShell {
             return self.kid_mapped(window, on);
         }
         let w = self.windows.get_mut(&window).ok_or(ShellError::State)?;
-        // an iconified window stays mapped; showing it is the Dock's deminiaturize
+        // an iconified window stays mapped; showing it is the Dock's deminiaturize, and it comes back key and in
+        // front, as NS's `ns_make_frame_visible` raises it with focus (round 9: back from the Dock but not key, the
+        // resize, keys and IME rows after it got no events)
         if on && w.window.isMiniaturized() {
             w.window.deminiaturize(None);
+            w.window.makeKeyAndOrderFront(None);
             return Ok(());
         }
         if on != w.mapped {
