@@ -119,7 +119,7 @@ too whenever Lisp runs, since `ns_select's `[NSApp run]' has returned by then."
 (ert-deftest nhmac-appearance-dark ()
   "A change of the system appearance records it in `ns-system-appearance' and runs the hook with `dark'."
   (skip-unless (nhmac-win-gui--naglfar-p))
-  (let* ((got nil) (fn (lambda (a) (setq got a))))
+  (let* ((got nil) (fn (lambda (a) (setq got a))) (before ns-system-appearance))
     (add-hook 'ns-system-appearance-change-functions fn)
     (unwind-protect
         (progn
@@ -131,7 +131,14 @@ too whenever Lisp runs, since `ns_select's `[NSApp run]' has returned by then."
             (should (eq got want))
             (should (eq ns-system-appearance want))))
       (remove-hook 'ns-system-appearance-change-functions fn)
-      (nhmac--call 'test-app-appearance 0))))
+      (nhmac--call 'test-app-appearance 0)
+      ;; the change back is a menu-bar event pair too: run it here, or it waits in the queue and the next input row
+      ;; starts with input pending (round 11: every resize row ran in 0.0 s behind it)
+      (unless (eq ns-system-appearance before)
+        (let ((cmd (key-binding (vector (read-event nil nil 2) (read-event nil nil 2)))))
+          (glitnir-gui--say "nhmac-appearance-dark: back: %S" cmd)
+          (when (eq cmd 'nhmac-appearance-changed)
+            (call-interactively cmd)))))))
 
 (ert-deftest nhmac-transparent-titlebar ()
   "`ns-transparent-titlebar' makes the title bar transparent."
