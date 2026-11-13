@@ -99,7 +99,7 @@ pumps' scope never takes inside a take (`:overlapping-takes' stays 0)."
                             (plist-get (nhmac-stats) :overlapping-takes))
           ;; round 6: a press on A's tool bar, a session begun and no move seen in it: the press's age and the
           ;; buttons down when the session began
-          (glitnir-gui--say "nhmac-dnd-drag-out: at the start %s" (nhmac--query 'test-drag-log))
+          (glitnir-gui--say "nhmac-dnd-drag-out: at the start %S" (nhmac--query 'test-drag-start-log))
           (should (eq result 'XdndActionCopy))
           (should drop)
           (should (eq (posn-window (event-start drop)) (frame-selected-window b)))

@@ -317,7 +317,7 @@ this call.  PLIST is then sent, and its reply goes to the process's buffer as on
 ;; failed 13 rows that way after a row gave activation up (the Dock).  Each such row starts active, raised through
 ;; Accessibility when it is not, or fails once naming why.
 (defconst gui-runner--input-rows
-  "\\`nhmac-\\(?:keys\\|resize\\|ime\\|dnd\\)-\\|\\`nhmac-draw-all-records\\'"
+  "\\`nhmac-\\(?:keys\\|resize\\|ime\\|dnd\\)-\\|\\`nhmac-draw-all-records\\'\\|\\`\\(?:margin-mouse-face\\|mouse-sensor\\)-gui/"
   "The names of the rows that need the application active and the selected frame key (Naglfar).")
 
 (defun gui-runner-ensure-active ()
@@ -325,6 +325,8 @@ this call.  PLIST is then sent, and its reply goes to the process's buffer as on
 through Accessibility (`test-ax-activate') and wait up to 2 s.  Fail naming the state and who is frontmost when it
 stays inactive; the state otherwise."
   (let ((st (nhmac--query 'test-app-state (selected-frame))))
+    ;; round 10: the input rows failed with Emacs's focus t; the state each one starts from
+    (glitnir-gui--say "gui-runner-ensure-active: %s: %S" (ert-test-name (ert-running-test)) st)
     (unless (and (plist-get st :active) (plist-get st :key))
       (let ((before st) (rc (nhmac--query 'test-ax-activate (selected-frame))) (deadline (+ (float-time) 2)))
         (while (and (progn (setq st (nhmac--query 'test-app-state (selected-frame)))

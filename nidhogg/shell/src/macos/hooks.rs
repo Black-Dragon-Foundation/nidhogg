@@ -630,14 +630,15 @@ impl MacShell {
             ),
             "test-font-probe" => super::super::font_probe::query(arg).ok_or(ShellError::Arg),
             "test-zoom-log" => Ok(super::super::ax::test_zoom_log()),
-            "test-drag-log" => Ok(format!(
-                "{} {}",
-                DRAG_LOG.with(|l| l.borrow().clone()),
-                super::super::dnd::START_LOG
+            "test-drag-log" => Ok(DRAG_LOG.with(|l| l.borrow().clone())),
+            // its own hook: Lisp reads one object from an answer (rounds 9 and 10 read the drag log only)
+            "test-drag-start-log" => Ok({
+                let l = super::super::dnd::START_LOG
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-            )),
+                    .clone();
+                if l.is_empty() { "nil".to_owned() } else { l }
+            }),
             "test-chrome-log" => Ok(format!(
                 "({})",
                 super::child::CHROME_LOG.with(|l| l.borrow().join(" "))
