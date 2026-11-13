@@ -131,6 +131,12 @@ define_class!(
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, e: &NSEvent) {
+            // the release that ends our drag out is the session's, as the grab's is on Wayland: one reaching the
+            // glue while the drag runs ends it with no action (the drag-out row: the session ended over the other
+            // frame with copy, and the call had returned 0)
+            if dnd::swallow_release() {
+                return;
+            }
             self.button(e, NHSHELL_BUTTON_RELEASED);
         }
 

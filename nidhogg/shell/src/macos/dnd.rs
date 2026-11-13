@@ -243,8 +243,9 @@ define_class!(
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let head = l.trim_end_matches(')').to_owned();
                 *l = format!(
-                    "{head} :moves {} :ended-at ({:.0} {:.0}) :operation {})",
+                    "{head} :moves {} :releases-taken {} :ended-at ({:.0} {:.0}) :operation {})",
                     MOVES.load(std::sync::atomic::Ordering::Relaxed),
+                    SWALLOWED.load(std::sync::atomic::Ordering::Relaxed),
                     p.x,
                     p.y,
                     op.0
@@ -312,6 +313,7 @@ pub fn start(
         NSEvent::pressedMouseButtons(),
     );
     MOVES.store(0, std::sync::atomic::Ordering::Relaxed);
+    SWALLOWED.store(0, std::sync::atomic::Ordering::Relaxed);
     let _session = view.beginDraggingSessionWithItems_event_source(
         &NSArray::from_retained_slice(&[dragging]),
         &press,
@@ -341,6 +343,18 @@ fn start_log(s: String) {
 
 /// The moves the running drag session reported (test diagnostics; the session's end logs them).
 static MOVES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Whether a left button release now belongs to our drag session (it runs): counted for `test-drag-start-log`.
+pub fn swallow_release() -> bool {
+    let running = SOURCE.with(|s| s.borrow().is_some());
+    if running {
+        SWALLOWED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    running
+}
+
+/// The releases our drag sessions took (test diagnostics; the session's end logs them).
+static SWALLOWED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// `ShellBackend::drag_cancel`.
 pub fn cancel() {
