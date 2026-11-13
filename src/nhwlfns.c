@@ -596,6 +596,24 @@ nhwl_set_parent_frame (struct frame *f, Lisp_Object new_value,
      again.  */
   if (out->window)
     {
+      /* A top-level's place is on the screen and a child's in its
+	 parent's native area: a top-level that becomes a child stays
+	 where it shows, as under NS, as a child that becomes a top-level
+	 does.  */
+      if (p && !FRAME_PARENT_FRAME (f))
+	{
+	  int x = 0, y = 0;
+
+	  for (a = p; a; a = FRAME_PARENT_FRAME (a))
+	    {
+	      x += a->left_pos;
+	      y += a->top_pos;
+	      if (!FRAME_PARENT_FRAME (a))
+		y += FRAME_NHWL_OUTPUT (a)->title_bar_height;
+	    }
+	  f->left_pos -= x;
+	  f->top_pos += out->title_bar_height - y;
+	}
       block_input ();
       NHG (nhg_session_remove (FRAME_NHG (f), out->window));
       out->focus_window = 0;
