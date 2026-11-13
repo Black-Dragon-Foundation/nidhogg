@@ -22691,8 +22691,8 @@ glitnir_point_line_kept_p (struct window *w)
       return false;
   return true;
 }
-#endif
 
+#endif
 static int
 try_window_id (struct window *w)
 {

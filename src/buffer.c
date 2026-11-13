@@ -998,8 +998,8 @@ glitnir_note_overlay_change (struct buffer *b, Lisp_Object plist,
       || !NILP (lookup_char_property (plist, Qdisplay, false)))
     BUF_OVERLAY_UNCONFINED_MODIFF (b) = BUF_OVERLAY_MODIFF (b);
 }
-#endif
 
+#endif
 /* Mark OV as no longer associated with its buffer.  */
 
 static void
