@@ -51,6 +51,12 @@ unsafe extern "C" {
         button: u32,
     ) -> *mut CGEventOpaque;
     fn CGEventPost(tap: u32, event: *mut CGEventOpaque);
+    fn CGEventCreateKeyboardEvent(
+        source: *const c_void,
+        key: u16,
+        down: bool,
+    ) -> *mut CGEventOpaque;
+    fn CGEventSetFlags(event: *mut CGEventOpaque, flags: u64);
     fn CGPreflightPostEventAccess() -> bool;
 }
 
@@ -367,6 +373,26 @@ pub fn real_mouse(mtm: MainThreadMarker, kind: i64, at: (f64, f64)) -> ShellResu
         }
         CGEventPost(CG_HID_TAP, cg);
         CFRelease(cg.cast());
+    }
+    Ok(())
+}
+
+/// Post a real press and release of the key with virtual key code `code` and `CGEventFlags` `flags` (Option is
+/// 1 << 19, as `NSEventModifierFlagOption`) through the window server's HID tap: it reaches the key window as typing
+/// would, translated by the current keyboard layout there (a dead key's state included), which an event the app posts
+/// itself (`key`) never is.
+pub fn real_key(code: u16, flags: u64) -> ShellResult {
+    for down in [true, false] {
+        // SAFETY: Core Graphics' constructor; the event is posted, then released once.
+        unsafe {
+            let ev = CGEventCreateKeyboardEvent(std::ptr::null(), code, down);
+            if ev.is_null() {
+                return Err(ShellError::NoMem);
+            }
+            CGEventSetFlags(ev, flags);
+            CGEventPost(CG_HID_TAP, ev);
+            CFRelease(ev.cast());
+        }
     }
     Ok(())
 }

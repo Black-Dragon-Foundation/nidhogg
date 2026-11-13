@@ -397,6 +397,11 @@ impl MacShell {
                 super::super::menus::test_update(&self.app);
                 Some(Ok(()))
             }
+            // "(CODE FLAGS)": a real key press and release through the window server (`inject::real_key`)
+            "test-real-key" => Some(whole_numbers(arg).and_then(|n| match n[..] {
+                [code, flags] => inject::real_key(u16::try_from(code).map_err(|_| ShellError::Arg)?, flags),
+                _ => Err(ShellError::Arg),
+            })),
             // "(WINDOW)": the green button's zoom, as AppKit's `zoom:` runs it
             "test-zoom" => Some(first_number(arg).and_then(|w| {
                 self.win(w)?.window.zoom(None);
