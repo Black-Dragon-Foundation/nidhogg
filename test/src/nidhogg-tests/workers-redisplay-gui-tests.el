@@ -93,4 +93,37 @@
       (set-window-parameter nil 'mode-line-format nil)
       (kill-buffer b))))
 
+(ert-deftest workers-redisplay-gui/a-row-inside-the-first-line-keeps-no-base ()
+  ;; The window starts on a continuation row of a wrapped first line: the count from the start says line 1 there, but
+  ;; that position is not where line 1 starts.  Kept as the base, the next redisplay counted from it to a row of the
+  ;; same line, got 0 lines past a base that is not the buffer's start, and a checking build aborted (eassert in
+  ;; maybe_produce_line_number; seen on macOS at scale 2, where the Glitnir rows' lines wrap).
+  (let ((b (get-buffer-create " *wr-wrapped*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer b
+            (erase-buffer)
+            (insert (make-string (* 6 (window-max-chars-per-line)) ?x) "\n")
+            (dotimes (i 50) (insert (format "line %d\n" (+ i 2))))
+            (setq-local display-line-numbers t truncate-lines nil))
+          (delete-other-windows)
+          (set-window-buffer nil b)
+          (set-window-parameter nil 'mode-line-format 'none)
+          (redisplay t)
+          (let ((second (with-current-buffer b
+                          (save-excursion (goto-char (point-min)) (vertical-motion 2) (point)))))
+            (should (> second (with-current-buffer b (point-min))))
+            (set-window-start nil second)
+            (set-window-point nil second)
+            (redisplay t)
+            ;; again, from whatever base the first redisplay kept
+            (set-window-start nil second)
+            (redraw-frame)
+            (redisplay t)
+            (should (= (window-start) second))
+            ;; the kept base gives the right number
+            (should (= (workers-redisplay-gui--mode-line-l (selected-window)) 1))))
+      (set-window-parameter nil 'mode-line-format nil)
+      (kill-buffer b))))
+
 ;;; workers-redisplay-gui-tests.el ends here
