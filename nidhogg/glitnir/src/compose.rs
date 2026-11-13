@@ -556,7 +556,7 @@ fn compose_layers(
             draw_label(k, t, &pieces, l, sprites);
         }
         // a window's blocks go over its frame's pixels and the labels, inside the window, when that frame is drawn here
-        if !p.blocks.is_empty()
+        if !(p.blocks.is_empty() && p.edges.is_empty())
             && p.kind == Kind::Window
             && sources.iter().any(|s| s.layer == p.parent)
             && let Some(frame) = scene.iter().find(|q| q.id == p.parent).map(|q| q.rect)
@@ -565,6 +565,12 @@ fn compose_layers(
             for b in p.blocks.iter() {
                 for c in &pieces {
                     draw_block(k, t, b, c.intersect(&area));
+                }
+            }
+            // its edges over its blocks
+            for e in p.edges.iter() {
+                for c in &pieces {
+                    draw_edge(k, t, e, c.intersect(&area));
                 }
             }
         }
@@ -816,6 +822,20 @@ fn draw_block(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Re
     let ring = CardRing::around(inner, r - wu, wu, b.ring_argb);
     let mut dst = t.at(clip);
     ring.draw(k, &mut dst, clip);
+}
+
+/// Edge E within CLIP (root px, inside the target and the window), anti-aliased in its colour.
+fn draw_edge(k: &Kernels, t: &mut TargetView, e: &crate::edge::Edge, clip: Rect) {
+    let q = crate::edge::bounds(e).intersect(&clip);
+    if q.is_empty() || e.argb == 0 {
+        return;
+    }
+    let cov = crate::edge::coverage(e, q);
+    let mask = Mask {
+        data: &cov,
+        stride: q.w as usize,
+    };
+    k.solid_over(&mut t.at(q), e.argb, &mask, q.w as usize, q.h as usize);
 }
 
 /// A window card, ready to draw within any rectangle.
@@ -3232,6 +3252,37 @@ mod tests {
             }
         }
 
+        /// Edges go over the frame's pixels inside their window, after its blocks: a line with an arrow, nothing
+        /// outside the window.
+        #[test]
+        fn edges_draw_over_the_frame_in_the_window() {
+            use crate::edge::Edge;
+            let window = Rect::new(0, 0, 100, 80);
+            let (mut s, mut f) = (Scene::default(), Frames::new());
+            s.upsert(&desc(ROOT, 0, 1, Rect::new(0, 0, 120, 80), 1.0, true))
+                .unwrap();
+            s.upsert(&desc(WIN, ROOT, 2, window, 1.0, true)).unwrap();
+            s.set_edges(
+                WIN,
+                vec![Edge {
+                    points: vec![(10, 20), (110, 20)].into(),
+                    width_px: 1,
+                    radius_px: 6,
+                    argb: RING,
+                    arrow_px: 6,
+                    dash_px: 0,
+                }]
+                .into(),
+            )
+            .unwrap();
+            s.commit(ROOT, &mut f);
+            let out = compose_all(&s, &Buf::new(120, 80, FRONT), 1.0);
+            assert_eq!(out.at(40, 20), RING, "the line");
+            assert_eq!(out.at(40, 21), FRONT, "one pixel wide");
+            assert_eq!(out.at(105, 20), FRONT, "nothing past the window");
+            assert_eq!(out.at(5, 20), FRONT, "nothing before the start");
+        }
+
         /// A block whose top was scrolled out: no top line and no top corners; the sides run to its top.
         #[test]
         fn open_top_has_no_top_side() {
@@ -3393,6 +3444,35 @@ mod tests {
             let area: u64 = d.iter().map(Rect::area).sum();
             assert!(area <= 2 * 60 * 20, "damage {d:?}");
             for p in [(20, 10), (79, 29), (20, 30), (79, 49)] {
+                assert!(
+                    d.iter().any(|r| r.contains(p.0, p.1)),
+                    "{p:?} damaged: {d:?}"
+                );
+            }
+        }
+
+        /// A change of the edges only damages their bounds, old and new, not the window.
+        #[test]
+        fn an_edge_change_damages_the_edges() {
+            use crate::edge::Edge;
+            let edge = |y: i32| Edge {
+                points: vec![(20, y), (80, y)].into(),
+                width_px: 1,
+                radius_px: 6,
+                argb: RING,
+                arrow_px: 6,
+                dash_px: 0,
+            };
+            let (mut s, mut f) = (Scene::default(), Frames::new());
+            s.upsert(&desc(ROOT, 0, 1, ALL, 1.0, true)).unwrap();
+            s.upsert(&desc(WIN, ROOT, 2, ALL, 1.0, true)).unwrap();
+            s.set_edges(WIN, vec![edge(10)].into()).unwrap();
+            s.commit(ROOT, &mut f);
+            s.set_edges(WIN, vec![edge(50)].into()).unwrap();
+            let d = s.commit(ROOT, &mut f).to_vec();
+            let area: u64 = d.iter().map(Rect::area).sum();
+            assert!(area <= 2 * 70 * 15, "damage {d:?}");
+            for p in [(20, 10), (80, 10), (20, 50), (80, 50)] {
                 assert!(
                     d.iter().any(|r| r.contains(p.0, p.1)),
                     "{p:?} damaged: {d:?}"

@@ -874,6 +874,41 @@ int32_t nhg_blocks_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const N
 /* How many of FRAME's windows have a block layer (while it is not 0, C lists the frame's blocks at each publish).  */
 int32_t nhg_blocks_count (NhgDisplay *d, uint64_t frame);
 
+/* ---- Window edges --------------------------------------------------------------------------------------------------
+   Thin lines over a window's text (the window parameter glitnir-edges, resolved by glitnir.el into glitnir--edges):
+   polylines with rounded bends, an arrowhead or dashes, drawn by Glitnir above the window's blocks inside its text
+   area.  C resolves each point against the window's current matrix; the glue sizes the line, bends, arrow and dashes
+   from the frame's scale.  */
+
+#define NHG_EDGE_ARROW   1   /* an arrowhead at the last point */
+#define NHG_EDGE_DASH    2   /* dashed */
+#define NHG_EDGE_POINTS  8   /* the most points an edge has: the start, 6 bends, the end */
+
+typedef struct
+{
+  int32_t x, y;
+} NhgPoint;
+
+/* One edge of Emacs window SEQ: CLIP its text area, POINTS its first NPOINTS points, all device pixels with the native
+   area's origin; FLAGS NHG_EDGE_*; RGB the line's 0xRRGGBB at OPACITY (0 to 1).  */
+typedef struct
+{
+  uint64_t seq;
+  NhgRect clip;
+  NhgPoint points[NHG_EDGE_POINTS];
+  uint32_t npoints;
+  uint32_t flags;
+  int32_t rgb;
+  float opacity;
+} NhgEdge;
+
+/* FRAME (WINDOW its tree's shell window) is about to be published with the N edges at EDGES: each window with edges
+   gets its edge layer, the others lose theirs.  Returns how many windows have edge layers.  */
+int32_t nhg_edges_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const NhgEdge *edges, size_t n);
+
+/* How many of FRAME's windows have an edge layer (while it is not 0, C lists the frame's edges at each publish).  */
+int32_t nhg_edges_count (NhgDisplay *d, uint64_t frame);
+
 /* Layout legs.  Emacs window W_SEQ of FRAME (WINDOW its shell window, a top-level's) has the layout leg vector V, N
    floats as glitnir--leg-vector gave them (lisp/glitnir.el's glitnir--leg-slots; N 0 for none).  A new capture number
    asks the presenter for a picture of the window's text area before the packets published after this call, and makes
