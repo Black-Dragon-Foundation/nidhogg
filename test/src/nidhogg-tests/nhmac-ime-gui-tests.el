@@ -101,16 +101,21 @@
     (should (cl-some (lambda (e) (memq e '(127 backspace))) (nhmac-ime--events 1)))))
 
 (ert-deftest nhmac-ime-dead-keys ()
-  "With Option not a modifier (`ns-alternate-modifier' none), Option-e e is é, through the input system."
+  "With Option not a modifier (`ns-alternate-modifier' none), Option-e e is é, through the input system.
+The keys go through the window server, whose keyboard layout makes the dead key, as typing does: keys the app posts
+itself (`test-post-key') never composed in any round."
   (skip-unless (nhmac-ime--naglfar-p))
+  (let ((access (nhmac--query 'test-post-access)))
+    (unless (eq access t)
+      (ert-skip (format "the runner's grant does not allow posting events (CGPreflightPostEventAccess %S)" access))))
   (let ((was ns-alternate-modifier))
     (unwind-protect
         (progn
           (setq ns-alternate-modifier 'none)
           (nhmac-ime--events 0.3)
-          ;; key code 14 is e on the ANSI layout; Option is NSEventModifierFlagOption (1 << 19)
-          (nhmac--call 'test-post-key (selected-frame) 0 ?e (ash 1 19) 14)
-          (nhmac--call 'test-post-key (selected-frame) ?e ?e 0 14)
+          ;; key code 14 is e on the ANSI layout; Option is kCGEventFlagMaskAlternate (1 << 19)
+          (nhmac--call 'test-real-key 14 (ash 1 19))
+          (nhmac--call 'test-real-key 14 0)
           (should (memq ?é (nhmac-ime--events 1.5))))
       (setq ns-alternate-modifier was))))
 
