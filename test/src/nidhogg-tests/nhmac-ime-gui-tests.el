@@ -138,6 +138,9 @@ itself (`test-post-key') never composed in any round."
   "With the Japanese Romaji input source selected (`TISSelectInputSource'), k a typed as AppKit key events is marked
 か (the input method's own preedit), and Return commits it into the buffer; the earlier input source comes back."
   (skip-unless (nhmac-ime--naglfar-p))
+  (let ((access (nhmac--query 'test-post-access)))
+    (unless (eq access t)
+      (ert-skip (format "the runner's grant does not allow posting events (CGPreflightPostEventAccess %S)" access))))
   (let* ((before (nhmac--query 'test-input-source ""))
          (was (plist-get before :current)))
     (unwind-protect
@@ -148,16 +151,17 @@ itself (`test-post-key') never composed in any round."
           (should (equal (plist-get sel :current) nhmac-ime--kana))
           (nhmac-ime--in-buffer ""
             (nhmac-ime--events 0.3)
-            ;; ANSI key codes: k 40, a 0, Return 36
-            (nhmac--call 'test-post-key (selected-frame) ?k ?k 0 40)
-            (nhmac--call 'test-post-key (selected-frame) ?a ?a 0 0)
+            ;; ANSI key codes: k 40, a 0, Return 36; through the window server, as typing reaches the input method
+            ;; (keys the app posts itself reached no input method in the live session)
+            (nhmac--call 'test-real-key 40 0)
+            (nhmac--call 'test-real-key 0 0)
             (nhmac-ime--events 1)
             (let ((marked (plist-get (nhmac-ime--state) :marked)))
               (glitnir-gui--say "nhmac-ime-real-input-source: after k a: %S, working %S, marked %S"
                                 (buffer-string) (nhmac-ime--working) marked)
               (should (equal (list (buffer-string) (nhmac-ime--working)) '("" "か")))
               (should marked))
-            (nhmac--call 'test-post-key (selected-frame) ?\r ?\r 0 36)
+            (nhmac--call 'test-real-key 36 0)
             (dolist (ev (nhmac-ime--events 1))
               (when (characterp ev) (insert ev)))
             (glitnir-gui--say "nhmac-ime-real-input-source: after Return: %S" (buffer-string))
