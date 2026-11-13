@@ -25,15 +25,20 @@
     st))
 
 (defun nhmac-focus--compose (row what)
-  "Type Option-e e with Option not a modifier and return the events that came, logging them with ROW and WHAT."
+  "Type Option-e e with Option not a modifier and return the events that came, logging them with ROW and WHAT.
+The keys go through the window server, as typing does: its keyboard layout makes the dead key (round 13: keys the
+app posts itself, `test-post-key', never compose, whoever is first responder)."
+  (let ((access (nhmac--query 'test-post-access)))
+    (unless (eq access t)
+      (ert-skip (format "the runner's grant does not allow posting events (CGPreflightPostEventAccess %S)" access))))
   (let ((was ns-alternate-modifier) evs)
     (unwind-protect
         (progn
           (setq ns-alternate-modifier 'none)
           (while (read-event nil nil 0.1))
-          ;; key code 14 is e on the ANSI layout; Option is NSEventModifierFlagOption (1 << 19)
-          (nhmac--call 'test-post-key (selected-frame) 0 ?e (ash 1 19) 14)
-          (nhmac--call 'test-post-key (selected-frame) ?e ?e 0 14)
+          ;; key code 14 is e on the ANSI layout; Option is kCGEventFlagMaskAlternate (1 << 19)
+          (nhmac--call 'test-real-key 14 (ash 1 19))
+          (nhmac--call 'test-real-key 14 0)
           (let ((deadline (+ (float-time) 1.5)) ev)
             (while (and (< (float-time) deadline) (setq ev (read-event nil nil 0.3)))
               (push ev evs))))
