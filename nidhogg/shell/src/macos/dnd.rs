@@ -76,6 +76,7 @@ fn record(
     view: &NSView,
     info: &ProtocolObject<dyn NSDraggingInfo>,
     make: fn(DndEv) -> ShellEvent,
+    action: u32,
 ) {
     let p = view.convertPoint_fromView(info.draggingLocation(), None);
     let (x, y) = super::scale::of_view(view).device_point(p.x, p.y, view.bounds().size.height);
@@ -88,6 +89,7 @@ fn record(
             y,
             source_actions: actions,
             preferred: dnd_map::first_action(actions),
+            action,
             own: u8::from(info.draggingSource().is_some()),
             ..DndEv::default()
         }),
@@ -110,29 +112,32 @@ pub fn entered(id: WindowId, view: &NSView, info: &ProtocolObject<dyn NSDragging
             ..Reply::default()
         })
     });
-    record(id, view, info, ShellEvent::DndEnter);
+    record(id, view, info, ShellEvent::DndEnter, 0);
     target_reply()
 }
 
 /// `draggingUpdated:`.
 pub fn updated(id: WindowId, view: &NSView, info: &ProtocolObject<dyn NSDraggingInfo>) -> usize {
-    record(id, view, info, ShellEvent::DndMotion);
+    record(id, view, info, ShellEvent::DndMotion, 0);
     target_reply()
 }
 
 /// `draggingExited:`.
 pub fn exited(id: WindowId, view: &NSView, info: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
     if let Some(info) = info {
-        record(id, view, info, ShellEvent::DndLeave);
+        record(id, view, info, ShellEvent::DndLeave, 0);
     } else {
         deliver(MacEv::Input(id, ShellEvent::DndLeave(DndEv::default())));
     }
     OFFER.with(|o| *o.borrow_mut() = None);
 }
 
-/// `performDragOperation:`: whether the drop is taken.  The offer stays until `dnd_finish`.
+/// `performDragOperation:`: whether the drop is taken.  The offer stays until `dnd_finish`.  The drop carries the
+/// action the target's answer chose, as the compositor's does on Wayland: the glue gives Lisp a drop, and ends our own
+/// drag out over our own frame, only with one (the drag-out row: 0 here, so no drop and the call returned 0).
 pub fn dropped(id: WindowId, view: &NSView, info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
-    record(id, view, info, ShellEvent::DndDrop);
+    let action = dnd_map::actions_of(target_reply());
+    record(id, view, info, ShellEvent::DndDrop, action);
     REPLY.with(Cell::get).accepted
 }
 
