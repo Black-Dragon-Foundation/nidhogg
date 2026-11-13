@@ -227,7 +227,7 @@ pub fn test_state(
 /// Text Input Sources, for the test hook that selects a real input source.
 #[cfg(feature = "test-hooks")]
 mod tis {
-    use crate::api::{ShellError, ShellResult};
+    use crate::api::ShellResult;
 
     /// `TISInputSourceRef` and the other Core Foundation objects the input source calls take.
     type CFRef = *const std::ffi::c_void;
@@ -235,6 +235,8 @@ mod tis {
     #[link(name = "Carbon", kind = "framework")]
     unsafe extern "C" {
         static kTISPropertyInputSourceID: CFRef;
+        static kTISPropertyInputSourceIsSelectCapable: CFRef;
+        static kTISPropertyInputSourceIsEnabled: CFRef;
         fn TISCreateInputSourceList(properties: CFRef, include_all_installed: u8) -> CFRef;
         fn TISEnableInputSource(source: CFRef) -> i32;
         fn TISSelectInputSource(source: CFRef) -> i32;
@@ -246,6 +248,52 @@ mod tis {
     unsafe extern "C" {
         fn CFArrayGetCount(a: CFRef) -> isize;
         fn CFArrayGetValueAtIndex(a: CFRef, i: isize) -> CFRef;
+        fn CFBooleanGetValue(b: CFRef) -> u8;
+    }
+
+    /// An input source's id, whether it is enabled and select-capable, and the source.
+    type Source = (String, bool, bool, CFRef);
+
+    /// The installed (`all`) or enabled input sources whose id starts with `prefix`: each one's id, whether it is
+    /// enabled and whether it can be selected, and the source (borrowed from `list`, which the caller keeps).
+    ///
+    /// # Safety
+    ///
+    /// The sources are borrowed from the returned list; they live as long as it does.
+    unsafe fn sources(prefix: &str, all: bool) -> (Option<super::super::text::Cf>, Vec<Source>) {
+        use super::super::text::{Cf, string};
+        let flag = |src: CFRef, key: CFRef| {
+            // SAFETY: a borrowed CFBoolean property of a live source, or null.
+            unsafe {
+                let v = TISGetInputSourceProperty(src, key);
+                !v.is_null() && CFBooleanGetValue(v) != 0
+            }
+        };
+        // SAFETY: a Create call (+1, owned by `Cf`); the elements and their id properties are borrowed while it lives.
+        unsafe {
+            let Some(list) = Cf::new(TISCreateInputSourceList(std::ptr::null(), u8::from(all)))
+            else {
+                return (None, Vec::new());
+            };
+            let mut out = Vec::new();
+            for i in 0..CFArrayGetCount(list.get()) {
+                let src = CFArrayGetValueAtIndex(list.get(), i);
+                let id = TISGetInputSourceProperty(src, kTISPropertyInputSourceID);
+                if id.is_null() {
+                    continue;
+                }
+                let id = string(id);
+                if id.starts_with(prefix) {
+                    out.push((
+                        id,
+                        flag(src, kTISPropertyInputSourceIsEnabled),
+                        flag(src, kTISPropertyInputSourceIsSelectCapable),
+                        src,
+                    ));
+                }
+            }
+            (Some(list), out)
+        }
     }
 
     /// The current keyboard input source's id (`kTISPropertyInputSourceID`).
@@ -260,32 +308,49 @@ mod tis {
     }
 
     /// Test hook (`test-input-source`): enable and select the installed input source `id` (Text Input Sources, e.g.
-    /// `com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese`), or with an empty `id` only report.  Its answer, for Lisp:
-    /// `(:found BOOL :enable STATUS :select STATUS :current "ID")`, STATUS the OSStatus (0 is done).
+    /// `com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese`), or with an empty `id` only report.  Enabling returns
+    /// before the enabled list has it, and only a select-capable source (an input mode, not its input method) can be
+    /// selected (round 9: select paramErr -50): the enabled list is read again for up to 2 s until `id` is in it, and
+    /// the select-capable source with that id is selected.  Its answer, for Lisp: `(:found BOOL :enable STATUS
+    /// :enabled-after MS :select STATUS :current "ID" :candidates ((ID ENABLED SELECT-CAPABLE) ...))`, STATUS the
+    /// OSStatus (0 is done), the candidates every installed source of `id`'s input method (its id less the last part).
     pub fn test_input_source(id: &str) -> ShellResult<String> {
-        use super::super::text::{Cf, cf_string, dictionary};
         let id = id.trim_matches('"');
-        let (mut found, mut enable, mut select) = (false, -1, -1);
+        let b = |v: bool| if v { "t" } else { "nil" };
+        let (mut found, mut enable, mut select, mut after) = (false, -1, -1, -1i64);
+        let family = id.rsplit_once('.').map_or(id, |(f, _)| f);
+        let mut candidates = String::new();
         if !id.is_empty() {
-            let key = cf_string(id).ok_or(ShellError::NoMem)?;
-            // SAFETY: the property key is HIToolbox's constant; the dictionary retains it and the id.
-            let props = dictionary(&[unsafe { kTISPropertyInputSourceID }], &[key.get()])
-                .ok_or(ShellError::NoMem)?;
-            // SAFETY: a Create call (+1, owned by `Cf`); its elements are borrowed while it lives.
+            // SAFETY: each list is kept while its borrowed sources are used.
             unsafe {
-                if let Some(list) = Cf::new(TISCreateInputSourceList(props.get(), 1))
-                    && CFArrayGetCount(list.get()) > 0
-                {
-                    let src = CFArrayGetValueAtIndex(list.get(), 0);
+                let (_all, installed) = sources(family, true);
+                for (cid, en, sel, _) in &installed {
+                    candidates.push_str(&format!(
+                        "({} {} {})",
+                        crate::pasteboard::lisp_string(cid),
+                        b(*en),
+                        b(*sel)
+                    ));
+                }
+                if let Some((_, _, _, src)) = installed.iter().find(|c| c.0 == id) {
                     found = true;
-                    enable = TISEnableInputSource(src);
-                    select = TISSelectInputSource(src);
+                    enable = TISEnableInputSource(*src);
+                    let start = std::time::Instant::now();
+                    while start.elapsed() < std::time::Duration::from_secs(2) {
+                        let (_list, enabled) = sources(id, false);
+                        if let Some((_, _, _, src)) = enabled.iter().find(|c| c.0 == id && c.2) {
+                            after = i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX);
+                            select = TISSelectInputSource(*src);
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
                 }
             }
         }
         Ok(format!(
-            "(:found {} :enable {enable} :select {select} :current {})",
-            if found { "t" } else { "nil" },
+            "(:found {} :enable {enable} :enabled-after {after} :select {select} :current {} :candidates ({candidates}))",
+            b(found),
             current_source_id()
                 .map_or_else(|| "nil".into(), |s| crate::pasteboard::lisp_string(&s))
         ))

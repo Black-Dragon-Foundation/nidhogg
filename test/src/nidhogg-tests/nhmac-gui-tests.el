@@ -3240,10 +3240,13 @@ a bare frame (`nhmac-gui--bare-frame')."
     (nreverse bad)))
 
 (defun nhmac-gui--cursor-probes (k)
-  "Each cursor kind over the scene's first image, at point, probed where Emacs draws it; the failures."
+  "Each cursor kind over the scene's first image, at point, probed where Emacs draws it; the failures.  Blinking is
+off while it probes: a blink's off phase draws no cursor."
   (let* ((cursor (nhmac-gui--rgb (frame-parameter nil 'cursor-color)))
          (img (nhmac-gui--prop-box 'display (get-char-property (point) 'display)))
+         (blink blink-cursor-mode)
          (bad nil))
+    (blink-cursor-mode -1)
     (pcase-let ((`(,x0 ,top ,x1 ,bottom) img))
       (dolist (c nhmac-gui--draw-cursors)
         (setq-local cursor-type (nhmac-gui--draw-cursor c k))
@@ -3265,6 +3268,7 @@ a bare frame (`nhmac-gui--bare-frame')."
             (nhmac--test-draw-watch 0 0 0 0)
             (push f bad)))))
     (setq-local cursor-type nil)
+    (when blink (blink-cursor-mode 1))
     (redisplay t)
     (nreverse bad)))
 

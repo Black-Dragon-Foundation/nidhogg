@@ -597,6 +597,12 @@ impl MacShell {
             }),
             // whether this process may post events through the window server (`CGPreflightPostEventAccess`)
             "test-post-access" => Ok(lisp_bool(inject::post_access())),
+            // "(W)": whether the application is active and W key, who is frontmost, the AX grant
+            "test-app-state" => first_number(arg).and_then(|w| Ok(inject::app_state(&self.app, self.win(w)?))),
+            // "(W)": activate through Accessibility, then W key and front; the AX error
+            "test-ax-activate" => {
+                first_number(arg).and_then(|w| Ok(inject::ax_activate(&self.app, self.win(w)?).to_string()))
+            }
             "test-surface" => numbers(arg).and_then(|n| match n[..] {
                 [w, x, y] => self.surface_info(w as WindowId, x as i32, y as i32),
                 _ => Err(ShellError::Arg),
@@ -624,14 +630,15 @@ impl MacShell {
             ),
             "test-font-probe" => super::super::font_probe::query(arg).ok_or(ShellError::Arg),
             "test-zoom-log" => Ok(super::super::ax::test_zoom_log()),
-            "test-drag-log" => Ok(format!(
-                "{} {}",
-                DRAG_LOG.with(|l| l.borrow().clone()),
-                super::super::dnd::START_LOG
+            "test-drag-log" => Ok(DRAG_LOG.with(|l| l.borrow().clone())),
+            // its own hook: Lisp reads one object from an answer (rounds 9 and 10 read the drag log only)
+            "test-drag-start-log" => Ok({
+                let l = super::super::dnd::START_LOG
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-            )),
+                    .clone();
+                if l.is_empty() { "nil".to_owned() } else { l }
+            }),
             "test-chrome-log" => Ok(format!(
                 "({})",
                 super::child::CHROME_LOG.with(|l| l.borrow().join(" "))

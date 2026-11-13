@@ -311,6 +311,46 @@ this call.  PLIST is then sent, and its reply goes to the process's buffer as on
 
 (advice-add 'ert-run-test :around #'gui-runner--strict-held)
 
+;; Naglfar's input rows need the application active and its frame key: since macOS 14 activation is cooperative (an
+;; `activate' is a request the frontmost application may refuse), an inactive application has no key window, so posted
+;; keys reach nothing, a press on its window is an activating click, and its cursor is drawn unfocused.  Rounds 7 to 9
+;; failed 13 rows that way after a row gave activation up (the Dock).  Each such row starts active, raised through
+;; Accessibility when it is not, or fails once naming why.
+(defconst gui-runner--input-rows
+  "\\`nhmac-\\(?:keys\\|resize\\|ime\\|dnd\\)-\\|\\`nhmac-draw-all-records\\'\\|\\`\\(?:margin-mouse-face\\|mouse-sensor\\)-gui/"
+  "The names of the rows that need the application active and the selected frame key (Naglfar).")
+
+(defun gui-runner-ensure-active ()
+  "Make sure the application is active and the selected frame its key window (Naglfar): when not, make it frontmost
+through Accessibility (`test-ax-activate') and wait up to 2 s.  Fail naming the state and who is frontmost when it
+stays inactive; the state otherwise."
+  (let ((st (nhmac--query 'test-app-state (selected-frame))))
+    ;; round 10: the input rows failed with Emacs's focus t; the state each one starts from
+    (glitnir-gui--say "gui-runner-ensure-active: %s: %S" (ert-test-name (ert-running-test)) st)
+    (unless (and (plist-get st :active) (plist-get st :key))
+      (let ((before st) (rc (nhmac--query 'test-ax-activate (selected-frame))) (deadline (+ (float-time) 2)))
+        (while (and (progn (setq st (nhmac--query 'test-app-state (selected-frame)))
+                           (not (and (plist-get st :active) (plist-get st :key))))
+                    (< (float-time) deadline))
+          (sit-for 0.1))
+        (glitnir-gui--say "gui-runner-ensure-active: %s: was %S; AX frontmost %S; now %S"
+                          (ert-test-name (ert-running-test)) before rc st)
+        (unless (and (plist-get st :active) (plist-get st :key))
+          (ert-fail (list "not active" st :ax-error rc)))))
+    st))
+
+(defun gui-runner--active (run test &rest args)
+  "`ert-run-test' advice: an input row of Naglfar's (`gui-runner--input-rows') starts with `gui-runner-ensure-active'."
+  (if (not (and (fboundp 'nhmac--query) (featurep 'nidhogg-macos)
+                (string-match-p gui-runner--input-rows (symbol-name (ert-test-name test)))))
+      (apply run test args)
+    (let ((body (ert-test-body test)))
+      (setf (ert-test-body test) (lambda () (gui-runner-ensure-active) (funcall body)))
+      (unwind-protect (apply run test args)
+        (setf (ert-test-body test) body)))))
+
+(advice-add 'ert-run-test :around #'gui-runner--active)
+
 (defvar gui-runner--pw-procs nil "The pipewire and wireplumber processes this session started.")
 (defvar gui-runner--cast-session nil "The ScreenCast session's D-Bus path, held by Emacs's own connection.")
 

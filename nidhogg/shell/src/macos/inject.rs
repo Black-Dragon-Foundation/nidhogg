@@ -8,7 +8,9 @@ use crate::api::{ShellError, ShellResult};
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::Retained;
 use objc2::{ClassType, MainThreadMarker, msg_send};
-use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSScreen};
+use objc2_app_kit::{
+    NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSScreen, NSWorkspace,
+};
 use objc2_foundation::{NSPoint, NSString};
 use std::ffi::c_void;
 
@@ -55,6 +57,17 @@ unsafe extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFRelease(cf: *const c_void);
+    static kCFBooleanTrue: *const c_void;
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXUIElementCreateApplication(pid: i32) -> *const c_void;
+    fn AXUIElementSetAttributeValue(
+        element: *const c_void,
+        attribute: *const c_void,
+        value: *const c_void,
+    ) -> i32;
 }
 
 /// `kCGScrollEventUnitPixel` and `kCGScrollEventUnitLine`.
@@ -243,6 +256,54 @@ pub fn mouse(
     .ok_or(ShellError::State)?;
     app.postEvent_atStart(&ev, false);
     Ok(())
+}
+
+/// Whether this application is active and `w` its key window, which application is frontmost, and whether this one
+/// may use Accessibility: `(:active :key :frontmost :frontmost-pid :pid :ax-trusted)`.  Since macOS 14 activation is
+/// cooperative: an inactive application has no key window, so the window server's keys reach nothing and a press on
+/// its window is an activating click (test diagnostics: the input rows say which it was).
+pub fn app_state(app: &NSApplication, w: &Win) -> String {
+    let b = |v: bool| if v { "t" } else { "nil" };
+    let key = app.keyWindow().is_some_and(|k| {
+        Retained::as_ptr(&k).cast::<c_void>() == Retained::as_ptr(&w.window).cast::<c_void>()
+    });
+    let (front, front_pid) = NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .map_or((String::new(), -1), |a| {
+            (
+                a.bundleIdentifier()
+                    .map_or_else(String::new, |s| s.to_string()),
+                a.processIdentifier(),
+            )
+        });
+    format!(
+        "(:active {} :key {} :frontmost {front:?} :frontmost-pid {front_pid} :pid {} :ax-trusted {})",
+        b(app.isActive()),
+        b(key),
+        std::process::id(),
+        b(super::nsapp::ax_trusted())
+    )
+}
+
+/// Make this application frontmost through Accessibility (its `AXFrontmost`, as automation tools raise an
+/// application; cooperative activation does not refuse it as it may refuse `activate`), then `w` key and in front.
+/// The AX error (0: done; -1: no element).
+pub fn ax_activate(app: &NSApplication, w: &Win) -> i32 {
+    let attr = NSString::from_str("AXFrontmost");
+    let pid = i32::try_from(std::process::id()).unwrap_or(-1);
+    // SAFETY: an element made and released here; the attribute is a CFString (toll-free bridged NSString) and the
+    // value the CFBoolean constant.
+    let rc = unsafe {
+        let el = AXUIElementCreateApplication(pid);
+        if el.is_null() {
+            return -1;
+        }
+        let rc = AXUIElementSetAttributeValue(el, Retained::as_ptr(&attr).cast(), kCFBooleanTrue);
+        CFRelease(el);
+        rc
+    };
+    focus(app, w);
+    rc
 }
 
 /// Whether this process may post events through the window server.
