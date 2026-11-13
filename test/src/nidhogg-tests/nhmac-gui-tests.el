@@ -2636,6 +2636,9 @@ a child again, and the child moves to another root."
                             (list (frame-pixel-width c) (frame-pixel-height c)) (frame-position c)
                             (nhmac--test-child c))
             (should (eq (frame-parent c) root))
+            ;; it stays where it showed, as under NS: back at its place in the root, not at its screen place taken
+            ;; as one in the root (round 11: the lane's display left of the main one put it off the root, a panel)
+            (should (equal (frame-position c) '(40 . 40)))
             (should (nhmac-gui--windows-become windows))
             (should (eq (plist-get (nhmac--test-child c) :host) 'parent))
             (should (eq (plist-get (nhmac--test-child c) :contents-is-newest) t))
