@@ -61,6 +61,32 @@ thread_local! {
 /// reached nothing after the full-screen and Dock rows, while the window was key).
 pub static KEY_LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+/// The window of notification `n` takes its content view (the Emacs view) back as first responder when it holds that
+/// itself or nothing: AppKit leaves the window its own first responder after a full-screen transition and the Dock
+/// (round 12: from the full-screen and miniaturize rows on, `:first-responder` was the window), and then key events
+/// reach the window, never the view's `interpretKeyEvents:`, so Option and dead keys, Command-Shift and marked text
+/// did nothing until a click in the view gave it back.  Another responder (a field the view made first) stays.
+fn own_responder(n: &NSNotification) {
+    let Some(w) = n
+        .object()
+        .and_then(|o| o.downcast::<objc2_app_kit::NSWindow>().ok())
+    else {
+        return;
+    };
+    let Some(view) = w.contentView() else {
+        return;
+    };
+    let lost = w.firstResponder().is_none_or(|r| {
+        std::ptr::eq(
+            objc2::rc::Retained::as_ptr(&r).cast::<()>(),
+            objc2::rc::Retained::as_ptr(&w).cast::<()>(),
+        )
+    });
+    if lost {
+        w.makeFirstResponder(Some(&view));
+    }
+}
+
 fn key_note(n: &NSNotification, name: &str) {
     static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let ms = T0
@@ -145,6 +171,7 @@ define_class!(
         #[unsafe(method(windowDidBecomeKey:))]
         fn did_become_key(&self, n: &NSNotification) {
             key_note(n, "windowDidBecomeKey");
+            own_responder(n);
             deliver(MacEv::Key(*self.ivars(), true));
         }
 
@@ -157,6 +184,7 @@ define_class!(
         #[unsafe(method(windowDidDeminiaturize:))]
         fn did_deminiaturize(&self, n: &NSNotification) {
             key_note(n, "windowDidDeminiaturize");
+            own_responder(n);
             deliver(MacEv::Key(*self.ivars(), true));
         }
 
@@ -181,6 +209,7 @@ define_class!(
         #[unsafe(method(windowDidEnterFullScreen:))]
         fn did_enter_full_screen(&self, n: &NSNotification) {
             key_note(n, "windowDidEnterFullScreen");
+            own_responder(n);
             fs_note(2);
             deliver(MacEv::FullScreen(*self.ivars(), false));
         }
@@ -188,6 +217,7 @@ define_class!(
         #[unsafe(method(windowDidExitFullScreen:))]
         fn did_exit_full_screen(&self, n: &NSNotification) {
             key_note(n, "windowDidExitFullScreen");
+            own_responder(n);
             fs_note(3);
             deliver(MacEv::FullScreen(*self.ivars(), false));
         }
