@@ -26,6 +26,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'nidhogg-views)
 
 (defconst sja-tests--map
@@ -178,6 +179,56 @@ RESET marks it a reset.  Return the drain's status, or the push's decision when 
       ;; 200 moves: one id string each, and no conses beyond the loop's own
       (should (<= strings 200))
       (should (< conses 50)))))
+
+;; drgnx's perf row `view-select-dim' (2026-11-13): 6,400 rows dimmed and undimmed a key, each answer 6,400 fresh id
+;; strings, about 460 KB a key, enough for a 40 ms GC to land on a keystroke
+(defun sja-tests--many (n)
+  "A tree model of N nodes n0.., labelled by their ids, with `dim' among its classes."
+  (concat
+   "{\"ops\": [{\"reset\": {\"descriptor\": {\"scheme\": \"tree\", \"lists\": [\"order\"],"
+   " \"match_fields\": [\"label\"], \"classes\": [\"selected\", \"match\", \"dim\"], \"start\": \"order\"},"
+   " \"nodes\": ["
+   (mapconcat (lambda (i) (format "{\"id\": \"n%d\", \"kind\": \"var\", \"fields\": [[\"label\", \"n%d\"]]}" i i))
+              (number-sequence 0 (1- n)) ",")
+   "], \"edges\": [], \"lists\": [{\"name\": \"order\", \"ids\": ["
+   (mapconcat (lambda (i) (format "\"n%d\"" i)) (number-sequence 0 (1- n)) ",")
+   "]}]}}]}"))
+
+(ert-deftest sja/the-same-ids-come-back-as-the-same-strings ()
+  (let ((h (nidhogg-view-open "t-ids")))
+    (unwind-protect
+        (progn
+          (should (eq (sja-tests--put "t-ids" 1 (sja-tests--many 200) t) 'applied))
+          (nidhogg-view-set h 'search "n0")
+          (let ((first (nidhogg-view-get h 'classes)))
+            (should (> (length first) 300))         ; the premise: most nodes changed
+            (nidhogg-view-set h 'search nil)
+            (let ((again (nidhogg-view-get h 'classes)))
+              (should (= (length first) (length again)))
+              ;; the same ids (in any order): the same strings
+              (let ((seen (make-hash-table :test #'equal)))
+                (mapc (lambda (x) (when (stringp x) (puthash x x seen))) first)
+                (should (cl-every (lambda (x) (or (not (stringp x)) (eq x (gethash x seen)))) again)))))
+          (let* ((keys (byte-compile `(lambda ()
+                                        (dotimes (_ 50)
+                                          (nidhogg-view-set ,h 'search "n0") (nidhogg-view-get ,h 'classes)
+                                          (nidhogg-view-set ,h 'search nil) (nidhogg-view-get ,h 'classes)))))
+                 (before (memory-use-counts))
+                 (_ (funcall keys))
+                 (strings (- (nth 6 (memory-use-counts)) (nth 6 before))))
+            ;; 100 answers of ~200 ids each: no string per id
+            (should (< strings 100))))
+      (nidhogg-view-close h))))
+
+(ert-deftest sja/an-id-lisp-changed-is-not-given-again ()
+  (sja-tests--with "t-ids-changed" h
+    (nidhogg-view-set h 'select "agent:a")
+    (let ((id (nidhogg-view-get h 'selection)))
+      (put-text-property 0 1 'face 'bold id)
+      (should (equal (nidhogg-view-get h 'selection) "agent:a"))
+      (should-not (text-properties-at 0 (nidhogg-view-get h 'selection)))
+      (aset id 0 ?b)
+      (should (equal (nidhogg-view-get h 'selection) "agent:a")))))
 
 (defconst sja-tests--tree
   (concat

@@ -19,9 +19,9 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* Sjá lives in the Rust library Glitnir carries.  This file passes an op
    and its arguments (nil, fixnums, strings) to sja_call and builds the
-   Lisp value from the flat answer Sjá returns.  It interns nothing and
-   knows no op: the verbs are Rust's, the named functions are defsubsts
-   in lisp/nidhogg-views.el.  Sjá never calls Emacs.  */
+   Lisp value from the flat answer Sjá returns.  It knows no op: the
+   verbs are Rust's, the named functions are defsubsts in
+   lisp/nidhogg-views.el.  Sjá never calls Emacs.  */
 
 #include <config.h>
 
@@ -32,6 +32,56 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "sja.h"
 
 enum { SJA_MAX_ARGS = 16 };
+
+/* The short strings answers gave, kept so the same bytes come back as the
+   same string: a view's ids recur in every answer (a class step over
+   6,400 rows answered 6,400 fresh strings a key, ~460 KB, enough for a GC
+   pause to land on a keystroke).  A vector of SJA_STRINGS slots in sets of
+   SJA_WAYS by the bytes' hash, the newest first; nil until the first
+   answer.  A string Lisp changed since (its bytes, or text properties put
+   on it) is not given again.  Bounded: SJA_STRINGS strings of at most
+   SJA_STRING_MAX bytes.  */
+enum { SJA_STRINGS = 1 << 15, SJA_WAYS = 4, SJA_STRING_MAX = 128 };
+static Lisp_Object sja_strings;
+
+/* The string of the LEN bytes of UTF-8 at P.  */
+static Lisp_Object
+sja_string (const unsigned char *p, size_t len)
+{
+  if (len > SJA_STRING_MAX)
+    return make_string_from_utf8 ((const char *) p, len);
+  if (NILP (sja_strings))
+    sja_strings = make_nil_vector (SJA_STRINGS);
+  /* The hash mixed (splitmix64's finalizer): its low bits come from a
+     short string's first bytes alone, so ids that share a prefix would
+     share a set.  */
+  uint64_t z = hash_char_array ((const char *) p, len);
+  z = (z ^ (z >> 30)) * UINT64_C (0xbf58476d1ce4e5b9);
+  z = (z ^ (z >> 27)) * UINT64_C (0x94d049bb133111eb);
+  z ^= z >> 31;
+  ptrdiff_t i = z & (SJA_STRINGS - SJA_WAYS);
+  ptrdiff_t j = i;
+  Lisp_Object s = Qnil;
+  for (; j < i + SJA_WAYS; j++)
+    {
+      Lisp_Object c = AREF (sja_strings, j);
+      if (STRINGP (c) && SBYTES (c) == len && !string_intervals (c)
+	  && memcmp (SDATA (c), p, len) == 0)
+	{
+	  s = c;
+	  break;
+	}
+    }
+  if (NILP (s))
+    {
+      s = make_string_from_utf8 ((const char *) p, len);
+      j = i + SJA_WAYS - 1;	/* the oldest goes */
+    }
+  for (; j > i; j--)
+    ASET (sja_strings, j, AREF (sja_strings, j - 1));
+  ASET (sja_strings, i, s);
+  return s;
+}
 
 /* The value of the answer tokens T[*AT..N), advancing *AT.  */
 static Lisp_Object
@@ -45,7 +95,7 @@ sja_value (const sja_tok *t, size_t n, size_t *at)
     case SJA_INT:
       return make_int (k->int_);
     case SJA_STR:
-      return make_string_from_utf8 ((const char *) k->ptr, k->len);
+      return sja_string (k->ptr, k->len);
     case SJA_LIST:
     case SJA_DOTTED:
     case SJA_VECTOR:
@@ -139,6 +189,8 @@ void
 syms_of_nidhogg_views (void)
 {
   defsubr (&Snidhogg_view__call);
+  sja_strings = Qnil;
+  staticpro (&sja_strings);
 }
 
 #endif /* HAVE_GLITNIR */
