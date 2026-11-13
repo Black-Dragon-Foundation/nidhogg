@@ -25677,13 +25677,17 @@ nh_lnum_base_usable (struct window *w, bool wide)
    it) has nobody else to keep it, and every iterator of every redisplay
    counted the lines from the start, a few ms each deep into a large
    buffer.  The mode line's decision that the lines are too long for
-   numbers (a base of -1) stays.  */
+   numbers (a base of -1) stays.  Only a line's start is kept, as the
+   mode line keeps: IT on a continuation row (a wrapped line, a window
+   started inside one) is inside its line, and a base there would
+   count the line's later rows from a place that is not its start.  */
 static void
 nh_lnum_keep_base (struct it *it, ptrdiff_t this_line, bool wide)
 {
   struct window *w = it->w;
   nh_lnum_counts_from_start++;
-  if (w->base_line_pos != -1 && nh_lnum_base_usable (w, wide))
+  if (w->base_line_pos != -1 && nh_lnum_base_usable (w, wide)
+      && FETCH_BYTE (IT_BYTEPOS (*it) - 1) == '\n')
     {
       w->base_line_number = this_line + 1;
       w->base_line_pos = IT_CHARPOS (*it);
