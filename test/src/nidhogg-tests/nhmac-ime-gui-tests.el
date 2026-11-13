@@ -25,6 +25,14 @@
       (push ev evs))
     (nreverse evs)))
 
+(defvar ns-working-overlay)
+
+(defun nhmac-ime--working ()
+  "The marked text shown as NS shows it (`ns-insert-working-text'): the after-string of `ns-working-overlay' in the
+current buffer, or nil.  It is no buffer text."
+  (and (bound-and-true-p ns-working-overlay) (eq (overlay-buffer ns-working-overlay) (current-buffer))
+       (substring-no-properties (or (overlay-get ns-working-overlay 'after-string) ""))))
+
 (defmacro nhmac-ime--in-buffer (text &rest body)
   "Run BODY in a fresh buffer holding TEXT, shown in the selected window."
   (declare (indent 1))
@@ -48,12 +56,14 @@
     (glitnir-gui--say "nhmac-ime-marked-and-commit: focus %S" (frame-focus-state))
     (nhmac--call 'test-ime (selected-frame) 0 "か")
     (nhmac-ime--events 1)
-    (should (equal (buffer-string) "か"))
+    ;; the working text is an overlay's after-string (NS's since Bug#23412), the buffer still empty
+    (should (equal (list (buffer-string) (nhmac-ime--working)) '("" "か")))
     (should (eql (cadr (plist-get (nhmac-ime--state) :marked)) 1))
     (nhmac--call 'test-ime (selected-frame) 1 "家")
     (dolist (ev (nhmac-ime--events 1))
       (when (characterp ev) (insert ev)))
     (should (equal (buffer-string) "家"))
+    (should (null (nhmac-ime--working)))
     (should (null (plist-get (nhmac-ime--state) :marked)))))
 
 (ert-deftest nhmac-ime-selected-range ()
@@ -128,6 +138,9 @@ itself (`test-post-key') never composed in any round."
   "With the Japanese Romaji input source selected (`TISSelectInputSource'), k a typed as AppKit key events is marked
 か (the input method's own preedit), and Return commits it into the buffer; the earlier input source comes back."
   (skip-unless (nhmac-ime--naglfar-p))
+  (let ((access (nhmac--query 'test-post-access)))
+    (unless (eq access t)
+      (ert-skip (format "the runner's grant does not allow posting events (CGPreflightPostEventAccess %S)" access))))
   (let* ((before (nhmac--query 'test-input-source ""))
          (was (plist-get before :current)))
     (unwind-protect
@@ -138,15 +151,22 @@ itself (`test-post-key') never composed in any round."
           (should (equal (plist-get sel :current) nhmac-ime--kana))
           (nhmac-ime--in-buffer ""
             (nhmac-ime--events 0.3)
-            ;; ANSI key codes: k 40, a 0, Return 36
-            (nhmac--call 'test-post-key (selected-frame) ?k ?k 0 40)
-            (nhmac--call 'test-post-key (selected-frame) ?a ?a 0 0)
-            (nhmac-ime--events 1)
+            ;; ANSI key codes: k 40, a 0, Return 36; through the window server, as typing reaches the input method
+            ;; (keys the app posts itself reached no input method in the live session)
+            (nhmac--call 'test-real-key 40 0)
+            (nhmac--call 'test-real-key 0 0)
+            ;; until the working text shows (the input method's first use in a session answers later), at most 3 s;
+            ;; the time it took is logged
+            (let ((t0 (float-time)))
+              (while (and (not (nhmac-ime--working)) (< (- (float-time) t0) 3))
+                (nhmac-ime--events 0.2))
+              (glitnir-gui--say "nhmac-ime-real-input-source: working text after %.1f s" (- (float-time) t0)))
             (let ((marked (plist-get (nhmac-ime--state) :marked)))
-              (glitnir-gui--say "nhmac-ime-real-input-source: after k a: %S, marked %S" (buffer-string) marked)
-              (should (equal (buffer-string) "か"))
+              (glitnir-gui--say "nhmac-ime-real-input-source: after k a: %S, working %S, marked %S"
+                                (buffer-string) (nhmac-ime--working) marked)
+              (should (equal (list (buffer-string) (nhmac-ime--working)) '("" "か")))
               (should marked))
-            (nhmac--call 'test-post-key (selected-frame) ?\r ?\r 0 36)
+            (nhmac--call 'test-real-key 36 0)
             (dolist (ev (nhmac-ime--events 1))
               (when (characterp ev) (insert ev)))
             (glitnir-gui--say "nhmac-ime-real-input-source: after Return: %S" (buffer-string))

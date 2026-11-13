@@ -348,6 +348,22 @@ pub fn place(state: &mut Display, window: u64, x: i32, y: i32) -> Result<(), Glu
         .move_to(window, to_logical(x, s), to_logical(y, s))?)
 }
 
+/// A top-level frame's window moved (`ShellEvent::Moved`): a `MOVED` action with its top-left in device pixels at the
+/// frame's scale, the inverse of `place`.  A child frame's place is its parent's business.
+pub fn moved(state: &mut Display, ev: &nhshell::event::Record, m: &nhshell::event::MovedEv) {
+    let Ok(f) = state.frame(ev.window) else {
+        return;
+    };
+    if f.flags & NHG_FRAME_CHILD != 0 {
+        return;
+    }
+    let s = scale(f);
+    let mut a = crate::action::NhgAction::new(crate::action::NHG_ACT_MOVED, ev.window, ev.time_ns);
+    a.x = crate::csd::to_device(m.x, s);
+    a.y = crate::csd::to_device(m.y, s);
+    state.actions.push(a);
+}
+
 /// Push: Emacs made the frame visible (`on`) or invisible, not iconified.
 pub fn visible(state: &mut Display, window: u64, on: bool) -> Result<(), GlueError> {
     let f = state.frame_mut(window)?;
