@@ -22,6 +22,10 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
 
+#include <dispatch/dispatch.h>
+#include <pthread.h>
+#include <signal.h>
+
 #include "lisp.h"
 #include "atimer.h"
 #include "nhwlterm.h"
@@ -124,6 +128,50 @@ usage: (nhmac--query WHAT &rest ARGS)  */)
   return Fcar (Fread_from_string (make_string (buf, len), Qnil, Qnil));
 }
 
+/* The main thread, which the present deadline's wake signals.  */
+static pthread_t nhmac_main_pthread;
+static dispatch_source_t nhmac_deadline_source;
+
+static void
+nhmac_deadline_kick (void *unused)
+{
+  pthread_kill (nhmac_main_pthread, SIGALRM);
+}
+
+/* The present deadline's own wake, NS nanoseconds from now (negative:
+   none).  Its atimer runs when a SIGALRM comes, and macOS lets the
+   interval timer's come late, by its timer coalescing: 15 to 40 ms for
+   the 8 ms deadline in the lane, past 20 ms of busy Lisp.  A strict
+   dispatch timer (no coalescing) sends the main thread its SIGALRM on
+   time; the atimer, due by then, runs at Lisp's next quit check.  A
+   kick that finds nothing due does nothing.  */
+void
+nhmac_deadline_wake (int64_t ns)
+{
+  if (!nhmac_deadline_source)
+    {
+      if (ns < 0)
+	return;
+      nhmac_deadline_source
+	= dispatch_source_create (DISPATCH_SOURCE_TYPE_TIMER, 0,
+				  DISPATCH_TIMER_STRICT,
+				  dispatch_get_global_queue
+				  (QOS_CLASS_USER_INTERACTIVE, 0));
+      if (!nhmac_deadline_source)
+	return;
+      dispatch_source_set_event_handler_f (nhmac_deadline_source,
+					   nhmac_deadline_kick);
+      dispatch_source_set_timer (nhmac_deadline_source,
+				 DISPATCH_TIME_FOREVER,
+				 DISPATCH_TIME_FOREVER, 0);
+      dispatch_resume (nhmac_deadline_source);
+    }
+  dispatch_source_set_timer (nhmac_deadline_source,
+			     (ns < 0 ? DISPATCH_TIME_FOREVER
+			      : dispatch_time (DISPATCH_TIME_NOW, ns)),
+			     DISPATCH_TIME_FOREVER, 0);
+}
+
 /* The non-main threads that want the global lock (thread.c), and the
    waiters a condition's wake is on its way to (nidhogg-testclock.c's
    marks): while it is above 0 the main wait does not park.  */
@@ -220,6 +268,7 @@ nhmac_select (int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds,
     {
       cancel_atimer (dpyinfo->present_deadline);
       dpyinfo->present_deadline = NULL;
+      nhmac_deadline_wake (-1);
     }
   bool waiting = waiting_for_input;
   waiting_for_input = false;
@@ -256,6 +305,7 @@ nhmac_select (int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds,
 void
 nhmac_startup (void)
 {
+  nhmac_main_pthread = pthread_self ();
   NHG (nhg_startup ());
 }
 
