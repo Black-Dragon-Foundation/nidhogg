@@ -1750,6 +1750,8 @@ nhwl_create_frame_window (struct frame *f, uint64_t in_place)
   rc = nhwl_window_new (f, &desc,
 			nhwl_child_p (f) ? NHG_FRAME_CHILD : 0, &id);
   unblock_input ();
+  if (rc >= 0 && nhwl_test_drain_in_window_new)
+    nhwl_drain_events (dpyinfo, NULL);
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a window (%d)", rc);
   out->window = id;
@@ -5242,6 +5244,11 @@ One of `alt', `meta', `super', `hyper' or `control'.  */);
     doc: /* Seconds to wait for the compositor's first configure of a frame.
 If it is not a float there is no wait.  */);
   Vnhwl_wait_for_configure_timeout = make_float (2.0);
+
+  DEFVAR_BOOL ("nhwl--test-drain-in-window-new", nhwl_test_drain_in_window_new,
+    doc: /* Non-nil: drain the shell's events right after a frame's window is made.
+As an `unblock_input' that handles a pending signal does there.  For tests.  */);
+  nhwl_test_drain_in_window_new = false;
 
   DEFVAR_LISP ("pgtk-keysym-table", Vnhwl_keysym_table,
     doc: /* Hash table of character codes indexed by X keysym codes.  */);
