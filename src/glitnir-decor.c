@@ -62,6 +62,7 @@ struct box_keys
   bool open_top, open_bottom, open_left, open_right;
   /* :fit text: the box is as tall as the text, not the row.  */
   bool fit_text;
+  int fit_pad;			/* :fit (text . PAD): pixels above and below */
 };
 
 /* Read the decoration keys of face FACE's :box plist.  True when it has
@@ -88,7 +89,13 @@ box_keys (struct face *face, struct box_keys *k)
 	    k->open_right |= EQ (o, Qright);
 	  }
       else if (EQ (key, QCfit))
-	k->fit_text = EQ (val, Qtext);
+	{
+	  k->fit_text = EQ (val, Qtext)
+			|| (CONSP (val) && EQ (XCAR (val), Qtext)
+			    && FIXNATP (XCDR (val)));
+	  if (k->fit_text && CONSP (val))
+	    k->fit_pad = min (XFIXNAT (XCDR (val)), 1000);
+	}
     }
   return k->radius > 0 || k->fit_text
 	 || k->open_top || k->open_bottom || k->open_left || k->open_right;
@@ -139,12 +146,15 @@ glitnir_decor_colour_beneath (struct glyph_string *s, int side)
 }
 
 /* The band a :fit text box fills in glyph string S's row: from its face's
-   font's ascent above the baseline to its descent below, the box's own
-   lines outside that, never more than the row.  True when S's face asks
+   font's ascent above the baseline to its descent below, its pad
+   (:fit (text . PAD)) and the box's own lines outside that, never more
+   than the row.  True when S's face asks
    for it where Glitnir draws, with *TOP and *BOTTOM (exclusive) the band in
    frame pixels and *BENEATH the colour of the rest of the row: the first
-   glyph to the left in another face, else what the row shows past its
-   left end.  */
+   glyph to the left whose face is not a box fit to its text (a character
+   from another font is the run's own, in a face of its own), else what the
+   row shows past its left end; under the pointer's highlight (whose faces
+   are not the glyphs'), the highlight's background.  */
 
 bool
 glitnir_decor_fit_band (struct glyph_string *s, int *top, int *bottom,
@@ -156,14 +166,30 @@ glitnir_decor_fit_band (struct glyph_string *s, int *top, int *bottom,
   if (!font || !nhwl_glitnir_active_p (s->f) || !box_keys (s->face, &k)
       || !k.fit_text)
     return false;
-  int line = max (s->face->box_horizontal_line_width, 0);
+  int line = max (s->face->box_horizontal_line_width, 0) + k.fit_pad;
   *top = max (s->y, s->ybase - FONT_BASE (font) - line);
   *bottom = min (s->y + s->height, s->ybase + FONT_DESCENT (font) + line);
 
+  if (s->hl == DRAW_MOUSE_FACE)
+    {
+      Mouse_HLInfo *hlinfo = &FRAME_DISPLAY_INFO (s->f)->mouse_highlight;
+      struct face *mf = FACE_FROM_ID_OR_NULL (s->f, hlinfo->mouse_face_face_id);
+      if (mf)
+	{
+	  *beneath = mf->background;
+	  return true;
+	}
+    }
   struct glyph *area = s->row->glyphs[s->area];
   struct glyph *g = s->first_glyph;
-  while (g > area && g[-1].face_id == s->first_glyph->face_id)
-    g--;
+  while (g > area)
+    {
+      struct face *lf = FACE_FROM_ID_OR_NULL (s->f, g[-1].face_id);
+      struct box_keys lk;
+      if (!lf || !box_keys (lf, &lk) || !lk.fit_text)
+	break;
+      g--;
+    }
   unsigned long c;
   if (g > area && face_bg (s->f, g - 1, &c))
     *beneath = c;
@@ -174,6 +200,32 @@ glitnir_decor_fit_band (struct glyph_string *s, int *top, int *bottom,
       *beneath = def ? def->background : s->face->background;
     }
   return true;
+}
+
+/* Whether ROW of F's window holds a glyph whose face is a box fit to its
+   text where Glitnir draws.  Such a glyph's colour beneath comes from its
+   neighbours (glitnir_decor_fit_band), which redisplay does not compare:
+   update_text_area draws a changed row that holds one whole.  */
+
+bool
+glitnir_decor_row_fit_p (struct frame *f, struct glyph_row *row)
+{
+  if (!nhwl_glitnir_active_p (f))
+    return false;
+  struct glyph *g = row->glyphs[TEXT_AREA];
+  struct glyph *end = g + row->used[TEXT_AREA];
+  int last = -1;
+  for (; g < end; g++)
+    if (g->face_id != last)
+      {
+	struct face *face = FACE_FROM_ID_OR_NULL (f, g->face_id);
+	struct box_keys k;
+	last = g->face_id;
+	if (face && face->box != FACE_NO_BOX && box_keys (face, &k)
+	    && k.fit_text)
+	  return true;
+      }
+  return false;
 }
 
 #ifdef NHWL_WAYLAND
@@ -493,11 +545,11 @@ glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
     return false;
 
   /* :fit text: from the font's ascent above the baseline to its descent
-     below, the box's own lines outside that when they are drawn outside;
-     never more than the row.  */
+     below, its pad and the box's own lines outside that when they are
+     drawn outside; never more than the row.  */
   if (k.fit_text && s->font)
     {
-      int line = max (s->face->box_horizontal_line_width, 0);
+      int line = max (s->face->box_horizontal_line_width, 0) + k.fit_pad;
       top_y = max (top_y, s->ybase - FONT_BASE (s->font) - line);
       bottom_y = min (bottom_y, s->ybase + FONT_DESCENT (s->font) + line - 1);
     }
@@ -634,7 +686,7 @@ repaint_neighbour_end (struct glyph_string *s, struct glyph *nb, int side)
      glitnir_decor_draw_box drew it, not S's row.  */
   if (k.fit_text && face->font)
     {
-      int line = max (face->box_horizontal_line_width, 0);
+      int line = max (face->box_horizontal_line_width, 0) + k.fit_pad;
       int y0 = max (top_y, s->ybase - FONT_BASE (face->font) - line);
       int y1 = min (top_y + h - 1,
 		    s->ybase + FONT_DESCENT (face->font) + line - 1);

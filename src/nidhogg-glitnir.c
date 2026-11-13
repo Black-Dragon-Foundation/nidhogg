@@ -55,7 +55,9 @@ glitnir_box_key_ok (Lisp_Object key, Lisp_Object value)
   if (EQ (key, QClabel))
     return STRINGP (value);
   if (EQ (key, QCfit))
-    return EQ (value, Qtext);
+    return EQ (value, Qtext)
+	   || (CONSP (value) && EQ (XCAR (value), Qtext)
+	       && FIXNATP (XCDR (value)));
   return false;
 }
 
@@ -639,12 +641,41 @@ syms_of_nidhogg_glitnir (void)
 Setting it to nil turns its decorations off.  */);
   glitnir_enable = true;
 
+  DEFVAR_BOOL ("glitnir-confined-overlay-redisplay",
+	       glitnir_confined_overlay_redisplay,
+	       doc: /* Non-nil means an overlay change redisplays only its lines.
+Stock Emacs redisplays a whole window after any overlay change in its
+buffer.  With this, a change of an overlay that is not `invisible' or
+`display' is redisplayed like a change of the overlay's text, and the
+current line's number in its own face (`line-number-current-line')
+needs a whole redisplay only when point's line changed.  */);
+  glitnir_confined_overlay_redisplay = true;
+
+  DEFVAR_INT ("glitnir--redisplay-changed-lines",
+	      glitnir_redisplay_changed_lines,
+	      doc: /* How many window redisplays updated only the changed lines.
+Counts `try_window_id' successes; a test sets it to 0 and reads it.  */);
+  glitnir_redisplay_changed_lines = 0;
+
+  DEFVAR_INT ("glitnir--redisplay-same-start", glitnir_redisplay_same_start,
+	      doc: /* How many window redisplays drew the window again from its start.
+Counts the redisplays of a window from the same start as before (its
+text, not just point, changed and only its lines could not be updated);
+a test sets it to 0 and reads it.  */);
+  glitnir_redisplay_same_start = 0;
+
+  DEFVAR_INT ("glitnir--redisplay-gave-up", glitnir_redisplay_gave_up,
+	      doc: /* Why the last try at redisplaying only a window's changed lines gave up.
+The number of the reason in `try_window_id' (xdisp.c), for tests.  */);
+  glitnir_redisplay_gave_up = 0;
+
   DEFSYM (Qglitnir__resolve, "glitnir--resolve");
   DEFSYM (Qglitnir__chrome_vector, "glitnir--chrome-vector");
   DEFSYM (Qglitnir__card, "glitnir--card");
   DEFSYM (Qglitnir__cards, "glitnir--cards");
   DEFSYM (Qglitnir__blocks, "glitnir--blocks");
   DEFSYM (Qglitnir__ruler, "glitnir--ruler");
+  DEFSYM (Qglitnir__edges, "glitnir--edges");
 
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();
@@ -654,6 +685,9 @@ Setting it to nil turns its decorations off.  */);
   /* The overview ruler (window parameter glitnir-ruler): bars C lists
      beside the blocks.  */
   Fprovide (intern_c_string ("glitnir-ruler"), Qnil);
+  /* An overlay change redisplays only its lines
+     (`glitnir-confined-overlay-redisplay').  */
+  Fprovide (intern_c_string ("glitnir-confined-overlays"), Qnil);
 }
 
 #endif /* HAVE_GLITNIR */

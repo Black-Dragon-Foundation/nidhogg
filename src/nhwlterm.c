@@ -827,9 +827,147 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 #undef NHWL_RULER_Y
 }
 
+/* The edges nhg_edges_sync takes, kept between publishes.  */
+static NhgEdge *nhwl_edges;
+static ptrdiff_t nhwl_nedges, nhwl_edges_cap;
+
+/* Where position POS of leaf window W's buffer is drawn, plus DX and
+   DY: the left of its glyph and the top of its row in W's current
+   matrix, frame pixels, into P.  A position not on the rows shown sits
+   just outside the text area CLIP, one line above it (before the rows)
+   or below it, at its column times the frame's column width plus DX:
+   an edge to a card scrolled out leaves the window there.  False for a
+   position outside the buffer's accessible part.  */
+static bool
+nhwl_edge_point (struct window *w, ptrdiff_t pos, int dx, int dy,
+		 NhgRect clip, NhgPoint *p)
+{
+  struct buffer *b = XBUFFER (w->contents);
+  struct frame *f = XFRAME (w->frame);
+  struct glyph_matrix *m = w->current_matrix;
+  bool above = pos < marker_position (w->start);
+
+  if (pos < BUF_BEGV (b) || pos > BUF_ZV (b))
+    return false;
+  if (m)
+    {
+      struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (m);
+      struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
+      if (first < bottom && first->enabled_p)
+	above = pos < MATRIX_ROW_START_CHARPOS (first);
+      for (struct glyph_row *row = first;
+	   !above && row < bottom && row->enabled_p; row++)
+	{
+	  if (MATRIX_ROW_START_CHARPOS (row) > pos)
+	    break;
+	  if (MATRIX_ROW_END_CHARPOS (row) <= pos && !row->ends_at_zv_p)
+	    continue;
+	  int x = row->x;
+	  struct glyph *g = row->glyphs[TEXT_AREA];
+	  struct glyph *end = g + row->used[TEXT_AREA];
+	  for (; g < end && !(BUFFERP (g->object) && g->charpos >= pos); g++)
+	    x += g->pixel_width;
+	  *p = (NhgPoint) { WINDOW_TEXT_TO_FRAME_PIXEL_X (w, x) + dx,
+			    WINDOW_TO_FRAME_PIXEL_Y (w, row->y) + dy };
+	  return true;
+	}
+    }
+  /* Off the rows shown: its column, counted back to the line's start
+     (at most 4096 characters).  */
+  ptrdiff_t i = buf_charpos_to_bytepos (b, pos), begv = BUF_BEGV_BYTE (b);
+  int col = 0;
+  for (; i > begv && col < 4096; i--)
+    {
+      int c = BUF_FETCH_BYTE (b, i - 1);
+      if (c == '\n')
+	break;
+      col += CHAR_HEAD_P (c);
+    }
+  *p = (NhgPoint) { clip.x + col * FRAME_COLUMN_WIDTH (f) + dx,
+		    (above ? clip.y - FRAME_LINE_HEIGHT (f)
+		     : clip.y + clip.h + FRAME_LINE_HEIGHT (f)) };
+  return true;
+}
+
+/* Resolve edge V of leaf window W, whose text area is CLIP, into E.  V
+   is [FLAGS RGB OPACITY NPOINTS POS DX DY...] as glitnir--edge-vector
+   makes it (FLAGS NHG_EDGE_*, RGB 0xRRGGBB; each point a position of
+   W's buffer, a marker or an integer, and pixels from its glyph's left
+   and its row's top).  False for an edge of fewer than 2 points or
+   more than NHG_EDGE_POINTS, with a point outside the buffer, or all
+   of whose points are before the rows shown or all after them.  */
+static bool
+nhwl_edge_resolve (struct window *w, Lisp_Object v, NhgRect clip, NhgEdge *e)
+{
+  if (!VECTORP (v) || ASIZE (v) < 4)
+    return false;
+  intmax_t n = nhwl_block_int (v, 3, 0);
+  if (n < 2 || n > NHG_EDGE_POINTS || ASIZE (v) < 4 + 3 * n)
+    return false;
+  Lisp_Object op = AREF (v, 2);
+  *e = (NhgEdge) { .seq = w->sequence_number, .clip = clip,
+		   .npoints = n, .flags = nhwl_block_int (v, 0, 0),
+		   .rgb = nhwl_block_int (v, 1, -1),
+		   .opacity = NUMBERP (op) ? XFLOATINT (op) : 1.0f };
+  /* An edge whose points are all before the rows shown, or all after
+     them, runs outside the text area: none of it is drawn, so it is
+     not resolved (resolving a far position costs a walk back to its
+     line's start).  */
+  struct glyph_matrix *m = w->current_matrix;
+  if (m)
+    {
+      struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (m);
+      struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w), *last = NULL;
+      for (struct glyph_row *row = first; row < bottom && row->enabled_p; row++)
+	last = row;
+      if (last)
+	{
+	  ptrdiff_t start = MATRIX_ROW_START_CHARPOS (first);
+	  ptrdiff_t end = (last->ends_at_zv_p ? PTRDIFF_MAX
+			   : MATRIX_ROW_END_CHARPOS (last));
+	  int before = 0, after = 0;
+	  for (int i = 0; i < n; i++)
+	    {
+	      ptrdiff_t pos = nhwl_block_pos (w, AREF (v, 4 + 3 * i));
+	      before += pos >= 0 && pos < start;
+	      after += pos >= end;
+	    }
+	  if (before == n || after == n)
+	    return false;
+	}
+    }
+  for (int i = 0; i < n; i++)
+    {
+      ptrdiff_t pos = nhwl_block_pos (w, AREF (v, 4 + 3 * i));
+      if (pos < 0
+	  || !nhwl_edge_point (w, pos, nhwl_block_int (v, 5 + 3 * i, 0),
+			       nhwl_block_int (v, 6 + 3 * i, 0), clip,
+			       &e->points[i]))
+	return false;
+    }
+  return true;
+}
+
+/* List the edges V (the window parameter glitnir--edges, a vector of
+   edge vectors) of leaf window W, whose text area is CLIP.  */
+static void
+nhwl_edges_add (struct window *w, Lisp_Object v, NhgRect clip)
+{
+  if (!VECTORP (v))
+    return;
+  for (ptrdiff_t i = 0; i < ASIZE (v); i++)
+    {
+      if (nhwl_nedges == nhwl_edges_cap)
+	nhwl_edges = xpalloc (nhwl_edges, &nhwl_edges_cap, 1, -1,
+			      sizeof *nhwl_edges);
+      if (nhwl_edge_resolve (w, AREF (v, i), clip, &nhwl_edges[nhwl_nedges]))
+	nhwl_nedges++;
+    }
+}
+
 /* List the blocks of WINDOW's leaf windows and its next siblings' (the
-   window parameter glitnir--blocks, a vector of block vectors), and
-   their overview rulers (glitnir--ruler).  */
+   window parameter glitnir--blocks, a vector of block vectors), their
+   overview rulers (glitnir--ruler) and their edges (glitnir--edges).  */
 static void
 nhwl_blocks_add (Lisp_Object window)
 {
@@ -844,7 +982,9 @@ nhwl_blocks_add (Lisp_Object window)
 	}
       Lisp_Object v = Fwindow_parameter (window, Qglitnir__blocks);
       Lisp_Object r = Fwindow_parameter (window, Qglitnir__ruler);
-      if ((!VECTORP (v) && !VECTORP (r)) || !BUFFERP (w->contents))
+      Lisp_Object e = Fwindow_parameter (window, Qglitnir__edges);
+      if ((!VECTORP (v) && !VECTORP (r) && !VECTORP (e))
+	  || !BUFFERP (w->contents))
 	continue;
       int x, y, width, height;
       window_box (w, TEXT_AREA, &x, &y, &width, &height);
@@ -853,7 +993,40 @@ nhwl_blocks_add (Lisp_Object window)
 	for (ptrdiff_t i = 0; i < ASIZE (v); i++)
 	  nhwl_block_add (w, AREF (v, i), clip);
       nhwl_ruler_add (w, r, y, height);
+      nhwl_edges_add (w, e, clip);
     }
+}
+
+DEFUN ("glitnir-edges-resolved", Fglitnir_edges_resolved,
+       Sglitnir_edges_resolved, 0, 1, 0,
+       doc: /* The points of WINDOW's edges as C resolves them when its frame publishes.
+WINDOW defaults to the selected window.  A list with an entry for each
+edge of its parameter `glitnir--edges': a list of (X . Y), device
+pixels from the origin of the window's text area, or nil for an edge
+left out.  For tests.  */)
+  (Lisp_Object window)
+{
+  struct window *w = decode_live_window (window);
+  Lisp_Object out = Qnil;
+
+  XSETWINDOW (window, w);
+  Lisp_Object v = Fwindow_parameter (window, Qglitnir__edges);
+  if (!VECTORP (v) || !BUFFERP (w->contents))
+    return Qnil;
+  int x, y, width, height;
+  window_box (w, TEXT_AREA, &x, &y, &width, &height);
+  NhgRect clip = { x, y, width, height };
+  for (ptrdiff_t i = 0; i < ASIZE (v); i++)
+    {
+      NhgEdge e;
+      Lisp_Object pts = Qnil;
+      if (nhwl_edge_resolve (w, AREF (v, i), clip, &e))
+	for (int j = e.npoints - 1; j >= 0; j--)
+	  pts = Fcons (Fcons (make_fixnum (e.points[j].x - x),
+			      make_fixnum (e.points[j].y - y)), pts);
+      out = Fcons (pts, out);
+    }
+  return Fnreverse (out);
 }
 
 /* Before F's tree is published: F and each drawable child
@@ -873,14 +1046,21 @@ nhwl_blocks_sync (struct frame *f)
   if (out->glitnir_id
       && (!NILP (get_frame_param (f, Qglitnir__blocks))
 	  || nhwl_glue_rc (dpyinfo, NHG (nhg_blocks_count (dpyinfo->glue,
-							   out->glitnir_id))) > 0))
+							   out->glitnir_id))) > 0
+	  || nhwl_glue_rc (dpyinfo, NHG (nhg_edges_count (dpyinfo->glue,
+							  out->glitnir_id))) > 0))
     {
-      nhwl_nblocks = 0;
+      nhwl_nblocks = nhwl_nedges = 0;
       nhwl_blocks_add (FRAME_ROOT_WINDOW (f));
       nhwl_glue_rc (dpyinfo,
 		    NHG (nhg_blocks_sync (dpyinfo->glue, out->window,
 					  out->glitnir_id, nhwl_blocks,
 					  nhwl_nblocks)));
+      /* After the blocks: the edge layers go on top of them.  */
+      nhwl_glue_rc (dpyinfo,
+		    NHG (nhg_edges_sync (dpyinfo->glue, out->window,
+					 out->glitnir_id, nhwl_edges,
+					 nhwl_nedges)));
     }
   FOR_EACH_FRAME (tail, frame)
     if (nhwl_child_of (XFRAME (frame), f))
@@ -4942,6 +5122,7 @@ void
 syms_of_nhwlterm (void)
 {
   defsubr (&Snhwl__bench_full_redraw);
+  defsubr (&Sglitnir_edges_resolved);
   defsubr (&Snhwl_presenter_stats);
   defsubr (&Snhwl_glue_panics);
   defsubr (&Snhwl__scroll_layers);

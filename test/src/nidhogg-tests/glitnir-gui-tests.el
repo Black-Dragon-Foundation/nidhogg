@@ -273,6 +273,47 @@ glitnir-nhmac-gui-tests.el's `nhmac-ruler-*'."
       (set-window-fringes w nil nil)
       (kill-buffer buf))))
 
+;; Edges.
+
+(ert-deftest glitnir-gui/an-edge-joins-two-places-and-leaves-with-a-scroll ()
+  "A window's `glitnir-edges': a line from one buffer place to another, drawn over the text in its colour, its points
+where the places' glyphs are; scrolled past, its start sits one line above the text area, and an edge wholly above
+the rows shown is not resolved (none of it is drawn)."
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-edge*" 200)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (let* ((lh (with-current-buffer buf (line-pixel-height)))
+                 (dy (/ lh 2))
+                 (from (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 1) (+ (point) 10))))
+                 (to (+ from 30)))
+            (set-window-parameter w 'glitnir-edges `(((,from 0 ,dy) (,to 0 ,dy) ("#ff0000" . 1))))
+            (pcase-let* ((snap (glitnir-gui--painted))
+                         (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                         (`(,fx . ,fy) (posn-x-y (posn-at-point from w)))
+                         (`(,tx . ,_) (posn-x-y (posn-at-point to w))))
+              (should (equal (glitnir-edges-resolved w) (list (list (cons fx (+ fy dy)) (cons tx (+ fy dy))))))
+              (should (equal (glitnir-gui--pixel snap (list (+ x (/ (+ fx tx) 2)) (+ y fy dy))) '(255 0 0)))
+              (should-not (equal (glitnir-gui--pixel snap (list (+ x (/ (+ fx tx) 2)) (+ y fy dy (/ lh 2) 2)))
+                                 '(255 0 0))))
+            ;; scrolled down past its start: the start of an edge that reaches the rows shown is one frame line above
+            ;; the text area; the first edge, wholly above them, is not resolved.  Point goes along, or redisplay
+            ;; brings the window back to it
+            (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 20) (point))))
+                  (far (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 22) (+ (point) 10)))))
+              (set-window-parameter w 'glitnir-edges `(((,from 0 ,dy) (,to 0 ,dy) ("#ff0000" . 1))
+                                                       ((,from 0 ,dy) (,far 0 ,dy) ("#ff0000" . 1))))
+              (set-window-point w p)
+              (set-window-start w p))
+            (glitnir-gui--painted)
+            (pcase-let ((`(,gone ((,_ . ,y0) ,_)) (glitnir-edges-resolved w)))
+              (should-not gone)
+              (should (= y0 (- (frame-char-height)))))))
+      (set-window-parameter w 'glitnir-edges nil)
+      (kill-buffer buf))))
+
 ;; The stacking list.
 
 (defun glitnir-gui--children (n)
@@ -843,5 +884,45 @@ terminal frame, \"Unknown terminal type\" and a 60 s wait)."
     (should (equal (plist-get r :own-mini) t))
     (should (equal (plist-get r :deleted) 0))
     (should (plist-get r :exited))))
+
+(ert-deftest glitnir-gui/an-overlay-string-change-redisplays-only-its-lines ()
+  "An inline value (an overlay's after-string at a line's end) changed at a stop redisplays only its lines, with line
+numbers on and the current line's number in its own face; with `glitnir-confined-overlay-redisplay' off (stock
+Emacs) the same change draws the window again from its start.  An `invisible' overlay still does."
+  (skip-unless (featurep 'glitnir-confined-overlays))
+  (let ((buf (generate-new-buffer "*confined-overlays*"))
+        (frame (selected-frame))
+        (weight (face-attribute 'line-number-current-line :weight (selected-frame))))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (delete-other-windows)
+          ;; as `prog-mode' does: without a fixed direction try_window_id always gives up
+          (setq bidi-paragraph-direction 'left-to-right)
+          (dotimes (i 200) (insert (format "line %d of the program\n" i)))
+          (goto-char (point-min))
+          (forward-line 5)
+          (set-face-attribute 'line-number-current-line frame :weight 'bold)
+          (display-line-numbers-mode 1)
+          (let ((o (make-overlay (pos-eol 12) (pos-eol 12)))
+                (count (lambda (change)
+                         (redisplay t)
+                         (setq glitnir--redisplay-same-start 0 glitnir--redisplay-changed-lines 0
+                               glitnir--redisplay-gave-up 0)
+                         (funcall change)
+                         (redisplay t)
+                         (list glitnir--redisplay-same-start glitnir--redisplay-changed-lines))))
+            (overlay-put o 'after-string "  qty = 20")
+            (let ((n (funcall count (lambda () (overlay-put o 'after-string "  qty = 3")))))
+              (should (equal (list (nth 0 n) glitnir--redisplay-gave-up) '(0 0)))
+              (should (>= (nth 1 n) 1)))
+            (should (string-match-p "qty = 3" (format "%S" (overlay-get o 'after-string))))
+            (let ((glitnir-confined-overlay-redisplay nil))
+              (should (>= (nth 0 (funcall count (lambda () (overlay-put o 'after-string "  qty = 4")))) 1)))
+            ;; an invisible overlay may show outside its text: the window is drawn again
+            (let ((h (make-overlay (pos-bol 30) (pos-bol 31))))
+              (should (>= (nth 0 (funcall count (lambda () (overlay-put h 'invisible t)))) 1)))))
+      (set-face-attribute 'line-number-current-line frame :weight weight)
+      (kill-buffer buf))))
 
 ;;; glitnir-gui-tests.el ends here

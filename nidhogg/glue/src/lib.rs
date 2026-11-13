@@ -58,6 +58,7 @@ pub mod layers;
 // window cards
 pub mod blocks;
 pub mod cards;
+pub mod edges;
 
 // layout legs
 pub mod legs;

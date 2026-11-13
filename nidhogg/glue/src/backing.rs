@@ -39,6 +39,8 @@ pub const BLOCK_TAG: u64 = 1 << 61;
 /// A window's strip bars (the overview ruler, `NHG_BLOCK_STRIP`) are planned under its `sequence_number` with this bit
 /// set, so they get a block layer of their own, with their own clip, beside the window's rings and bars.
 pub const STRIP_TAG: u64 = 1 << 60;
+/// A window's edge layer id is the window's `sequence_number` with this bit set (`edges.rs`).
+pub const EDGE_TAG: u64 = 1 << 59;
 
 /// The last key given (C's `static last_id`: one counter for every display, as Glitnir's ids are global).
 static LAST_ID: AtomicU64 = AtomicU64::new(0);
@@ -152,6 +154,8 @@ pub struct Frame {
     pub(crate) cards: crate::cards::Cards,
     /// The frame's windows with blocks (`blocks.rs`).
     pub(crate) blocks: crate::blocks::Blocks,
+    /// The frame's windows with edges (`edges.rs`).
+    pub(crate) edges: crate::edges::Edges,
     /// The frame's windows with a capture or a layout leg (`legs.rs`).
     pub(crate) legs: crate::legs::Legs,
     /// The rows the visible bell inverted, until they are put back (`bell.rs`).

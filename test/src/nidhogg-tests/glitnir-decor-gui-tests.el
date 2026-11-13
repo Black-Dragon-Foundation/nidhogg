@@ -415,6 +415,129 @@ row's top."
     (should (equal (list 'text at) '(text (0 192 0))))
     (should (equal (list 'stock above) '(stock (0 192 0))))))
 
+(defun glitnir-decor-gui--fit-above (text at &optional tint late dy)
+  "On a row a 40 px space makes taller than its text, the run TEXT in a green face boxed in green with `:fit text':
+the pixel DY (default 3) px below the row's top over TEXT's character AT.  TINT: an overlay of that background over
+the whole line, as a list's selected row has, put on after the row was first drawn when LATE; (around . COLOUR): that
+tint on the line but not on TEXT, as drgnx's selection leaves a chip its face; (mouse . COLOUR): the line's
+`mouse-face' of that background, the pointer on it, as a hovered row."
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-decor-gui-fit-above")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white" :background "#00c000"
+                        :box '(:line-width (1 . 1) :color "#00c000" :corner-radius 4 :fit text))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "white")
+      (setq-local cursor-type nil)
+      (let ((fo (glitnir-decor-gui--calibrate)))
+        (insert "\n\n" (propertize " " 'display '(space :width (1) :height (40) :ascent 100))
+                "x " (propertize text 'face face) " y\n\n")
+        (when late
+          (goto-char 1)
+          (gui-runner-wait-settled))
+        (cond ((stringp tint)
+               (let ((o (make-overlay 3 (save-excursion (goto-char 3) (1+ (line-end-position))))))
+                 (overlay-put o 'face `(:background ,tint :extend t))))
+              ((eq (car-safe tint) 'around)
+               (dolist (o (list (make-overlay 3 6)
+                                (make-overlay (+ 6 (length text))
+                                              (save-excursion (goto-char 3) (1+ (line-end-position))))))
+                 (overlay-put o 'face `(:background ,(cdr tint) :extend t))))
+              (tint
+               (put-text-property 4 (save-excursion (goto-char 3) (line-end-position))
+                                  'mouse-face `(:background ,(cdr tint)))))
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (when (eq (car-safe tint) 'mouse)
+          (let ((e (window-body-pixel-edges)) (p (pos-visible-in-window-p 4 nil t)))
+            (set-mouse-pixel-position (selected-frame) (+ (nth 0 e) (nth 0 p) 2) (+ (nth 1 e) (nth 1 p) 2)))
+          (redisplay t)
+          (gui-runner-wait-settled))
+        (let* ((s (glitnir-decor-gui--scale))
+               (g (gui-runner-screen-grab))
+               (row (cdr (glitnir-decor-gui--at g 3 fo)))
+               (x (car (cdr (glitnir-decor-gui--at g (+ 6 at) fo)))))
+          (glitnir-decor-gui--px g (+ x (glitnir-decor-gui--dev s 2)) (+ (cdr row) (glitnir-decor-gui--dev s (or dy 3)))))))))
+
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-fills-only-the-text-past-other-fonts ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; drgnx's "3 failed · base": a character from another font (its own face) splits the run, and the text after it
+  ;; filled the row from there: the colour beneath it was taken from that character, the run's own green
+  (should (equal (list 'after-other-fonts (glitnir-decor-gui--fit-above " a ✓ b · c 中 d " 13))
+                 '(after-other-fonts (32 32 32)))))
+
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-on-a-tinted-row-shows-the-tint ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; drgnx's selected row (a tinted overlay over the line): above and below a pill, the row's tint, not the window's
+  (should (equal (list 'tint (glitnir-decor-gui--fit-above " ab " 2 "#3050a0")) '(tint (48 80 160)))))
+
+;; drgnx's Flow: a row selected after it was drawn kept the window's colour in a line at its top and bottom over each
+;; pill, where the stock box line would go (the background is drawn inside the box's lines, and the ring is not at
+;; the row's edge)
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-on-a-row-tinted-later-shows-the-tint-to-its-edge ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  (should (equal (list 'edge (glitnir-decor-gui--fit-above " ab " 2 "#3050a0" t 0)) '(edge (48 80 160)))))
+
+;; drgnx's Flow: the selection, put around a chip after the row was drawn, left the chip's glyphs as they were, so
+;; redisplay did not draw them again, and above and below the chip the row kept its old colour; a fit box's colour
+;; beneath comes from its neighbours, so a row that holds one is drawn whole when it changes
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-takes-a-new-colour-beneath-when-its-row-changes ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  (should (equal (list 'around (glitnir-decor-gui--fit-above " ab " 2 '(around . "#3050a0") t))
+                 '(around (48 80 160)))))
+
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-on-a-hovered-row-shows-the-hover ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; drgnx's task rows light under the pointer (`mouse-face'): above and below a pill, the hover's colour, not the
+  ;; window's (the glyphs keep their own faces; the hover is drawn over them)
+  ;; the premise: the pointer lights the row (the text before the pill in the hover's colour); a warped pointer does
+  ;; not always reach the frame here (as in decor-mouse-face-neighbour), and then there is nothing to judge
+  (unless (equal (glitnir-decor-gui--fit-above " ab " -2 '(mouse . "#3050a0")) '(48 80 160))
+    (ert-skip "the pointer did not light the row"))
+  (should (equal (list 'hover (glitnir-decor-gui--fit-above " ab " 2 '(mouse . "#3050a0"))) '(hover (48 80 160)))))
+
+;; drgnx's buttons (a 1 px ring, 24 px tall over 12 px text): `:fit (text . PAD)' pads the box PAD px above and below
+;; the text, inside its line, in the face's background (coordinator, 2026-11-13)
+(defun glitnir-decor-gui--fit-pad (fit)
+  "On a row a 40 px space makes taller than its text, \" ab \" in a green face ringed in orange with FIT as its :fit:
+\(INSIDE . OUTSIDE), the pixels 3 and 9 px above its text's top, inside its leading space."
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-decor-gui-fit-pad")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white" :background "#00c000"
+                        :box `(:line-width (1 . 1) :color "#ff8000" :corner-radius 4 :fit ,fit))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "white")
+      (setq-local cursor-type nil)
+      (let ((fo (glitnir-decor-gui--calibrate)))
+        (insert "\n\n" (propertize " " 'display '(space :width (1) :height (40) :ascent 100))
+                (propertize " ab " 'face face) "\n\n")
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (let* ((s (glitnir-decor-gui--scale))
+               (g (gui-runner-screen-grab))
+               (row (cdr (glitnir-decor-gui--at g 4 fo)))
+               (x (+ (car row) (glitnir-decor-gui--dev s 4)))
+               (h (save-excursion (goto-char 4) (line-pixel-height)))
+               (top (- h (frame-char-height))))
+          (cons (glitnir-decor-gui--px g x (+ (cdr row) (glitnir-decor-gui--dev s (- top 3))))
+                (glitnir-decor-gui--px g x (+ (cdr row) (glitnir-decor-gui--dev s (- top 9))))))))))
+
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-takes-a-pad ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  (let ((f (make-symbol "glitnir-decor-gui-fit-key")))
+    (custom-declare-face f nil "Test face.")
+    (set-face-attribute f nil :box '(:line-width 1 :fit (text . 4)))
+    (should-error (set-face-attribute f nil :box '(:line-width 1 :fit (text . -1)))))
+  ;; padded 4 px: 3 px above the text is the fill, 9 px above (past the pad and the line) the window
+  (pcase-let ((`(,inside . ,outside) (glitnir-decor-gui--fit-pad '(text . 4))))
+    (should (equal (list 'pad inside) '(pad (0 192 0))))
+    (should (equal (list 'outside outside) '(outside (32 32 32)))))
+  ;; the premise: unpadded, 3 px above the text is past the line
+  (should (equal (list 'unpadded (car (glitnir-decor-gui--fit-pad 'text))) '(unpadded (32 32 32)))))
+
 (ert-deftest glitnir-decor-gui/box-across-a-newline-is-stock ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Buffer text in a boxed face that runs on over its newline (no string, no stretch) is drawn as stock Emacs draws

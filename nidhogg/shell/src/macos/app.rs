@@ -36,7 +36,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask, NSScreen};
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRect, NSSize, NSString};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRect, NSString};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::Duration;
 
@@ -153,6 +153,10 @@ fn drain_events(app: &NSApplication) {
         mode,
         true,
     ) {
+        #[cfg(feature = "test-hooks")]
+        if super::inject::send_posted(app, &ev) {
+            continue;
+        }
         if !kq::is_marker(&ev) {
             app.sendEvent(&ev);
         }
@@ -623,40 +627,13 @@ impl MacShell {
         // lent so the `windowDidResize:` it causes is applied in the same drain
         let mut moves = Vec::new();
         for id in ids {
-            let Some(w) = self.windows.get_mut(id) else {
-                continue;
-            };
-            let Some((frame, px)) = w.resize.inflight else {
-                continue;
-            };
-            if w.surfaces.newest().is_none() {
-                continue;
-            }
-            let drawn = w.surfaces.size();
-            if drawn == px {
+            if let Some(w) = self.windows.get_mut(id)
+                && let Some((frame, px)) = w.resize.inflight
+                && w.surfaces.newest().is_some()
+                && w.surfaces.size() == px
+            {
                 w.resize.inflight = None;
                 moves.push((w.window.clone(), frame));
-            } else if w.configuring.is_none() {
-                // the host took the step and drew another size: its frame's minimum (a drag past it), or a tool bar
-                // that wrapped.  The window takes the host's size with the dragged edges where the step put them;
-                // waiting for the size asked for kept the resize pending for good (the live session, 2026-11-13: a
-                // left-edge drag to AppKit's minimum, 23 points, left the frame at Emacs's 70 and every later step
-                // waiting)
-                let s = w.scale();
-                let content = NSSize::new(s.pt(f64::from(drawn.0)), s.pt(f64::from(drawn.1)));
-                let cur = w.window.frame();
-                let mut r = w.window.frameRectForContentRect(NSRect::new(frame.origin, content));
-                if frame.origin.x != cur.origin.x {
-                    // the left edge moved: the right one stays
-                    r.origin.x = frame.origin.x + frame.size.width - r.size.width;
-                }
-                if frame.origin.y + frame.size.height == cur.origin.y + cur.size.height {
-                    // the top stayed: it stays (AppKit's y is up, the origin the bottom-left)
-                    r.origin.y = frame.origin.y + frame.size.height - r.size.height;
-                }
-                w.size = (s.pt_i(drawn.0), s.pt_i(drawn.1));
-                w.resize.inflight = None;
-                moves.push((w.window.clone(), r));
             }
         }
         if !moves.is_empty() {

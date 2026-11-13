@@ -303,6 +303,10 @@ impl Kq {
                     };
                 }
                 Some(ev) => {
+                    #[cfg(feature = "test-hooks")]
+                    if super::inject::send_posted(app, &ev) {
+                        break Woke::Event;
+                    }
                     app.sendEvent(&ev);
                     break Woke::Event;
                 }

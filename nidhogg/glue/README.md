@@ -280,7 +280,22 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   outside the rounded path in the beneath colour), a rule on its bottom pixel rows or a bar (`NHG_BLOCK_BAR`, kind
   `bar` in Lisp: the block's rectangle filled in the line's colour, square, a selected row's accent), over the frame's
   pixels; only a bar fills. The block layers stay above the frame's outputs. A scale change and a reconnect give them again. A shell with
-  cards on layers of its own (macOS) draws no blocks yet.
+  cards on layers of its own (macOS) gets each window's blocks as one image instead (`blocks::images_at`,
+  `glitnir::compose::block_overlay`), in the window's card list after its cards.
+- **Edges** (`src/edges.rs`): thin lines over a window's text from one buffer place to another, with rounded bends, an
+  arrowhead or dashes (the window parameter `glitnir-edges`, a list of `(FROM TO COLOUR . PLIST)`, which `glitnir.el`
+  resolves into `glitnir--edges`; the debugger's heap graph). In the same pass as the blocks, C resolves each point
+  (a buffer position plus DX, DY) against the window's current matrix: its glyph's left and its row's top; a position
+  not on the rows shown sits one frame line above the text area (before them) or below it, at its column. They go to
+  `nhg_edges_sync` as `NhgEdge`s (the text area, up to 8 points, arrow and dash flags, a colour), while the frame's
+  `glitnir--blocks` flag is set or `nhg_edges_count` is not 0. Each window with edges gets a WINDOW layer, id
+  `sequence_number | EDGE_TAG`, at its text area, kept above its blocks and the frame's outputs and left alone while
+  its edges, clip and scale do not change. The glue sizes them from the scale: a line of one logical px in whole
+  device px, bends of radius 6, an arrow 6 long, dashes of 3; compose draws them anti-aliased
+  (`glitnir::edge::coverage`). `glitnir-edges-resolved` gives the points C resolves, for tests. A shell with cards on
+  layers of its own (macOS) gets each window's edges as one image at its text area instead (`edges::images_at`,
+  `glitnir::compose::edge_overlay`), last in the window's card list; the shell stacks the list's layers in its order,
+  so the edges show above the blocks they cross.
 - **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose
   last full-window scroll is 2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
   box demotes first. Demotion is `set_output (…, 0)` and the layer's removal, in that publish: Glitnir damages the
