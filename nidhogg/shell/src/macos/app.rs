@@ -153,6 +153,10 @@ fn drain_events(app: &NSApplication) {
         mode,
         true,
     ) {
+        #[cfg(feature = "test-hooks")]
+        if super::inject::send_posted(app, &ev) {
+            continue;
+        }
         if !kq::is_marker(&ev) {
             app.sendEvent(&ev);
         }

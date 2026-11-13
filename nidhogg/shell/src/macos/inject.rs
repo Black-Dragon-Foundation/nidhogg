@@ -12,6 +12,8 @@ use objc2_app_kit::{
     NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSScreen, NSWorkspace,
 };
 use objc2_foundation::{NSPoint, NSString};
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::ffi::c_void;
 
 /// Core Graphics' event, opaque.
@@ -156,8 +158,65 @@ pub fn key(
     Ok(())
 }
 
-/// Post a mouse event of `kind` at `x`, `y` (device pixels from the view's top left): `button` (0 left, 1 right, 2
-/// middle) for a press, release or drag, `button` lines (positive down) for a wheel, points for a precise scroll.
+/// The subtype of the application-defined event a posted press, release, drag or move waits as.
+const POSTED: i16 = 0x6e6d;
+
+/// A posted mouse event, made when the pump drains it: its screen point (points, y up) and the window's number.
+struct Posted {
+    ty: NSEventType,
+    screen: NSPoint,
+    flags: NSEventModifierFlags,
+    window: isize,
+    pressure: f32,
+}
+
+thread_local! {
+    /// The posted mouse events, in their order in the application's queue.
+    static POSTED_EVENTS: RefCell<VecDeque<Posted>> = const { RefCell::new(VecDeque::new()) };
+    /// While a posted button is down: the content's top left on the screen at the press.
+    static PRESS: Cell<Option<NSPoint>> = const { Cell::new(None) };
+}
+
+/// The content's top left on the screen, in points (y up).
+fn content_top_left(w: &Win) -> NSPoint {
+    let c = w.window.contentRectForFrameRect(w.window.frame());
+    NSPoint::new(c.origin.x, c.origin.y + c.size.height)
+}
+
+/// Send `ev` if it is a posted mouse event (true): made now, at its screen point in the window's frame of now.  A
+/// resize step's commit runs in the pump before the drain and moves the window's origin; a location in window
+/// coordinates made at the post moved with it, so a drag of the left or top edge, or one about the centre, chased
+/// its own steps (the live session, 2026-11-13: the left edge grew 1500 points for a 60-point drag).
+pub fn send_posted(app: &NSApplication, ev: &NSEvent) -> bool {
+    if ev.r#type() != NSEventType::ApplicationDefined || ev.subtype().0 != POSTED {
+        return false;
+    }
+    let Some(p) = POSTED_EVENTS.with(|q| q.borrow_mut().pop_front()) else {
+        return true;
+    };
+    let Some(window) = app.windowWithWindowNumber(p.window) else {
+        return true;
+    };
+    let made = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+        p.ty,
+        window.convertPointFromScreen(p.screen),
+        p.flags,
+        0.0,
+        p.window,
+        None,
+        0,
+        1,
+        p.pressure,
+    );
+    if let Some(made) = made {
+        app.sendEvent(&made);
+    }
+    true
+}
+
+/// Post a mouse event of `kind` at `x`, `y` (device pixels from the view's top left; while a posted button is down,
+/// from where the view's top left was at the press): `button` (0 left, 1 right, 2 middle) for a press, release or
+/// drag, `button` lines (positive down) for a wheel, points for a precise scroll.
 pub fn mouse(
     mtm: MainThreadMarker,
     app: &NSApplication,
@@ -248,19 +307,41 @@ pub fn mouse(
         (MOUSE_MOVE, _) => NSEventType::MouseMoved,
         _ => return Err(ShellError::Arg),
     };
-    let ev = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-        ty,
-        at,
-        flags,
+    // the screen point: from the content's top left now, or at the press while the button is down
+    let origin = match kind {
+        MOUSE_DOWN => {
+            let o = content_top_left(w);
+            PRESS.with(|p| p.set(Some(o)));
+            o
+        }
+        MOUSE_DRAG => PRESS.with(Cell::get).unwrap_or_else(|| content_top_left(w)),
+        MOUSE_UP => PRESS.with(Cell::take).unwrap_or_else(|| content_top_left(w)),
+        _ => content_top_left(w),
+    };
+    let scale = w.scale();
+    let screen = NSPoint::new(origin.x + scale.pt(x), origin.y - scale.pt(y));
+    let marker = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+        NSEventType::ApplicationDefined,
+        NSPoint::new(0.0, 0.0),
+        NSEventModifierFlags(0),
         0.0,
-        w.window.windowNumber(),
-        None,
         0,
-        1,
-        if kind == MOUSE_DOWN || kind == MOUSE_DRAG { 1.0 } else { 0.0 },
+        None,
+        POSTED,
+        0,
+        0,
     )
     .ok_or(ShellError::State)?;
-    app.postEvent_atStart(&ev, false);
+    POSTED_EVENTS.with(|q| {
+        q.borrow_mut().push_back(Posted {
+            ty,
+            screen,
+            flags,
+            window: w.window.windowNumber(),
+            pressure: if kind == MOUSE_DOWN || kind == MOUSE_DRAG { 1.0 } else { 0.0 },
+        });
+    });
+    app.postEvent_atStart(&marker, false);
     Ok(())
 }
 
