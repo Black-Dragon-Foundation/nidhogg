@@ -992,6 +992,71 @@ colour beneath; stock fills the row (the premise: the probe above the text is in
     (should (equal (list 'text at) (list 'text #x00c000)))
     (should (equal (list 'stock above) (list 'stock #x00c000)))))
 
+(defun glitnir-nhmac--fit-pad (fit)
+  "As `glitnir-nhmac--fit-fill', the box ringed in orange: (INSIDE . OUTSIDE), the root surface's pixels 3 and 9
+pixels above the text's top inside the leading space, as #xRRGGBB."
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-nhmac-fit-pad")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white" :background "#00c000"
+                        :box `(:line-width (1 . 1) :color "#ff8000" :corner-radius 4 :fit ,fit))
+    (save-window-excursion
+      (with-temp-buffer
+        (switch-to-buffer (current-buffer))
+        (face-remap-add-relative 'default :background "#202020" :foreground "white")
+        (setq-local cursor-type nil)
+        (insert "\n\n" (propertize " " 'display '(space :width (1) :height (40) :ascent 100))
+                (propertize " ab " 'face face) "\n\n")
+        (goto-char 1)
+        (nhmac-gui--settle)
+        (pcase-let* ((w (selected-window))
+                     (`(,wx ,wy . ,_) (window-inside-pixel-edges w))
+                     (`(,px . ,py) (posn-x-y (posn-at-point 4 w)))
+                     (h (save-excursion (goto-char 4) (line-pixel-height)))
+                     (x (+ wx px 3)) (top (+ wy py (- h (frame-char-height)))))
+          (cons (glitnir-nhmac--surface-px x (- top 3))
+                (glitnir-nhmac--surface-px x (- top 9))))))))
+
+(ert-deftest glitnir-nhmac/a-box-fit-to-the-text-takes-a-pad ()
+  "`:fit (text . 4)' pads the box 4 pixels above and below the text in the face's background
+\(glitnir-decor-gui/a-box-fit-to-the-text-takes-a-pad on Linux)."
+  :tags '(draws)
+  ;; padded 4: 3 above the text is the fill, 9 above (past the pad and the box's line) the window
+  (pcase-let ((`(,inside . ,outside) (glitnir-nhmac--fit-pad '(text . 4))))
+    (should (equal (list 'pad inside) (list 'pad #x00c000)))
+    (should (equal (list 'outside outside) (list 'outside #x202020))))
+  ;; the premise: unpadded, 3 above the text is past the line
+  (should (equal (list 'unpadded (car (glitnir-nhmac--fit-pad 'text))) (list 'unpadded #x202020))))
+
+(ert-deftest glitnir-nhmac/a-box-fit-to-the-text-takes-a-new-colour-beneath-when-its-row-changes ()
+  "A tint put on the line around a `:fit text' chip after the row was drawn (drgnx's selection) shows above the chip
+too: a row that holds a fit box is drawn whole when it changes
+\(glitnir-decor-gui/a-box-fit-to-the-text-takes-a-new-colour-beneath-when-its-row-changes on Linux)."
+  :tags '(draws)
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-nhmac-fit-around")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white" :background "#00c000"
+                        :box '(:line-width (1 . 1) :color "#00c000" :corner-radius 4 :fit text))
+    (save-window-excursion
+      (with-temp-buffer
+        (switch-to-buffer (current-buffer))
+        (face-remap-add-relative 'default :background "#202020" :foreground "white")
+        (setq-local cursor-type nil)
+        (insert "\n\n" (propertize " " 'display '(space :width (1) :height (40) :ascent 100))
+                (propertize " ab " 'face face) "\n\n")
+        (goto-char 1)
+        (nhmac-gui--settle)
+        (dolist (o (list (make-overlay 3 4) (make-overlay 8 (save-excursion (goto-char 3) (1+ (line-end-position))))))
+          (overlay-put o 'face '(:background "#3050a0" :extend t)))
+        (nhmac-gui--settle)
+        (pcase-let* ((w (selected-window))
+                     (`(,wx ,wy . ,_) (window-inside-pixel-edges w))
+                     (`(,px . ,py) (posn-x-y (posn-at-point 6 w)))
+                     (x (+ wx px 2)) (y (+ wy py 3)))
+          ;; over the chip's `b', 3 pixels below the row's top: the tint around it, not the old window colour
+          (should (equal (list 'around (glitnir-nhmac--surface-px x y)) (list 'around #x3050a0))))))))
+
 ;; The overview ruler (docs/specs/nidhogg/2026-11-13-glitnir-overview-ruler-case.md in the org folder): block bars
 ;; whose clip is a strip in the right fringe, shown on macOS as the window's block image like any block.
 
