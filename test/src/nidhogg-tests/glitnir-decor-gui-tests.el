@@ -415,11 +415,11 @@ row's top."
     (should (equal (list 'text at) '(text (0 192 0))))
     (should (equal (list 'stock above) '(stock (0 192 0))))))
 
-(defun glitnir-decor-gui--fit-above (text at &optional tint)
+(defun glitnir-decor-gui--fit-above (text at &optional tint late dy)
   "On a row a 40 px space makes taller than its text, the run TEXT in a green face boxed in green with `:fit text':
-the pixel 3 px below the row's top over TEXT's character AT.  TINT: an overlay of that background over the whole
-line, as a list's selected row has; (mouse . COLOUR): the line's `mouse-face' of that background, the pointer on it,
-as a hovered row."
+the pixel DY (default 3) px below the row's top over TEXT's character AT.  TINT: an overlay of that background over
+the whole line, as a list's selected row has, put on after the row was first drawn when LATE; (mouse . COLOUR): the
+line's `mouse-face' of that background, the pointer on it, as a hovered row."
   (let ((glitnir-enable t)
         (face (make-symbol "glitnir-decor-gui-fit-above")))
     (custom-declare-face face nil "Test face.")
@@ -432,6 +432,9 @@ as a hovered row."
       (let ((fo (glitnir-decor-gui--calibrate)))
         (insert "\n\n" (propertize " " 'display '(space :width (1) :height (40) :ascent 100))
                 "x " (propertize text 'face face) " y\n\n")
+        (when late
+          (goto-char 1)
+          (gui-runner-wait-settled))
         (cond ((stringp tint)
                (let ((o (make-overlay 3 (save-excursion (goto-char 3) (1+ (line-end-position))))))
                  (overlay-put o 'face `(:background ,tint :extend t))))
@@ -449,7 +452,7 @@ as a hovered row."
                (g (gui-runner-screen-grab))
                (row (cdr (glitnir-decor-gui--at g 3 fo)))
                (x (car (cdr (glitnir-decor-gui--at g (+ 6 at) fo)))))
-          (glitnir-decor-gui--px g (+ x (glitnir-decor-gui--dev s 2)) (+ (cdr row) (glitnir-decor-gui--dev s 3))))))))
+          (glitnir-decor-gui--px g (+ x (glitnir-decor-gui--dev s 2)) (+ (cdr row) (glitnir-decor-gui--dev s (or dy 3)))))))))
 
 (ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-fills-only-the-text-past-other-fonts ()
   (skip-unless (featurep 'nidhogg-wayland))
@@ -462,6 +465,13 @@ as a hovered row."
   (skip-unless (featurep 'nidhogg-wayland))
   ;; drgnx's selected row (a tinted overlay over the line): above and below a pill, the row's tint, not the window's
   (should (equal (list 'tint (glitnir-decor-gui--fit-above " ab " 2 "#3050a0")) '(tint (48 80 160)))))
+
+;; drgnx's Flow: a row selected after it was drawn kept the window's colour in a line at its top and bottom over each
+;; pill, where the stock box line would go (the background is drawn inside the box's lines, and the ring is not at
+;; the row's edge)
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-on-a-row-tinted-later-shows-the-tint-to-its-edge ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  (should (equal (list 'edge (glitnir-decor-gui--fit-above " ab " 2 "#3050a0" t 0)) '(edge (48 80 160)))))
 
 (ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-on-a-hovered-row-shows-the-hover ()
   (skip-unless (featurep 'nidhogg-wayland))
