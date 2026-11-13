@@ -279,6 +279,7 @@ glitnir-nhmac-gui-tests.el's `nhmac-ruler-*'."
   "A window's `glitnir-edges': a line from one buffer place to another, drawn over the text in its colour, its points
 where the places' glyphs are; scrolled past, its start sits one line above the text area, and an edge wholly above
 the rows shown is not resolved (none of it is drawn)."
+  (glitnir-gui--skip-unless-tree "nhmac-edges-drawn-like-cards")
   (let ((buf (glitnir-gui--text-buffer "*glitnir-edge*" 200)) (w (selected-window)))
     (unwind-protect
         (progn
