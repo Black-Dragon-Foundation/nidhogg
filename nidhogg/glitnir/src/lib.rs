@@ -15,6 +15,7 @@ pub mod compose;
 pub mod damage;
 pub mod decor;
 pub mod ease;
+pub mod edge;
 pub mod ffi;
 pub mod geom;
 pub mod history;

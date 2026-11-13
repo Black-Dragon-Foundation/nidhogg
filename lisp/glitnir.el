@@ -559,6 +559,70 @@ is done per redisplay: a scroll moves the band in C."
     (when (window-parameter window 'glitnir--ruler)
       (setq glitnir--blocks-any t))))
 
+;; Edges: a window parameter `glitnir-edges' draws thin lines over the
+;; window's text from one buffer position to another, with rounded bends,
+;; an arrowhead or dashes (the debugger's heap graph: a reference from a
+;; card's field to the card it points at).  Like blocks, it is resolved
+;; into `glitnir--edges' only when it, or the theme, changed; C resolves
+;; each point against the window's matrix when the frame publishes, and
+;; the line's width, bends, arrow and dashes come from the frame's scale.
+
+(defconst glitnir--edge-points 8
+  "The most points an edge has: its start, up to 6 bends and its end.")
+
+(defun glitnir--edge-place (place)
+  "PLACE, a position or (POS DX DY), as the list (POS DX DY)."
+  (cond ((or (integerp place) (markerp place)) (list place 0 0))
+        ((and (consp place) (or (integerp (car place)) (markerp (car place)))
+              (integerp (or (nth 1 place) 0)) (integerp (or (nth 2 place) 0)))
+         (list (car place) (or (nth 1 place) 0) (or (nth 2 place) 0)))
+        (t (signal 'wrong-type-argument (list 'glitnir-edge-place place)))))
+
+(defun glitnir--edge-vector (spec frame)
+  "Return edge SPEC as the vector C reads, for FRAME, or nil for no colour.
+SPEC is (FROM TO COLOUR . PLIST): FROM and TO places, each a buffer
+position (a marker or an integer) or (POS DX DY), DX and DY pixels from
+the left of POS's glyph and the top of its row; COLOUR a face, whose
+foreground is used, a colour name or (FACE-OR-COLOUR . OPACITY); PLIST
+`:points' (the bends between, places, at most 6), `:arrow' (an
+arrowhead at TO) and `:dash' (dashed).  The vector is [FLAGS RGB
+OPACITY NPOINTS POS DX DY...], FLAGS 1 for the arrow and 2 for dashes.
+Signal `wrong-type-argument' for another shape."
+  (unless (and (consp spec) (consp (cdr spec)) (consp (cddr spec)))
+    (signal 'wrong-type-argument (list 'glitnir-edge spec)))
+  (let* ((plist (nthcdr 3 spec))
+         (places (mapcar #'glitnir--edge-place
+                         (append (list (nth 0 spec)) (plist-get plist :points) (list (nth 1 spec)))))
+         (c (nth 2 spec))
+         (colour (glitnir--ring (if (and (consp c) (numberp (cdr c))) c (cons c 1)) frame)))
+    (when (> (length places) glitnir--edge-points)
+      (signal 'wrong-type-argument (list 'glitnir-edge-points spec)))
+    (and colour
+         (apply #'vector
+                (logior (if (plist-get plist :arrow) 1 0) (if (plist-get plist :dash) 2 0))
+                (car colour) (cdr colour) (length places)
+                (apply #'append places)))))
+
+(defun glitnir--recheck-edges (window)
+  "Resolve WINDOW's edges when its `glitnir-edges' or the theme changed.
+The vector of edge vectors goes into the window parameter
+`glitnir--edges', which C reads when the frame publishes; it sets the
+frame's flag that blocks set, so C lists the frame.  A window that
+never had edges gets no parameter of them."
+  (let ((spec (window-parameter window 'glitnir-edges))
+        (key (window-parameter window 'glitnir--edges-key)))
+    (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
+                (and (null spec) (null key)))
+      (set-window-parameter window 'glitnir--edges-key (and spec (cons spec glitnir--card-generation)))
+      (let* ((frame (window-frame window))
+             (v (and spec (vconcat (delq nil (mapcar (lambda (e) (glitnir--edge-vector e frame)) spec))))))
+        (when (equal v []) (setq v nil))
+        (unless (equal v (window-parameter window 'glitnir--edges))
+          (set-window-parameter window 'glitnir--edges v)
+          (force-window-update window))))
+    (when (window-parameter window 'glitnir--edges)
+      (setq glitnir--blocks-any t))))
+
 (defun glitnir-ruler-position (posn)
   "The buffer position at the y of POSN, a click on a window's overview ruler.
 The strip stands for the whole buffer, top to bottom, by characters, as
@@ -589,6 +653,7 @@ This runs on every redisplay, so it walks the tree rather than building a window
         (glitnir--recheck-cards window)
         (glitnir--recheck-blocks window)
         (glitnir--recheck-ruler window)
+        (glitnir--recheck-edges window)
         (when (window-parameter window 'glitnir--card) (setq any t)))
       (setq window (window-next-sibling window)))
     any))
