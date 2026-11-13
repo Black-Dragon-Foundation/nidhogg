@@ -81,6 +81,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | events: `FRAME_DONE` | the display link (`presented_ns` 0 unless known) | after `XShmPutImage` completes (`presented_ns` 0) | fits |
 | events: `FRAME_READY` (21, roots only, inline mode: the tree's pacer lets it present; a child presents with its tree, deepest first) | the display link: ready when the layer may show the next bitmap (always, once drawn); child windows show in the root's walk | idle after `XShmCompletion` of the last put; children's puts in the root's walk | fits |
 | events: `OUTPUT_ADD`, `OUTPUT_CHANGE`, `OUTPUT_REMOVE`, `ENTER_OUTPUT`, `LEAVE_OUTPUT` | `NSScreen`, `didChangeScreenParameters`, `windowDidChangeScreen:` | RandR monitors (a window's monitor from its position) | fits |
+| event: `Moved` (a top-level's top-left, logical pixels from the main screen's top-left) | `windowDidMove:`, and after each new scale and at creation | none (Wayland clients have no position) | macOS only |
 | events: `DISCONNECTED` | never sent | connection error | fits |
 | `set_decorated` | `styleMask` with or without the title bar | `_MOTIF_WM_HINTS` decorations | fits |
 | `bell` | `NSBeep` | `XkbBell` | fits |

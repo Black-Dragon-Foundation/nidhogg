@@ -3810,6 +3810,19 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
       nhwl_scale_changed (f, a->code);
       break;
 
+#ifdef HAVE_NHMAC
+    case NHG_ACT_MOVED:
+      /* Where AppKit put the top-level, as nsterm.m's windowDidMove:
+	 stores it: AppKit may constrain or nudge the place asked for, and
+	 a move to a screen of another scale changes its device pixels.  */
+      if (!nhwl_child_p (f))
+	{
+	  f->left_pos = a->x;
+	  f->top_pos = a->y;
+	}
+      break;
+#endif
+
     case NHG_ACT_READY:
       /* Whatever Emacs is doing, drawn or not: the pacer re-arms through
 	 here.  */
