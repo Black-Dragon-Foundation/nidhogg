@@ -1,5 +1,5 @@
 # A live session on a macOS runner, for debugging Naglfar row by row: a push to scratch/ng-mac-rounds (the macOS rounds'
-# branch, whose caches the rounds save) whose head commit's message holds `[ng-live]` (an empty commit on top of the
+# branch, whose caches the rounds save) whose head commit's message ends with `[ng-live]` (an empty commit on top of the
 # round's) builds the Naglfar app as the build workflow's macos-naglfar job does (its caches read, never written), then
 # opens a tmate SSH session that only the pushing user's public SSH keys (their GitHub profile's) can enter.  In the session:
 # nidhogg/test/nhmac-gui.sh on single rows, `make -C "$RUNNER_TEMP/nbuild/obj"` after a `git fetch` of a newer scratch
@@ -7,8 +7,9 @@
 # leaving it), or at the timeout.  It takes one of the organisation's macOS jobs while it runs.
 #
 # No secrets: the job's token reads contents only, no `secrets.*` is referenced, the checkout keeps no credentials,
-# the tmate action gets no token (it reads the public keys unauthenticated), and a guard fails the job when anything
-# that looks like a credential is in the environment or in git's configuration.
+# the tmate action gets that read-only job token for its key lookup (unauthenticated lookups share a 60-an-hour limit
+# per runner address and failed on it), and a guard fails the job when anything that looks like a credential is in the
+# environment or in git's configuration before the session opens.
 name: Nidhogg macOS live session
 
 on:
@@ -26,7 +27,7 @@ jobs:
   live:
     name: macOS live session (Naglfar)
     # every round's push: skipped (no runner taken) unless the head commit asks for a session
-    if: ${{ contains(github.event.head_commit.message, '[ng-live]') }}
+    if: ${{ endsWith(github.event.head_commit.message, '[ng-live]') }}
     runs-on: xcode-27
     # under GitHub's 6 hours for a job
     timeout-minutes: 330
@@ -104,13 +105,14 @@ jobs:
           if [ -n "$bad" ]; then echo "live: credential-like variables in the environment: $bad"; exit 1; fi
           if git config --get-regexp '^http\..*extraheader' >/dev/null; then echo "live: git keeps credentials"; exit 1; fi
           echo "live: no credentials"
-      # pinned by commit (v3.24); the actor's public keys only (it fails when the profile has none); no token
+      # pinned by commit (v3.24); the actor's public keys only (it fails when the profile has none); the job's
+      # read-only token for that lookup only (unauthenticated, the runner's address hit GitHub's 60-an-hour limit)
       - name: Session (tmate, the pushing user's keys only)
         id: tmate
         uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
         with:
           limit-access-to-actor: 'true'
-          github-token: ''
+          github-token: ${{ github.token }}
           detached: 'true'
           connect-timeout-seconds: '900'
       # the address as an annotation, readable while the job runs (it is no way in without the user's key)

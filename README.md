@@ -562,12 +562,13 @@ post AppKit events and read the shell's counters through those hooks.
   otherwise; never forced): it saves caches as `nidhogg-31` does (`CACHE_SAVE`, `CACHE_SAVE_ALL`), so each round
   restores the last one's ccache, configure checks and cargo targets (GitHub shares a cache only within its ref and with
   the default branch). Its runs share one concurrency group: a new round's push cancels a running one.
-- Live sessions: a push to `scratch/ng-mac-rounds` whose head commit's message holds `[ng-live]` (an empty commit on the
+- Live sessions: a push to `scratch/ng-mac-rounds` whose head commit's message ends with `[ng-live]` (an empty commit on the
   round's) runs `.github/workflows/macos-live.yml` (every other push to it skips the job), which builds the
   Naglfar app as `macOS (Naglfar)` does (its caches read only) and opens a tmate SSH session on the runner that only the
   pushing user's public SSH keys can enter (`limit-access-to-actor`; it fails when the profile has none); the address is
   the job's `live session` notice. The job reads contents only, references no secret, keeps no git credentials, gives
-  the session action no token, and fails when the environment or git holds anything credential-like. It ends with the
+  the session action only that read-only job token for its key lookup (unauthenticated lookups share 60 an hour per
+  runner address), and fails before the session when the environment or git holds anything credential-like. It ends with the
   session or after 330 minutes, and holds one of the five macOS runners meanwhile.
 - Native compilation in the macOS app job: a `scratch/*` dispatch builds with `build.sh --native-preloaded` (only the
   preloaded Lisp native-compiled, the rest byte code, JIT off in the image, so no compile starts under a timing row;
