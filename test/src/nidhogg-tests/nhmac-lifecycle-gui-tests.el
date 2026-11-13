@@ -1,6 +1,7 @@
 ;;; nhmac-lifecycle-gui-tests.el --- Naglfar's app lifecycle rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).  The application events are
 ;; posted through the test hook that stands for the delegate's callbacks.

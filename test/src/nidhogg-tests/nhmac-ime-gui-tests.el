@@ -1,6 +1,7 @@
 ;;; nhmac-ime-gui-tests.el --- Naglfar's input method rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).  An input method talks to the
 ;; frame's view through `NSTextInputClient'; the test hooks call those methods as one does (`test-ime') and read what

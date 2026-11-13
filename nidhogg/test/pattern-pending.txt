@@ -27,3 +27,12 @@ nhwl-dnd-tests.el # GUI rows wait on the compositor through the gui-runner waits
 nhwl-gui-rg-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-w2-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhmac-ax-gui-tests.el # naglfar: real-Mac rewrite in .7 (2026-11-13)
+nhmac-dnd-gui-tests.el # naglfar: real-Mac rewrite in .7 (2026-11-13)
+nhmac-driver-gui-tests.el # naglfar: real-Mac rewrite in .7 (2026-11-13)
+nhmac-focus-gui-tests.el # naglfar: real-Mac rewrite in .7 (2026-11-13)
+nhmac-gui-tests.el # naglfar: real-Mac rewrite in .7 (2026-11-13)
+nhmac-menu-gui-tests.el # naglfar: real-Mac rewrite in .7 (2026-11-13)
+nhmac-resize-gui-tests.el # naglfar: real-Mac rewrite in .7 (2026-11-13)
+nhmac-watchdog-gui-tests.el # naglfar: real-Mac rewrite in .7 (2026-11-13)
+nhmac-window-gui-tests.el # naglfar: real-Mac rewrite in .7 (2026-11-13)

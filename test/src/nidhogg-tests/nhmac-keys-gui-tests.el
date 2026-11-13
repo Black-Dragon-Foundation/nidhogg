@@ -1,6 +1,7 @@
 ;;; nhmac-keys-gui-tests.el --- Naglfar's modifier choice rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).  Keys are posted as AppKit
 ;; events (`nhmac--test-post-key') and read as Emacs reads them.  The comparison with NS in the same run is not

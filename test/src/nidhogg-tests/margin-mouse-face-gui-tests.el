@@ -1,6 +1,7 @@
 ;;; margin-mouse-face-gui-tests.el --- GUI tests: `mouse-face' on a margin string  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).  Stock Emacs lights a string's `mouse-face'
 ;; in the mode, header and tab lines only; Nidhogg lights it in the window margins too (a debugger's breakpoint

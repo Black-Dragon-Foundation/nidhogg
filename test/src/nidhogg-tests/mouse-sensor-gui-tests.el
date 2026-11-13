@@ -1,6 +1,7 @@
 ;;; mouse-sensor-gui-tests.el --- GUI tests for mouse sensors  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).  `nidhogg--note-mouse' notes the pointer as a
 ;; shell does (note_mouse_highlight, or the leave handler); the sensor's changes are events, run by read_char.
