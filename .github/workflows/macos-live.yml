@@ -21,16 +21,17 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: nidhogg-live-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   live:
     name: macOS live session (Naglfar)
     # every round's push: skipped (no runner taken) unless the head commit asks for a session
     if: ${{ endsWith(github.event.head_commit.message, '[ng-live]') }}
     runs-on: xcode-27
+    # the job's, not the workflow's: a skipped job (a round's own push) takes no place in the group, so it never cancels
+    # a session that runs; a newer [ng-live] push replaces the older session
+    concurrency:
+      group: nidhogg-live-${{ github.ref }}
+      cancel-in-progress: true
     # under GitHub's 6 hours for a job
     timeout-minutes: 330
     permissions:
