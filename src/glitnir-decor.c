@@ -193,6 +193,32 @@ glitnir_decor_fit_band (struct glyph_string *s, int *top, int *bottom,
   return true;
 }
 
+/* Whether ROW of F's window holds a glyph whose face is a box fit to its
+   text where Glitnir draws.  Such a glyph's colour beneath comes from its
+   neighbours (glitnir_decor_fit_band), which redisplay does not compare:
+   update_text_area draws a changed row that holds one whole.  */
+
+bool
+glitnir_decor_row_fit_p (struct frame *f, struct glyph_row *row)
+{
+  if (!nhwl_glitnir_active_p (f))
+    return false;
+  struct glyph *g = row->glyphs[TEXT_AREA];
+  struct glyph *end = g + row->used[TEXT_AREA];
+  int last = -1;
+  for (; g < end; g++)
+    if (g->face_id != last)
+      {
+	struct face *face = FACE_FROM_ID_OR_NULL (f, g->face_id);
+	struct box_keys k;
+	last = g->face_id;
+	if (face && face->box != FACE_NO_BOX && box_keys (face, &k)
+	    && k.fit_text)
+	  return true;
+      }
+  return false;
+}
+
 /* A rounded rectangle path; radii clockwise from the top left.  */
 
 static void
