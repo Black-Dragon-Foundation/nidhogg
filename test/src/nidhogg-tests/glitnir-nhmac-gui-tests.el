@@ -837,6 +837,114 @@ cards; a child frame's window's ring shows the same way, on the child; each goes
        (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
        (should-not (glitnir-nhmac--box (glitnir-nhmac--grab "block-ring-gone") glitnir-nhmac--block-ring))))))
 
+;; The overview ruler (docs/specs/nidhogg/2026-11-13-glitnir-overview-ruler-case.md in the org folder): block bars
+;; whose clip is a strip in the right fringe, shown on macOS as the window's block image like any block.
+
+(defconst glitnir-nhmac--ruler-mark #xff00ff "The ruler's marks at lines 1 and 501: a colour no other row shows.")
+(defconst glitnir-nhmac--ruler-end #x00ff00 "The ruler's mark at the buffer's end.")
+(defconst glitnir-nhmac--ruler-band #x0000ff "The ruler's band over the part shown.")
+
+(defun glitnir-nhmac--ruler-on (w)
+  "Give window W, showing 1,000 lines, a ruler 12 points wide 2 in from its right edge in a right fringe of 16 points:
+marks at lines 1 and 501 in the left lane, one at the end in the right lane, and the band."
+  (let ((s (glitnir-nhmac--scale)))
+    (set-window-fringes w nil (round (* 16 s)))
+    (with-current-buffer (window-buffer w)
+      (set-window-parameter
+       w 'glitnir-ruler
+       `(:width ,(round (* 12 s)) :right ,(round (* 2 s)) :height ,(round (* 4 s))
+                :band (,(glitnir-nhmac--hex glitnir-nhmac--ruler-band) . 1)
+                :marks ((1 0 ,(round (* 6 s)) (,(glitnir-nhmac--hex glitnir-nhmac--ruler-mark) . 1))
+                        (,(save-excursion (goto-char 1) (forward-line 500) (point)) 0 ,(round (* 6 s))
+                         (,(glitnir-nhmac--hex glitnir-nhmac--ruler-mark) . 1))
+                        (,(point-max) ,(round (* 6 s)) ,(round (* 12 s))
+                         (,(glitnir-nhmac--hex glitnir-nhmac--ruler-end) . 1))))))
+    (force-window-update w)
+    (redisplay t)))
+
+(defun glitnir-nhmac--ruler-boxes (img w)
+  "The ruler's marks, end mark and band in IMG as boxes (X0 Y0 X1 Y1), and window W's text area's top, bottom and
+right edge in IMG's pixels (the frame at 20, 60 points in the capture, as `glitnir-nhmac--root-rect'): a plist."
+  (pcase-let* ((s (glitnir-nhmac--scale)) (fx (round (* 20 s))) (fy (round (* 60 s)))
+               (`(,_ ,ty ,tx1 ,ty1) (window-inside-pixel-edges w)))
+    (list :marks (glitnir-nhmac--box img glitnir-nhmac--ruler-mark)
+          :end (glitnir-nhmac--box img glitnir-nhmac--ruler-end)
+          :band (glitnir-nhmac--box img glitnir-nhmac--ruler-band)
+          :top (+ fy ty) :bottom (+ fy ty1) :text-right (+ fx tx1))))
+
+(ert-deftest nhmac-ruler-marks-the-buffer-by-position ()
+  "A window's `glitnir-ruler' shows in its right fringe, right of the text area: the marks of lines 1 and 501 at the
+strip's top and half way down, the end's at its bottom in the right lane, the band over the part shown; a scroll
+moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-the-buffer-by-position on Linux)."
+  :tags '(draws)
+  (skip-unless (fboundp 'glitnir-ruler-position))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let ((w (selected-window)) (buf (window-buffer (selected-window))) (k (round (* 3 (glitnir-nhmac--scale)))))
+       (with-current-buffer buf (dotimes (i 1000) (insert (format "line %d\n" (1+ i)))))
+       (set-window-start w 1)
+       (unwind-protect
+           (progn
+             (glitnir-nhmac--ruler-on w)
+             (let* ((b (glitnir-nhmac--ruler-boxes (glitnir-nhmac--grab "ruler") w))
+                    (marks (plist-get b :marks)) (end (plist-get b :end)) (band (plist-get b :band))
+                    (mid (/ (+ (plist-get b :top) (plist-get b :bottom)) 2)))
+               (nhmac-gui--say "nhmac-ruler-marks-the-buffer-by-position: %S" b)
+               (should (and marks end band))
+               ;; right of the text area, all of it
+               (should (> (nth 0 marks) (plist-get b :text-right)))
+               (should (> (nth 0 band) (plist-get b :text-right)))
+               ;; line 1 at the top, line 501 half way down (the marks' box spans both)
+               (should (<= (abs (- (nth 1 marks) (plist-get b :top))) k))
+               (should (<= (abs (- (nth 3 marks) mid)) (* 3 k)))
+               ;; the end at the bottom, in the right lane
+               (should (<= (abs (- (nth 3 end) (1- (plist-get b :bottom)))) k))
+               (should (> (nth 0 end) (nth 2 marks)))
+               ;; the band: the top part is shown
+               (should (<= (abs (- (nth 1 band) (plist-get b :top))) k))
+               (should (< (nth 3 band) mid)))
+             ;; a scroll to line 496: the band moves to the middle, the marks stay
+             (set-window-start w (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point))))
+             (redisplay t)
+             (let* ((b (glitnir-nhmac--ruler-boxes (glitnir-nhmac--grab "ruler-scrolled") w))
+                    (marks (plist-get b :marks)) (band (plist-get b :band))
+                    (mid (/ (+ (plist-get b :top) (plist-get b :bottom)) 2)))
+               (nhmac-gui--say "nhmac-ruler-marks-the-buffer-by-position: scrolled %S" b)
+               (should (and marks band))
+               (should (<= (abs (- (nth 1 marks) (plist-get b :top))) k))
+               (should (> (nth 1 band) (+ (plist-get b :top) k)))
+               (should (<= (nth 1 band) mid (nth 3 band)))))
+         (set-window-parameter w 'glitnir-ruler nil)
+         (set-window-fringes w nil nil)
+         (with-current-buffer buf (erase-buffer)))))))
+
+(ert-deftest nhmac-ruler-beside-a-ring ()
+  "A window with both a ring block and a ruler shows both: the ring in its text area, the ruler in its fringe (the
+glue keeps each its own clip)."
+  :tags '(draws)
+  (skip-unless (fboundp 'glitnir-ruler-position))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let ((w (selected-window)) (buf (window-buffer (selected-window))))
+       (with-current-buffer buf (dotimes (i 1000) (insert (format "line %d\n" (1+ i)))))
+       (set-window-start w 1)
+       (unwind-protect
+           (progn
+             (glitnir-nhmac--ring-on w)
+             (glitnir-nhmac--ruler-on w)
+             (let* ((img (glitnir-nhmac--grab "ruler-ring"))
+                    (b (glitnir-nhmac--ruler-boxes img w))
+                    (ring (glitnir-nhmac--box img glitnir-nhmac--block-ring)))
+               (nhmac-gui--say "nhmac-ruler-beside-a-ring: ring %S, ruler %S, cards %S" ring b (glitnir-nhmac--cards t))
+               (should ring)
+               (should (< (nth 2 ring) (plist-get b :text-right)))
+               (should (plist-get b :marks))
+               (should (> (nth 0 (plist-get b :marks)) (plist-get b :text-right)))))
+         (set-window-parameter w 'glitnir-blocks nil)
+         (set-window-parameter w 'glitnir-ruler nil)
+         (set-window-fringes w nil nil)
+         (with-current-buffer buf (erase-buffer)))))))
+
 (ert-deftest nhmac-blocks-drawn-on-a-child-frame ()
   "A child frame's window with a ring block: the child's own layers show the ring, inside the child on the screen;
 the root has no block image."
