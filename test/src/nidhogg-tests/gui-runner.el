@@ -343,13 +343,31 @@ stays inactive; the state otherwise."
           (ert-fail (list "not active" st :ax-error rc)))))
     st))
 
+(defun gui-runner-take-special-events ()
+  "Run the special events waiting (`special-event-map': move-frame, config-changed-event, ...) as the command loop
+runs them between commands, and log each.  The first other event goes back to `unread-command-events' and ends it.
+The live session (2026-11-13): the frame's move to the lane's display left move-frame events queued that no row
+read, so `input-pending-p' stayed t, every `sit-for' returned at once, and a `set-frame-size' was never applied."
+  (let ((n 0) ev)
+    (while (and (< n 50) (input-pending-p)
+                (setq ev (let ((special-event-map (make-sparse-keymap))) (read-event nil nil 0))))
+      (setq n (1+ n))
+      (let ((cmd (and (consp ev) (lookup-key special-event-map (vector (car ev))))))
+        (glitnir-gui--say "gui-runner-take-special-events: %s: %S%s" (ert-test-name (ert-running-test)) ev
+                          (if (commandp cmd) "" ", not special: put back"))
+        (if (not (commandp cmd))
+            (progn (push ev unread-command-events) (setq n 50))
+          (let ((last-input-event ev))
+            (command-execute cmd nil (vector ev) t)))))))
+
 (defun gui-runner--active (run test &rest args)
-  "`ert-run-test' advice: an input row of Naglfar's (`gui-runner--input-rows') starts with `gui-runner-ensure-active'."
+  "`ert-run-test' advice: an input row of Naglfar's (`gui-runner--input-rows') starts with
+`gui-runner-ensure-active', then `gui-runner-take-special-events' (the activation's events included)."
   (if (not (and (fboundp 'nhmac--query) (featurep 'nidhogg-macos)
                 (string-match-p gui-runner--input-rows (symbol-name (ert-test-name test)))))
       (apply run test args)
     (let ((body (ert-test-body test)))
-      (setf (ert-test-body test) (lambda () (gui-runner-ensure-active) (funcall body)))
+      (setf (ert-test-body test) (lambda () (gui-runner-ensure-active) (gui-runner-take-special-events) (funcall body)))
       (unwind-protect (apply run test args)
         (setf (ert-test-body test) body)))))
 
