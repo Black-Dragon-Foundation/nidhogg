@@ -56,6 +56,47 @@ pixels; the display's width is the main screen's."
           (should (= (display-pixel-width) (plist-get info :screen-device-width))))
       (delete-frame f))))
 
+(defun nhmac-gui--queued (secs)
+  "Wait as redisplay waits, reading no input, until any event is queued, at most SECS; whether one is."
+  (let ((end (+ (float-time) secs)) (input-pending-p-filter-events nil))
+    (while (and (not (input-pending-p)) (< (float-time) end))
+      (accept-process-output nil 0.05))
+    (input-pending-p)))
+
+(defun nhmac-gui--read-queued ()
+  "Read the queued events without running them: their kinds and frames, as (KIND FRAME)."
+  (let ((special-event-map (make-sparse-keymap)) evs ev)
+    (while (setq ev (read-event nil nil 0.05))
+      (push (list (car-safe ev) (car-safe (car-safe (cdr-safe ev)))) evs))
+    (nreverse evs)))
+
+(ert-deftest nhmac-a-pending-move-frame-is-not-input ()
+  "A queued `move-frame' (a new frame entering its screen) is in `while-no-input-ignore-events' by default, so
+`input-pending-p' does not count it and `while-no-input' runs its body (nhwl-gui/a-pending-move-frame-is-not-input on
+Linux; company-box's first child frame lost its documentation)."
+  (nhmac-gui--read-queued)
+  ;; whether a child frame (a layer in its root's window) queues one at all: logged, not asserted
+  (let ((child (make-frame `((parent-frame . ,(selected-frame)) (width . 20) (height . 4) (left . 40) (top . 40)))))
+    (nhmac-gui--queued 2)
+    (nhmac-gui--say "nhmac-a-pending-move-frame-is-not-input: after a child frame %S, queued %S" child
+                    (nhmac-gui--read-queued))
+    (delete-frame child))
+  (nhmac-gui--read-queued)
+  (let ((f (make-frame '((width . 40) (height . 10)))))
+    (unwind-protect
+        (progn
+          (should (nhmac-gui--queued 4))
+          ;; the frame's other events (its focus) may come first: let the rest arrive
+          (accept-process-output nil 0.3)
+          ;; nothing read yet: what is queued is the new frame's
+          (let ((pending (input-pending-p)) (ran (while-no-input 'ran)) (queued (nhmac-gui--read-queued)))
+            (nhmac-gui--say "nhmac-a-pending-move-frame-is-not-input: a new frame %S, queued %S" f queued)
+            ;; the premise: its move-frame was among them
+            (should (member (list 'move-frame f) queued))
+            (should (equal (list 'pending pending) '(pending nil)))
+            (should (eq ran 'ran))))
+      (delete-frame f))))
+
 (ert-deftest nhmac-frame-position-and-geometry-follow-appkit ()
   "`frame-position' and `frame-geometry' are where AppKit has the window (NS's windowDidMove:, frame_geometry): the
 outer position is the frame's, the title bar is AppKit's frame less the content, the native area starts under it; a
