@@ -35,18 +35,19 @@ job pin | grep -qF "TAG: \${{ startsWith(github.ref, 'refs/tags/') }}" || fail "
 job pin | grep -qF 'nidhogg/ci/drgnx-line'                        || fail "the pin job does not read drgnx's line"
 job pin | grep -qF 'git ls-remote https://github.com/Black-Dragon-Foundation/drgnx.git "refs/heads/$branch"' || fail "the pin job does not resolve drgnx's line head"
 job pin | grep -qF 'never the pin instead"; exit 1; }'            || fail "a missing drgnx line does not fail the pin job"
-# cache writes: every save step is CACHE_SAVE's (nidhogg-31 and this repository's pull requests) or CACHE_SAVE_ALL's
-# (nidhogg-31), and neither is ever true for a ci/* branch, a fork's pull request or a tag; a pull request's entries
+# cache writes: every save step is CACHE_SAVE's (nidhogg-31, the macOS rounds' branch scratch/ng-mac-rounds and this
+# repository's pull requests) or CACHE_SAVE_ALL's (nidhogg-31 and that branch), and neither is ever true for a ci/* branch, a fork's pull request or a tag; a pull request's entries
 # are scoped to its merge ref, so no other ref's run reads them, it saves no large prefix-restored entry, and its
 # earlier runs' entries are deleted (pr-caches)
 for l in $(grep -n 'uses: actions/cache/save@' "$wf" | cut -d: -f1); do
   sed -n "$((l - 2)),$((l - 1))p" "$wf" | grep -qE "if: .*env\.CACHE_SAVE(_ALL)? == 'true'" || fail "the cache save at line $l is not under CACHE_SAVE or CACHE_SAVE_ALL"
 done
 own_pr="(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)"
-grep -qxF "  CACHE_SAVE: \${{ $own_pr || (github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31') }}" "$wf" || fail "CACHE_SAVE is not nidhogg-31's and this repository's pull requests'"
+saving="(github.ref == 'refs/heads/nidhogg-31' || github.ref == 'refs/heads/scratch/ng-mac-rounds')"
+grep -qxF "  CACHE_SAVE: \${{ $own_pr || (github.event_name != 'pull_request' && $saving) }}" "$wf" || fail "CACHE_SAVE is not nidhogg-31's, the rounds branch's and this repository's pull requests'"
 job pr-caches | grep -qF "if: \${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}" || fail "pr-caches does not run for this repository's pull requests only"
 job pr-caches | grep -qF 'select(.created_at < \"$start\")' || fail "pr-caches does not delete only the entries of earlier runs"
-grep -qxF "  CACHE_SAVE_ALL: \${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31' }}" "$wf" || fail "CACHE_SAVE_ALL is not nidhogg-31's"
+grep -qxF "  CACHE_SAVE_ALL: \${{ github.event_name != 'pull_request' && $saving }}" "$wf" || fail "CACHE_SAVE_ALL is not nidhogg-31's and the rounds branch's"
 [ "$(job native-crates | grep -cF "env.CACHE_SAVE == 'true' && github.event_name != 'pull_request'")" = 2 ] || fail "a pull request saves the native crates' entry"
 # a release tag's tarball has no restored compiled Lisp: the jobs that make tarballs skip the restore for a tag
 for j in linux macos; do

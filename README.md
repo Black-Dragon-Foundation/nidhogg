@@ -558,7 +558,12 @@ post AppKit events and read the shell's counters through those hooks.
   own files under `test/` only: the bundle holds RUN's C, Rust and Lisp; the artifact is kept a day). Either one leaves
   out the release app job (no tarball). Such a run is partial, as every narrowed run; a full round runs every few
   focused ones and before a merge.
-- Live sessions: a push to a branch `scratch/ng-live-<sha10>` runs `.github/workflows/macos-live.yml`, which builds the
+- The macOS rounds go to one branch, `scratch/ng-mac-rounds`, pushed by fast-forward (a merge commit when the line moved
+  otherwise; never forced): it saves caches as `nidhogg-31` does (`CACHE_SAVE`, `CACHE_SAVE_ALL`), so each round
+  restores the last one's ccache, configure checks and cargo targets (GitHub shares a cache only within its ref and with
+  the default branch). Its runs share one concurrency group: a new round's push cancels a running one.
+- Live sessions: a push to `scratch/ng-mac-rounds` whose head commit's message holds `[ng-live]` (an empty commit on the
+  round's) runs `.github/workflows/macos-live.yml` (every other push to it skips the job), which builds the
   Naglfar app as `macOS (Naglfar)` does (its caches read only) and opens a tmate SSH session on the runner that only the
   pushing user's public SSH keys can enter (`limit-access-to-actor`; it fails when the profile has none); the address is
   the job's `live session` notice. The job reads contents only, references no secret, keeps no git credentials, gives

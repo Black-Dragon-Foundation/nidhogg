@@ -1,6 +1,7 @@
-# A live session on a macOS runner, for debugging Naglfar row by row: a push to a branch scratch/ng-live-<sha10>
-# builds the Naglfar app as the build workflow's macos-naglfar job does (its caches read, never written), then opens a
-# tmate SSH session that only the pushing user's public SSH keys (their GitHub profile's) can enter.  In the session:
+# A live session on a macOS runner, for debugging Naglfar row by row: a push to scratch/ng-mac-rounds (the macOS rounds'
+# branch, whose caches the rounds save) whose head commit's message holds `[ng-live]` (an empty commit on top of the
+# round's) builds the Naglfar app as the build workflow's macos-naglfar job does (its caches read, never written), then
+# opens a tmate SSH session that only the pushing user's public SSH keys (their GitHub profile's) can enter.  In the session:
 # nidhogg/test/nhmac-gui.sh on single rows, `make -C "$RUNNER_TEMP/nbuild/obj"` after a `git fetch` of a newer scratch
 # commit (the repository is public: no credentials).  The job ends when the session does (`touch /tmp/continue`, or
 # leaving it), or at the timeout.  It takes one of the organisation's macOS jobs while it runs.
@@ -12,7 +13,7 @@ name: Nidhogg macOS live session
 
 on:
   push:
-    branches: ["scratch/ng-live-*"]
+    branches: ["scratch/ng-mac-rounds"]
 
 permissions:
   contents: read
@@ -24,6 +25,8 @@ concurrency:
 jobs:
   live:
     name: macOS live session (Naglfar)
+    # every round's push: skipped (no runner taken) unless the head commit asks for a session
+    if: ${{ contains(github.event.head_commit.message, '[ng-live]') }}
     runs-on: xcode-27
     # under GitHub's 6 hours for a job
     timeout-minutes: 330
