@@ -36,6 +36,9 @@ pub const WINDOW_TAG: u64 = 1 << 63;
 pub const CARD_TAG: u64 = 1 << 62;
 /// A window's block layer id is the window's `sequence_number` with this bit set (`blocks.rs`).
 pub const BLOCK_TAG: u64 = 1 << 61;
+/// A window's strip bars (the overview ruler, `NHG_BLOCK_STRIP`) are planned under its `sequence_number` with this bit
+/// set, so they get a block layer of their own, with their own clip, beside the window's rings and bars.
+pub const STRIP_TAG: u64 = 1 << 60;
 
 /// The last key given (C's `static last_id`: one counter for every display, as Glitnir's ids are global).
 static LAST_ID: AtomicU64 = AtomicU64::new(0);

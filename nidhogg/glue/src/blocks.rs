@@ -15,7 +15,7 @@
 //! - **When:** at each publish while the frame has blocks or block layers; [`sync_at`] upserts what changed and
 //!   removes the layers of windows that lost their blocks.  A reconnect gives them all again ([`forget_all`]).
 
-use crate::backing::{BLOCK_TAG, Backings, NhgRect, WINDOW_TAG};
+use crate::backing::{BLOCK_TAG, Backings, NhgRect, STRIP_TAG, WINDOW_TAG};
 use crate::cards::premultiplied;
 use crate::display::Display;
 use crate::guard::GlueError;
@@ -35,6 +35,9 @@ pub const NHG_BLOCK_OPEN_TOP: u32 = 2;
 pub const NHG_BLOCK_OPEN_BOTTOM: u32 = 4;
 /// [`NhgBlock::flags`]: a bar (the whole rectangle filled in the line's colour), not a ring.
 pub const NHG_BLOCK_BAR: u32 = 8;
+/// [`NhgBlock::flags`]: a bar of the window's strip (the overview ruler, in its right fringe): planned as a layer of
+/// its own (`seq | STRIP_TAG`), whose clip is the strip, so the window's other blocks keep theirs.
+pub const NHG_BLOCK_STRIP: u32 = 16;
 
 /// One block of one Emacs window as C resolves it at publish.  Layout equals `NhgBlock`.
 #[repr(C)]
@@ -122,7 +125,13 @@ pub fn plan(
             open_top: b.flags & NHG_BLOCK_OPEN_TOP != 0 || rect.y < clip.y,
             open_bottom: b.flags & NHG_BLOCK_OPEN_BOTTOM != 0 || rect.y + rect.h > clip.y + clip.h,
         };
-        let e = out.entry(b.seq).or_insert_with(|| (clip, Vec::new()));
+        // a window's strip is a layer of its own: one clip a layer
+        let k = if b.flags & NHG_BLOCK_STRIP != 0 {
+            b.seq | STRIP_TAG
+        } else {
+            b.seq
+        };
+        let e = out.entry(k).or_insert_with(|| (clip, Vec::new()));
         e.0 = clip;
         e.1.push(block);
     }
