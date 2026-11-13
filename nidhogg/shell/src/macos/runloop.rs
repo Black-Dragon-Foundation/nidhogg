@@ -56,6 +56,39 @@ thread_local! {
     pub static FS_LOG: std::cell::RefCell<FsLog> = const { std::cell::RefCell::new((None, Vec::new())) };
 }
 
+/// The window's focus and transition notifications, oldest first: name, milliseconds since the first, whether the
+/// window is key then, and its first responder's class (test diagnostics, `test-key-log`: round 11's text input keys
+/// reached nothing after the full-screen and Dock rows, while the window was key).
+pub static KEY_LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn key_note(n: &NSNotification, name: &str) {
+    static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let ms = T0
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis();
+    let (key, responder) = n
+        .object()
+        .and_then(|o| o.downcast::<objc2_app_kit::NSWindow>().ok())
+        .map_or((false, "nil".to_owned()), |w| {
+            (
+                w.isKeyWindow(),
+                w.firstResponder()
+                    .map_or_else(|| "nil".to_owned(), |r| format!("{:?}", r.class().name())),
+            )
+        });
+    let mut l = KEY_LOG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if l.len() >= 32 {
+        l.remove(0);
+    }
+    l.push(format!(
+        "({name} {ms} {} {responder})",
+        if key { "t" } else { "nil" }
+    ));
+}
+
 fn fs_note(i: usize) {
     FS_NOTES[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     fs_log(i);
@@ -110,22 +143,26 @@ define_class!(
         }
 
         #[unsafe(method(windowDidBecomeKey:))]
-        fn did_become_key(&self, _n: &NSNotification) {
+        fn did_become_key(&self, n: &NSNotification) {
+            key_note(n, "windowDidBecomeKey");
             deliver(MacEv::Key(*self.ivars(), true));
         }
 
         #[unsafe(method(windowDidMiniaturize:))]
-        fn did_miniaturize(&self, _n: &NSNotification) {
+        fn did_miniaturize(&self, n: &NSNotification) {
+            key_note(n, "windowDidMiniaturize");
             deliver(MacEv::Key(*self.ivars(), false));
         }
 
         #[unsafe(method(windowDidDeminiaturize:))]
-        fn did_deminiaturize(&self, _n: &NSNotification) {
+        fn did_deminiaturize(&self, n: &NSNotification) {
+            key_note(n, "windowDidDeminiaturize");
             deliver(MacEv::Key(*self.ivars(), true));
         }
 
         #[unsafe(method(windowDidResignKey:))]
-        fn did_resign_key(&self, _n: &NSNotification) {
+        fn did_resign_key(&self, n: &NSNotification) {
+            key_note(n, "windowDidResignKey");
             deliver(MacEv::Key(*self.ivars(), false));
         }
 
@@ -142,13 +179,15 @@ define_class!(
         }
 
         #[unsafe(method(windowDidEnterFullScreen:))]
-        fn did_enter_full_screen(&self, _n: &NSNotification) {
+        fn did_enter_full_screen(&self, n: &NSNotification) {
+            key_note(n, "windowDidEnterFullScreen");
             fs_note(2);
             deliver(MacEv::FullScreen(*self.ivars(), false));
         }
 
         #[unsafe(method(windowDidExitFullScreen:))]
-        fn did_exit_full_screen(&self, _n: &NSNotification) {
+        fn did_exit_full_screen(&self, n: &NSNotification) {
+            key_note(n, "windowDidExitFullScreen");
             fs_note(3);
             deliver(MacEv::FullScreen(*self.ivars(), false));
         }

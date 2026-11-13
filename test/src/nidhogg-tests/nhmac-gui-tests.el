@@ -3266,6 +3266,7 @@ off while it probes: a blink's off phase draws no cursor."
             ;; cursor Emacs draws when the frame is not the display's highlight frame (its focus redirected?)
             (setq f (append f (list :blink blink-cursor-mode :focus (frame-focus-state)
                                     :frame-focus (frame-focus) :frames (frame-list)
+                                    :focus-frames (nhwl--focus-frames)
                                     :non-selected cursor-in-non-selected-windows
                                     :window-cursor (window-cursor-type)
                                     :selected (eq (selected-window) (frame-selected-window))
