@@ -675,6 +675,7 @@ extern int nhmac_select (int, fd_set *, fd_set *, fd_set *,
 extern void nhmac_startup (void);
 extern const char *ns_relocate (const char *);
 extern int nhmac_menu_choice (const NhgAction *, struct input_event *);
+extern void nhmac_deadline_wake (int64_t);
 /* nhmacfont.c */
 extern void syms_of_nhmacfont (void);
 extern struct font_driver const nhmacfont_driver;

@@ -1079,10 +1079,14 @@ static void
 nhwl_present_deadline_arm (struct nhwl_display_info *dpyinfo)
 {
   if (!dpyinfo->present_deadline)
-    dpyinfo->present_deadline
-      = start_atimer (ATIMER_RELATIVE,
-		      make_timespec (0, NHWL_PRESENT_DEADLINE_NS),
-		      nhwl_present_deadline, dpyinfo);
+    {
+      dpyinfo->present_deadline
+	= start_atimer (ATIMER_RELATIVE,
+			make_timespec (0, NHWL_PRESENT_DEADLINE_NS),
+			nhwl_present_deadline, dpyinfo);
+      /* After the atimer's start, so the kick finds it due.  */
+      nhmac_deadline_wake (NHWL_PRESENT_DEADLINE_NS);
+    }
 }
 
 /* The deadline came: the shell commits what it holds.  Inside a
@@ -4892,6 +4896,7 @@ nhwl_delete_terminal (struct terminal *terminal)
   if (dpyinfo->present_deadline)
     cancel_atimer (dpyinfo->present_deadline);
   dpyinfo->present_deadline = NULL;
+  nhmac_deadline_wake (-1);
 #endif
 
   if (dpyinfo->glue)
