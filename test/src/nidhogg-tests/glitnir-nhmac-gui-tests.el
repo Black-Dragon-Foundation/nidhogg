@@ -1052,7 +1052,10 @@ too: a row that holds a fit box is drawn whole when it changes
         (nhmac-gui--settle)
         (pcase-let* ((w (selected-window))
                      (`(,wx ,wy . ,_) (window-inside-pixel-edges w))
-                     (`(,px . ,py) (posn-x-y (posn-at-point 6 w)))
+                     ;; the row's top from the run's first glyph, as fit-fill reads it (the `b''s own y was its
+                     ;; text's: the live session read the glyph there)
+                     (`(,px . ,_) (posn-x-y (posn-at-point 6 w)))
+                     (`(,_ . ,py) (posn-x-y (posn-at-point 4 w)))
                      (x (+ wx px 2)) (y (+ wy py 3)))
           ;; over the chip's `b', 3 pixels below the row's top: the tint around it, not the old window colour
           (should (equal (list 'around (glitnir-nhmac--surface-px x y)) (list 'around #x3050a0))))))))
