@@ -183,7 +183,10 @@ that read none of it run on every backend."
 (ert-deftest glitnir-gui/the-ruler-marks-the-buffer-by-position ()
   "A window's `glitnir-ruler': a strip at its right inner edge (the right fringe, widened to hold it) where marks
 sit at their position's fraction of the buffer and the band covers the part shown; a scroll moves the band, not the
-marks; nothing is drawn in the text area; a click's y on the strip gives the position at that fraction."
+marks; nothing is drawn in the text area; a click's y on the strip gives the position at that fraction.
+On Naglfar the strip and the ring are layers over the backing `glitnir-snapshot' reads: the screen's rows are
+glitnir-nhmac-gui-tests.el's `nhmac-ruler-*'."
+  (glitnir-gui--skip-unless-tree)
   (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler*" 1000)) (w (selected-window)))
     (unwind-protect
         (progn
@@ -237,7 +240,10 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
 
 (ert-deftest glitnir-gui/a-ruler-beside-a-ring ()
   "A window with a ring block and a ruler: the ring's line stays whole in the text area and the ruler's mark shows in
-the strip (each its own layer, its own clip)."
+the strip (each its own layer, its own clip).
+On Naglfar the strip and the ring are layers over the backing `glitnir-snapshot' reads: the screen's rows are
+glitnir-nhmac-gui-tests.el's `nhmac-ruler-*'."
+  (glitnir-gui--skip-unless-tree)
   (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-ring*" 1000)) (w (selected-window)))
     (unwind-protect
         (progn
