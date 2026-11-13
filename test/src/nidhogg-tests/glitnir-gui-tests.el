@@ -163,7 +163,8 @@
       (set-window-parameter w 'glitnir-blocks nil)
       (kill-buffer buf))))
 
-;; The overview ruler.
+;; The overview ruler.  Its rows wait through `glitnir-gui--painted' (redisplay, the presenter settled), which every
+;; shell gives; `glitnir--draw-count' is the Wayland shell's alone (0 on Naglfar).
 
 (ert-deftest glitnir-gui/the-ruler-marks-the-buffer-by-position ()
   "A window's `glitnir-ruler': a strip at its right inner edge (the right fringe, widened to hold it) where marks
@@ -176,7 +177,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
           (set-window-fringes w nil 16)
           (set-window-start w 1)
           (glitnir-gui--painted)
-          (glitnir-gui--drawn
+          (progn
             (with-current-buffer buf
               (set-window-parameter
                w 'glitnir-ruler
@@ -203,7 +204,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
               (should (< (abs (- (with-current-buffer buf (line-number-at-pos pos)) 501)) 2))))
           ;; a scroll: the band moves to the middle, the marks stay (point goes along, or redisplay brings the
           ;; window back to it)
-          (glitnir-gui--drawn
+          (progn
             (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point)))))
               (set-window-point w p)
               (set-window-start w p)))
@@ -230,7 +231,7 @@ the strip (each its own layer, its own clip)."
           (set-window-fringes w nil 16)
           (set-window-start w 1)
           (glitnir-gui--painted)
-          (glitnir-gui--drawn
+          (progn
             (with-current-buffer buf
               (set-window-parameter
                w 'glitnir-blocks
