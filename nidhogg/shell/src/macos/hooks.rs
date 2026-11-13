@@ -603,7 +603,7 @@ impl MacShell {
             // the window's focus and transition notifications since the start, oldest first
             "test-key-log" => Ok(format!(
                 "({})",
-                super::runloop::KEY_LOG
+                super::super::runloop::KEY_LOG
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .join(" ")
