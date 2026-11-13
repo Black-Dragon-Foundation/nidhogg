@@ -1728,6 +1728,43 @@ PROTO (nhg_layers_count, int32_t (NhgDisplay *, uint64_t));";
         }
     }
 
+    /// The edges' part of the header: the flags, the entry's layout and the entry points.
+    #[test]
+    fn edges_header_matches() {
+        use nhglue::edges::*;
+        use nhglue::ffi::{nhg_edges_count, nhg_edges_sync};
+        type E = NhgEdge;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_EDGE_ARROW", NHG_EDGE_ARROW.into()),
+            ("NHG_EDGE_DASH", NHG_EDGE_DASH.into()),
+            ("NHG_EDGE_POINTS", NHG_EDGE_POINTS as i64),
+            ("sizeof (NhgPoint)", size_of::<NhgPoint>() as i64),
+            ("sizeof (E)", size_of::<E>() as i64),
+            ("_Alignof (E)", align_of::<E>() as i64),
+            ("offsetof (E, seq)", offset_of!(E, seq) as i64),
+            ("offsetof (E, clip)", offset_of!(E, clip) as i64),
+            ("offsetof (E, points)", offset_of!(E, points) as i64),
+            ("offsetof (E, npoints)", offset_of!(E, npoints) as i64),
+            ("offsetof (E, flags)", offset_of!(E, flags) as i64),
+            ("offsetof (E, rgb)", offset_of!(E, rgb) as i64),
+            ("offsetof (E, opacity)", offset_of!(E, opacity) as i64),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+typedef NhgEdge E;
+PROTO (nhg_edges_sync, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgEdge *, size_t));
+PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const E, usize) -> i32 =
+            nhg_edges_sync;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_edges_count;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
     /// The blocks' part of the header: the flags, the entry's layout and the entry points.
     #[test]
     fn blocks_header_matches() {
