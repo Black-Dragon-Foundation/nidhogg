@@ -563,7 +563,8 @@ post AppKit events and read the shell's counters through those hooks.
   restores the last one's ccache, configure checks and cargo targets (GitHub shares a cache only within its ref and with
   the default branch). Its runs share one concurrency group: a new round's push cancels a running one.
 - Live sessions: a push to `scratch/ng-mac-rounds` whose head commit's message ends with `[ng-live]` (an empty commit on the
-  round's) runs `.github/workflows/macos-live.yml` (every other push to it skips the job), which builds the
+  round's) runs `.github/workflows/macos-live.yml` (every other push to it skips the job, and a skipped job leaves a
+  running session alone: the concurrency group is the job's), which builds the
   Naglfar app as `macOS (Naglfar)` does (its caches read only), prints one DNS and TCP line each for the session's
   server and GitHub (failing at once when one is unreachable), and opens an upterm SSH session on the runner (the
   action pinned by commit, upterm by version) that only the pushing user's public SSH keys can enter
