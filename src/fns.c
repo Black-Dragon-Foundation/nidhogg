@@ -6161,6 +6161,9 @@ extract_data_from_object (Lisp_Object spec,
       record_unwind_current_buffer ();
 
       struct buffer *bp = XBUFFER (object);
+      /* A killed buffer's text is gone: reading it would crash.  */
+      if (!BUFFER_LIVE_P (bp))
+	error ("Selecting deleted buffer");
       set_buffer_internal (bp);
 
       b = !NILP (start) ? fix_position (start) : BEGV;

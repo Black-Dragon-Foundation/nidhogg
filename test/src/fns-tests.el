@@ -1427,6 +1427,19 @@
   (should (string-match "\\`[0-9a-f]\\{128\\}\\'"
                         (secure-hash 'sha512 'iv-auto 100))))
 
+(ert-deftest test-secure-hash-killed-buffer ()
+  "Hashing a killed buffer signals an error instead of crashing."
+  (dolist (text '("some text" ""))
+    (let ((buf (with-temp-buffer (insert text) (current-buffer))))
+      (should-not (buffer-live-p buf))
+      (should-error (secure-hash 'sha256 buf))
+      (should-error (md5 buf))
+      ;; With a coding system given, no Lisp runs before the buffer's
+      ;; text is read.
+      (should-error (md5 buf nil nil 'utf-8))
+      (let ((coding-system-for-write 'utf-8))
+        (should-error (secure-hash 'sha256 buf))))))
+
 (ert-deftest test-vector-delete ()
   (let ((v1 (make-vector 1000 1)))
     (should (equal (delete t (vector nil t)) [nil]))
