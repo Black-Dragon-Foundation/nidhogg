@@ -201,9 +201,12 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
                                                                                  (/ h 2)))
                                                      0 nil nil nil nil nil nil))))
               (should (< (abs (- (with-current-buffer buf (line-number-at-pos pos)) 501)) 2))))
-          ;; a scroll: the band moves to the middle, the marks stay
+          ;; a scroll: the band moves to the middle, the marks stay (point goes along, or redisplay brings the
+          ;; window back to it)
           (glitnir-gui--drawn
-            (set-window-start w (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point)))))
+            (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point)))))
+              (set-window-point w p)
+              (set-window-start w p)))
           (pcase-let* ((snap (glitnir-gui--painted))
                        (`(,_ ,_ ,right ,_) (window-pixel-edges w))
                        (`(,_ ,ty ,_ ,ty1) (window-inside-pixel-edges w))
