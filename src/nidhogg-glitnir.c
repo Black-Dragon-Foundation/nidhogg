@@ -55,7 +55,9 @@ glitnir_box_key_ok (Lisp_Object key, Lisp_Object value)
   if (EQ (key, QClabel))
     return STRINGP (value);
   if (EQ (key, QCfit))
-    return EQ (value, Qtext);
+    return EQ (value, Qtext)
+	   || (CONSP (value) && EQ (XCAR (value), Qtext)
+	       && FIXNATP (XCDR (value)));
   return false;
 }
 
