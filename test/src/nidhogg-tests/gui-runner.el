@@ -745,6 +745,9 @@ The rows without the tag (locks, fds, threads) still run."
        (glitnir-gui--say "%s %s (%.1f s)"
                          (cond ((not expected) "FAILED") ((ert-test-skipped-p result) "skipped") (t "passed"))
                          (ert-test-name test) (- (float-time) glitnir-gui--row-start))
+       ;; a skip says why (no silent skips)
+       (when (and expected (ert-test-skipped-p result))
+         (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result)))
        (unless expected
          (when (ert-test-result-with-condition-p result)
            (glitnir-gui--say "  %S" (ert-test-result-with-condition-condition result))
