@@ -137,10 +137,14 @@ if [ -n "$TARGET" ]; then
   . ../ci/target-std.sh
   target_std "$TARGET" || exit 3
   feats=(--no-default-features)
-  case $TARGET in *-apple-darwin) feats+=(--features macos) ;; esac
+  # macOS: also with the test hooks the glue's test-hooks turns on (the GUI rows' build), which only CI built before
+  extra=("")
+  case $TARGET in *-apple-darwin) feats+=(--features macos); extra+=(--features=test-hooks) ;; esac
   for prof in dev test; do
-    DOCS_RS=1 cargo clippy --lib --profile "$prof" --locked --target "$TARGET" "${feats[@]}" -- -D warnings ||
-      fail "clippy ($TARGET, $prof)"
+    for x in "${extra[@]}"; do
+      DOCS_RS=1 cargo clippy --lib --profile "$prof" --locked --target "$TARGET" "${feats[@]}" $x -- -D warnings ||
+        fail "clippy ($TARGET, $prof${x:+, test-hooks})"
+    done
   done
   echo "check.sh: $TARGET ok (clippy; its tests run on the target)"
   exit 0
