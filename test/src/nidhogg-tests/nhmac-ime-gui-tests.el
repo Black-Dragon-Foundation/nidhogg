@@ -155,10 +155,10 @@ itself (`test-post-key') never composed in any round."
             ;; (keys the app posts itself reached no input method in the live session)
             (nhmac--call 'test-real-key 40 0)
             (nhmac--call 'test-real-key 0 0)
-            ;; until the working text shows (the input method's first use in a session answers later), at most 3 s;
-            ;; the time it took is logged
+            ;; until the working text is the kana (the input method's first use in a session answers later, and the
+            ;; full lane showed "k" alone before the a came), at most 3 s; the time it took is logged
             (let ((t0 (float-time)))
-              (while (and (not (nhmac-ime--working)) (< (- (float-time) t0) 3))
+              (while (and (not (equal (nhmac-ime--working) "か")) (< (- (float-time) t0) 3))
                 (nhmac-ime--events 0.2))
               (glitnir-gui--say "nhmac-ime-real-input-source: working text after %.1f s" (- (float-time) t0)))
             (let ((marked (plist-get (nhmac-ime--state) :marked)))
