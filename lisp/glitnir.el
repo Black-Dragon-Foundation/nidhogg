@@ -228,9 +228,14 @@ Only undecorated child frames have one."
     n))
 
 (defun glitnir--color-rgb (name frame)
-  "Colour NAME on FRAME as the number 0xRRGGBB, or nil when it names none."
+  "Colour NAME on FRAME as the number 0xRRGGBB, or nil when it names none.
+A colour spec (\"#808080\", \"rgb:...\") is taken exactly: on a frame
+that is not graphical (batch, a terminal) `color-values' gives the
+nearest of the terminal's colours instead, and Glitnir's numbers are
+24-bit colours for the GPU, never a terminal's."
   (when-let* (((stringp name))
-              (v (color-values name frame)))
+              (v (or (color-values-from-color-spec name)
+                     (color-values name frame))))
     (glitnir--rgb (mapcar (lambda (c) (/ c 257)) v))))
 
 (defun glitnir--fill-shadow (v radius sh)
