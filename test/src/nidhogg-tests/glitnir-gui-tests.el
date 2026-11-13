@@ -249,6 +249,41 @@ the strip (each its own layer, its own clip)."
       (set-window-fringes w nil nil)
       (kill-buffer buf))))
 
+;; Edges.
+
+(ert-deftest glitnir-gui/an-edge-joins-two-places-and-leaves-with-a-scroll ()
+  "A window's `glitnir-edges': a line from one buffer place to another, drawn over the text in its colour, its points
+where the places' glyphs are; scrolled past, its start sits one line above the text area."
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-edge*" 200)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (let* ((lh (with-current-buffer buf (line-pixel-height)))
+                 (dy (/ lh 2))
+                 (from (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 1) (+ (point) 10))))
+                 (to (+ from 30)))
+            (set-window-parameter w 'glitnir-edges `(((,from 0 ,dy) (,to 0 ,dy) ("#ff0000" . 1))))
+            (pcase-let* ((snap (glitnir-gui--painted))
+                         (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                         (`(,fx . ,fy) (posn-x-y (posn-at-point from w)))
+                         (`(,tx . ,_) (posn-x-y (posn-at-point to w))))
+              (should (equal (glitnir-edges-resolved w) (list (list (cons fx (+ fy dy)) (cons tx (+ fy dy))))))
+              (should (equal (glitnir-gui--pixel snap (list (+ x (/ (+ fx tx) 2)) (+ y fy dy))) '(255 0 0)))
+              (should-not (equal (glitnir-gui--pixel snap (list (+ x (/ (+ fx tx) 2)) (+ y fy dy (/ lh 2) 2)))
+                                 '(255 0 0))))
+            ;; scrolled down past its start: the start is one frame line above the text area
+            ;; point goes along, or redisplay brings the window back to it
+            (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 20) (point)))))
+              (set-window-point w p)
+              (set-window-start w p))
+            (glitnir-gui--painted)
+            (pcase-let ((`((,_ . ,y0) ,_) (car (glitnir-edges-resolved w))))
+              (should (= y0 (- (frame-char-height)))))))
+      (set-window-parameter w 'glitnir-edges nil)
+      (kill-buffer buf))))
+
 ;; The stacking list.
 
 (defun glitnir-gui--children (n)
