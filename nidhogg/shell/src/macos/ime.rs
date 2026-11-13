@@ -318,6 +318,7 @@ mod tis {
         let id = id.trim_matches('"');
         let b = |v: bool| if v { "t" } else { "nil" };
         let (mut found, mut enable, mut select, mut after) = (false, -1, -1, -1i64);
+        let mut parent = -1;
         let family = id.rsplit_once('.').map_or(id, |(f, _)| f);
         let mut candidates = String::new();
         if !id.is_empty() {
@@ -334,11 +335,19 @@ mod tis {
                 }
                 if let Some((_, _, _, src)) = installed.iter().find(|c| c.0 == id) {
                     found = true;
+                    // a mode is selectable only when it and its parent input method are both enabled
+                    // (TextInputSources.h); round 11: the mode enabled, its parent not, select gave paramErr
+                    if let Some((_, en, _, p)) = installed.iter().find(|c| c.0 == family) {
+                        parent = if *en { 0 } else { TISEnableInputSource(*p) };
+                    }
                     enable = TISEnableInputSource(*src);
                     let start = std::time::Instant::now();
                     while start.elapsed() < std::time::Duration::from_secs(2) {
-                        let (_list, enabled) = sources(id, false);
-                        if let Some((_, _, _, src)) = enabled.iter().find(|c| c.0 == id && c.2) {
+                        let (_list, enabled) = sources(family, false);
+                        let parent_on = parent == -1 || enabled.iter().any(|c| c.0 == family);
+                        if let Some((_, _, _, src)) =
+                            enabled.iter().find(|c| c.0 == id && c.2 && parent_on)
+                        {
                             after = i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX);
                             select = TISSelectInputSource(*src);
                             break;
@@ -349,7 +358,8 @@ mod tis {
             }
         }
         Ok(format!(
-            "(:found {} :enable {enable} :enabled-after {after} :select {select} :current {} :candidates ({candidates}))",
+            "(:found {} :parent-enable {parent} :enable {enable} :enabled-after {after} :select {select} :current {} \
+             :candidates ({candidates}))",
             b(found),
             current_source_id()
                 .map_or_else(|| "nil".into(), |s| crate::pasteboard::lisp_string(&s))

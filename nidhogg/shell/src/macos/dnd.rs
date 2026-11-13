@@ -227,8 +227,31 @@ define_class!(
             NSDragOperation(self.ivars().0)
         }
 
+        // test diagnostics: whether the session tracked the pointer (round 11: started on a live press, ended with
+        // no operation and no drop on the target)
+        #[unsafe(method(draggingSession:movedToPoint:))]
+        fn moved(&self, _s: &NSDraggingSession, _p: NSPoint) {
+            MOVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
         #[unsafe(method(draggingSession:endedAtPoint:operation:))]
-        fn ended(&self, _s: &NSDraggingSession, _p: NSPoint, op: NSDragOperation) {
+        fn ended(&self, _s: &NSDraggingSession, p: NSPoint, op: NSDragOperation) {
+            #[cfg(feature = "test-hooks")]
+            {
+                let mut l = START_LOG
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let head = l.trim_end_matches(')').to_owned();
+                *l = format!(
+                    "{head} :moves {} :ended-at ({:.0} {:.0}) :operation {})",
+                    MOVES.load(std::sync::atomic::Ordering::Relaxed),
+                    p.x,
+                    p.y,
+                    op.0
+                );
+            }
+            #[cfg(not(feature = "test-hooks"))]
+            let _ = p;
             let action = dnd_map::actions_of(op.0);
             deliver(MacEv::Input(
                 self.ivars().1,
@@ -288,6 +311,7 @@ pub fn start(
         objc2_foundation::NSProcessInfo::processInfo().systemUptime() - press.timestamp(),
         NSEvent::pressedMouseButtons(),
     );
+    MOVES.store(0, std::sync::atomic::Ordering::Relaxed);
     let _session = view.beginDraggingSessionWithItems_event_source(
         &NSArray::from_retained_slice(&[dragging]),
         &press,
@@ -314,6 +338,9 @@ fn start_log(s: String) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = s;
 }
+
+/// The moves the running drag session reported (test diagnostics; the session's end logs them).
+static MOVES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// `ShellBackend::drag_cancel`.
 pub fn cancel() {
