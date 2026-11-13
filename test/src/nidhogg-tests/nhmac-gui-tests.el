@@ -3327,10 +3327,10 @@ off while it probes: a blink's off phase draws no cursor."
         (setq-local cursor-type (nhmac-gui--draw-cursor c k))
         (redisplay t)
         (let ((f (pcase c
-                   ;; a box cursor on an image is the image with a rectangle in the cursor's colour around it
-                   ((or 'box 'hollow) (nhmac-gui--probe-all (format "%s cursor" c) cursor x0 top (1+ x0) (1+ top) 24))
-                   ('bar (nhmac-gui--probe-all "bar cursor" cursor x0 (+ top 1) (+ x0 (* 2 k)) (- bottom 1) 24))
-                   ('hbar (nhmac-gui--probe-all "hbar cursor" cursor (1+ x0) (- bottom (* 2 k)) (1- x1) bottom 24)))))
+                   ;; a cursor of any kind on an image is the image with a rectangle in the cursor's colour around it:
+                   ;; `nhwl_draw_bar_cursor' draws a bar or hbar there as a box (xterm.c's and pgtk's rule; round 11's
+                   ;; records: the outline at the image's corner, with the bar and the hbar cursor types)
+                   (_ (nhmac-gui--probe-all (format "%s cursor" c) cursor x0 top (1+ x0) (1+ top) 24)))))
           ;; round 9: no cursor colour anywhere in the image's box at either scale (round 8's too, behind the
           ;; records): whether the cursor blinked off or the frame lacked focus, and what was drawn there
           (when f
