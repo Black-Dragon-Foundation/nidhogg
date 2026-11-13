@@ -98,6 +98,9 @@ pub struct MacShell {
     retired: Vec<(WindowId, child::Kid)>,
     /// Roots whose children changed since their last commit.
     owed: BTreeSet<WindowId>,
+    /// Each root's tree commits that showed something (a window's new picture, a child's new state): `draw_count`,
+    /// as the Wayland presenter counts its own.
+    draws: BTreeMap<WindowId, u64>,
     /// Each root's window cards (`set_cards`), shown by the root tree's commit.
     cards: BTreeMap<WindowId, cards::Cards>,
     /// Each root's windows' layout captures and legs, started by the root tree's commit.
@@ -213,6 +216,7 @@ impl MacShell {
             order_dirty: BTreeSet::new(),
             retired: Vec::new(),
             owed: BTreeSet::new(),
+            draws: BTreeMap::new(),
             cards: BTreeMap::new(),
             legs: BTreeMap::new(),
             hover: HashMap::new(),
@@ -857,6 +861,7 @@ impl ShellBackend for MacShell {
         self.children_gone(window);
         self.cards.remove(&window);
         self.legs.remove(&window);
+        self.draws.remove(&window);
         self.windows
             .remove(&window)
             .map(drop)
@@ -1412,7 +1417,8 @@ impl ShellBackend for MacShell {
     }
 
     fn draw_count(&self, root: WindowId) -> ShellResult<u64> {
-        self.win(root).map(|_| 0)
+        self.win(root)?;
+        Ok(self.draws.get(&root).copied().unwrap_or(0))
     }
 
     fn tree_snapshot(
