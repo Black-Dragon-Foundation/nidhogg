@@ -33,6 +33,17 @@
   "The device pixels per point of the selected frame's window."
   (plist-get (nhmac--test-surface 0 0) :scale))
 
+(defun glitnir-nhmac--origin ()
+  "Where the selected frame's native area starts in a capture (`nhmac-gui--capture', taken from the display's
+top-left), as (X Y) device pixels: from AppKit's frame of the window and its screen (`nhmac--window-info'), below the
+title bar.  The live session (2026-11-13): the area at 21, 72 points, not the 20, 60 the rows assumed (a 32 point
+title bar, and AppKit's frame 1 point right of the place asked for)."
+  (let* ((info (nhmac--window-info)) (s (glitnir-nhmac--scale))
+         (fr (plist-get info :frame)) (sc (plist-get info :on-screen))
+         (top (- (+ (nth 1 sc) (nth 3 sc)) (+ (nth 1 fr) (nth 3 fr))))
+         (title (- (nth 3 fr) (/ (plist-get info :device-height) s))))
+    (list (round (* (- (nth 0 fr) (nth 0 sc)) s)) (round (* (+ top title) s)))))
+
 (defun glitnir-nhmac--with-white (fn)
   "Call FN with the selected frame's background `glitnir-nhmac--bg' and an empty buffer in its window, then as before.
 The probes then read the root's background wherever no child is.  FN runs after `glitnir-nhmac--clean-root'."
@@ -796,7 +807,7 @@ The line count is the default line height times 3 (no line spacing in the rows).
 (defun glitnir-nhmac--ring-check (row img bg height w &optional own)
   "Assert that IMG shows the block ring inside the box of background BG (window W's, as IMG shows it), from its text
 area's left edge to the box's right within 3 pixels, below its first line, HEIGHT device pixels tall within 3; ROW
-names it.  OWN non-nil (a root frame's window, at 20, 60 points in IMG) also asserts the ring's exact colour in its
+names it.  OWN non-nil (a root frame's window, at `glitnir-nhmac--origin' in IMG) also asserts the ring's exact colour in its
 card's own pixels on its middle row."
   ;; the ring within 32: a window's outermost device pixels on the screen carry the system's light window rim over
   ;; the content (round 10, scale 1: the card's pure red column 0 showed #xff1919 at the window's left edge, a 1 px
@@ -826,10 +837,10 @@ card's own pixels on its middle row."
                                         ;; the card's own pixels: the capture's row less the frame's place in it
                                         ;; (`glitnir-nhmac--root-rect') and the card's; ARGB (round 9 read a
                                         ;; capture row as the card's and got its transparent inside)
-                                        (let ((s (glitnir-nhmac--scale)))
+                                        (let ((o (glitnir-nhmac--origin)))
                                           (nhmac--query 'test-card-row (window-frame w) (nth 0 c)
-                                                        (- y (round (* 60 s)) (nth 2 c))
-                                                        (max 0 (- (nth 0 box) (round (* 20 s)) (nth 1 c) 2)) 12))
+                                                        (- y (nth 1 o) (nth 2 c))
+                                                        (max 0 (- (nth 0 box) (nth 0 o) (nth 1 c) 2)) 12))
                                       (error (list 'error e))))
                                   cards))
           (nhmac-gui--say "%s: cards %S, rows %S" row cards card-rows))))
@@ -937,6 +948,49 @@ dashed line has gaps; with the parameters gone their images go."
            (set-window-parameter w 'glitnir-edges nil)
            (set-window-parameter w 'glitnir-blocks nil)))))))
 
+;; A box fit to the text (`:fit text'): its face's background fills only the text's band of a taller row, the rest of
+;; the row in the colour beneath (glitnir-decor-gui/a-box-fit-to-the-text-fills-only-the-text on Linux, which reads the
+;; recorder; here the root's own surface).
+
+(defun glitnir-nhmac--fit-fill (fit)
+  "On a row a 40 pixel space (all ascent) makes taller than its text, the run \" ab \" in a green face boxed in green
+with FIT as its :fit: (AT-TEXT . ABOVE), the root surface's pixels inside its leading space at the text's middle and
+3 pixels below the row's top, as #xRRGGBB."
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-nhmac-fit-fill")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white" :background "#00c000"
+                        :box `(:line-width (1 . 1) :color "#00c000" :corner-radius 4 ,@(and fit `(:fit ,fit))))
+    (save-window-excursion
+      (with-temp-buffer
+        (switch-to-buffer (current-buffer))
+        (face-remap-add-relative 'default :background "#202020" :foreground "white")
+        (setq-local cursor-type nil)
+        (insert "\n\n" (propertize " " 'display '(space :width (1) :height (40) :ascent 100))
+                (propertize " ab " 'face face) "\n\n")
+        (goto-char 1)
+        (nhmac-gui--settle)
+        (pcase-let* ((w (selected-window))
+                     (`(,wx ,wy . ,_) (window-inside-pixel-edges w))
+                     (`(,px . ,py) (posn-x-y (posn-at-point 4 w)))
+                     (h (save-excursion (goto-char 4) (line-pixel-height)))
+                     (text (frame-char-height))
+                     (x (+ wx px 3)) (y (+ wy py)))
+          (nhmac-gui--say "glitnir-nhmac/fit-fill %S: run at %S, row %d px, text %d px" fit (cons x y) h text)
+          (cons (glitnir-nhmac--surface-px x (+ y (- h (/ text 2))))
+                (glitnir-nhmac--surface-px x (+ y 3))))))))
+
+(ert-deftest glitnir-nhmac/a-box-fit-to-the-text-fills-only-the-text ()
+  "`:fit text' confines the face's background to the box (the text and the box's lines), the rest of the row in the
+colour beneath; stock fills the row (the premise: the probe above the text is in the row)."
+  :tags '(draws)
+  (pcase-let ((`(,at . ,above) (glitnir-nhmac--fit-fill 'text)))
+    (should (equal (list 'text at) (list 'text #x00c000)))
+    (should (equal (list 'above above) (list 'above #x202020))))
+  (pcase-let ((`(,at . ,above) (glitnir-nhmac--fit-fill nil)))
+    (should (equal (list 'text at) (list 'text #x00c000)))
+    (should (equal (list 'stock above) (list 'stock #x00c000)))))
+
 ;; The overview ruler (docs/specs/nidhogg/2026-11-13-glitnir-overview-ruler-case.md in the org folder): block bars
 ;; whose clip is a strip in the right fringe, shown on macOS as the window's block image like any block.
 
@@ -964,8 +1018,8 @@ marks at lines 1 and 501 in the left lane, one at the end in the right lane, and
 
 (defun glitnir-nhmac--ruler-boxes (img w)
   "The ruler's marks, end mark and band in IMG as boxes (X0 Y0 X1 Y1), and window W's text area's top, bottom and
-right edge in IMG's pixels (the frame at 20, 60 points in the capture, as `glitnir-nhmac--root-rect'): a plist."
-  (pcase-let* ((s (glitnir-nhmac--scale)) (fx (round (* 20 s))) (fy (round (* 60 s)))
+right edge in IMG's pixels (the frame at `glitnir-nhmac--origin' in the capture): a plist."
+  (pcase-let* ((`(,fx ,fy) (glitnir-nhmac--origin))
                (`(,_ ,ty ,tx1 ,ty1) (window-inside-pixel-edges w)))
     (list :marks (glitnir-nhmac--box img glitnir-nhmac--ruler-mark)
           :end (glitnir-nhmac--box img glitnir-nhmac--ruler-end)
@@ -977,11 +1031,15 @@ right edge in IMG's pixels (the frame at 20, 60 points in the capture, as `glitn
 strip's top and half way down, the end's at its bottom in the right lane, the band over the part shown; a scroll
 moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-the-buffer-by-position on Linux)."
   :tags '(draws)
-  (skip-unless (fboundp 'glitnir-ruler-position))
+  ;; required on macOS (never skipped): it stands in for glitnir-gui's snapshot row, which skips there
+  (should (fboundp 'glitnir-ruler-position))
   (glitnir-nhmac--with-white
    (lambda ()
      (let ((w (selected-window)) (buf (window-buffer (selected-window))) (k (round (* 3 (glitnir-nhmac--scale)))))
        (with-current-buffer buf (dotimes (i 1000) (insert (format "line %d\n" (1+ i)))))
+       ;; point too: left at the end, it pulls the window there at the next redisplay (the live session: the window
+       ;; started at line 972, so the ring's lines 2 to 4 were not shown and C rightly gave no ring)
+       (set-window-point w 1)
        (set-window-start w 1)
        (unwind-protect
            (progn
@@ -1004,7 +1062,9 @@ moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-t
                (should (<= (abs (- (nth 1 band) (plist-get b :top))) k))
                (should (< (nth 3 band) mid)))
              ;; a scroll to line 496: the band moves to the middle, the marks stay
-             (set-window-start w (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point))))
+             (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point)))))
+               (set-window-point w p)
+               (set-window-start w p))
              (redisplay t)
              (let* ((b (glitnir-nhmac--ruler-boxes (glitnir-nhmac--grab "ruler-scrolled") w))
                     (marks (plist-get b :marks)) (band (plist-get b :band))
@@ -1022,11 +1082,15 @@ moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-t
   "A window with both a ring block and a ruler shows both: the ring in its text area, the ruler in its fringe (the
 glue keeps each its own clip)."
   :tags '(draws)
-  (skip-unless (fboundp 'glitnir-ruler-position))
+  ;; required on macOS (never skipped): it stands in for glitnir-gui's snapshot row, which skips there
+  (should (fboundp 'glitnir-ruler-position))
   (glitnir-nhmac--with-white
    (lambda ()
      (let ((w (selected-window)) (buf (window-buffer (selected-window))))
        (with-current-buffer buf (dotimes (i 1000) (insert (format "line %d\n" (1+ i)))))
+       ;; point too: left at the end, it pulls the window there at the next redisplay (the live session: the window
+       ;; started at line 972, so the ring's lines 2 to 4 were not shown and C rightly gave no ring)
+       (set-window-point w 1)
        (set-window-start w 1)
        (unwind-protect
            (progn
@@ -1508,10 +1572,10 @@ above it moves down by one, and the window server lists no window more or less."
     (list n mx)))
 
 (defun glitnir-nhmac--root-rect (img)
-  "The root frame's pixels in capture IMG as (X Y W H): the frame's place in the capture (`nhmac-gui--capture'),
+  "The root frame's pixels in capture IMG as (X Y W H): the frame's place in the capture (`glitnir-nhmac--origin'),
 4 points in on every side, clipped to IMG."
-  (let* ((s (glitnir-nhmac--scale)) (in (round (* 4 s)))
-         (x (+ (round (* 20 s)) in)) (y (+ (round (* 60 s)) in)))
+  (let* ((s (glitnir-nhmac--scale)) (in (round (* 4 s))) (o (glitnir-nhmac--origin))
+         (x (+ (nth 0 o) in)) (y (+ (nth 1 o) in)))
     (list x y (min (- (frame-pixel-width) in in) (- (nth 0 img) x)) (min (- (frame-pixel-height) in in) (- (nth 1 img) y)))))
 
 (defun glitnir-nhmac--with-pattern (fn)
@@ -1801,8 +1865,8 @@ at its moving place, so a whole-area move would show the new layout from the sta
                                       collect (format "%06x" (logand p #xffffff))))
              ;; round 9: the surface has the pattern; the screen's same row before the leg and after it (the surface
              ;; never redrawn, or the screen not showing it)
-             (let* ((s (glitnir-nhmac--scale)) (x0 (round (* 20 s)))
-                    (y (+ (round (* 60 s)) (/ (frame-pixel-height) 2))))
+             (let* ((o (glitnir-nhmac--origin)) (x0 (nth 0 o))
+                    (y (+ (nth 1 o) (/ (frame-pixel-height) 2))))
                ;; round 10: both rows black where the surface has the pattern: the capture's size, and where the
                ;; surface's background (its first pixel) is in it (the frame not at 20, 60 points at this scale)
                (let ((bg (logand (aref (nhmac--test-surface-region 0 (/ (frame-pixel-height) 2) 1 1) 0) #xffffff)))

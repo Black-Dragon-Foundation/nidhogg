@@ -357,6 +357,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_frame_param` | - | what changing a frame parameter does (validation, clamps, defaults, what to redo): `params.rs` | same |
 | `nhg_font_id` / `nhg_font_name` / `nhg_font_list` / `nhg_font_match` / `nhg_font_has_char` | - | font-spec records and `macfont_list`/`macfont_match`/`macfont_has_char` over a font source (`fontspec.rs`; none on Linux) | Core Text source |
 | (action) `NHG_ACT_MENU` | - | none | a choice from the native menu bar: `code` the item's place, `flags` the tree's generation; C turns it into the menu-bar events of the item's key path |
+| (action) `NHG_ACT_MOVED` | - | none | a top-level's window moved, or changed scale (Naglfar): `x`, `y` its top-left in device pixels at the frame's scale, the inverse of `nhg_window_place`; C stores it as `left_pos`/`top_pos` (NS's `windowDidMove:`) |
 | `nhg_startup` / `nhg_relocate` | - | none (unsupported; no path moves) | first in `main`, no display: `LANG` from `NSLocale` when unset (no outer pool: each call drains its own); `ns_relocate` into the app bundle |
 | `nhg_inhibit_idle` | - | hold or release an idle inhibitor | `IOPMAssertion` |
 | `nhg_window_export` / `nhg_activation_token` | - | xdg-foreign handle; activation token | no counterpart (nothing, error) |

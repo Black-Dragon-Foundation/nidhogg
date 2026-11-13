@@ -296,6 +296,8 @@ struct nhwl_output
   uint32_t start120;		/* macOS: a new top-level asked for at `left',
 				   `top': the scale of the screen there (0:
 				   none), which it starts at */
+  int title_bar_height;		/* macOS: the top-level's title bar over its
+				   content, device pixels (0: none) */
   /* Copies of the glue's configure state that C still reads, set when C
      applies a RESIZE action.  */
   int logical_w, logical_h;	/* the compositor's last suggestion, logical px */
@@ -599,6 +601,8 @@ extern bool nhwl_decor_target (struct frame *, struct window *, uint64_t *,
 extern bool glitnir_decor_draw_box (struct glyph_string *, int, int, int, int,
 				    int, int, bool, bool, XRectangle *);
 extern unsigned long glitnir_decor_colour_beneath (struct glyph_string *, int);
+extern bool glitnir_decor_fit_band (struct glyph_string *, int *, int *,
+				    unsigned long *);
 extern void glitnir_decor_after_glyphs (struct glyph_string *);
 extern void glitnir_decor_record (struct glyph_string *);
 extern void glitnir_decor_clear (struct frame *, int, int, int, int);

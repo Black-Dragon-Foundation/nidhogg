@@ -25,7 +25,8 @@ use crate::api::{
 };
 use crate::caps::NhShellCaps;
 use crate::event::{
-    ConfigureEv, FocusEv, MenuEv, NHSHELL_STATE_ACTIVATED, OutputEv, Record, ScaleEv, ShellEvent,
+    ConfigureEv, FocusEv, MenuEv, MovedEv, NHSHELL_STATE_ACTIVATED, OutputEv, Record, ScaleEv,
+    ShellEvent,
 };
 use crate::scope::{Scope, ScopeStats, Taken};
 use crate::vars::Settings;
@@ -250,11 +251,37 @@ impl MacShell {
     /// AppKit's point for a frame's top-left at (`x`, `y`) points from the main screen's top-left (NS's
     /// compute_offset: y up from the main screen's bottom).
     fn screen_point(&self, x: i32, y: i32) -> objc2_foundation::NSPoint {
-        let top = NSScreen::screens(self.mtm)
+        objc2_foundation::NSPoint::new(f64::from(x), self.main_top() - f64::from(y))
+    }
+
+    /// The main screen's top in AppKit's coordinates (y up from its bottom).
+    fn main_top(&self) -> f64 {
+        NSScreen::screens(self.mtm)
             .iter()
             .next()
-            .map_or(0.0, |s| s.frame().origin.y + s.frame().size.height);
-        objc2_foundation::NSPoint::new(f64::from(x), top - f64::from(y))
+            .map_or(0.0, |s| s.frame().origin.y + s.frame().size.height)
+    }
+
+    /// Tell the host where window `id`'s frame is (its top-left as `screen_point` takes it) and how tall its title bar
+    /// is, when either changed since it was last told or `always` (a new scale: the host's device pixels changed).  NS's windowDidMove: does the same, so
+    /// `frame-position` is where AppKit put the frame (it may constrain or nudge the place asked for).
+    fn moved(&mut self, id: WindowId, always: bool) {
+        let top = self.main_top();
+        let Some(w) = self.windows.get_mut(&id) else {
+            return;
+        };
+        let r = w.window.frame();
+        let pos = (
+            r.origin.x.round() as i32,
+            (top - (r.origin.y + r.size.height)).round() as i32,
+            (r.size.height.round() as i32 - w.content_size().1).max(0),
+        );
+        if !always && w.pos == Some(pos) {
+            return;
+        }
+        w.pos = Some(pos);
+        let (x, y, title) = pos;
+        self.push(ShellEvent::Moved(MovedEv { x, y, title }), id);
     }
 
     /// Lend the backend to the scope while `f` makes AppKit calls that may call back; the events queued meanwhile
@@ -331,6 +358,7 @@ impl MacShell {
                     super::windowing::fullscreen_transition(w, busy, &mut self.effects);
                 }
             }
+            MacEv::Moved(id) => self.moved(id, false),
             MacEv::FullScreenWant(id) => {
                 if let Some(w) = self.windows.get_mut(&id) {
                     super::windowing::want(w, &mut self.effects);
@@ -472,10 +500,13 @@ impl MacShell {
         w.size = size;
         if rescaled {
             self.push(ShellEvent::Scale(ScaleEv { scale120: scale }), id);
+            self.moved(id, true);
         }
         if resized {
             self.configure(id, size.0, size.1);
         }
+        // a resize from the top moves the top-left; full screen hides the title bar
+        self.moved(id, false);
     }
 
     /// Tell the host when window `id` is on another screen than it was told: a leave of the old output and an enter
@@ -845,6 +876,7 @@ impl ShellBackend for MacShell {
         layers::changed_outside();
         self.windows.insert(id, win);
         self.push(ShellEvent::Scale(ScaleEv { scale120: scale }), id);
+        self.moved(id, true);
         // 0 x 0, ours to pick, as a compositor's first configure: the window has the size the host made it with, and
         // the host may have resized its frame since (a tool bar that wraps at the new width) before this is read;
         // the window takes that size from the host's next surface
