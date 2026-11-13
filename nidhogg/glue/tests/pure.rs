@@ -296,6 +296,19 @@ mod geometry {
     use nhglue::csd::{NHG_FIT_CONFIGURE, NHG_FIT_UNDECORATED, clamp, fit_size, to_device};
     use nhshell::event::{NHSHELL_STATE_ACTIVATED, NHSHELL_STATE_MAXIMIZED, NHSHELL_STATE_TILED_L};
 
+    /// A top-level's place (`nhg_window_place`, a new window's `NHG_WIN_PLACED`): to nearest, halves away from zero,
+    /// so the place `frame-position` reports comes back as itself (truncation once moved -1420 to -1419 at each call).
+    #[test]
+    fn place_rounds_to_nearest() {
+        use nhglue::window::place_logical;
+        assert_eq!(place_logical(-1420, 120), -1420);
+        assert_eq!(place_logical(-1420, 0), -1420);
+        assert_eq!(place_logical(-2518, 240), -1259);
+        assert_eq!(place_logical(-3, 240), -2);
+        assert_eq!(place_logical(3, 240), 2);
+        assert_eq!(place_logical(-1, 180), -1);
+    }
+
     /// `nhwl_to_device`: `roundf ((float) l * (float) s / 120.0f)`, halves away from zero, in single precision.
     #[test]
     fn device_rounding() {

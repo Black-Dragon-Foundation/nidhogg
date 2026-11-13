@@ -1,14 +1,17 @@
 # A live session on a macOS runner, for debugging Naglfar row by row: a push to scratch/ng-mac-rounds (the macOS rounds'
-# branch, whose caches the rounds save) whose head commit's message holds `[ng-live]` (an empty commit on top of the
+# branch, whose caches the rounds save) whose head commit's message ends with `[ng-live]` (an empty commit on top of the
 # round's) builds the Naglfar app as the build workflow's macos-naglfar job does (its caches read, never written), then
-# opens a tmate SSH session that only the pushing user's public SSH keys (their GitHub profile's) can enter.  In the session:
-# nidhogg/test/nhmac-gui.sh on single rows, `make -C "$RUNNER_TEMP/nbuild/obj"` after a `git fetch` of a newer scratch
-# commit (the repository is public: no credentials).  The job ends when the session does (`touch /tmp/continue`, or
-# leaving it), or at the timeout.  It takes one of the organisation's macOS jobs while it runs.
+# opens an upterm SSH session that only the pushing user's public SSH keys (their GitHub profile's) can enter.  In the
+# session: nidhogg/test/nhmac-gui.sh on single rows, `make -C "$RUNNER_TEMP/nbuild/obj"` after a `git fetch` of a newer
+# scratch commit (the repository is public: no credentials).  The job ends when the session does (`exit` in its shell),
+# 30 minutes after the build when no one joined, or at the timeout.  It takes one of the organisation's macOS jobs while
+# it runs.  Before the session a reachability step prints one DNS and TCP line for the session's server and GitHub and
+# fails the job at once when one is unreachable (a tmate session once sat 46 minutes with no network).
 #
 # No secrets: the job's token reads contents only, no `secrets.*` is referenced, the checkout keeps no credentials,
-# the tmate action gets no token (it reads the public keys unauthenticated), and a guard fails the job when anything
-# that looks like a credential is in the environment or in git's configuration.
+# the upterm action gets no token (upterm reads the user's public keys from github.com/USER.keys), and a guard fails
+# the job when anything that looks like a credential is in the environment or in git's configuration before the
+# session opens.
 name: Nidhogg macOS live session
 
 on:
@@ -18,16 +21,17 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: nidhogg-live-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   live:
     name: macOS live session (Naglfar)
     # every round's push: skipped (no runner taken) unless the head commit asks for a session
-    if: ${{ contains(github.event.head_commit.message, '[ng-live]') }}
+    if: ${{ endsWith(github.event.head_commit.message, '[ng-live]') }}
     runs-on: xcode-27
+    # the job's, not the workflow's: a skipped job (a round's own push) takes no place in the group, so it never cancels
+    # a session that runs; a newer [ng-live] push replaces the older session
+    concurrency:
+      group: nidhogg-live-${{ github.ref }}
+      cancel-in-progress: true
     # under GitHub's 6 hours for a job
     timeout-minutes: 330
     permissions:
@@ -104,18 +108,41 @@ jobs:
           if [ -n "$bad" ]; then echo "live: credential-like variables in the environment: $bad"; exit 1; fi
           if git config --get-regexp '^http\..*extraheader' >/dev/null; then echo "live: git keeps credentials"; exit 1; fi
           echo "live: no credentials"
-      # pinned by commit (v3.24); the actor's public keys only (it fails when the profile has none); no token
-      - name: Session (tmate, the pushing user's keys only)
-        id: tmate
-        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
+      # one line a host: its address and whether a TCP connection opens within 5 s; the job fails here, not in a
+      # session that never comes
+      - name: Reachability (the session's server, GitHub)
+        run: |
+          ok=1
+          for hp in uptermd.upterm.dev:22 github.com:443 api.github.com:443; do
+            h=${hp%:*} p=${hp#*:}
+            ip=$(dscacheutil -q host -a name "$h" | awk '/^ip_address:/ { print $2; exit }')
+            if [ -z "$ip" ]; then echo "reach: $h dns FAIL"; ok=0; continue; fi
+            if nc -z -G 5 "$h" "$p" >/dev/null 2>&1; then t=ok; else t=FAIL; ok=0; fi
+            echo "reach: $h dns $ip tcp/$p $t"
+          done
+          if [ "$ok" != 1 ]; then echo "::error title=live session::unreachable (the reach: lines above)"; exit 1; fi
+      # pinned by commit (action v2.7.0) and upterm itself by version; the actor's public keys only (no session when
+      # there is no one to authorize)
+      - name: Session (upterm, the pushing user's keys only)
+        id: upterm
+        uses: owenthereal/action-upterm@b9dfa526f890bbd5162d781f8d9c69b97731d73d # v2.7.0
         with:
           limit-access-to-actor: 'true'
-          github-token: ''
+          upterm-version: v0.40.0
           detached: 'true'
-          connect-timeout-seconds: '900'
-      # the address as an annotation, readable while the job runs (it is no way in without the user's key)
+          wait-timeout-minutes: '30'
+      # the address as an artifact of a day, which the API serves while the job still runs (annotations, logs and
+      # the summary only once it ends); it is no way in without the user's key
       - name: The session's address
         env:
-          ADDR: ${{ steps.tmate.outputs.ssh-address }}
-        run: echo "::notice title=live session::$ADDR"
+          ADDR: ${{ steps.upterm.outputs.ssh-command }}
+          JOIN: ${{ steps.upterm.outputs.join-command }}
+        run: |
+          test -n "$ADDR" || { echo "::error title=live session::no address from the session step"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/live" && printf '%s\n%s\n' "$ADDR" "$JOIN" > "$RUNNER_TEMP/live/address.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: live-session
+          path: ${{ runner.temp }}/live/address.txt
+          retention-days: 1
       # the session's post step waits for it to end

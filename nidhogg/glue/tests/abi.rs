@@ -1592,6 +1592,7 @@ PROTO (nhg_session_remove, int32_t (NhgDisplay *, uint64_t));";
             ("NHG_ACT_DRAG_DROPPED", NHG_ACT_DRAG_DROPPED.into()),
             ("NHG_ACT_DRAG_DONE", NHG_ACT_DRAG_DONE.into()),
             ("NHG_ACT_MENU", NHG_ACT_MENU.into()),
+            ("NHG_ACT_MOVED", NHG_ACT_MOVED.into()),
             ("NHG_DRAG_ALLOW_CURRENT", NHG_DRAG_ALLOW_CURRENT.into()),
             ("NHG_DRAG_RETURN_FRAME", NHG_DRAG_RETURN_FRAME.into()),
             ("NHG_DRAG_RETURN_NOW", NHG_DRAG_RETURN_NOW.into()),

@@ -138,6 +138,44 @@ glitnir_decor_colour_beneath (struct glyph_string *s, int side)
   return def ? def->background : s->face->background;
 }
 
+/* The band a :fit text box fills in glyph string S's row: from its face's
+   font's ascent above the baseline to its descent below, the box's own
+   lines outside that, never more than the row.  True when S's face asks
+   for it where Glitnir draws, with *TOP and *BOTTOM (exclusive) the band in
+   frame pixels and *BENEATH the colour of the rest of the row: the first
+   glyph to the left in another face, else what the row shows past its
+   left end.  */
+
+bool
+glitnir_decor_fit_band (struct glyph_string *s, int *top, int *bottom,
+			unsigned long *beneath)
+{
+  struct box_keys k;
+  struct font *font = s->face->font;
+
+  if (!font || !nhwl_glitnir_active_p (s->f) || !box_keys (s->face, &k)
+      || !k.fit_text)
+    return false;
+  int line = max (s->face->box_horizontal_line_width, 0);
+  *top = max (s->y, s->ybase - FONT_BASE (font) - line);
+  *bottom = min (s->y + s->height, s->ybase + FONT_DESCENT (font) + line);
+
+  struct glyph *area = s->row->glyphs[s->area];
+  struct glyph *g = s->first_glyph;
+  while (g > area && g[-1].face_id == s->first_glyph->face_id)
+    g--;
+  unsigned long c;
+  if (g > area && face_bg (s->f, g - 1, &c))
+    *beneath = c;
+  else
+    {
+      int id = lookup_basic_face (s->w, s->f, DEFAULT_FACE_ID);
+      struct face *def = FACE_FROM_ID_OR_NULL (s->f, id);
+      *beneath = def ? def->background : s->face->background;
+    }
+  return true;
+}
+
 #ifdef NHWL_WAYLAND
 /* A rounded rectangle path; radii clockwise from the top left.  */
 

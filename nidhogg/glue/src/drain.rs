@@ -149,6 +149,7 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
             a.flags = m.generation;
             state.actions.push(a);
         }
+        ShellEvent::Moved(m) => crate::window::moved(state, &ev, &m),
         ShellEvent::Touch(t) => touch::touch(state, &ev, &t),
         ShellEvent::Pinch(p) => touch::pinch(state, &ev, &p),
         // a popup closed by the reconnect came as an ordinary dismissal above

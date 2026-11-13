@@ -375,6 +375,46 @@ row's bottom) across a run \" ab \" with FIT as its :fit, followed by text drawn
   (should (> (glitnir-decor-gui--ring-in-spacing nil) 0))
   (should (equal (list 'fit (glitnir-decor-gui--ring-in-spacing 'text)) '(fit 0))))
 
+;; drgnx's pills on a row taller than its text (its Flow's 30 px rows, a 1 px space that high): the face's background
+;; filled the whole row, so a chip was a tall block; under `:fit text' it is as tall as the text and the box's lines.
+(defun glitnir-decor-gui--fit-fill (fit)
+  "On a row a 40 px space (all ascent) makes taller than its text, the run \" ab \" in a green face boxed in green
+with FIT as its :fit: (AT-TEXT . ABOVE), the pixels inside its leading space at the text's middle and 3 px below the
+row's top."
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-decor-gui-fit-fill")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white" :background "#00c000"
+                        :box `(:line-width (1 . 1) :color "#00c000" :corner-radius 4 ,@(and fit `(:fit ,fit))))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "white")
+      (setq-local cursor-type nil)
+      (let ((fo (glitnir-decor-gui--calibrate)))
+        (insert "\n\n" (propertize " " 'display '(space :width (1) :height (40) :ascent 100))
+                (propertize " ab " 'face face) "\n\n")
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (let* ((s (glitnir-decor-gui--scale))
+               (g (gui-runner-screen-grab))
+               (row (cdr (glitnir-decor-gui--at g 4 fo)))
+               (x (+ (car row) (glitnir-decor-gui--dev s 3)))
+               (h (save-excursion (goto-char 4) (line-pixel-height)))
+               (text (frame-char-height)))
+          (cons (glitnir-decor-gui--px g x (+ (cdr row) (glitnir-decor-gui--dev s (- h (/ text 2)))))
+                (glitnir-decor-gui--px g x (+ (cdr row) (glitnir-decor-gui--dev s 3)))))))))
+
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-fills-only-the-text ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; `:fit text' confines the face's background to the box (the text and the box's lines), the rest of the row in
+  ;; the colour beneath; stock fills the row (the premise: the probe above the text is in the row).
+  (pcase-let ((`(,at . ,above) (glitnir-decor-gui--fit-fill 'text)))
+    (should (equal (list 'text at) '(text (0 192 0))))
+    (should (equal (list 'above above) '(above (32 32 32)))))
+  (pcase-let ((`(,at . ,above) (glitnir-decor-gui--fit-fill nil)))
+    (should (equal (list 'text at) '(text (0 192 0))))
+    (should (equal (list 'stock above) '(stock (0 192 0))))))
+
 (ert-deftest glitnir-decor-gui/box-across-a-newline-is-stock ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Buffer text in a boxed face that runs on over its newline (no string, no stretch) is drawn as stock Emacs draws
