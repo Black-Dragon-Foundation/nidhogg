@@ -97,6 +97,40 @@ thread_local! {
     static REPORT: RefCell<Option<PanicReport>> = const { RefCell::new(None) };
 }
 
+/// The entry point that last took a display's lock, and its thread: what a call that finds the lock held names (one
+/// writer at a time, the lock's holder, so the pair is never torn while it is held).
+static HOLDER: std::sync::Mutex<(&'static str, u64)> = std::sync::Mutex::new(("", 0));
+
+/// The calling thread, as a number for the report.
+fn thread_no() -> u64 {
+    // SAFETY: reads the calling thread's own handle.
+    unsafe { libc::pthread_self() as u64 }
+}
+
+/// Note `name` on this thread as the lock's holder.
+fn hold(name: &'static str) {
+    if let Ok(mut h) = HOLDER.try_lock() {
+        *h = (name, thread_no());
+    }
+}
+
+/// The report of a call `name` that found the lock held: the holder, whether it is this thread, how many guards this
+/// thread is inside (above 0 with no glue frame in the backtrace: a longjmp abandoned that call), and the backtrace.
+fn held_report(name: &str) -> PanicReport {
+    let (holder, thread) = HOLDER.try_lock().map(|h| *h).unwrap_or(("?", 0));
+    let me = thread_no();
+    PanicReport::here(format!(
+        "{name}: the display's state was locked on entry: a call re-entered, or a longjmp abandoned an earlier one \
+         (held by {holder} on {}, {} guards on this thread)",
+        if thread == me {
+            "this thread".to_string()
+        } else {
+            format!("thread {thread:#x}, not this one {me:#x}")
+        },
+        IN_GUARD.get()
+    ))
+}
+
 /// The lowest address of the calling thread's stack, from `pthread_getattr_np`.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn read_stack_low() -> Option<usize> {
@@ -250,12 +284,12 @@ pub unsafe fn guard<R: Ret>(
         return R::err(NHG_E_PANIC);
     }
     let mut state = match d.state.try_lock() {
-        Ok(s) => s,
+        Ok(s) => {
+            hold(name);
+            s
+        }
         Err(TryLockError::WouldBlock) => {
-            d.poison(PanicReport::plain(format!(
-                "{name}: the display's state was locked on entry: a call re-entered, or a longjmp abandoned an \
-                 earlier one"
-            )));
+            d.poison(held_report(name));
             return R::err(NHG_E_PANIC);
         }
         Err(TryLockError::Poisoned(_)) => {

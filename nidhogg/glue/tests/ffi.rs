@@ -322,6 +322,10 @@ mod guard {
         // SAFETY: a live display.
         assert_eq!(unsafe { nhg_frame_register(d, 1, 0) }, NHG_E_PANIC);
         assert!(panic_message(d).contains("locked on entry"));
+        // it names the holder's thread and the guards this thread is inside, with the backtrace
+        let msg = panic_message(d);
+        assert!(msg.contains("guards on this thread"), "{msg}");
+        assert!(msg.contains("backtrace:"), "{msg}");
         // SAFETY: a live display, not used again.
         assert_eq!(unsafe { nhg_close(d) }, NHG_OK);
     }
