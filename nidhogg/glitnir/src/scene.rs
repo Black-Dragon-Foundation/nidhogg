@@ -25,6 +25,7 @@
 use crate::committed::{Committed, OutputFrame};
 use crate::damage::{Damage, Frames};
 use crate::decor::{Anchor, Anchors, Label, Sprites};
+pub use crate::edge::Edge;
 use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
 use crate::geom::Rect;
 use crate::stack::Stack;
@@ -195,11 +196,13 @@ pub struct Block {
     pub open_bottom: bool,
 }
 
-/// The parts of the scene the blocks of a window layer at P draw (root px, clipped to its rectangle).
+/// The parts of the scene the blocks and edges of a window layer at P draw (root px, clipped to its rectangle).
 pub fn block_patches(p: &Placed) -> Vec<Rect> {
     p.blocks
         .iter()
-        .map(|b| b.rect.intersect(&p.rect))
+        .map(|b| b.rect)
+        .chain(p.edges.iter().map(crate::edge::bounds))
+        .map(|r| r.intersect(&p.rect))
         .filter(|r| !r.is_empty())
         .collect()
 }
@@ -414,6 +417,8 @@ struct Layer {
     card: Option<Card>,
     /// A window layer's blocks.
     blocks: Arc<[Block]>,
+    /// A window layer's edges.
+    edges: Arc<[Edge]>,
     /// A window layer that is its own output.
     own: bool,
 }
@@ -431,6 +436,8 @@ pub struct Placed {
     pub card: Option<Card>,
     /// A window layer's blocks ([`Scene::set_blocks`]).
     pub blocks: Arc<[Block]>,
+    /// A window layer's edges ([`Scene::set_edges`]).
+    pub edges: Arc<[Edge]>,
     /// [`bounds`] of the rectangle and chrome, with a card's ring.
     pub bounds: Rect,
 }
@@ -443,6 +450,7 @@ impl Placed {
             && self.chrome == o.chrome
             && self.card == o.card
             && self.blocks == o.blocks
+            && self.edges == o.edges
     }
 }
 
@@ -476,12 +484,18 @@ impl Scene {
                 self.mark_restacked(d.id);
             }
         }
-        let (chrome, card, blocks, own) = self
-            .layers
-            .get(&d.id)
-            .map_or((None, None, Arc::from([]), false), |l| {
-                (l.chrome, l.card.clone(), Arc::clone(&l.blocks), l.own)
-            });
+        let (chrome, card, blocks, edges, own) =
+            self.layers
+                .get(&d.id)
+                .map_or((None, None, Arc::from([]), Arc::from([]), false), |l| {
+                    (
+                        l.chrome,
+                        l.card.clone(),
+                        Arc::clone(&l.blocks),
+                        Arc::clone(&l.edges),
+                        l.own,
+                    )
+                });
         let window = kind == Kind::Window;
         self.layers.insert(
             d.id,
@@ -493,6 +507,7 @@ impl Scene {
                 chrome,
                 card: card.filter(|_| window),
                 blocks: if window { blocks } else { Arc::from([]) },
+                edges: if window { edges } else { Arc::from([]) },
                 own: own && window,
             },
         );
@@ -585,6 +600,17 @@ impl Scene {
         match self.layers.get_mut(&id) {
             Some(l) if l.kind == Kind::Window => {
                 l.blocks = blocks;
+                Ok(())
+            }
+            _ => Err(GLITNIR_E_ARG),
+        }
+    }
+
+    /// Set window layer ID's edges (empty: none).  `GLITNIR_E_ARG` for an unknown id or a layer that is not a window.
+    pub fn set_edges(&mut self, id: u64, edges: Arc<[Edge]>) -> Result<(), i32> {
+        match self.layers.get_mut(&id) {
+            Some(l) if l.kind == Kind::Window => {
+                l.edges = edges;
                 Ok(())
             }
             _ => Err(GLITNIR_E_ARG),
@@ -748,6 +774,7 @@ impl Scene {
                     chrome: l.chrome,
                     card: l.card.clone(),
                     blocks: Arc::clone(&l.blocks),
+                    edges: Arc::clone(&l.edges),
                     bounds: card_bounds(l.rect, l.chrome.as_ref(), l.card.as_ref()),
                 });
                 self.walk(id, out);
@@ -845,7 +872,7 @@ impl Scene {
                         } else {
                             out.extend(card_change(o, n));
                         }
-                        if o.blocks != n.blocks {
+                        if o.blocks != n.blocks || o.edges != n.edges {
                             out.extend(block_patches(o));
                             out.extend(block_patches(n));
                         }
@@ -982,6 +1009,11 @@ pub fn set_card(root: u64, layer: u64, card: Option<Card>) -> Result<(), i32> {
 /// Set window layer LAYER's blocks in ROOT's scene ([`Scene::set_blocks`]); `GLITNIR_E_STATE` when ROOT has no scene.
 pub fn set_blocks(root: u64, layer: u64, blocks: Arc<[Block]>) -> Result<(), i32> {
     with(root, |s| s.set_blocks(layer, blocks))
+}
+
+/// Set window layer LAYER's edges in ROOT's scene ([`Scene::set_edges`]); `GLITNIR_E_STATE` when ROOT has no scene.
+pub fn set_edges(root: u64, layer: u64, edges: Arc<[Edge]>) -> Result<(), i32> {
+    with(root, |s| s.set_edges(layer, edges))
 }
 
 /// ROOT's committed scene as its last commit left it; `None` when ROOT has no scene.

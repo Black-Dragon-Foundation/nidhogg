@@ -662,6 +662,55 @@ the theme's generation), and the frame's `glitnir--blocks' flag follows whether 
         (clrhash glitnir--blocks-seen)
         (set-frame-parameter nil 'glitnir--blocks nil)))))
 
+(ert-deftest glitnir-edge-vector-from-spec ()
+  "An edge spec as the vector C reads: flags, colour, the number of points, then each (POS DX DY); a place is a
+position or (POS DX DY); bends go between FROM and TO; more than 8 points or a bad place signal."
+  (with-temp-buffer
+    (insert "one\ntwo\nthree\n")
+    (let* ((m (copy-marker 5))
+           (v (glitnir--edge-vector `((1 3 4) ,m ("#ff0000" . 0.5) :points ((9 0 2)) :arrow t) (selected-frame))))
+      (should (equal (append v nil) (list 1 #xff0000 0.5 3 1 3 4 9 0 2 m 0 0)))
+      (should (= (aref (glitnir--edge-vector '(1 5 "#00ff00" :dash t) (selected-frame)) 0) 2))
+      (should (= (aref (glitnir--edge-vector '(1 5 "#00ff00" :dash t :arrow t) (selected-frame)) 0) 3))
+      (should-not (glitnir--edge-vector '(1 5 "no-such-colour") (selected-frame)))
+      (should-error (glitnir--edge-vector `(1 5 "#00ff00" :points ,(make-list 7 2)) (selected-frame))
+                    :type 'wrong-type-argument)
+      (dolist (bad '(nil (1) (1 5) ("x" 5 "#00ff00") (1 (5 "a") "#00ff00")))
+        (should-error (glitnir--edge-vector bad (selected-frame)) :type 'wrong-type-argument)))))
+
+(ert-deftest glitnir-edges-resolve-only-on-change ()
+  "A window's `glitnir-edges' is resolved into `glitnir--edges' once per change of the spec or the theme's
+generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; edges gone, both go."
+  (let ((w (selected-window)) (sets 0)
+        (set-window-parameter (symbol-function 'set-window-parameter)))
+    (with-temp-buffer
+      (insert "one\ntwo\nthree\n")
+      (cl-letf (((symbol-function 'set-window-parameter)
+                 (lambda (win p v)
+                   (when (eq p 'glitnir--edges) (setq sets (1+ sets)))
+                   (funcall set-window-parameter win p v))))
+        (unwind-protect
+            (let ((spec '((1 5 ("#ff0000" . 1) :arrow t))))
+              (set-window-parameter w 'glitnir-edges spec)
+              (glitnir--recheck-frame-cards w)
+              (should (equal (window-parameter w 'glitnir--edges) (vector (vector 1 #xff0000 1 2 1 0 0 5 0 0))))
+              (should (eq (frame-parameter nil 'glitnir--blocks) t))
+              (glitnir--recheck-frame-cards w)
+              (setq glitnir--card-generation (1+ glitnir--card-generation))
+              (glitnir--recheck-frame-cards w)
+              (should (= sets 1))
+              (set-window-parameter w 'glitnir-edges '((1 5 ("#ff0000" . 1))))
+              (glitnir--recheck-frame-cards w)
+              (should (= sets 2))
+              (set-window-parameter w 'glitnir-edges nil)
+              (glitnir--recheck-frame-cards w)
+              (should-not (window-parameter w 'glitnir--edges))
+              (should-not (frame-parameter nil 'glitnir--blocks)))
+          (dolist (k '(glitnir-edges glitnir--edges glitnir--edges-key))
+            (set-window-parameter w k nil))
+          (clrhash glitnir--blocks-seen)
+          (set-frame-parameter nil 'glitnir--blocks nil))))))
+
 (ert-deftest glitnir-ruler-resolves-only-on-change ()
   "A window's `glitnir-ruler' is resolved into `glitnir--ruler' once per change of the spec or the theme's
 generation, never per redisplay, and sets the frame's `glitnir--blocks' flag, so C lists the frame."

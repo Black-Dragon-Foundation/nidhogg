@@ -645,6 +645,7 @@ Setting it to nil turns its decorations off.  */);
   DEFSYM (Qglitnir__cards, "glitnir--cards");
   DEFSYM (Qglitnir__blocks, "glitnir--blocks");
   DEFSYM (Qglitnir__ruler, "glitnir--ruler");
+  DEFSYM (Qglitnir__edges, "glitnir--edges");
 
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();
