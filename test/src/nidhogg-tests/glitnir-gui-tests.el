@@ -834,4 +834,44 @@ behind: the minibuffer frame C made for it to borrow from while it was made goes
     (should (equal (plist-get r :deleted) 0))
     (should (plist-get r :exited))))
 
+(ert-deftest glitnir-gui/an-overlay-string-change-redisplays-only-its-lines ()
+  "An inline value (an overlay's after-string at a line's end) changed at a stop redisplays only its lines, with line
+numbers on and the current line's number in its own face; with `glitnir-confined-overlay-redisplay' off (stock
+Emacs) the same change draws the window again from its start.  An `invisible' overlay still does."
+  (skip-unless (featurep 'glitnir-confined-overlays))
+  (let ((buf (generate-new-buffer "*confined-overlays*"))
+        (frame (selected-frame))
+        (weight (face-attribute 'line-number-current-line :weight (selected-frame))))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (delete-other-windows)
+          ;; as `prog-mode' does: without a fixed direction try_window_id always gives up
+          (setq bidi-paragraph-direction 'left-to-right)
+          (dotimes (i 200) (insert (format "line %d of the program\n" i)))
+          (goto-char (point-min))
+          (forward-line 5)
+          (set-face-attribute 'line-number-current-line frame :weight 'bold)
+          (display-line-numbers-mode 1)
+          (let ((o (make-overlay (pos-eol 12) (pos-eol 12)))
+                (count (lambda (change)
+                         (redisplay t)
+                         (setq glitnir--redisplay-same-start 0 glitnir--redisplay-changed-lines 0
+                               glitnir--redisplay-gave-up 0)
+                         (funcall change)
+                         (redisplay t)
+                         (list glitnir--redisplay-same-start glitnir--redisplay-changed-lines))))
+            (overlay-put o 'after-string "  qty = 20")
+            (let ((n (funcall count (lambda () (overlay-put o 'after-string "  qty = 3")))))
+              (should (equal (list (nth 0 n) glitnir--redisplay-gave-up) '(0 0)))
+              (should (>= (nth 1 n) 1)))
+            (should (string-match-p "qty = 3" (format "%S" (overlay-get o 'after-string))))
+            (let ((glitnir-confined-overlay-redisplay nil))
+              (should (>= (nth 0 (funcall count (lambda () (overlay-put o 'after-string "  qty = 4")))) 1)))
+            ;; an invisible overlay may show outside its text: the window is drawn again
+            (let ((h (make-overlay (pos-bol 30) (pos-bol 31))))
+              (should (>= (nth 0 (funcall count (lambda () (overlay-put h 'invisible t)))) 1)))))
+      (set-face-attribute 'line-number-current-line frame :weight weight)
+      (kill-buffer buf))))
+
 ;;; glitnir-gui-tests.el ends here

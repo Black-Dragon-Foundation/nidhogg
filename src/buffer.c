@@ -641,6 +641,9 @@ even if it is dead.  The return value is never nil.  */)
   set_buffer_intervals (b, NULL);
   BUF_UNCHANGED_MODIFIED (b) = 1;
   BUF_OVERLAY_UNCHANGED_MODIFIED (b) = 1;
+#ifdef HAVE_GLITNIR
+  BUF_OVERLAY_UNCONFINED_MODIFF (b) = 1;
+#endif
   BUF_END_UNCHANGED (b) = 0;
   BUF_BEG_UNCHANGED (b) = 0;
   *(BUF_GPT_ADDR (b)) = *(BUF_Z_ADDR (b)) = 0; /* Put an anchor '\0'.  */
@@ -981,6 +984,22 @@ remove_buffer_overlay (struct buffer *b, struct Lisp_Overlay *ov)
   ov->buffer = NULL;
 }
 
+#ifdef HAVE_GLITNIR
+/* Note an overlay change in B that may show outside the overlay's text:
+   PROP (the property just set, or nil) or the overlay's properties
+   PLIST make it `invisible' or `display'.  Call it after
+   modify_overlay.  */
+static void
+glitnir_note_overlay_change (struct buffer *b, Lisp_Object plist,
+			     Lisp_Object prop)
+{
+  if (EQ (prop, Qinvisible) || EQ (prop, Qdisplay)
+      || !NILP (lookup_char_property (plist, Qinvisible, false))
+      || !NILP (lookup_char_property (plist, Qdisplay, false)))
+    BUF_OVERLAY_UNCONFINED_MODIFF (b) = BUF_OVERLAY_MODIFF (b);
+}
+#endif
+
 /* Mark OV as no longer associated with its buffer.  */
 
 static void
@@ -990,6 +1009,9 @@ drop_overlay (struct Lisp_Overlay *ov)
     return;
 
   modify_overlay (ov->buffer, overlay_start (ov), overlay_end (ov));
+#ifdef HAVE_GLITNIR
+  glitnir_note_overlay_change (ov->buffer, ov->plist, Qnil);
+#endif
   remove_buffer_overlay (ov->buffer, ov);
 }
 
@@ -1009,6 +1031,9 @@ delete_all_overlays (struct buffer *b)
   ITREE_FOREACH (node, b->overlays, PTRDIFF_MIN, PTRDIFF_MAX, POST_ORDER)
     {
       modify_overlay (b, node->begin, node->end);
+#ifdef HAVE_GLITNIR
+      BUF_OVERLAY_UNCONFINED_MODIFF (b) = BUF_OVERLAY_MODIFF (b);
+#endif
       XOVERLAY (node->data)->buffer = NULL;
       node->parent = NULL;
       node->left = NULL;
@@ -3796,6 +3821,11 @@ buffer.  */)
       else
 	modify_overlay (b, min (o_beg, n_beg), max (o_end, n_end));
     }
+#ifdef HAVE_GLITNIR
+  if (ob && ob != b)
+    glitnir_note_overlay_change (ob, XOVERLAY (overlay)->plist, Qnil);
+  glitnir_note_overlay_change (b, XOVERLAY (overlay)->plist, Qnil);
+#endif
 
   /* Delete the overlay if it is empty after clipping and has the
      evaporate property.  */
@@ -4102,6 +4132,10 @@ VALUE will be returned.*/)
       if (changed)
 	modify_overlay (b, OVERLAY_START (overlay),
                         OVERLAY_END (overlay));
+#ifdef HAVE_GLITNIR
+      if (changed)
+	glitnir_note_overlay_change (b, XOVERLAY (overlay)->plist, prop);
+#endif
       if (EQ (prop, Qevaporate) && ! NILP (value)
 	  && (OVERLAY_START (overlay)
               == OVERLAY_END (overlay)))
