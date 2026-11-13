@@ -1082,44 +1082,46 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
   "After `redisplay' and Lisp that runs on for 20 ms the layer shows the newest surface, read back in the process,
 with no run-loop turn: the commit's deadline commits it.  The redisplay is forced: an event still queued from an
 earlier row makes a plain `redisplay' return at once (round 2: 0 commits, 0 deadline commits), which is not the case
-judged here; whether one was pending is logged."
+judged here; whether one was pending is logged.  Five keys: the deadline's SIGALRM came 15 to 40 ms late under macOS's
+timer coalescing, so one key passed or failed by chance."
   :tags '(draws)
   (nhmac-gui--typing-buffer "shows")
-  (let ((before (nhmac-stats)))
-    (insert "y")
-    (nhmac-gui--say "nhmac-commit-shows-without-spin: input pending %S" (input-pending-p))
-    (redisplay t)
-    (let ((end (+ (float-time) 0.02)))
-      (while (< (float-time) end)))
-    (let ((s (nhmac-gui--surface)))
-      (nhmac-gui--say "nhmac-commit-shows-without-spin: %S; %d commits, %d deadline commits, %d pumps" s
-                      (nhmac-gui--delta before :commits) (nhmac-gui--delta before :deadline-flushes)
-                      (nhmac-gui--delta before :pumps))
-      ;; round 6: 0 commits and 0 deadline commits, red at both scales: whether the redisplay drew, and what the
-      ;; pacer held or deferred
-      (nhmac-gui--say "nhmac-commit-shows-without-spin: deltas %S"
-                      (mapcar (lambda (k) (cons k (nhmac-gui--delta before k)))
-                              '(:draws :held :held-timeouts :pacer-arms :pacer-fires :deferred-commits :handed-pumps
-                                       :takes :applied)))
-      ;; round 8: draws and no commit of either kind in the 20 ms (the deadline is 8 ms): how long the deadline
-      ;; took, Lisp still running on
-      (unless (plist-get s :contents-is-newest)
-        (let* ((t0 (float-time)) (end (+ t0 1.0)) newest)
-          (while (and (not (setq newest (plist-get (nhmac-gui--surface) :contents-is-newest)))
-                      (< (float-time) end)))
-          (nhmac-gui--say "nhmac-commit-shows-without-spin: newest %S after %.0f ms more; %d deadline commits"
-                          newest (* 1000 (- (float-time) t0))
-                          (- (plist-get (nhmac-stats) :deadline-flushes) (plist-get before :deadline-flushes)))))
-      (should (eq (plist-get s :contents-is-newest) t))
-      (should (equal (plist-get s :gravity) "topLeft"))
-      (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
-                                         (float (car (plist-get s :points))))))
-      (should (equal (list (plist-get s :w) (plist-get s :h))
-                     (list (frame-pixel-width) (frame-pixel-height))))
-      ;; a fresh backing is the frame's background (drawing comes with the record emitter)
-      (should (= (logand (plist-get s :pixel) #xff000000) #xff000000)))
-    (should (= (nhmac-gui--delta before :spins-in-redisplay) 0))
-    (should (>= (nhmac-gui--delta before :commits) 1)))
+  (dotimes (_ 5)
+    (let ((before (nhmac-stats)))
+      (insert "y")
+      (nhmac-gui--say "nhmac-commit-shows-without-spin: input pending %S" (input-pending-p))
+      (redisplay t)
+      (let ((end (+ (float-time) 0.02)))
+        (while (< (float-time) end)))
+      (let ((s (nhmac-gui--surface)))
+        (nhmac-gui--say "nhmac-commit-shows-without-spin: %S; %d commits, %d deadline commits, %d pumps" s
+                        (nhmac-gui--delta before :commits) (nhmac-gui--delta before :deadline-flushes)
+                        (nhmac-gui--delta before :pumps))
+        ;; round 6: 0 commits and 0 deadline commits, red at both scales: whether the redisplay drew, and what the
+        ;; pacer held or deferred
+        (nhmac-gui--say "nhmac-commit-shows-without-spin: deltas %S"
+                        (mapcar (lambda (k) (cons k (nhmac-gui--delta before k)))
+                                '(:draws :held :held-timeouts :pacer-arms :pacer-fires :deferred-commits :handed-pumps
+                                         :takes :applied)))
+        ;; round 8: draws and no commit of either kind in the 20 ms (the deadline is 8 ms): how long the deadline
+        ;; took, Lisp still running on
+        (unless (plist-get s :contents-is-newest)
+          (let* ((t0 (float-time)) (end (+ t0 1.0)) newest)
+            (while (and (not (setq newest (plist-get (nhmac-gui--surface) :contents-is-newest)))
+                        (< (float-time) end)))
+            (nhmac-gui--say "nhmac-commit-shows-without-spin: newest %S after %.0f ms more; %d deadline commits"
+                            newest (* 1000 (- (float-time) t0))
+                            (- (plist-get (nhmac-stats) :deadline-flushes) (plist-get before :deadline-flushes)))))
+        (should (eq (plist-get s :contents-is-newest) t))
+        (should (equal (plist-get s :gravity) "topLeft"))
+        (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
+                                           (float (car (plist-get s :points))))))
+        (should (equal (list (plist-get s :w) (plist-get s :h))
+                       (list (frame-pixel-width) (frame-pixel-height))))
+        ;; a fresh backing is the frame's background (drawing comes with the record emitter)
+        (should (= (logand (plist-get s :pixel) #xff000000) #xff000000)))
+      (should (= (nhmac-gui--delta before :spins-in-redisplay) 0))
+      (should (>= (nhmac-gui--delta before :commits) 1))))
   (kill-buffer))
 
 (ert-deftest nhmac-redisplay-has-no-flush ()
