@@ -199,15 +199,16 @@ ends a `sit-for' early."
   (nhmac--test-post-key ?\C-x ?x nhmac-gui--ns-control)
   (nhmac--test-post-key ?\C-f ?f nhmac-gui--ns-control)
   (should (equal (nhmac-gui--events 2) '(?\C-x ?\C-f)))
-  (let ((start (float-time)) quit)
+  (let (quit ran-out)
     (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
     (condition-case nil
         (let ((inhibit-quit nil))
-          (sit-for 5)
+          ;; t only when the 4 s ran out with no input: the C-g never came
+          (setq ran-out (sit-for 4))
           (setq quit (eq (read-event nil nil 1) ?\C-g)))
       (quit (setq quit t)))
     (should quit)
-    (should (< (- (float-time) start) 4))))
+    (should-not ran-out)))
 
 (defun nhmac-gui--pos-xy (pos)
   "Device pixels from the frame's top left of the middle of the character at POS."
@@ -452,10 +453,11 @@ helper's hop (`:helper-hops-keys' 0)."
             (push (cons 'first-output (- (float-time) t0)) phases)
             (should (> bytes 0))
             (setq t0 (float-time))
+            ;; each key within 0.5 s, or the read gives nil and the keys' check fails
             (dolist (c keys)
               (nhmac--test-post-key c)
               (let ((t1 (float-time)))
-                (push (read-event nil nil 2) got)
+                (push (read-event nil nil 0.5) got)
                 (setq worst (max worst (- (float-time) t1)))))
             (push (cons 'keys (- (float-time) t0)) phases))
         (setq t0 (float-time))
@@ -464,7 +466,6 @@ helper's hop (`:helper-hops-keys' 0)."
       (nhmac-gui--say "nhmac-keys-before-output: worst %.3f s, %d bytes of output, phases %S" worst bytes
                       (nreverse phases))
       (should (equal (nreverse got) keys))
-      (should (< worst 0.5))
       (should (= (nhmac-gui--delta before :helper-hops-keys) 0))
       (should (> (nhmac-gui--delta before :waits) 0)))))
 
@@ -578,18 +579,17 @@ lock-waiter count is back to 0 after each (a signal marks one waiter, not all)."
 
 (ert-deftest nhmac-quit-reaches-busy-loop ()
   "A C-g queued in AppKit while Lisp runs a busy loop (no input read, no redisplay, no wait) quits it: the loop's
-input polls pump AppKit.  The loop ends itself after 5 s, failing the row."
+input polls pump AppKit.  The loop ends itself after 4 s, failing the row."
   (nhmac-gui--flush)
   (let ((start (float-time)) quit)
     (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
     (condition-case nil
         (let ((inhibit-quit nil)
-              (deadline (+ start 5)))
+              (deadline (+ start 4)))
           (while (< (float-time) deadline)))
       (quit (setq quit t)))
     (nhmac-gui--say "nhmac-quit-reaches-busy-loop: quit %S after %.2f s" quit (- (float-time) start))
-    (should quit)
-    (should (< (- (float-time) start) 4))))
+    (should quit)))
 
 (ert-deftest nhmac-keys-under-yield-loop ()
   "While a Lisp thread spins on `thread-yield', and again under 4-thread contention, keys, a process's output, a
@@ -634,11 +634,12 @@ wait, with no AppKit event: the notifier's want of the lock ends the main thread
                                     (setq go t notified (float-time))
                                     (condition-notify c)))
                                 "nhmac-cn")))
-    (should (nhmac-gui--idle-until (lambda () woken) 5))
+    (should (nhmac-gui--idle-until (lambda () notified) 5))
+    ;; the waiter wakes within 0.5 s of the notify
+    (should (nhmac-gui--idle-until (lambda () woken) 0.5))
     (thread-join notifier)
     (thread-join waiter)
-    (nhmac-gui--say "nhmac-thread-wakes-idle-main: woken %.3f s after the notify" (- woken notified))
-    (should (< (- woken notified) 0.5))))
+    (nhmac-gui--say "nhmac-thread-wakes-idle-main: woken %.3f s after the notify" (- woken notified))))
 
 ;; The guard: an Objective-C exception in a pump poisons the display, as a panic does, and Emacs goes on
 (ert-deftest nhmac-objc-exception-poisons ()
@@ -683,6 +684,9 @@ is raised in a child Emacs on the same window server, never in the runner; the c
          (kill-emacs 0))))"
   "What a child Emacs in `nhmac-frame-shows-at-every-start' runs: it places its frame as gui-runner does, and a
 second later prints whether the frame is visible, its draws, the shell's startup trace and view, and ends.")
+
+;; nhwlterm.c's: the row's `let' must bind it dynamically wherever this file is compiled
+(defvar nhwl--test-drain-in-window-new)
 
 (ert-deftest nhmac-frame-shows-after-a-drain-in-its-making ()
   "A frame whose window's first configure is drained while the window is made still shows: the configure is applied
@@ -1048,7 +1052,7 @@ anyway, counted as a held timeout and a busy surface, so a stuck window server n
                     (nhmac-gui--delta before :pacer-fires) (nhmac-gui--delta before :commits)
                     (nhmac-gui--delta before :deadline-flushes))
     (should shown)
-    (should (>= (- (float-time) t0) 0.05))
+    ;; drawn by the bound, not before: the held timeout counts it
     (should (= (nhmac-gui--delta before :held-timeouts) 1))
     (should (= (nhmac-gui--delta before :surface-busy) 1)))
   (kill-buffer))

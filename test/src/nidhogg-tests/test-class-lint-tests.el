@@ -38,7 +38,8 @@
 ;;              no clock read (float-time, current-time, or a time function
 ;;              given nil for now).  A synchronous `call-process' is
 ;;              allowed.  Peer and clock helpers are allowed.
-;;   C (cond)   no fixed pause: no sleep-for, no sit-for above 0.
+;;   C (cond)   no fixed pause: no sleep-for, no sit-for above 0 (the files on
+;;              nidhogg/test/pattern-pending.txt are passed over).
 ;;   D and C    no child script that writes, sleeps and writes again
 ;;              (`echo a; sleep 0.3; echo b'): such a test relies on the
 ;;              OS handing it the two writes as two reads, at the child's
@@ -389,14 +390,22 @@ class line has none."
           (push (string-trim (car (split-string line " # "))) rows)))
       (nreverse rows))))
 
-(defun test-class-lint--real-violations (rule)
-  "The violations of RULE over every classified test file, as strings."
+(defun test-class-lint--file-violations (rule files &optional skip)
+  "The violations of RULE over FILES, a list of (NAME . TEXT), as strings; the files named in SKIP are passed over."
   (let (out)
-    (dolist (file (test-class-lint--test-files))
-      (dolist (v (test-class-lint--violations (test-class-lint--read-file file)))
-        (when (eq (car v) rule)
-          (push (format "%s: %s: %s" (file-name-nondirectory file) (nth 1 v) (nth 2 v)) out))))
+    (pcase-dolist (`(,name . ,text) files)
+      (unless (member name skip)
+        (dolist (v (test-class-lint--violations text))
+          (when (eq (car v) rule)
+            (push (format "%s: %s: %s" name (nth 1 v) (nth 2 v)) out)))))
     (nreverse out)))
+
+(defun test-class-lint--real-violations (rule &optional skip)
+  "The violations of RULE over every classified test file, as strings; the files named in SKIP are passed over."
+  (test-class-lint--file-violations
+   rule (mapcar (lambda (file) (cons (file-name-nondirectory file) (test-class-lint--read-file file)))
+                (test-class-lint--test-files))
+   skip))
 
 ;;; The tests
 
@@ -404,7 +413,10 @@ class line has none."
   (should-not (test-class-lint--real-violations 'det-real-time)))
 
 (ert-deftest test-class/cond-has-no-fixed-pause ()
-  (should-not (test-class-lint--real-violations 'cond-pause)))
+  ;; The files on the pattern-pending list are passed over: their waits are rewritten along with their pattern (the
+  ;; Naglfar rows on a real Mac in .7, the user's exception of 2026-11-13).  Every other `cond' file is checked, see
+  ;; `test-class/a-pause-off-the-pending-list-still-fails'.
+  (should-not (test-class-lint--real-violations 'cond-pause (test-pattern-lint--pending))))
 
 (ert-deftest test-class/only-timing-asserts-the-clock ()
   (should-not (test-class-lint--real-violations 'clock-assert)))
@@ -427,6 +439,13 @@ class line has none."
 
 (defconst test-class-lint--header-det ";; test-class: det\n")
 (defconst test-class-lint--header-cond ";; test-class: cond\n")
+
+(ert-deftest test-class/a-pause-off-the-pending-list-still-fails ()
+  (let ((files (list (cons "a-tests.el" (concat test-class-lint--header-cond "(ert-deftest my/a () (sit-for 1))\n"))
+                     (cons "b-tests.el" (concat test-class-lint--header-cond "(ert-deftest my/b () (sit-for 1))\n")))))
+    (should (equal (test-class-lint--file-violations 'cond-pause files '("b-tests.el"))
+                   '("a-tests.el: my/a: sit-for above 0")))
+    (should (= (length (test-class-lint--file-violations 'cond-pause files)) 2))))
 
 (ert-deftest test-class/sees-through-a-local-helper ()
   (let ((v (test-class-lint--violations

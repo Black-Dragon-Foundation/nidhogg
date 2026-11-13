@@ -1,6 +1,7 @@
 ;;; glitnir-nhmac-gui-tests.el --- Glitnir's child chrome on Naglfar  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh on the macOS runner, with nhmac-gui-tests.el (its helpers).  Glitnir P5's NS rows,
 ;; rebuilt on Naglfar's layers (design §5.7): the corners and the border are the content layer's properties, the
@@ -61,13 +62,17 @@ The probes then read the root's background wherever no child is.  FN runs after 
 
 (defun glitnir-nhmac--grab (name)
   "The screen around the selected frame, as `nhmac-gui--bmp-read' gives it, after the layers settled.
+Settled: the pacer holds no commit, and two captures in a row agree (at most 10 captures; the last is taken).
 Saved as NAME.bmp under GLITNIR_GUI_OUT when that is set, so a failing row leaves its evidence."
   (nhmac-gui--settle)
-  (sit-for 0.3)
+  (nhmac-gui--wait-unheld 1)
   (let* ((dir (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory))
-         (file (expand-file-name (format "%s-%s.bmp" name (getenv "GLITNIR_GUI_SCALE")) dir)))
+         (file (expand-file-name (format "%s-%s.bmp" name (getenv "GLITNIR_GUI_SCALE")) dir))
+         (img nil) (last nil) (tries 0))
     (make-directory dir t)
-    (nhmac-gui--bmp-read (nhmac-gui--capture file))))
+    (while (progn (setq last img img (nhmac-gui--bmp-read (nhmac-gui--capture file)) tries (1+ tries))
+                  (and (< tries 10) (not (equal img last)))))
+    img))
 
 (defun glitnir-nhmac--box (img rgb &optional near)
   "The bounding box (X0 Y0 X1 Y1, inclusive) of the pixels of IMG within NEAR (default 8) of RGB, or nil."
@@ -1922,8 +1927,7 @@ at its moving place, so a whole-area move would show the new layout from the sta
          ;; comes late (a commit after the grab) or never (the root's contents not the newest picture)
          (when (<= (car new) 100)
            (let ((stats (nhmac-stats)))
-             (sit-for 2)
-             (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: 2 s later vs during %S, window start %S, surface %S, stats then %S now %S"
+             (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: later vs during %S, window start %S, surface %S, stats then %S now %S"
                              (glitnir-nhmac--diff during (glitnir-nhmac--grab "leg-later") rect)
                              (window-start) (nhmac--test-surface 0 0)
                              stats (nhmac-stats))

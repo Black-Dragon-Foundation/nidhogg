@@ -1,6 +1,7 @@
 ;;; nhmac-ns-gui-tests.el --- Naglfar's ns compatibility layer on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).  Each ns function NS
 ;; defines in C answers on Naglfar, through the shell, as NS's does.

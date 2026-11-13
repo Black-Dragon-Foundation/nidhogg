@@ -111,11 +111,9 @@ a tree that lists it (and the shell's menu then shows it)."
     (advice-add 'nhmac--call :around send)
     (unwind-protect
         (progn
-          (setq listed (and (nhmac-menu-gui--idle
-                             6 (lambda () (and made (cl-find-if (lambda (e) (string-match-p name (cadr e)))
-                                                                (nhmac-menu-gui--dump)))))
-                            sent))
-          (should made)
+          (should (nhmac-menu-gui--idle 6 (lambda () made)))
+          ;; the shell gets a tree that lists the buffer within 0.5 s of the filter
+          (setq listed (nhmac-menu-gui--idle 0.5 (lambda () sent)))
           ;; the build's own time: the listing waits `nhmac-menu-delay' of idleness, then one build
           (glitnir-gui--say "nhmac-menu-buffers-after-filter: listed %s; delay %s, a build %.3f s; builds (start took gcs gc-time) %S"
                             (if listed (format "%.2f s after the filter" (- listed made)) "never")
@@ -126,7 +124,9 @@ a tree that lists it (and the shell's menu then shows it)."
           (glitnir-gui--say "nhmac-menu-buffers-after-filter: filter at %.3f; timing (scheduled idle due fired idle) %S"
                             made nhmac-menu--timing)
           (should listed)
-          (should (< (- listed made) 0.5)))
+          ;; and the shell's menu shows it
+          (should (nhmac-menu-gui--idle
+                   2 (lambda () (cl-find-if (lambda (e) (string-match-p name (cadr e))) (nhmac-menu-gui--dump))))))
       (advice-remove 'nhmac-menu-build watch)
       (advice-remove 'nhmac--call send)
       (delete-process proc)
