@@ -712,9 +712,12 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
       (let* ((buf (generate-new-buffer " *nhmac-start*"))
              (t0 (float-time))
              (proc (make-process :name "nhmac-start" :buffer buf :connection-type 'pipe
-                                 :command (list emacs "-Q" "--eval" nhmac-gui--start-report))))
+                                 :command (list emacs "-Q" "--eval" nhmac-gui--start-report)
+                                 ;; the sentinel runs after Emacs read the child's last output; `process-live-p'
+                                 ;; turns nil at its exit, maybe before (the lane's start 7: exit, output "")
+                                 :sentinel (lambda (p _) (process-put p 'done t)))))
         (unwind-protect
-            (let* ((ended (gui-runner-wait (lambda () (not (process-live-p proc))) 30))
+            (let* ((ended (gui-runner-wait (lambda () (process-get proc 'done)) 30))
                    (out (with-current-buffer buf (buffer-string)))
                    (facts (and (string-match "^NHMAC-START \\(.*\\)$" out)
                                (car (read-from-string (match-string 1 out))))))
