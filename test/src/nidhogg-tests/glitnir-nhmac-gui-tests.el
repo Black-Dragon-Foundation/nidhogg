@@ -896,9 +896,10 @@ dashed line has gaps; with the parameters gone their images go."
                 (tagged (lambda (tag) (cl-count-if (lambda (c) (/= 0 (logand (car c) tag)))
                                                    (plist-get (glitnir-nhmac--cards t) :cards)))))
            (glitnir-nhmac--ring-on left)
-           ;; down column 6 from line 1 to line 6: across the ring's top side (lines 2 to 4) and its bottom side
+           ;; down column 6 from line 0 to line 6 (from 0): across the ring's top side (lines 1 to 3) and its bottom
+           ;; side.  From line 1 it began inside the ring (the live session, 2026-11-13: arrow top 129, ring top 122)
            (set-window-parameter left 'glitnir-edges
-                                 `(((,(glitnir-nhmac--line-pos left 1 6) 0 ,dy) (,(glitnir-nhmac--line-pos left 6 6) 0 ,dy)
+                                 `(((,(glitnir-nhmac--line-pos left 0 6) 0 ,dy) (,(glitnir-nhmac--line-pos left 6 6) 0 ,dy)
                                     ,(glitnir-nhmac--hex glitnir-nhmac--edge-arrow) :arrow t)))
            (set-window-parameter right 'glitnir-edges
                                  `(((,(glitnir-nhmac--line-pos right 2 2) 0 ,dy) (,(glitnir-nhmac--line-pos right 2 30) 0 ,dy)
