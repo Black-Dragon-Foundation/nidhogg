@@ -262,8 +262,8 @@ impl MacShell {
             .map_or(0.0, |s| s.frame().origin.y + s.frame().size.height)
     }
 
-    /// Tell the host where window `id`'s frame is (its top-left as `screen_point` takes it), when it moved since it was
-    /// last told or `always` (a new scale: the host's device pixels changed).  NS's windowDidMove: does the same, so
+    /// Tell the host where window `id`'s frame is (its top-left as `screen_point` takes it) and how tall its title bar
+    /// is, when either changed since it was last told or `always` (a new scale: the host's device pixels changed).  NS's windowDidMove: does the same, so
     /// `frame-position` is where AppKit put the frame (it may constrain or nudge the place asked for).
     fn moved(&mut self, id: WindowId, always: bool) {
         let top = self.main_top();
@@ -274,12 +274,14 @@ impl MacShell {
         let pos = (
             r.origin.x.round() as i32,
             (top - (r.origin.y + r.size.height)).round() as i32,
+            (r.size.height.round() as i32 - w.content_size().1).max(0),
         );
         if !always && w.pos == Some(pos) {
             return;
         }
         w.pos = Some(pos);
-        self.push(ShellEvent::Moved(MovedEv { x: pos.0, y: pos.1 }), id);
+        let (x, y, title) = pos;
+        self.push(ShellEvent::Moved(MovedEv { x, y, title }), id);
     }
 
     /// Lend the backend to the scope while `f` makes AppKit calls that may call back; the events queued meanwhile
@@ -503,6 +505,8 @@ impl MacShell {
         if resized {
             self.configure(id, size.0, size.1);
         }
+        // a resize from the top moves the top-left; full screen hides the title bar
+        self.moved(id, false);
     }
 
     /// Tell the host when window `id` is on another screen than it was told: a leave of the old output and an enter

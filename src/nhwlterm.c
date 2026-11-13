@@ -3819,6 +3819,7 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 	{
 	  f->left_pos = a->x;
 	  f->top_pos = a->y;
+	  FRAME_NHWL_OUTPUT (f)->title_bar_height = a->h;
 	}
       break;
 #endif

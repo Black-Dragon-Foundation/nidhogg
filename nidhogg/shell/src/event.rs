@@ -84,8 +84,8 @@ pub enum ShellEvent {
     Reconnected,
     /// An item of the menu bar was chosen: the generation of the tree it came from and the item's place in it.
     Menu(MenuEv),
-    /// A top-level window's frame moved, or its scale changed: its top-left now (macOS; Wayland clients have no
-    /// position).
+    /// A top-level window's frame moved, its title bar changed height, or its scale changed: where it is now (macOS;
+    /// Wayland clients have no position).
     Moved(MovedEv),
 }
 
@@ -185,11 +185,13 @@ pub struct MenuEv {
 }
 
 /// Where a top-level window is (`ShellEvent::Moved`): its frame's top-left in logical pixels from the main screen's
-/// top-left, as `ShellBackend::move_to` takes it.
+/// top-left, as `ShellBackend::move_to` takes it, and the height of its title bar over the content (logical pixels;
+/// 0 without one, as in full screen).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MovedEv {
     pub x: i32,
     pub y: i32,
+    pub title: i32,
 }
 
 /// `session.state`.

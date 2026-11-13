@@ -59,7 +59,7 @@ pub const NHG_ACT_DRAG_DONE: u32 = 38;
 /// A native menu bar choice: `code` the item's place in the tree, `flags` the tree's generation (no window).
 pub const NHG_ACT_MENU: u32 = 60;
 /// A top-level frame's window moved or changed scale (macOS): `x`, `y` its top-left in device pixels at its scale from
-/// the main screen's top-left, as `nhg_window_place` takes it.
+/// the main screen's top-left, as `nhg_window_place` takes it; `h` its title bar's height (device pixels, 0: none).
 pub const NHG_ACT_MOVED: u32 = 61;
 
 /// `RESIZE` flags: fullscreen or maximized changed (C stores the frame's `fullscreen` parameter).
