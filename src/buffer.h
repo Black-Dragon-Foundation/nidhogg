@@ -292,8 +292,8 @@ struct buffer_text
        or was `invisible' or `display'.  try_window_id redisplays only
        the changed lines after any other overlay change.  */
     modiff_count overlay_unconfined_modiff;
-#endif
 
+#endif
     /* Properties of this buffer's text.  */
     INTERVAL intervals;
 
