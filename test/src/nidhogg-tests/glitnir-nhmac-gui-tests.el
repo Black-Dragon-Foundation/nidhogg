@@ -955,7 +955,8 @@ right edge in IMG's pixels (the frame at `glitnir-nhmac--origin' in the capture)
 strip's top and half way down, the end's at its bottom in the right lane, the band over the part shown; a scroll
 moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-the-buffer-by-position on Linux)."
   :tags '(draws)
-  (skip-unless (fboundp 'glitnir-ruler-position))
+  ;; required on macOS (never skipped): it stands in for glitnir-gui's snapshot row, which skips there
+  (should (fboundp 'glitnir-ruler-position))
   (glitnir-nhmac--with-white
    (lambda ()
      (let ((w (selected-window)) (buf (window-buffer (selected-window))) (k (round (* 3 (glitnir-nhmac--scale)))))
@@ -1005,7 +1006,8 @@ moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-t
   "A window with both a ring block and a ruler shows both: the ring in its text area, the ruler in its fringe (the
 glue keeps each its own clip)."
   :tags '(draws)
-  (skip-unless (fboundp 'glitnir-ruler-position))
+  ;; required on macOS (never skipped): it stands in for glitnir-gui's snapshot row, which skips there
+  (should (fboundp 'glitnir-ruler-position))
   (glitnir-nhmac--with-white
    (lambda ()
      (let ((w (selected-window)) (buf (window-buffer (selected-window))))

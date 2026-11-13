@@ -10,12 +10,16 @@
 (require 'ert)
 (require 'cl-lib)
 
-(defun glitnir-gui--skip-unless-tree ()
+(defun glitnir-gui--skip-unless-tree (&optional by)
   "Skip the running row unless the shell is the Wayland one.
 The rows judge the scene tree the compositor was given (`glitnir-snapshot', `glitnir--stacking', the draw counts),
 which Naglfar has no counterpart of (its child frames are layers, read by glitnir-nhmac-gui-tests.el).  The rows
-that read none of it run on every backend."
-  (unless (featurep 'nidhogg-wayland) (ert-skip "reads the Wayland shell's scene tree (glitnir-snapshot, stacking)")))
+that read none of it run on every backend.  BY, a row's name: the macOS row that checks the same on the screen,
+named in the skip."
+  (unless (featurep 'nidhogg-wayland)
+    (ert-skip (if by
+                  (format "Naglfar: layers over the root; checked by %s" by)
+                "reads the Wayland shell's scene tree (glitnir-snapshot, stacking)"))))
 
 (defun glitnir-gui--drawn-since (draws)
   "Wait for the selected frame's tree to show something once more than DRAWS, a `glitnir--draw-count'."
@@ -186,7 +190,7 @@ sit at their position's fraction of the buffer and the band covers the part show
 marks; nothing is drawn in the text area; a click's y on the strip gives the position at that fraction.
 On Naglfar the strip and the ring are layers over the backing `glitnir-snapshot' reads: the screen's rows are
 glitnir-nhmac-gui-tests.el's `nhmac-ruler-*'."
-  (glitnir-gui--skip-unless-tree)
+  (glitnir-gui--skip-unless-tree "nhmac-ruler-marks-the-buffer-by-position")
   (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler*" 1000)) (w (selected-window)))
     (unwind-protect
         (progn
@@ -243,7 +247,7 @@ glitnir-nhmac-gui-tests.el's `nhmac-ruler-*'."
 the strip (each its own layer, its own clip).
 On Naglfar the strip and the ring are layers over the backing `glitnir-snapshot' reads: the screen's rows are
 glitnir-nhmac-gui-tests.el's `nhmac-ruler-*'."
-  (glitnir-gui--skip-unless-tree)
+  (glitnir-gui--skip-unless-tree "nhmac-ruler-beside-a-ring")
   (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-ring*" 1000)) (w (selected-window)))
     (unwind-protect
         (progn
