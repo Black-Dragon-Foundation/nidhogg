@@ -58,12 +58,12 @@ Saved as NAME.bmp under GLITNIR_GUI_OUT when that is set, so a failing row leave
     (make-directory dir t)
     (nhmac-gui--bmp-read (nhmac-gui--capture file))))
 
-(defun glitnir-nhmac--box (img rgb)
-  "The bounding box (X0 Y0 X1 Y1, inclusive) of the pixels of IMG within 8 of RGB, or nil."
+(defun glitnir-nhmac--box (img rgb &optional near)
+  "The bounding box (X0 Y0 X1 Y1, inclusive) of the pixels of IMG within NEAR (default 8) of RGB, or nil."
   (pcase-let ((`(,w ,h ,px) img) (x0 nil) (y0 nil) (x1 nil) (y1 nil))
     (dotimes (y h)
       (dotimes (x w)
-        (unless (nhmac-gui--far (aref px (+ (* y w) x)) rgb 8)
+        (unless (nhmac-gui--far (aref px (+ (* y w) x)) rgb (or near 8))
           (setq x0 (min (or x0 x) x) y0 (min (or y0 y) y) x1 (max (or x1 x) x) y1 (max (or y1 y) y)))))
     (and x0 (list x0 y0 x1 y1))))
 
@@ -783,7 +783,10 @@ The line count is the default line height times 3 (no line spacing in the rows).
   "Assert that IMG shows the block ring inside the box of background BG (window W's, as IMG shows it), from its text
 area's left edge to the box's right within 3 pixels, below its first line, HEIGHT device pixels tall within 3; ROW
 names it."
-  (let ((r (glitnir-nhmac--box img glitnir-nhmac--block-ring))
+  ;; the ring within 32: a window's outermost device pixels on the screen carry the system's light window rim over
+  ;; the content (round 10, scale 1: the card's pure red column 0 showed #xff1919 at the window's left edge, a 1 px
+  ;; ring there; at scale 2 the ring's inner pixel is clear of it)
+  (let ((r (glitnir-nhmac--box img glitnir-nhmac--block-ring 32))
         (box (glitnir-nhmac--box img bg))
         ;; the text area's left edge in the window (its left margin and fringe)
         (inset (- (nth 0 (window-body-pixel-edges w)) (nth 0 (window-pixel-edges w)))))
@@ -1703,6 +1706,11 @@ at its moving place, so a whole-area move would show the new layout from the sta
              ;; never redrawn, or the screen not showing it)
              (let* ((s (glitnir-nhmac--scale)) (x0 (round (* 20 s)))
                     (y (+ (round (* 60 s)) (/ (frame-pixel-height) 2))))
+               ;; round 10: both rows black where the surface has the pattern: the capture's size, and where the
+               ;; surface's background (its first pixel) is in it (the frame not at 20, 60 points at this scale)
+               (let ((bg (logand (aref (nhmac--test-surface-region 0 (/ (frame-pixel-height) 2) 1 1) 0) #xffffff)))
+                 (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: capture %dx%d, rect %S, #%06x at %S"
+                                 (nth 0 before) (nth 1 before) rect bg (glitnir-nhmac--box before bg 0)))
                (dolist (g (list (cons "before" before) (cons "after" after)))
                  (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: screen row %d %s: %S" y (car g)
                                  (cl-loop for x from x0 below (+ x0 64)
