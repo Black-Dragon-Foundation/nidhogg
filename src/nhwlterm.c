@@ -1079,10 +1079,14 @@ static void
 nhwl_present_deadline_arm (struct nhwl_display_info *dpyinfo)
 {
   if (!dpyinfo->present_deadline)
-    dpyinfo->present_deadline
-      = start_atimer (ATIMER_RELATIVE,
-		      make_timespec (0, NHWL_PRESENT_DEADLINE_NS),
-		      nhwl_present_deadline, dpyinfo);
+    {
+      dpyinfo->present_deadline
+	= start_atimer (ATIMER_RELATIVE,
+			make_timespec (0, NHWL_PRESENT_DEADLINE_NS),
+			nhwl_present_deadline, dpyinfo);
+      /* After the atimer's start, so the kick finds it due.  */
+      nhmac_deadline_wake (NHWL_PRESENT_DEADLINE_NS);
+    }
 }
 
 /* The deadline came: the shell commits what it holds.  Inside a
@@ -1745,10 +1749,15 @@ nhwl_create_frame_window (struct frame *f, uint64_t in_place)
   block_input ();
   rc = nhwl_window_new (f, &desc,
 			nhwl_child_p (f) ? NHG_FRAME_CHILD : 0, &id);
+  /* Before unblock_input: a drain there (a pending signal handled) finds
+     F by its window.  */
+  if (rc >= 0)
+    out->window = id;
   unblock_input ();
+  if (rc >= 0 && nhwl_test_drain_in_window_new)
+    nhwl_drain_events (dpyinfo, NULL);
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a window (%d)", rc);
-  out->window = id;
   /* `alpha' was set before the window existed, or for an older window.  */
   out->alpha_cut = 0;
   out->alpha_host = false;
@@ -4892,6 +4901,7 @@ nhwl_delete_terminal (struct terminal *terminal)
   if (dpyinfo->present_deadline)
     cancel_atimer (dpyinfo->present_deadline);
   dpyinfo->present_deadline = NULL;
+  nhmac_deadline_wake (-1);
 #endif
 
   if (dpyinfo->glue)
@@ -5237,6 +5247,11 @@ One of `alt', `meta', `super', `hyper' or `control'.  */);
     doc: /* Seconds to wait for the compositor's first configure of a frame.
 If it is not a float there is no wait.  */);
   Vnhwl_wait_for_configure_timeout = make_float (2.0);
+
+  DEFVAR_BOOL ("nhwl--test-drain-in-window-new", nhwl_test_drain_in_window_new,
+    doc: /* Non-nil: drain the shell's events right after a frame's window is made.
+As an `unblock_input' that handles a pending signal does there.  For tests.  */);
+  nhwl_test_drain_in_window_new = false;
 
   DEFVAR_LISP ("pgtk-keysym-table", Vnhwl_keysym_table,
     doc: /* Hash table of character codes indexed by X keysym codes.  */);

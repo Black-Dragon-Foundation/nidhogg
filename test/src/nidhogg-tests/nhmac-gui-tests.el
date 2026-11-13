@@ -56,6 +56,47 @@ pixels; the display's width is the main screen's."
           (should (= (display-pixel-width) (plist-get info :screen-device-width))))
       (delete-frame f))))
 
+(defun nhmac-gui--queued (secs)
+  "Wait as redisplay waits, reading no input, until any event is queued, at most SECS; whether one is."
+  (let ((end (+ (float-time) secs)) (input-pending-p-filter-events nil))
+    (while (and (not (input-pending-p)) (< (float-time) end))
+      (accept-process-output nil 0.05))
+    (input-pending-p)))
+
+(defun nhmac-gui--read-queued ()
+  "Read the queued events without running them: their kinds and frames, as (KIND FRAME)."
+  (let ((special-event-map (make-sparse-keymap)) evs ev)
+    (while (setq ev (read-event nil nil 0.05))
+      (push (list (car-safe ev) (car-safe (car-safe (cdr-safe ev)))) evs))
+    (nreverse evs)))
+
+(ert-deftest nhmac-a-pending-move-frame-is-not-input ()
+  "A queued `move-frame' (a new frame entering its screen) is in `while-no-input-ignore-events' by default, so
+`input-pending-p' does not count it and `while-no-input' runs its body (nhwl-gui/a-pending-move-frame-is-not-input on
+Linux; company-box's first child frame lost its documentation)."
+  (nhmac-gui--read-queued)
+  ;; whether a child frame (a layer in its root's window) queues one at all: logged, not asserted
+  (let ((child (make-frame `((parent-frame . ,(selected-frame)) (width . 20) (height . 4) (left . 40) (top . 40)))))
+    (nhmac-gui--queued 2)
+    (nhmac-gui--say "nhmac-a-pending-move-frame-is-not-input: after a child frame %S, queued %S" child
+                    (nhmac-gui--read-queued))
+    (delete-frame child))
+  (nhmac-gui--read-queued)
+  (let ((f (make-frame '((width . 40) (height . 10)))))
+    (unwind-protect
+        (progn
+          (should (nhmac-gui--queued 4))
+          ;; the frame's other events (its focus) may come first: let the rest arrive
+          (accept-process-output nil 0.3)
+          ;; nothing read yet: what is queued is the new frame's
+          (let ((pending (input-pending-p)) (ran (while-no-input 'ran)) (queued (nhmac-gui--read-queued)))
+            (nhmac-gui--say "nhmac-a-pending-move-frame-is-not-input: a new frame %S, queued %S" f queued)
+            ;; the premise: its move-frame was among them
+            (should (member (list 'move-frame f) queued))
+            (should (equal (list 'pending pending) '(pending nil)))
+            (should (eq ran 'ran))))
+      (delete-frame f))))
+
 (ert-deftest nhmac-frame-position-and-geometry-follow-appkit ()
   "`frame-position' and `frame-geometry' are where AppKit has the window (NS's windowDidMove:, frame_geometry): the
 outer position is the frame's, the title bar is AppKit's frame less the content, the native area starts under it; a
@@ -643,6 +684,22 @@ is raised in a child Emacs on the same window server, never in the runner; the c
   "What a child Emacs in `nhmac-frame-shows-at-every-start' runs: it places its frame as gui-runner does, and a
 second later prints whether the frame is visible, its draws, the shell's startup trace and view, and ends.")
 
+(ert-deftest nhmac-frame-shows-after-a-drain-in-its-making ()
+  "A frame whose window's first configure is drained while the window is made still shows: the configure is applied
+to it, not dropped.  An `unblock_input' that handles a pending signal drains there; the full lane's start 3 of 20 in
+`nhmac-frame-shows-at-every-start' got its configure applied 1.7 ms in, had no wait for it, and never showed."
+  :tags '(draws)
+  (let ((f nil))
+    (unwind-protect
+        (progn
+          (let ((nhwl--test-drain-in-window-new t))
+            (setq f (make-frame '((name . "drained")))))
+          (gui-runner-wait (lambda () (frame-visible-p f)) 3)
+          (nhmac-gui--say "nhmac-frame-shows-after-a-drain-in-its-making: visible %S, startup %S" (frame-visible-p f)
+                          (nhmac--startup-log))
+          (should (eq (frame-visible-p f) t)))
+      (when (frame-live-p f) (delete-frame f)))))
+
 (ert-deftest nhmac-frame-shows-at-every-start ()
   "A frame shows at every start: 20 child Emacsen at scale 1, on the runner's display and placed as the runner places
 its frame, each become visible and draw.  Guards the start that once drew nothing at scale 1; a failing start's facts
@@ -655,9 +712,12 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
       (let* ((buf (generate-new-buffer " *nhmac-start*"))
              (t0 (float-time))
              (proc (make-process :name "nhmac-start" :buffer buf :connection-type 'pipe
-                                 :command (list emacs "-Q" "--eval" nhmac-gui--start-report))))
+                                 :command (list emacs "-Q" "--eval" nhmac-gui--start-report)
+                                 ;; the sentinel runs after Emacs read the child's last output; `process-live-p'
+                                 ;; turns nil at its exit, maybe before (the lane's start 7: exit, output "")
+                                 :sentinel (lambda (p _) (process-put p 'done t)))))
         (unwind-protect
-            (let* ((ended (gui-runner-wait (lambda () (not (process-live-p proc))) 30))
+            (let* ((ended (gui-runner-wait (lambda () (process-get proc 'done)) 30))
                    (out (with-current-buffer buf (buffer-string)))
                    (facts (and (string-match "^NHMAC-START \\(.*\\)$" out)
                                (car (read-from-string (match-string 1 out))))))
@@ -1041,45 +1101,47 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
   "After `redisplay' and Lisp that runs on for 20 ms the layer shows the newest surface, read back in the process,
 with no run-loop turn: the commit's deadline commits it.  The redisplay is forced: an event still queued from an
 earlier row makes a plain `redisplay' return at once (round 2: 0 commits, 0 deadline commits), which is not the case
-judged here; whether one was pending is logged."
+judged here; whether one was pending is logged.  Five times, each in a new buffer: the deadline's SIGALRM came 15 to
+40 ms late under macOS's timer coalescing, so one try passed or failed by chance."
   :tags '(draws)
-  (nhmac-gui--typing-buffer "shows")
-  (let ((before (nhmac-stats)))
-    (insert "y")
-    (nhmac-gui--say "nhmac-commit-shows-without-spin: input pending %S" (input-pending-p))
-    (redisplay t)
-    (let ((end (+ (float-time) 0.02)))
-      (while (< (float-time) end)))
-    (let ((s (nhmac-gui--surface)))
-      (nhmac-gui--say "nhmac-commit-shows-without-spin: %S; %d commits, %d deadline commits, %d pumps" s
-                      (nhmac-gui--delta before :commits) (nhmac-gui--delta before :deadline-flushes)
-                      (nhmac-gui--delta before :pumps))
-      ;; round 6: 0 commits and 0 deadline commits, red at both scales: whether the redisplay drew, and what the
-      ;; pacer held or deferred
-      (nhmac-gui--say "nhmac-commit-shows-without-spin: deltas %S"
-                      (mapcar (lambda (k) (cons k (nhmac-gui--delta before k)))
-                              '(:draws :held :held-timeouts :pacer-arms :pacer-fires :deferred-commits :handed-pumps
-                                       :takes :applied)))
-      ;; round 8: draws and no commit of either kind in the 20 ms (the deadline is 8 ms): how long the deadline
-      ;; took, Lisp still running on
-      (unless (plist-get s :contents-is-newest)
-        (let* ((t0 (float-time)) (end (+ t0 1.0)) newest)
-          (while (and (not (setq newest (plist-get (nhmac-gui--surface) :contents-is-newest)))
-                      (< (float-time) end)))
-          (nhmac-gui--say "nhmac-commit-shows-without-spin: newest %S after %.0f ms more; %d deadline commits"
-                          newest (* 1000 (- (float-time) t0))
-                          (- (plist-get (nhmac-stats) :deadline-flushes) (plist-get before :deadline-flushes)))))
-      (should (eq (plist-get s :contents-is-newest) t))
-      (should (equal (plist-get s :gravity) "topLeft"))
-      (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
-                                         (float (car (plist-get s :points))))))
-      (should (equal (list (plist-get s :w) (plist-get s :h))
-                     (list (frame-pixel-width) (frame-pixel-height))))
-      ;; a fresh backing is the frame's background (drawing comes with the record emitter)
-      (should (= (logand (plist-get s :pixel) #xff000000) #xff000000)))
-    (should (= (nhmac-gui--delta before :spins-in-redisplay) 0))
-    (should (>= (nhmac-gui--delta before :commits) 1)))
-  (kill-buffer))
+  (dotimes (_ 5)
+    (nhmac-gui--typing-buffer "shows")
+    (let ((before (nhmac-stats)))
+      (insert "y")
+      (nhmac-gui--say "nhmac-commit-shows-without-spin: input pending %S" (input-pending-p))
+      (redisplay t)
+      (let ((end (+ (float-time) 0.02)))
+        (while (< (float-time) end)))
+      (let ((s (nhmac-gui--surface)))
+        (nhmac-gui--say "nhmac-commit-shows-without-spin: %S; %d commits, %d deadline commits, %d pumps" s
+                        (nhmac-gui--delta before :commits) (nhmac-gui--delta before :deadline-flushes)
+                        (nhmac-gui--delta before :pumps))
+        ;; round 6: 0 commits and 0 deadline commits, red at both scales: whether the redisplay drew, and what the
+        ;; pacer held or deferred
+        (nhmac-gui--say "nhmac-commit-shows-without-spin: deltas %S"
+                        (mapcar (lambda (k) (cons k (nhmac-gui--delta before k)))
+                                '(:draws :held :held-timeouts :pacer-arms :pacer-fires :deferred-commits :handed-pumps
+                                         :takes :applied)))
+        ;; round 8: draws and no commit of either kind in the 20 ms (the deadline is 8 ms): how long the deadline
+        ;; took, Lisp still running on
+        (unless (plist-get s :contents-is-newest)
+          (let* ((t0 (float-time)) (end (+ t0 1.0)) newest)
+            (while (and (not (setq newest (plist-get (nhmac-gui--surface) :contents-is-newest)))
+                        (< (float-time) end)))
+            (nhmac-gui--say "nhmac-commit-shows-without-spin: newest %S after %.0f ms more; %d deadline commits"
+                            newest (* 1000 (- (float-time) t0))
+                            (- (plist-get (nhmac-stats) :deadline-flushes) (plist-get before :deadline-flushes)))))
+        (should (eq (plist-get s :contents-is-newest) t))
+        (should (equal (plist-get s :gravity) "topLeft"))
+        (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
+                                           (float (car (plist-get s :points))))))
+        (should (equal (list (plist-get s :w) (plist-get s :h))
+                       (list (frame-pixel-width) (frame-pixel-height))))
+        ;; a fresh backing is the frame's background (drawing comes with the record emitter)
+        (should (= (logand (plist-get s :pixel) #xff000000) #xff000000)))
+      (should (= (nhmac-gui--delta before :spins-in-redisplay) 0))
+      (should (>= (nhmac-gui--delta before :commits) 1)))
+    (kill-buffer)))
 
 (ert-deftest nhmac-redisplay-has-no-flush ()
   "The commit is off the redisplay path (as NS's, Core Animation's at the run loop's turn): a redisplay that drew
@@ -2595,6 +2657,9 @@ a child again, and the child moves to another root."
                             (list (frame-pixel-width c) (frame-pixel-height c)) (frame-position c)
                             (nhmac--test-child c))
             (should (eq (frame-parent c) root))
+            ;; it stays where it showed, as under NS: back at its place in the root, not at its screen place taken
+            ;; as one in the root (round 11: the lane's display left of the main one put it off the root, a panel)
+            (should (equal (frame-position c) '(40 . 40)))
             (should (nhmac-gui--windows-become windows))
             (should (eq (plist-get (nhmac--test-child c) :host) 'parent))
             (should (eq (plist-get (nhmac--test-child c) :contents-is-newest) t))
@@ -3286,10 +3351,10 @@ off while it probes: a blink's off phase draws no cursor."
         (setq-local cursor-type (nhmac-gui--draw-cursor c k))
         (redisplay t)
         (let ((f (pcase c
-                   ;; a box cursor on an image is the image with a rectangle in the cursor's colour around it
-                   ((or 'box 'hollow) (nhmac-gui--probe-all (format "%s cursor" c) cursor x0 top (1+ x0) (1+ top) 24))
-                   ('bar (nhmac-gui--probe-all "bar cursor" cursor x0 (+ top 1) (+ x0 (* 2 k)) (- bottom 1) 24))
-                   ('hbar (nhmac-gui--probe-all "hbar cursor" cursor (1+ x0) (- bottom (* 2 k)) (1- x1) bottom 24)))))
+                   ;; a cursor of any kind on an image is the image with a rectangle in the cursor's colour around it:
+                   ;; `nhwl_draw_bar_cursor' draws a bar or hbar there as a box (xterm.c's and pgtk's rule; round 11's
+                   ;; records: the outline at the image's corner, with the bar and the hbar cursor types)
+                   (_ (nhmac-gui--probe-all (format "%s cursor" c) cursor x0 top (1+ x0) (1+ top) 24)))))
           ;; round 9: no cursor colour anywhere in the image's box at either scale (round 8's too, behind the
           ;; records): whether the cursor blinked off or the frame lacked focus, and what was drawn there
           (when f

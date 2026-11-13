@@ -116,22 +116,40 @@ too whenever Lisp runs, since `ns_select's `[NSApp run]' has returned by then."
     (sit-for 0.5)
     (glitnir-gui--say "nhmac-miniaturize: back, focus %S" (frame-focus-state))))
 
+(defun nhmac-win-gui--appearance-command (when)
+  "The command of the menu-bar event pair an appearance change sends, read within 2 s; nil if none came.  Events read
+before the pair are logged with WHEN (the row's step): the pair is two events, the menu bar's and the command's."
+  (let ((deadline (+ (float-time) 2)) (seen nil) prev ev cmd)
+    (while (and (not cmd) (< (float-time) deadline) (setq ev (read-event nil nil 0.5)))
+      (setq cmd (and prev (key-binding (vector prev ev))))
+      (unless cmd
+        (when prev (push prev seen))
+        (setq prev ev)))
+    (glitnir-gui--say "nhmac-appearance-dark: %s: %S, before it %S, left %S" when cmd (nreverse seen) (and (not cmd) prev))
+    cmd))
+
 (ert-deftest nhmac-appearance-dark ()
   "A change of the system appearance records it in `ns-system-appearance' and runs the hook with `dark'."
   (skip-unless (nhmac-win-gui--naglfar-p))
-  (let* ((got nil) (fn (lambda (a) (setq got a))))
+  (let* ((got nil) (fn (lambda (a) (setq got a))) (before ns-system-appearance))
     (add-hook 'ns-system-appearance-change-functions fn)
     (unwind-protect
         (progn
           (nhmac--call 'test-app-appearance (if (eq ns-system-appearance 'dark) 0 1))
           (let ((want (if (eq ns-system-appearance 'dark) 'light 'dark))
-                (cmd (key-binding (vector (read-event nil nil 2) (read-event nil nil 2)))))
+                (cmd (nhmac-win-gui--appearance-command "changed")))
             (should (eq cmd 'nhmac-appearance-changed))
             (call-interactively cmd)
             (should (eq got want))
             (should (eq ns-system-appearance want))))
       (remove-hook 'ns-system-appearance-change-functions fn)
-      (nhmac--call 'test-app-appearance 0))))
+      (nhmac--call 'test-app-appearance 0)
+      ;; the change back is a menu-bar event pair too: run it here, or it waits in the queue and the next input row
+      ;; starts with input pending (round 11: every resize row ran in 0.0 s behind it)
+      (unless (eq ns-system-appearance before)
+        (let ((cmd (nhmac-win-gui--appearance-command "back")))
+          (when (eq cmd 'nhmac-appearance-changed)
+            (call-interactively cmd)))))))
 
 (ert-deftest nhmac-transparent-titlebar ()
   "`ns-transparent-titlebar' makes the title bar transparent."

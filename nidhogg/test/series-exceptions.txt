@@ -2,3 +2,4 @@
 ba6b4ef18087dc9debabab6a1994b66c80ddf0c7 commit misfiled: same; removed by the release rebuild
 39c820f726eae91dbf58d431d109ceb51d152cce commit misfiled: Naglfar-created Lisp (nhmac-win.el) edited under a test: subject; the release rebuild re-subjects it as naglfar: and removes this line
 dd4fc05b83defff9dfd78b2495874385e3ba2769 commit misfiled: a HAVE_NHWL change (default fringes) under an nhwl: subject; the release rebuild re-subjects it as shell: and removes this line
+02e9e0dd3b72596504004dd8d6b8094cc491dd9f commit misfiled: a HAVE_NHMAC change (the present deadline's wake) without the naglfar: subject; the release rebuild re-subjects it as naglfar: and removes this line
