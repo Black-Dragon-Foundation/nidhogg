@@ -1082,11 +1082,11 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
   "After `redisplay' and Lisp that runs on for 20 ms the layer shows the newest surface, read back in the process,
 with no run-loop turn: the commit's deadline commits it.  The redisplay is forced: an event still queued from an
 earlier row makes a plain `redisplay' return at once (round 2: 0 commits, 0 deadline commits), which is not the case
-judged here; whether one was pending is logged.  Five keys: the deadline's SIGALRM came 15 to 40 ms late under macOS's
-timer coalescing, so one key passed or failed by chance."
+judged here; whether one was pending is logged.  Five times, each in a new buffer: the deadline's SIGALRM came 15 to
+40 ms late under macOS's timer coalescing, so one try passed or failed by chance."
   :tags '(draws)
-  (nhmac-gui--typing-buffer "shows")
   (dotimes (_ 5)
+    (nhmac-gui--typing-buffer "shows")
     (let ((before (nhmac-stats)))
       (insert "y")
       (nhmac-gui--say "nhmac-commit-shows-without-spin: input pending %S" (input-pending-p))
@@ -1121,8 +1121,8 @@ timer coalescing, so one key passed or failed by chance."
         ;; a fresh backing is the frame's background (drawing comes with the record emitter)
         (should (= (logand (plist-get s :pixel) #xff000000) #xff000000)))
       (should (= (nhmac-gui--delta before :spins-in-redisplay) 0))
-      (should (>= (nhmac-gui--delta before :commits) 1))))
-  (kill-buffer))
+      (should (>= (nhmac-gui--delta before :commits) 1)))
+    (kill-buffer)))
 
 (ert-deftest nhmac-redisplay-has-no-flush ()
   "The commit is off the redisplay path (as NS's, Core Animation's at the run loop's turn): a redisplay that drew
