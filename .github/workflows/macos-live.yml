@@ -130,9 +130,18 @@ jobs:
           upterm-version: v0.40.0
           detached: 'true'
           wait-timeout-minutes: '30'
-      # the address as an annotation, readable while the job runs (it is no way in without the user's key)
+      # the address as an artifact of a day, which the API serves while the job still runs (annotations, logs and
+      # the summary only once it ends); it is no way in without the user's key
       - name: The session's address
         env:
           ADDR: ${{ steps.upterm.outputs.ssh-command }}
-        run: echo "::notice title=live session::$ADDR"
+          JOIN: ${{ steps.upterm.outputs.join-command }}
+        run: |
+          test -n "$ADDR" || { echo "::error title=live session::no address from the session step"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/live" && printf '%s\n%s\n' "$ADDR" "$JOIN" > "$RUNNER_TEMP/live/address.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: live-session
+          path: ${{ runner.temp }}/live/address.txt
+          retention-days: 1
       # the session's post step waits for it to end

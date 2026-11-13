@@ -861,6 +861,49 @@ cards; a child frame's window's ring shows the same way, on the child; each goes
        (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
        (should-not (glitnir-nhmac--box (glitnir-nhmac--grab "block-ring-gone") glitnir-nhmac--block-ring))))))
 
+;; A box fit to the text (`:fit text'): its face's background fills only the text's band of a taller row, the rest of
+;; the row in the colour beneath (glitnir-decor-gui/a-box-fit-to-the-text-fills-only-the-text on Linux, which reads the
+;; recorder; here the root's own surface).
+
+(defun glitnir-nhmac--fit-fill (fit)
+  "On a row a 40 pixel space (all ascent) makes taller than its text, the run \" ab \" in a green face boxed in green
+with FIT as its :fit: (AT-TEXT . ABOVE), the root surface's pixels inside its leading space at the text's middle and
+3 pixels below the row's top, as #xRRGGBB."
+  (let ((glitnir-enable t)
+        (face (make-symbol "glitnir-nhmac-fit-fill")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :foreground "white" :background "#00c000"
+                        :box `(:line-width (1 . 1) :color "#00c000" :corner-radius 4 ,@(and fit `(:fit ,fit))))
+    (save-window-excursion
+      (with-temp-buffer
+        (switch-to-buffer (current-buffer))
+        (face-remap-add-relative 'default :background "#202020" :foreground "white")
+        (setq-local cursor-type nil)
+        (insert "\n\n" (propertize " " 'display '(space :width (1) :height (40) :ascent 100))
+                (propertize " ab " 'face face) "\n\n")
+        (goto-char 1)
+        (nhmac-gui--settle)
+        (pcase-let* ((w (selected-window))
+                     (`(,wx ,wy . ,_) (window-inside-pixel-edges w))
+                     (`(,px . ,py) (posn-x-y (posn-at-point 4 w)))
+                     (h (save-excursion (goto-char 4) (line-pixel-height)))
+                     (text (frame-char-height))
+                     (x (+ wx px 3)) (y (+ wy py)))
+          (nhmac-gui--say "glitnir-nhmac/fit-fill %S: run at %S, row %d px, text %d px" fit (cons x y) h text)
+          (cons (glitnir-nhmac--surface-px x (+ y (- h (/ text 2))))
+                (glitnir-nhmac--surface-px x (+ y 3))))))))
+
+(ert-deftest glitnir-nhmac/a-box-fit-to-the-text-fills-only-the-text ()
+  "`:fit text' confines the face's background to the box (the text and the box's lines), the rest of the row in the
+colour beneath; stock fills the row (the premise: the probe above the text is in the row)."
+  :tags '(draws)
+  (pcase-let ((`(,at . ,above) (glitnir-nhmac--fit-fill 'text)))
+    (should (equal (list 'text at) (list 'text #x00c000)))
+    (should (equal (list 'above above) (list 'above #x202020))))
+  (pcase-let ((`(,at . ,above) (glitnir-nhmac--fit-fill nil)))
+    (should (equal (list 'text at) (list 'text #x00c000)))
+    (should (equal (list 'stock above) (list 'stock #x00c000)))))
+
 ;; The overview ruler (docs/specs/nidhogg/2026-11-13-glitnir-overview-ruler-case.md in the org folder): block bars
 ;; whose clip is a strip in the right fringe, shown on macOS as the window's block image like any block.
 
