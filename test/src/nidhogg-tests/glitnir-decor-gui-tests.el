@@ -418,8 +418,9 @@ row's top."
 (defun glitnir-decor-gui--fit-above (text at &optional tint late dy)
   "On a row a 40 px space makes taller than its text, the run TEXT in a green face boxed in green with `:fit text':
 the pixel DY (default 3) px below the row's top over TEXT's character AT.  TINT: an overlay of that background over
-the whole line, as a list's selected row has, put on after the row was first drawn when LATE; (mouse . COLOUR): the
-line's `mouse-face' of that background, the pointer on it, as a hovered row."
+the whole line, as a list's selected row has, put on after the row was first drawn when LATE; (around . COLOUR): that
+tint on the line but not on TEXT, as drgnx's selection leaves a chip its face; (mouse . COLOUR): the line's
+`mouse-face' of that background, the pointer on it, as a hovered row."
   (let ((glitnir-enable t)
         (face (make-symbol "glitnir-decor-gui-fit-above")))
     (custom-declare-face face nil "Test face.")
@@ -438,12 +439,17 @@ line's `mouse-face' of that background, the pointer on it, as a hovered row."
         (cond ((stringp tint)
                (let ((o (make-overlay 3 (save-excursion (goto-char 3) (1+ (line-end-position))))))
                  (overlay-put o 'face `(:background ,tint :extend t))))
+              ((eq (car-safe tint) 'around)
+               (dolist (o (list (make-overlay 3 6)
+                                (make-overlay (+ 6 (length text))
+                                              (save-excursion (goto-char 3) (1+ (line-end-position))))))
+                 (overlay-put o 'face `(:background ,(cdr tint) :extend t))))
               (tint
                (put-text-property 4 (save-excursion (goto-char 3) (line-end-position))
                                   'mouse-face `(:background ,(cdr tint)))))
         (goto-char 1)
         (gui-runner-wait-settled)
-        (when (consp tint)
+        (when (eq (car-safe tint) 'mouse)
           (let ((e (window-body-pixel-edges)) (p (pos-visible-in-window-p 4 nil t)))
             (set-mouse-pixel-position (selected-frame) (+ (nth 0 e) (nth 0 p) 2) (+ (nth 1 e) (nth 1 p) 2)))
           (redisplay t)
@@ -472,6 +478,14 @@ line's `mouse-face' of that background, the pointer on it, as a hovered row."
 (ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-on-a-row-tinted-later-shows-the-tint-to-its-edge ()
   (skip-unless (featurep 'nidhogg-wayland))
   (should (equal (list 'edge (glitnir-decor-gui--fit-above " ab " 2 "#3050a0" t 0)) '(edge (48 80 160)))))
+
+;; drgnx's Flow: the selection, put around a chip after the row was drawn, left the chip's glyphs as they were, so
+;; redisplay did not draw them again, and above and below the chip the row kept its old colour; a fit box's colour
+;; beneath comes from its neighbours, so a row that holds one is drawn whole when it changes
+(ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-takes-a-new-colour-beneath-when-its-row-changes ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  (should (equal (list 'around (glitnir-decor-gui--fit-above " ab " 2 '(around . "#3050a0") t))
+                 '(around (48 80 160)))))
 
 (ert-deftest glitnir-decor-gui/a-box-fit-to-the-text-on-a-hovered-row-shows-the-hover ()
   (skip-unless (featurep 'nidhogg-wayland))

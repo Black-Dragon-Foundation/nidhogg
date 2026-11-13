@@ -4770,7 +4770,16 @@ update_text_area (struct window *w, struct glyph_row *updated_row, int vpos,
 	  && !(current_row->mode_line_p
 	       && (vpos > (w->current_matrix->tab_line_p
 			   && w->current_matrix->header_line_p))))
-      || current_row->x != desired_row->x)
+      || current_row->x != desired_row->x
+#ifdef HAVE_NHWL
+      /* A box fit to its text takes its colour beneath from its
+	 neighbours: a row that holds one is drawn whole when it changes
+	 (glitnir-decor.c).  */
+      || (FRAME_NHWL_P (XFRAME (WINDOW_FRAME (w)))
+	  && !row_equal_p (current_row, desired_row, false)
+	  && glitnir_decor_row_fit_p (XFRAME (WINDOW_FRAME (w)), desired_row))
+#endif
+      )
     {
       output_cursor_to (w, vpos, 0, desired_row->y, desired_row->x);
 
