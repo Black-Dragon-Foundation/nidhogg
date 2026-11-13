@@ -3262,7 +3262,12 @@ off while it probes: a blink's off phase draws no cursor."
             (nhmac--test-draw-watch x0 top (- x1 x0) (- bottom top))
             (redraw-frame)
             (redisplay t)
+            ;; round 11: blink off, focus t, selected, and the record an outline in the cursor colour: the hollow
+            ;; cursor Emacs draws when the frame is not the display's highlight frame (its focus redirected?)
             (setq f (append f (list :blink blink-cursor-mode :focus (frame-focus-state)
+                                    :frame-focus (frame-focus) :frames (frame-list)
+                                    :non-selected cursor-in-non-selected-windows
+                                    :window-cursor (window-cursor-type)
                                     :selected (eq (selected-window) (frame-selected-window))
                                     :records (nhmac--test-draw-log))))
             (nhmac--test-draw-watch 0 0 0 0)

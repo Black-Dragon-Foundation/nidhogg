@@ -276,12 +276,30 @@ pub fn app_state(app: &NSApplication, w: &Win) -> String {
                 a.processIdentifier(),
             )
         });
+    // round 11: active and key, yet the keys that go through the text input system (Option, Command, dead keys,
+    // marked text) reached nothing after the full-screen and Dock rows: who takes the window's keys, and its input
+    // context
+    let responder = w.window.firstResponder();
+    let is_view = responder.as_ref().is_some_and(|r| {
+        Retained::as_ptr(r).cast::<c_void>() == Retained::as_ptr(&w.view).cast::<c_void>()
+    });
+    let class = responder
+        .as_ref()
+        .map_or_else(|| "nil".to_owned(), |r| format!("{:?}", r.class().name()));
+    // SAFETY: NSTextInputContext's class property, read on the main thread.
+    let context: Option<Retained<objc2::runtime::AnyObject>> =
+        unsafe { msg_send![objc2::class!(NSTextInputContext), currentInputContext] };
     format!(
-        "(:active {} :key {} :frontmost {front:?} :frontmost-pid {front_pid} :pid {} :ax-trusted {})",
+        "(:active {} :key {} :frontmost {front:?} :frontmost-pid {front_pid} :pid {} :ax-trusted {} \
+         :first-responder {class} :responder-is-view {} :input-context {} :key-window-number {} :window-number {})",
         b(app.isActive()),
         b(key),
         std::process::id(),
-        b(super::nsapp::ax_trusted())
+        b(super::nsapp::ax_trusted()),
+        b(is_view),
+        b(context.is_some()),
+        app.keyWindow().map_or(-1, |k| k.windowNumber()),
+        w.window.windowNumber()
     )
 }
 

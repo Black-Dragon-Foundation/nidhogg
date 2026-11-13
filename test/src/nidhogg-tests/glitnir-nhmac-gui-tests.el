@@ -561,9 +561,23 @@ not held, and the screen shows neither card row background (colours only the car
          (cards (nhmac--test-cards)) (surface (nhmac--test-surface 0 0))
          (img (glitnir-nhmac--grab (format "clean-%s" (replace-regexp-in-string "/" "-" (symbol-name row)))))
          (left (glitnir-nhmac--box img glitnir-nhmac--card-bg))
-         (right (glitnir-nhmac--box img glitnir-nhmac--other-bg)))
+         (right (glitnir-nhmac--box img glitnir-nhmac--other-bg))
+         ;; the root's content in the capture: a box wholly outside it is not the root's state (round 11: a 10 by 12
+         ;; point box near the card colour in the title-bar band, at the ruler rows only, none in the surface)
+         (root (glitnir-nhmac--root-rect img))
+         (inside (lambda (b)
+                   (and b (<= (nth 0 b) (+ (nth 0 root) (nth 2 root))) (>= (nth 2 b) (nth 0 root))
+                        (<= (nth 1 b) (+ (nth 1 root) (nth 3 root))) (>= (nth 3 b) (nth 1 root))))))
     (nhmac-gui--say "glitnir-nhmac/clean-root: %s: cards %S, surface %S, card colours on the screen %S %S"
                     row cards surface left right)
+    (unless (and (funcall inside left) (funcall inside right))
+      (when (or left right)
+        (nhmac-gui--say "glitnir-nhmac/clean-root: %s: outside the root's content %S: card colours %S %S, pixels %S"
+                        row root (and (not (funcall inside left)) left) (and (not (funcall inside right)) right)
+                        (let ((b (or (and (not (funcall inside left)) left) right)))
+                          (and b (format "%06x" (glitnir-nhmac--px img (nth 0 b) (nth 1 b)))))))
+      (unless (funcall inside left) (setq left nil))
+      (unless (funcall inside right) (setq right nil)))
     (when (or left right)
       ;; the screen shows a card row's picture: is it in the root's newest surface too (then Emacs did not redraw),
       ;; or only on the screen (then the layer shows something else)?  Every 16th row of the surface, counted; then
@@ -1717,7 +1731,13 @@ at its moving place, so a whole-area move would show the new layout from the sta
                ;; surface's background (its first pixel) is in it (the frame not at 20, 60 points at this scale)
                (let ((bg (logand (aref (nhmac--test-surface-region 0 (/ (frame-pixel-height) 2) 1 1) 0) #xffffff)))
                  (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: capture %dx%d, rect %S, #%06x at %S"
-                                 (nth 0 before) (nth 1 before) rect bg (glitnir-nhmac--box before bg 0)))
+                                 (nth 0 before) (nth 1 before) rect bg (glitnir-nhmac--box before bg 0))
+                 ;; round 11 (scale 2): the frame's region black throughout, its grey at capture x 1302 on: where the
+                 ;; frame is against the corner the capture is taken from
+                 (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: GLITNIR_GUI_FRAME %S, frame-position %S, pixel size %S, geometry %S, window %S"
+                                 (getenv "GLITNIR_GUI_FRAME") (frame-position)
+                                 (list (frame-pixel-width) (frame-pixel-height)) (frame-geometry)
+                                 (nhmac--query 'window-info (selected-frame))))
                (dolist (g (list (cons "before" before) (cons "after" after)))
                  (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: screen row %d %s: %S" y (car g)
                                  (cl-loop for x from x0 below (+ x0 64)
