@@ -551,6 +551,19 @@ post AppKit events and read the shell's counters through those hooks.
   its build trees as `naglfar-build` (object files and Rust targets left out), and the rows job fails naming the
   artifact if it is missing. Every row has a bar of its own (no row compares with the NS port): the timing rows run on
   the timing build against `budgets.eld`, font rows judge Core Text's answers, image rows ImageIO's.
+- Focused macOS rounds: between full rounds, a dispatch with `scope=macos` and `checks` naming only the failing rows
+  can add `-f shards='["SEL1","SEL2"]'` (a JSON list of ERT selectors: the rows job runs once per selector, at once, each
+  on its own runner, its logs in `nhmac-gui-logs-naglfar` for the first and `nhmac-gui-logs-naglfar-N` after) and
+  `-f app_run=RUN` (the rows take run RUN's `naglfar-build` artifact instead of building, for a change to the rows'
+  own files under `test/` only: the bundle holds RUN's C, Rust and Lisp; the artifact is kept a day). Either one leaves
+  out the release app job (no tarball). Such a run is partial, as every narrowed run; a full round runs every few
+  focused ones and before a merge.
+- Live sessions: a push to a branch `scratch/ng-live-<sha10>` runs `.github/workflows/macos-live.yml`, which builds the
+  Naglfar app as `macOS (Naglfar)` does (its caches read only) and opens a tmate SSH session on the runner that only the
+  pushing user's public SSH keys can enter (`limit-access-to-actor`; it fails when the profile has none); the address is
+  the job's `live session` notice. The job reads contents only, references no secret, keeps no git credentials, gives
+  the session action no token, and fails when the environment or git holds anything credential-like. It ends with the
+  session or after 330 minutes, and holds one of the five macOS runners meanwhile.
 - Native compilation in the macOS app job: a `scratch/*` dispatch builds with `build.sh --native-preloaded` (only the
   preloaded Lisp native-compiled, the rest byte code, JIT off in the image, so no compile starts under a timing row;
   the byte-compiled cache entry is taken from a full build's through `NIDHOGG_BUILD_LISP_CACHE_ELC=1`, the `.eln` entry
