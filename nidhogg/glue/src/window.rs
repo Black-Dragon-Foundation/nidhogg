@@ -107,6 +107,14 @@ pub fn to_logical(dev: i32, s120: u32) -> i32 {
     ((i64::from(dev) * 120 + s / 2) / s) as i32
 }
 
+/// A screen position of `dev` device pixels in logical pixels at scale `s120`/120 (0: 120), to nearest with halves
+/// away from zero.  Not `to_logical`, which truncates toward zero after adding half: a negative place came out one
+/// logical pixel right of the one asked for (-1420 at -1419), again at every `set-frame-position`.
+pub fn place_logical(dev: i32, s120: u32) -> i32 {
+    let s = if s120 == 0 { 120 } else { s120 };
+    (f64::from(dev) * 120.0 / f64::from(s)).round() as i32
+}
+
 /// The frame's scale times 120 (120 until C pushed one).
 pub fn scale(f: &Frame) -> u32 {
     if f.scale120 == 0 { 120 } else { f.scale120 }
@@ -168,7 +176,10 @@ pub fn new(
         // where it opens: at its frame's position (device pixels at the scale C made it for), or beside the frame
         // it was made from, so it shows first on the screen of that scale
         let place = if d.flags & NHSHELL_WIN_PLACED != 0 {
-            Place::At(to_logical(d.x, d.scale120), to_logical(d.y, d.scale120))
+            Place::At(
+                place_logical(d.x, d.scale120),
+                place_logical(d.y, d.scale120),
+            )
         } else if d.parent != 0 {
             Place::Near(d.parent)
         } else {
@@ -345,11 +356,11 @@ pub fn place(state: &mut Display, window: u64, x: i32, y: i32) -> Result<(), Glu
     let s = scale(f);
     Ok(state
         .backend()
-        .move_to(window, to_logical(x, s), to_logical(y, s))?)
+        .move_to(window, place_logical(x, s), place_logical(y, s))?)
 }
 
 /// A top-level frame's window moved (`ShellEvent::Moved`): a `MOVED` action with its top-left in device pixels at the
-/// frame's scale, the inverse of `place`.  A child frame's place is its parent's business.
+/// frame's scale, the inverse of `place`, and its title bar's height in `h`.  A child frame's place is its parent's business.
 pub fn moved(state: &mut Display, ev: &nhshell::event::Record, m: &nhshell::event::MovedEv) {
     let Ok(f) = state.frame(ev.window) else {
         return;
@@ -361,6 +372,7 @@ pub fn moved(state: &mut Display, ev: &nhshell::event::Record, m: &nhshell::even
     let mut a = crate::action::NhgAction::new(crate::action::NHG_ACT_MOVED, ev.window, ev.time_ns);
     a.x = crate::csd::to_device(m.x, s);
     a.y = crate::csd::to_device(m.y, s);
+    a.h = crate::csd::to_device(m.title, s);
     state.actions.push(a);
 }
 

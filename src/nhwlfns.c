@@ -1587,7 +1587,10 @@ Internal use only, use `display-monitor-attributes-list' instead.  */)
 
 /* Return geometric attributes of FRAME.  Adapted from frame_geometry
    (pgtkfns.c): a top-level has no position on Wayland, the decorations
-   are drawn inside it, and a child frame's origin is in its parent.  */
+   are drawn inside it, and a child frame's origin is in its parent.  On
+   macOS a top-level has its place on the screen and AppKit's title bar
+   above its native area (as nsfns.m's frame_geometry), both as the shell
+   last reported them (NHG_ACT_MOVED).  */
 static Lisp_Object
 frame_geometry (Lisp_Object frame, Lisp_Object attribute)
 {
@@ -1596,8 +1599,7 @@ frame_geometry (Lisp_Object frame, Lisp_Object attribute)
   int native_height = FRAME_PIXEL_HEIGHT (f);
   int left_pos = FRAME_PARENT_FRAME (f) ? f->left_pos : 0;
   int top_pos = FRAME_PARENT_FRAME (f) ? f->top_pos : 0;
-  int native_right = left_pos + native_width;
-  int native_bottom = top_pos + native_height;
+  int title_height = 0;
   int internal_border_width = FRAME_INTERNAL_BORDER_WIDTH (f);
   int tab_bar_height = FRAME_TAB_BAR_HEIGHT (f);
   int tab_bar_width = (tab_bar_height
@@ -1609,13 +1611,28 @@ frame_geometry (Lisp_Object frame, Lisp_Object attribute)
   if (FRAME_NHWL_OUTPUT (f) == NULL)
     return Qnil;	/* This can occur while creating a frame.  */
 
+#ifdef HAVE_NHMAC
+  if (!FRAME_PARENT_FRAME (f))
+    {
+      left_pos = f->left_pos;
+      top_pos = f->top_pos;
+      title_height = FRAME_NHWL_OUTPUT (f)->title_bar_height;
+    }
+#endif
+  int native_top = top_pos + title_height;
+  int native_right = left_pos + native_width;
+  int native_bottom = native_top + native_height;
+
   /* Construct list.  */
-  if (EQ (attribute, Qouter_edges) || EQ (attribute, Qnative_edges))
+  if (EQ (attribute, Qouter_edges))
     return list4 (make_fixnum (left_pos), make_fixnum (top_pos),
+		  make_fixnum (native_right), make_fixnum (native_bottom));
+  else if (EQ (attribute, Qnative_edges))
+    return list4 (make_fixnum (left_pos), make_fixnum (native_top),
 		  make_fixnum (native_right), make_fixnum (native_bottom));
   else if (EQ (attribute, Qinner_edges))
     return list4 (make_fixnum (left_pos + internal_border_width),
-		  make_fixnum (top_pos + tab_bar_height
+		  make_fixnum (native_top + tab_bar_height
 			       + FRAME_TOOL_BAR_TOP_HEIGHT (f)
 			       + internal_border_width),
 		  make_fixnum (native_right - internal_border_width),
@@ -1627,11 +1644,12 @@ frame_geometry (Lisp_Object frame, Lisp_Object attribute)
 		   Fcons (make_fixnum (left_pos), make_fixnum (top_pos))),
 	    Fcons (Qouter_size,
 		   Fcons (make_fixnum (native_width),
-			  make_fixnum (native_height))),
+			  make_fixnum (native_height + title_height))),
 	    Fcons (Qexternal_border_size,
 		   Fcons (make_fixnum (0), make_fixnum (0))),
 	    Fcons (Qtitle_bar_size,
-		   Fcons (make_fixnum (0), make_fixnum (0))),
+		   Fcons (make_fixnum (title_height ? native_width : 0),
+			  make_fixnum (title_height))),
 	    Fcons (Qmenu_bar_external, Qnil),
 	    Fcons (Qmenu_bar_size, Fcons (make_fixnum (0), make_fixnum (0))),
 	    Fcons (Qtab_bar_size,
