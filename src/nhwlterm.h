@@ -603,6 +603,7 @@ extern bool glitnir_decor_draw_box (struct glyph_string *, int, int, int, int,
 extern unsigned long glitnir_decor_colour_beneath (struct glyph_string *, int);
 extern bool glitnir_decor_fit_band (struct glyph_string *, int *, int *,
 				    unsigned long *);
+extern bool glitnir_decor_row_fit_p (struct frame *, struct glyph_row *);
 extern void glitnir_decor_after_glyphs (struct glyph_string *);
 extern void glitnir_decor_record (struct glyph_string *);
 extern void glitnir_decor_clear (struct frame *, int, int, int, int);

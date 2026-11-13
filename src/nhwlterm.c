@@ -894,7 +894,8 @@ nhwl_edge_point (struct window *w, ptrdiff_t pos, int dx, int dy,
    makes it (FLAGS NHG_EDGE_*, RGB 0xRRGGBB; each point a position of
    W's buffer, a marker or an integer, and pixels from its glyph's left
    and its row's top).  False for an edge of fewer than 2 points or
-   more than NHG_EDGE_POINTS, or with a point outside the buffer.  */
+   more than NHG_EDGE_POINTS, with a point outside the buffer, or all
+   of whose points are before the rows shown or all after them.  */
 static bool
 nhwl_edge_resolve (struct window *w, Lisp_Object v, NhgRect clip, NhgEdge *e)
 {
@@ -908,6 +909,33 @@ nhwl_edge_resolve (struct window *w, Lisp_Object v, NhgRect clip, NhgEdge *e)
 		   .npoints = n, .flags = nhwl_block_int (v, 0, 0),
 		   .rgb = nhwl_block_int (v, 1, -1),
 		   .opacity = NUMBERP (op) ? XFLOATINT (op) : 1.0f };
+  /* An edge whose points are all before the rows shown, or all after
+     them, runs outside the text area: none of it is drawn, so it is
+     not resolved (resolving a far position costs a walk back to its
+     line's start).  */
+  struct glyph_matrix *m = w->current_matrix;
+  if (m)
+    {
+      struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (m);
+      struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w), *last = NULL;
+      for (struct glyph_row *row = first; row < bottom && row->enabled_p; row++)
+	last = row;
+      if (last)
+	{
+	  ptrdiff_t start = MATRIX_ROW_START_CHARPOS (first);
+	  ptrdiff_t end = (last->ends_at_zv_p ? PTRDIFF_MAX
+			   : MATRIX_ROW_END_CHARPOS (last));
+	  int before = 0, after = 0;
+	  for (int i = 0; i < n; i++)
+	    {
+	      ptrdiff_t pos = nhwl_block_pos (w, AREF (v, 4 + 3 * i));
+	      before += pos >= 0 && pos < start;
+	      after += pos >= end;
+	    }
+	  if (before == n || after == n)
+	    return false;
+	}
+    }
   for (int i = 0; i < n; i++)
     {
       ptrdiff_t pos = nhwl_block_pos (w, AREF (v, 4 + 3 * i));
