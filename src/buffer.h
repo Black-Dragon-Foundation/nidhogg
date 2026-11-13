@@ -147,6 +147,10 @@ enum { BEG = 1, BEG_BYTE = BEG };
 #define BUF_OVERLAY_UNCHANGED_MODIFIED(buf) \
   ((buf)->text->overlay_unchanged_modified)
 #define BUF_BEG_UNCHANGED(buf) ((buf)->text->beg_unchanged)
+#ifdef HAVE_GLITNIR
+#define BUF_OVERLAY_UNCONFINED_MODIFF(buf) \
+  ((buf)->text->overlay_unconfined_modiff)
+#endif
 #define BUF_END_UNCHANGED(buf) ((buf)->text->end_unchanged)
 
 #define UNCHANGED_MODIFIED \
@@ -282,6 +286,14 @@ struct buffer_text
        end_unchanged contain no useful information.  */
     modiff_count overlay_unchanged_modified;
 
+#ifdef HAVE_GLITNIR
+    /* BUF_OVERLAY_MODIFF just after the last overlay change whose
+       display can reach past the overlay's own text: an overlay that is
+       or was `invisible' or `display'.  try_window_id redisplays only
+       the changed lines after any other overlay change.  */
+    modiff_count overlay_unconfined_modiff;
+
+#endif
     /* Properties of this buffer's text.  */
     INTERVAL intervals;
 

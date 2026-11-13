@@ -21070,6 +21070,10 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
       debug_method_add (w, "try_window_id %d", tem);
 #endif
 
+#ifdef HAVE_GLITNIR
+      if (tem > 0 && !MINI_WINDOW_P (w))
+	glitnir_redisplay_changed_lines++;
+#endif
       if (f->fonts_changed)
 	goto need_larger_matrices;
       if (tem > 0)
@@ -21142,6 +21146,10 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
 
 #ifdef GLYPH_DEBUG
       debug_method_add (w, "same window start");
+#endif
+#ifdef HAVE_GLITNIR
+      if (!MINI_WINDOW_P (w))
+	glitnir_redisplay_same_start++;
 #endif
 
       /* Try to redisplay starting at same place as before.
@@ -22665,6 +22673,26 @@ row_containing_pos (struct window *w, ptrdiff_t charpos,
 
    7. Update W's window end information.  */
 
+#ifdef HAVE_GLITNIR
+/* Whether point is on the line it was on when W was last redisplayed:
+   the same position, or (no text changed since) no newline between
+   the two within 4096 characters.  */
+static bool
+glitnir_point_line_kept_p (struct window *w)
+{
+  ptrdiff_t from = min (PT, w->last_point), to = max (PT, w->last_point);
+  if (from == to)
+    return true;
+  if (w->last_modified != MODIFF || from < BEGV || to > ZV
+      || to - from > 4096)
+    return false;
+  for (ptrdiff_t b = CHAR_TO_BYTE (from), e = CHAR_TO_BYTE (to); b < e; b++)
+    if (FETCH_BYTE (b) == '\n')
+      return false;
+  return true;
+}
+
+#endif
 static int
 try_window_id (struct window *w)
 {
@@ -22708,6 +22736,15 @@ try_window_id (struct window *w)
 #else
 #define GIVE_UP(X) return 0
 #endif
+#ifdef HAVE_GLITNIR
+  /* Why it last gave up, for `glitnir--redisplay-gave-up'.  */
+#undef GIVE_UP
+#define GIVE_UP(X)				\
+  do {						\
+    glitnir_redisplay_gave_up = (X);		\
+    return 0;					\
+  } while (false)
+#endif
 
   SET_TEXT_POS_FROM_MARKER (start, w->start);
 
@@ -22723,8 +22760,20 @@ try_window_id (struct window *w)
   /* This function's optimizations cannot be used if overlays have
      changed in the buffer displayed by the window, so give up if they
      have.  */
+#ifdef HAVE_GLITNIR
+  /* An overlay change was noted by modify_overlay as a change of the
+     overlay's text (BEG_UNCHANGED, END_UNCHANGED), so its lines are
+     redisplayed like changed text, unless it may show outside that
+     text (`invisible', `display').  */
+  if (w->last_overlay_modified != OVERLAY_MODIFF
+      && (!glitnir_confined_overlay_redisplay
+	  || (w->last_overlay_modified
+	      < BUF_OVERLAY_UNCONFINED_MODIFF (current_buffer))))
+    GIVE_UP (200);
+#else
   if (w->last_overlay_modified != OVERLAY_MODIFF)
     GIVE_UP (200);
+#endif
 
   /* Verify that narrowing has not changed.
      Also verify that we were not told to prevent redisplay optimizations.
@@ -22792,6 +22841,19 @@ try_window_id (struct window *w)
 
   /* Give up if display-line-numbers is in relative mode, or when the
      current line's number needs to be displayed in a distinct face.  */
+#ifdef HAVE_GLITNIR
+  /* The current line's number in its own face needs a whole redisplay
+     only when point's line changed.  */
+  if (EQ (Vdisplay_line_numbers, Qrelative)
+      || EQ (Vdisplay_line_numbers, Qvisual)
+      || (!NILP (Vdisplay_line_numbers)
+	  && NILP (Finternal_lisp_face_equal_p (Qline_number,
+						Qline_number_current_line,
+						w->frame))
+	  && !(glitnir_confined_overlay_redisplay
+	       && glitnir_point_line_kept_p (w))))
+    GIVE_UP (24);
+#else
   if (EQ (Vdisplay_line_numbers, Qrelative)
       || EQ (Vdisplay_line_numbers, Qvisual)
       || (!NILP (Vdisplay_line_numbers)
@@ -22799,6 +22861,7 @@ try_window_id (struct window *w)
 						Qline_number_current_line,
 						w->frame))))
     GIVE_UP (24);
+#endif
 
   /* composition-break-at-point is incompatible with the optimizations
      in this function, because we need to recompose characters when

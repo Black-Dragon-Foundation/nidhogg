@@ -239,6 +239,11 @@ nhwl_clear_glyph_string_rect (struct glyph_string *s, int x, int y,
   if (s->hl != DRAW_CURSOR
       && glitnir_decor_fit_band (s, &top, &bottom, &beneath))
     {
+      /* The whole row's height: callers leave out the box's lines at the
+	 row's edges, which a fit box's ring never covers.  */
+      int ye = max (y + h, s->y + s->height);
+      y = min (y, s->y);
+      h = ye - y;
       int y0 = max (y, top), y1 = min (y + h, bottom);
       if (y0 > y)
 	nhwl_fill_rectangle (s->f, beneath, x, y, w, y0 - y, alpha);
