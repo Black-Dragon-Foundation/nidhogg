@@ -779,17 +779,19 @@ The line count is the default line height times 3 (no line spacing in the rows).
                                     :beneath ,(glitnir-nhmac--hex glitnir-nhmac--gap))))
       (* 3 (frame-char-height (window-frame w))))))
 
-(defun glitnir-nhmac--ring-check (row img bg height w)
+(defun glitnir-nhmac--ring-check (row img bg height w &optional own)
   "Assert that IMG shows the block ring inside the box of background BG (window W's, as IMG shows it), from its text
 area's left edge to the box's right within 3 pixels, below its first line, HEIGHT device pixels tall within 3; ROW
-names it."
+names it.  OWN non-nil (a root frame's window, at 20, 60 points in IMG) also asserts the ring's exact colour in its
+card's own pixels on its middle row."
   ;; the ring within 32: a window's outermost device pixels on the screen carry the system's light window rim over
   ;; the content (round 10, scale 1: the card's pure red column 0 showed #xff1919 at the window's left edge, a 1 px
   ;; ring there; at scale 2 the ring's inner pixel is clear of it)
   (let ((r (glitnir-nhmac--box img glitnir-nhmac--block-ring 32))
         (box (glitnir-nhmac--box img bg))
         ;; the text area's left edge in the window (its left margin and fringe)
-        (inset (- (nth 0 (window-body-pixel-edges w)) (nth 0 (window-pixel-edges w)))))
+        (inset (- (nth 0 (window-body-pixel-edges w)) (nth 0 (window-pixel-edges w))))
+        (card-rows nil))
     (nhmac-gui--say "%s: ring %S in %S, text area %d px in, rows %d px" row r box inset height)
     ;; what puts the ring's left edge where it is: the window's edges, fringes, margins and scale, and the block
     (nhmac-gui--say "%s: window %S body %S fringes %S margins %S scroll-bars %S scale %S block %S" row
@@ -805,8 +807,7 @@ names it."
         ;; round 6: #xff1919 on the ring's left side, red on its right.  The cards' places and each one's own image
         ;; on that row (whether the glue drew the blend, or the screen made it)
         (let ((cards (plist-get (nhmac--test-cards (window-frame w)) :cards)))
-          (nhmac-gui--say "%s: cards %S, rows %S" row cards
-                          (mapcar (lambda (c)
+          (setq card-rows (mapcar (lambda (c)
                                     (condition-case e
                                         ;; the card's own pixels: the capture's row less the frame's place in it
                                         ;; (`glitnir-nhmac--root-rect') and the card's; ARGB (round 9 read a
@@ -816,8 +817,14 @@ names it."
                                                         (- y (round (* 60 s)) (nth 2 c))
                                                         (max 0 (- (nth 0 box) (round (* 20 s)) (nth 1 c) 2)) 12))
                                       (error (list 'error e))))
-                                  cards)))))
+                                  cards))
+          (nhmac-gui--say "%s: cards %S, rows %S" row cards card-rows))))
     (should (and r box))
+    ;; the ring's left side in its own card's pixels on its middle row is the ring's exact colour, opaque: the check
+    ;; within 32 above lets the screen's window rim through, never a blended or missing side the glue drew
+    (when own
+      (should (cl-some (lambda (cr) (and (listp cr) (member (format "ff%06x" glitnir-nhmac--block-ring) cr)))
+                       card-rows)))
     (should (<= (abs (- (nth 0 r) (+ (nth 0 box) inset))) 3))
     (should (<= (abs (- (nth 2 r) (nth 2 box))) 3))
     (should (> (nth 1 r) (nth 1 box)))
@@ -835,7 +842,7 @@ cards; a child frame's window's ring shows the same way, on the child; each goes
      (let ((h (glitnir-nhmac--ring-on left)))
        (should (= (length (plist-get (glitnir-nhmac--cards t) :cards)) 1))
        (glitnir-nhmac--ring-check 'nhmac-blocks-drawn-like-cards (glitnir-nhmac--grab "block-ring")
-                                  glitnir-nhmac--card-bg h left)
+                                  glitnir-nhmac--card-bg h left t)
        (set-window-parameter left 'glitnir-blocks nil)
        (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
        (should-not (glitnir-nhmac--box (glitnir-nhmac--grab "block-ring-gone") glitnir-nhmac--block-ring))))))
