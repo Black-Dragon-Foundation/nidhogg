@@ -567,8 +567,8 @@ post AppKit events and read the shell's counters through those hooks.
   Naglfar app as `macOS (Naglfar)` does (its caches read only), prints one DNS and TCP line each for the session's
   server and GitHub (failing at once when one is unreachable), and opens an upterm SSH session on the runner (the
   action pinned by commit, upterm by version) that only the pushing user's public SSH keys can enter
-  (`limit-access-to-actor`; no session when there is no one to authorize); the address is the job's `live session`
-  notice. The job reads contents only, references no secret, keeps no git credentials, gives the session action no
+  (`limit-access-to-actor`; no session when there is no one to authorize); the address is the job's `live-session`
+  artifact (a day), which the API serves while the job runs, unlike its annotations and logs. The job reads contents only, references no secret, keeps no git credentials, gives the session action no
   token (upterm reads the public keys from github.com), and fails before the session when the environment or git holds
   anything credential-like. It ends with the session (`exit` in its shell), 30 minutes after the build when no one
   joined, or after 330 minutes, and holds one of the five macOS runners meanwhile.
