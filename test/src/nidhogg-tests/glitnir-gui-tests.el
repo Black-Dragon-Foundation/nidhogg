@@ -177,6 +177,91 @@ that read none of it run on every backend."
       (set-window-parameter w 'glitnir-blocks nil)
       (kill-buffer buf))))
 
+;; The overview ruler.
+
+(ert-deftest glitnir-gui/the-ruler-marks-the-buffer-by-position ()
+  "A window's `glitnir-ruler': a strip at its right inner edge (the right fringe, widened to hold it) where marks
+sit at their position's fraction of the buffer and the band covers the part shown; a scroll moves the band, not the
+marks; nothing is drawn in the text area; a click's y on the strip gives the position at that fraction."
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler*" 1000)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-ruler
+               `(:width 12 :right 2 :height 4 :band ("#0000ff" . 1)
+                        :marks ((1 0 6 ("#ff0000" . 1))
+                                (,(save-excursion (goto-char 1) (forward-line 500) (point)) 0 6 ("#ff0000" . 1))
+                                (,(point-max) 6 12 ("#00ff00" . 1)))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,_ ,_ ,right ,_) (window-pixel-edges w))
+                       (`(,_ ,ty ,tx1 ,ty1) (window-inside-pixel-edges w))
+                       (h (- ty1 ty))
+                       (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2))
+                       (at (lambda (dx y) (glitnir-gui--pixel snap (list (+ (- x1 12) dx) y)))))
+            (should (equal (funcall at 2 (+ ty 1)) '(255 0 0)))              ; the first line's mark, left lane
+            (should (equal (funcall at 2 (+ ty (/ h 2) 1)) '(255 0 0)))      ; line 500's, half way down
+            (should (equal (funcall at 9 (- ty1 2)) '(0 255 0)))             ; the end's, right lane, at the bottom
+            (should (equal (funcall at 9 (+ ty 1)) '(0 0 255)))              ; the band: the top part is shown
+            (should-not (equal (funcall at 9 (+ ty (/ h 2) 1)) '(0 0 255)))  ; not the middle
+            (should-not (member (glitnir-gui--pixel snap (list (- tx1 3) (+ ty 1))) '((255 0 0) (0 0 255))))
+            ;; the click: the strip's middle is the buffer's middle (one line either way)
+            (let ((pos (glitnir-ruler-position (list w 'right-fringe (cons 0 (+ (- ty (nth 1 (window-pixel-edges w)))
+                                                                                 (/ h 2)))
+                                                     0 nil nil nil nil nil nil))))
+              (should (< (abs (- (with-current-buffer buf (line-number-at-pos pos)) 501)) 2))))
+          ;; a scroll: the band moves to the middle, the marks stay (point goes along, or redisplay brings the
+          ;; window back to it)
+          (glitnir-gui--drawn
+            (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point)))))
+              (set-window-point w p)
+              (set-window-start w p)))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,_ ,_ ,right ,_) (window-pixel-edges w))
+                       (`(,_ ,ty ,_ ,ty1) (window-inside-pixel-edges w))
+                       (h (- ty1 ty))
+                       (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2))
+                       (at (lambda (dx y) (glitnir-gui--pixel snap (list (+ (- x1 12) dx) y)))))
+            (should (equal (funcall at 2 (+ ty 1)) '(255 0 0)))
+            (should (equal (funcall at 9 (+ ty (/ h 2) 1)) '(0 0 255)))
+            (should-not (equal (funcall at 9 (+ ty 1)) '(0 0 255)))))
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/a-ruler-beside-a-ring ()
+  "A window with a ring block and a ruler: the ring's line stays whole in the text area and the ruler's mark shows in
+the strip (each its own layer, its own clip)."
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-ring*" 1000)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((bar ,(copy-marker 1) ,(save-excursion (goto-char 1) (forward-line 2) (point-marker))
+                      :x1 6 :ring ("#ff0000" . 1))))
+              (set-window-parameter w 'glitnir-ruler '(:width 12 :right 2 :height 4 :marks ((1 0 12 ("#00ff00" . 1)))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,_ ,_ ,right ,_) (window-pixel-edges w))
+                       (`(,x ,ty ,_ ,_) (window-inside-pixel-edges w))
+                       (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2)))
+            (should (equal (glitnir-gui--pixel snap (list (+ x 2) (+ ty 1))) '(255 0 0)))
+            (should (equal (glitnir-gui--pixel snap (list (- x1 6) (+ ty 1))) '(0 255 0)))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (kill-buffer buf))))
+
 ;; The stacking list.
 
 (defun glitnir-gui--children (n)

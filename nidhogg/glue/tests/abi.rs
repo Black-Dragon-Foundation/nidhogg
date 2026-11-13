@@ -1764,6 +1764,7 @@ PROTO (nhg_layers_count, int32_t (NhgDisplay *, uint64_t));";
             ("NHG_BLOCK_OPEN_TOP", NHG_BLOCK_OPEN_TOP.into()),
             ("NHG_BLOCK_OPEN_BOTTOM", NHG_BLOCK_OPEN_BOTTOM.into()),
             ("NHG_BLOCK_BAR", NHG_BLOCK_BAR.into()),
+            ("NHG_BLOCK_STRIP", NHG_BLOCK_STRIP.into()),
             ("sizeof (B)", size_of::<B>() as i64),
             ("_Alignof (B)", align_of::<B>() as i64),
             ("offsetof (B, seq)", offset_of!(B, seq) as i64),

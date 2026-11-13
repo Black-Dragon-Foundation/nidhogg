@@ -644,12 +644,16 @@ Setting it to nil turns its decorations off.  */);
   DEFSYM (Qglitnir__card, "glitnir--card");
   DEFSYM (Qglitnir__cards, "glitnir--cards");
   DEFSYM (Qglitnir__blocks, "glitnir--blocks");
+  DEFSYM (Qglitnir__ruler, "glitnir--ruler");
 
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();
 #endif
   syms_of_nidhogg_views ();
   Fprovide (intern_c_string ("glitnir"), Qnil);
+  /* The overview ruler (window parameter glitnir-ruler): bars C lists
+     beside the blocks.  */
+  Fprovide (intern_c_string ("glitnir-ruler"), Qnil);
 }
 
 #endif /* HAVE_GLITNIR */
