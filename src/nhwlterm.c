@@ -1749,12 +1749,15 @@ nhwl_create_frame_window (struct frame *f, uint64_t in_place)
   block_input ();
   rc = nhwl_window_new (f, &desc,
 			nhwl_child_p (f) ? NHG_FRAME_CHILD : 0, &id);
+  /* Before unblock_input: a drain there (a pending signal handled) finds
+     F by its window.  */
+  if (rc >= 0)
+    out->window = id;
   unblock_input ();
   if (rc >= 0 && nhwl_test_drain_in_window_new)
     nhwl_drain_events (dpyinfo, NULL);
   if (rc < 0)
     error ("nidhogg-wayland: cannot create a window (%d)", rc);
-  out->window = id;
   /* `alpha' was set before the window existed, or for an older window.  */
   out->alpha_cut = 0;
   out->alpha_host = false;
