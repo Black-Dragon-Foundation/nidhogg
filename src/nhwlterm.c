@@ -1974,6 +1974,25 @@ nhwl_set_min_size (struct frame *f)
   w = FRAME_TEXT_COLS_TO_PIXEL_WIDTH (f, 1);
   h = (FRAME_TEXT_LINES_TO_PIXEL_HEIGHT (f, 1) + FRAME_MENUBAR_HEIGHT (f)
        + FRAME_TOOLBAR_HEIGHT (f) + out->csd.strip);
+#ifdef HAVE_NHMAC
+  /* AppKit's minimum is the frame's own (frame-windows-min-size and the
+     internal borders), so a drag of an edge stops where the frame does;
+     one column was far below it (23 points against 70), and the window
+     kept asking for sizes the frame would not take.  */
+  {
+    Lisp_Object frame, mw, mh;
+    int border = 2 * FRAME_INTERNAL_BORDER_WIDTH (f);
+
+    XSETFRAME (frame, f);
+    mw = safe_calln (Qframe_windows_min_size, frame, Qt, Qnil, Qt);
+    mh = safe_calln (Qframe_windows_min_size, frame, Qnil, Qnil, Qt);
+    if (FIXNUMP (mw))
+      w = max (w, XFIXNUM (mw) + border);
+    if (FIXNUMP (mh))
+      h = max (h, (XFIXNUM (mh) + border + FRAME_MENUBAR_HEIGHT (f)
+		   + FRAME_TAB_BAR_HEIGHT (f) + FRAME_TOOLBAR_HEIGHT (f)));
+  }
+#endif
   block_input ();
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		NHG (nhg_window_min_size (FRAME_NHG (f), out->window, w, h)));
@@ -3819,6 +3838,7 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
 	{
 	  f->left_pos = a->x;
 	  f->top_pos = a->y;
+	  FRAME_NHWL_OUTPUT (f)->title_bar_height = a->h;
 	}
       break;
 #endif

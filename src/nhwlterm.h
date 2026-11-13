@@ -296,6 +296,8 @@ struct nhwl_output
   uint32_t start120;		/* macOS: a new top-level asked for at `left',
 				   `top': the scale of the screen there (0:
 				   none), which it starts at */
+  int title_bar_height;		/* macOS: the top-level's title bar over its
+				   content, device pixels (0: none) */
   /* Copies of the glue's configure state that C still reads, set when C
      applies a RESIZE action.  */
   int logical_w, logical_h;	/* the compositor's last suggestion, logical px */

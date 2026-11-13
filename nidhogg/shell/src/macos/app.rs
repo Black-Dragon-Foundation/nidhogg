@@ -36,7 +36,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask, NSScreen};
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRect, NSString};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRect, NSSize, NSString};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::Duration;
 
@@ -262,8 +262,8 @@ impl MacShell {
             .map_or(0.0, |s| s.frame().origin.y + s.frame().size.height)
     }
 
-    /// Tell the host where window `id`'s frame is (its top-left as `screen_point` takes it), when it moved since it was
-    /// last told or `always` (a new scale: the host's device pixels changed).  NS's windowDidMove: does the same, so
+    /// Tell the host where window `id`'s frame is (its top-left as `screen_point` takes it) and how tall its title bar
+    /// is, when either changed since it was last told or `always` (a new scale: the host's device pixels changed).  NS's windowDidMove: does the same, so
     /// `frame-position` is where AppKit put the frame (it may constrain or nudge the place asked for).
     fn moved(&mut self, id: WindowId, always: bool) {
         let top = self.main_top();
@@ -274,12 +274,14 @@ impl MacShell {
         let pos = (
             r.origin.x.round() as i32,
             (top - (r.origin.y + r.size.height)).round() as i32,
+            (r.size.height.round() as i32 - w.content_size().1).max(0),
         );
         if !always && w.pos == Some(pos) {
             return;
         }
         w.pos = Some(pos);
-        self.push(ShellEvent::Moved(MovedEv { x: pos.0, y: pos.1 }), id);
+        let (x, y, title) = pos;
+        self.push(ShellEvent::Moved(MovedEv { x, y, title }), id);
     }
 
     /// Lend the backend to the scope while `f` makes AppKit calls that may call back; the events queued meanwhile
@@ -503,6 +505,8 @@ impl MacShell {
         if resized {
             self.configure(id, size.0, size.1);
         }
+        // a resize from the top moves the top-left; full screen hides the title bar
+        self.moved(id, false);
     }
 
     /// Tell the host when window `id` is on another screen than it was told: a leave of the old output and an enter
@@ -619,13 +623,40 @@ impl MacShell {
         // lent so the `windowDidResize:` it causes is applied in the same drain
         let mut moves = Vec::new();
         for id in ids {
-            if let Some(w) = self.windows.get_mut(id)
-                && let Some((frame, px)) = w.resize.inflight
-                && w.surfaces.newest().is_some()
-                && w.surfaces.size() == px
-            {
+            let Some(w) = self.windows.get_mut(id) else {
+                continue;
+            };
+            let Some((frame, px)) = w.resize.inflight else {
+                continue;
+            };
+            if w.surfaces.newest().is_none() {
+                continue;
+            }
+            let drawn = w.surfaces.size();
+            if drawn == px {
                 w.resize.inflight = None;
                 moves.push((w.window.clone(), frame));
+            } else if w.configuring.is_none() {
+                // the host took the step and drew another size: its frame's minimum (a drag past it), or a tool bar
+                // that wrapped.  The window takes the host's size with the dragged edges where the step put them;
+                // waiting for the size asked for kept the resize pending for good (the live session, 2026-11-13: a
+                // left-edge drag to AppKit's minimum, 23 points, left the frame at Emacs's 70 and every later step
+                // waiting)
+                let s = w.scale();
+                let content = NSSize::new(s.pt(f64::from(drawn.0)), s.pt(f64::from(drawn.1)));
+                let cur = w.window.frame();
+                let mut r = w.window.frameRectForContentRect(NSRect::new(frame.origin, content));
+                if frame.origin.x != cur.origin.x {
+                    // the left edge moved: the right one stays
+                    r.origin.x = frame.origin.x + frame.size.width - r.size.width;
+                }
+                if frame.origin.y + frame.size.height == cur.origin.y + cur.size.height {
+                    // the top stayed: it stays (AppKit's y is up, the origin the bottom-left)
+                    r.origin.y = frame.origin.y + frame.size.height - r.size.height;
+                }
+                w.size = (s.pt_i(drawn.0), s.pt_i(drawn.1));
+                w.resize.inflight = None;
+                moves.push((w.window.clone(), r));
             }
         }
         if !moves.is_empty() {

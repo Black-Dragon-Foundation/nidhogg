@@ -56,6 +56,37 @@ pixels; the display's width is the main screen's."
           (should (= (display-pixel-width) (plist-get info :screen-device-width))))
       (delete-frame f))))
 
+(ert-deftest nhmac-frame-position-and-geometry-follow-appkit ()
+  "`frame-position' and `frame-geometry' are where AppKit has the window (NS's windowDidMove:, frame_geometry): the
+outer position is the frame's, the title bar is AppKit's frame less the content, the native area starts under it; a
+place asked for reads back as asked and moves AppKit's frame by as much, and asking for the place the frame has
+leaves it there (the live session, 2026-11-13: -1420 rounded to -1419, one point further right at each call)."
+  (let* ((f (selected-frame)) (s (frame-scale-factor f))
+         (info (lambda () (redisplay t) (sit-for 0.3) (nhmac--window-info f)))
+         (i0 (funcall info)) (fr (plist-get i0 :frame))
+         (title (round (- (* (nth 3 fr) s) (plist-get i0 :device-height))))
+         (g (frame-geometry f)) (p0 (frame-position f)))
+    (nhmac-gui--say "nhmac-frame-position-and-geometry-follow-appkit: position %S info %S geometry %S" p0 i0 g)
+    (should (equal (alist-get 'outer-position g) p0))
+    (should (> title 0))
+    (should (equal (alist-get 'title-bar-size g) (cons (frame-native-width f) title)))
+    (should (equal (alist-get 'outer-size g) (cons (frame-native-width f) (+ (frame-native-height f) title))))
+    (should (= (- (nth 1 (frame-edges f 'native-edges)) (nth 1 (frame-edges f 'outer-edges))) title))
+    ;; the place it has: nothing moves
+    (set-frame-position f (car p0) (cdr p0))
+    (let ((i1 (funcall info)))
+      (should (equal (frame-position f) p0))
+      (should (equal (seq-take (plist-get i1 :frame) 2) (seq-take fr 2))))
+    ;; 40 and 30 device pixels further: read back as asked, AppKit's frame moved by as many points
+    (unwind-protect
+        (let ((to (cons (+ (car p0) 40) (+ (cdr p0) 30))))
+          (set-frame-position f (car to) (cdr to))
+          (let ((i2 (funcall info)))
+            (should (equal (frame-position f) to))
+            (should (= (- (nth 0 (plist-get i2 :frame)) (nth 0 fr)) (round (/ 40 s))))
+            (should (= (- (nth 1 fr) (nth 1 (plist-get i2 :frame))) (round (/ 30 s))))))
+      (set-frame-position f (car p0) (cdr p0)))))
+
 ;; The pumps and the take-out scope
 (ert-deftest nhmac-reentry-sync-delegates ()
   "AppKit's delegates, called back from inside the shell's own calls, reach its state only through the scope.

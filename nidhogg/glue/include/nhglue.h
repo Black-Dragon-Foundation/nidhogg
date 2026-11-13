@@ -1008,7 +1008,8 @@ typedef struct { int32_t x, y, id; } NhgTouchPoint;
    window.  C looks the place up in the paths of that generation and drops a choice from an older one.  */
 #define NHG_ACT_MENU          60
 /* A top-level frame's window moved, or its scale changed (Naglfar): X, Y its top-left in device pixels at the frame's
-   scale from the main screen's top-left, as nhg_window_place takes it.  C stores it as the frame's position.  */
+   scale from the main screen's top-left, as nhg_window_place takes it; H its title bar's height (device pixels, 0:
+   none).  C stores them as the frame's position and frame-geometry's title bar.  */
 #define NHG_ACT_MOVED         61
 #define NHG_SETTLE_REPORT     1   /* every shown frame presented again, or 2 s passed: run `reconnected' */
 #define NHG_SETTLE_MONITORS   2   /* the monitor list differs from before the loss (ids aside) */

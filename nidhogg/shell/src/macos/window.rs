@@ -30,8 +30,9 @@ pub struct Win {
     pub scale120: u32,
     /// The output (`screens::outputs`' id) the host was last told the window is on; 0: none yet.
     pub output: u64,
-    /// The frame's top-left (logical pixels from the main screen's top-left) last reported to the host.
-    pub pos: Option<(i32, i32)>,
+    /// The frame's top-left (logical pixels from the main screen's top-left) and title bar height last reported to the
+    /// host.
+    pub pos: Option<(i32, i32, i32)>,
     /// Whether the host wants it shown.
     pub mapped: bool,
     /// The serial of the configure sent last, until the host acks it: till then the host may still draw at the old
