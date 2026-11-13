@@ -740,8 +740,96 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 		   (int32_t) nhwl_block_int (v, 8, 0) };
 }
 
+/* Add a filled bar RECT in RGB at OPACITY to the list, clipped to CLIP,
+   for window W.  */
+static void
+nhwl_bar_add (struct window *w, NhgRect clip, NhgRect rect, intmax_t rgb,
+	      float opacity)
+{
+  if (rgb < 0 || rect.w <= 0 || rect.h <= 0)
+    return;
+  if (nhwl_nblocks == nhwl_blocks_cap)
+    nhwl_blocks = xpalloc (nhwl_blocks, &nhwl_blocks_cap, 1, -1,
+			   sizeof *nhwl_blocks);
+  nhwl_blocks[nhwl_nblocks++]
+    = (NhgBlock) { w->sequence_number, clip, rect,
+		   NHG_BLOCK_BAR | NHG_BLOCK_STRIP, 0,
+		   (int32_t) rgb, opacity, (int32_t) rgb };
+}
+
+/* List the overview ruler V of leaf window W, whose text area spans
+   TOP to TOP + HEIGHT: a strip WIDTH wide at the window's right inner
+   edge less RIGHT, standing for the whole buffer.  The band over the
+   part the window shows goes first, then each mark at its position's
+   fraction of the buffer, at least HEIGHT tall, inside the strip.
+   Fractions are of characters, as the scroll bar measures, so a scroll
+   needs nothing of Lisp.  V is [WIDTH RIGHT HEIGHT BAND-RGB BAND-OPACITY
+   MARK...], each MARK [POS X0 X1 RGB OPACITY], as glitnir--ruler-vector
+   makes it.  */
+static void
+nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
+{
+  if (!VECTORP (v) || ASIZE (v) < 5 || height <= 0)
+    return;
+  struct buffer *b = XBUFFER (w->contents);
+  int width = nhwl_block_int (v, 0, 0);
+  int right = nhwl_block_int (v, 1, 0);
+  int least = max (1, (int) nhwl_block_int (v, 2, 1));
+  int x1 = (WINDOW_RIGHT_EDGE_X (w) - WINDOW_RIGHT_DIVIDER_WIDTH (w)
+	    - WINDOW_RIGHT_SCROLL_BAR_AREA_WIDTH (w) - right);
+  if (width <= 0)
+    return;
+  NhgRect strip = { x1 - width, top, width, height };
+  ptrdiff_t begv = BUF_BEGV (b), span = max (1, BUF_ZV (b) - begv);
+#define NHWL_RULER_Y(pos) \
+  (top + (int) ((double) (clip_to_bounds (begv, pos, begv + span) - begv) \
+		* height / span))
+
+  Lisp_Object op = AREF (v, 4);
+  /* The part shown: the current matrix's first and last text rows (the
+     window's end is not kept valid between redisplays).  */
+  ptrdiff_t start = marker_position (w->start), end = start;
+  struct glyph_matrix *m = w->current_matrix;
+  if (m)
+    {
+      struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
+      for (struct glyph_row *row = MATRIX_FIRST_TEXT_ROW (m);
+	   row < bottom && row->enabled_p; row++)
+	{
+	  if (row == MATRIX_FIRST_TEXT_ROW (m))
+	    start = MATRIX_ROW_START_CHARPOS (row);
+	  end = MATRIX_ROW_END_CHARPOS (row);
+	  if (row->ends_at_zv_p)
+	    break;
+	}
+    }
+  int y0 = NHWL_RULER_Y (start);
+  int y1 = max (y0 + least, NHWL_RULER_Y (end));
+  nhwl_bar_add (w, strip, (NhgRect) { strip.x, y0, width, min (y1, top + height) - y0 },
+		nhwl_block_int (v, 3, -1), NUMBERP (op) ? XFLOATINT (op) : 1.0f);
+
+  for (ptrdiff_t i = 5; i < ASIZE (v); i++)
+    {
+      Lisp_Object m = AREF (v, i);
+      if (!VECTORP (m) || ASIZE (m) < 5)
+	continue;
+      ptrdiff_t pos = nhwl_block_pos (w, AREF (m, 0));
+      if (pos < 0)
+	continue;
+      int mx0 = clip_to_bounds (0, nhwl_block_int (m, 1, 0), width);
+      int mx1 = clip_to_bounds (mx0, nhwl_block_int (m, 2, width), width);
+      int y = min (NHWL_RULER_Y (pos), top + height - least);
+      Lisp_Object mop = AREF (m, 4);
+      nhwl_bar_add (w, strip, (NhgRect) { strip.x + mx0, y, mx1 - mx0, least },
+		    nhwl_block_int (m, 3, -1),
+		    NUMBERP (mop) ? XFLOATINT (mop) : 1.0f);
+    }
+#undef NHWL_RULER_Y
+}
+
 /* List the blocks of WINDOW's leaf windows and its next siblings' (the
-   window parameter glitnir--blocks, a vector of block vectors).  */
+   window parameter glitnir--blocks, a vector of block vectors), and
+   their overview rulers (glitnir--ruler).  */
 static void
 nhwl_blocks_add (Lisp_Object window)
 {
@@ -755,13 +843,16 @@ nhwl_blocks_add (Lisp_Object window)
 	  continue;
 	}
       Lisp_Object v = Fwindow_parameter (window, Qglitnir__blocks);
-      if (!VECTORP (v) || !BUFFERP (w->contents))
+      Lisp_Object r = Fwindow_parameter (window, Qglitnir__ruler);
+      if ((!VECTORP (v) && !VECTORP (r)) || !BUFFERP (w->contents))
 	continue;
       int x, y, width, height;
       window_box (w, TEXT_AREA, &x, &y, &width, &height);
       NhgRect clip = { x, y, width, height };
-      for (ptrdiff_t i = 0; i < ASIZE (v); i++)
-	nhwl_block_add (w, AREF (v, i), clip);
+      if (VECTORP (v))
+	for (ptrdiff_t i = 0; i < ASIZE (v); i++)
+	  nhwl_block_add (w, AREF (v, i), clip);
+      nhwl_ruler_add (w, r, y, height);
     }
 }
 
