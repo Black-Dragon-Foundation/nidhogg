@@ -585,6 +585,8 @@ impl MacShell {
         let Some(w) = self.windows.get_mut(&root) else {
             return;
         };
+        // a commit of this tree: a window of it drew, or a child of it changed (`owed`)
+        *self.draws.entry(root).or_default() += 1;
         let mut constrained = None;
         if drawn.contains(&root) && w.surfaces.newest().is_some() {
             let (sw, sh) = w.surfaces.size();
