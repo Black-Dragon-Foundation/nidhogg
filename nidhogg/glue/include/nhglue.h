@@ -853,6 +853,7 @@ int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
 #define NHG_BLOCK_OPEN_TOP     2   /* the block goes on above the window's first text row: no top side */
 #define NHG_BLOCK_OPEN_BOTTOM  4   /* the block goes on below its last text row: no bottom side */
 #define NHG_BLOCK_BAR          8   /* the whole rectangle filled in the line's colour, not a ring */
+#define NHG_BLOCK_STRIP       16   /* a bar of the window's strip (the overview ruler): a layer of its own, its clip the strip */
 
 /* One block of Emacs window SEQ: CLIP its text area (window_box (w, TEXT_AREA)) and RECT the block's rows from x0 to
    x1, both device pixels with the native area's origin; FLAGS NHG_BLOCK_*; RADIUS the outer corner radius in device
