@@ -1,0 +1,118 @@
+# A live session on a macOS runner, for debugging Naglfar row by row: a push to a branch scratch/ng-live-<sha10>
+# builds the Naglfar app as the build workflow's macos-naglfar job does (its caches read, never written), then opens a
+# tmate SSH session that only the pushing user's public SSH keys (their GitHub profile's) can enter.  In the session:
+# nidhogg/test/nhmac-gui.sh on single rows, `make -C "$RUNNER_TEMP/nbuild/obj"` after a `git fetch` of a newer scratch
+# commit (the repository is public: no credentials).  The job ends when the session does (`touch /tmp/continue`, or
+# leaving it), or at the timeout.  It takes one of the organisation's macOS jobs while it runs.
+#
+# No secrets: the job's token reads contents only, no `secrets.*` is referenced, the checkout keeps no credentials,
+# the tmate action gets no token (it reads the public keys unauthenticated), and a guard fails the job when anything
+# that looks like a credential is in the environment or in git's configuration.
+name: Nidhogg macOS live session
+
+on:
+  push:
+    branches: ["scratch/ng-live-*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nidhogg-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: macOS live session (Naglfar)
+    runs-on: xcode-27
+    # under GitHub's 6 hours for a job
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: No credentials in the job
+        run: |
+          bad=$(env | cut -d= -f1 | grep -E 'TOKEN|SECRET|PASSWORD|CREDENTIAL|_KEY$' || true)
+          if [ -n "$bad" ]; then echo "live: credential-like variables in the environment: $bad"; exit 1; fi
+          if git config --get-regexp '^http\..*extraheader' >/dev/null; then echo "live: git keeps credentials"; exit 1; fi
+          echo "live: no credentials"
+      - name: Compiled-Lisp inputs
+        id: tree
+        run: echo "elc=$(bash nidhogg/ci/lisp-key.sh --elc)" >> "$GITHUB_OUTPUT"
+      - name: Build dependencies (Homebrew; Rust by rustup)
+        run: |
+          if command -v rustup >/dev/null; then
+            sed 's/#.*//' nidhogg/deps/macos.build | grep -vx 'rust' | xargs brew install
+            rustup toolchain install stable --profile minimal --component clippy,rustfmt,llvm-tools --no-self-update
+            rustup default stable
+          else
+            sed 's/#.*//' nidhogg/deps/macos.build | xargs brew install
+          fi
+          brew install ccache
+      - name: Toolchain versions
+        id: tc
+        run: |
+          echo "v=$(brew list --versions gcc libgccjit | tr ' \n' '--')" >> "$GITHUB_OUTPUT"
+          echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "deps=$(sed 's/#.*//' nidhogg/deps/macos.build | { xargs brew list --versions 2>/dev/null || true; } | { cat; echo "$ImageOS-$ImageVersion"; } | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      # the build workflow's macos-naglfar entries, read only
+      - name: Byte-compiled Lisp
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/lisp-cache/src
+            ${{ runner.temp }}/lisp-cache/stamp
+          key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-elc-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
+      - name: ccache (C objects)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-live
+          restore-keys: |
+            ccache-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-
+            ccache-macos-naglfar-${{ runner.arch }}-
+      - name: Configure's checks
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/config-cache
+          key: configure-macos-naglfar-${{ runner.arch }}-${{ steps.tc.outputs.deps }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
+      - name: File times
+        run: bash nidhogg/ci/set-mtimes.sh
+      - name: Naglfar build and bundle (as macos-naglfar's)
+        env:
+          NIDHOGG_BUILD_CCACHE: ${{ runner.temp }}/ccache
+          NIDHOGG_BUILD_CONFIG_CACHE: ${{ runner.temp }}/config-cache
+          NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache
+          NIDHOGG_BUILD_LISP_CACHE_ELC: '1'
+        run: |
+          /bin/bash nidhogg/build.sh --host --naglfar --dev --checking --stage build --jobs 3 --build-dir "$RUNNER_TEMP/nbuild"
+          make -C "$RUNNER_TEMP/nbuild/obj" install -j3
+          test -x "$RUNNER_TEMP/nbuild/obj/nextstep/Emacs.app/Contents/MacOS/Emacs"
+      - name: How to run a row
+        run: |
+          echo "app=$RUNNER_TEMP/nbuild/obj/nextstep/Emacs.app"
+          echo "caffeinate -d -i -u bash nidhogg/test/nhmac-gui.sh --emacs \"\$app/Contents/MacOS/Emacs\" --app \"\$app\" --files nhmac-focus-gui-tests.el --select 'nhmac-focus-' --out /tmp/live"
+      - name: No credentials before the session
+        run: |
+          bad=$(env | cut -d= -f1 | grep -E 'TOKEN|SECRET|PASSWORD|CREDENTIAL|_KEY$' || true)
+          if [ -n "$bad" ]; then echo "live: credential-like variables in the environment: $bad"; exit 1; fi
+          if git config --get-regexp '^http\..*extraheader' >/dev/null; then echo "live: git keeps credentials"; exit 1; fi
+          echo "live: no credentials"
+      # pinned by commit (v3.24); the actor's public keys only (it fails when the profile has none); no token
+      - name: Session (tmate, the pushing user's keys only)
+        id: tmate
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
+        with:
+          limit-access-to-actor: 'true'
+          github-token: ''
+          detached: 'true'
+          connect-timeout-seconds: '900'
+      # the address as an annotation, readable while the job runs (it is no way in without the user's key)
+      - name: The session's address
+        env:
+          ADDR: ${{ steps.tmate.outputs.ssh-address }}
+        run: echo "::notice title=live session::$ADDR"
+      # the session's post step waits for it to end
