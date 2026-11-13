@@ -592,14 +592,19 @@ through `ns-spi-service-call'."
 (declare-function pgtk-drop-finish "nhwlfns.c" (success timestamp delete))
 
 (defun nhmac--drag-n-drop (orig event)
-  "Call ORIG, `ns-drag-n-drop', with EVENT's drop in NS's form, then finish the drop."
-  (if (not (eq (car-safe (nth 2 event)) 'quote))
-      (funcall orig event)
-    (let ((offer (nhmac--query 'dnd-offer)))
-      (unwind-protect
-          (when offer
-            (funcall orig (list (car event) (nth 1 event) offer)))
-        (pgtk-drop-finish t (nth 2 (nth 2 event)) nil)))))
+  "Call ORIG, `ns-drag-n-drop', with EVENT's drop in NS's form, then finish the drop.
+An enter or a motion, `(lambda XdndSelection TIME ACTION)', goes to ORIG
+as NS's motion, whose third element is `lambda' alone."
+  (let ((kind (car-safe (nth 2 event))))
+    (cond
+     ((eq kind 'lambda) (funcall orig (list (car event) (nth 1 event) 'lambda)))
+     ((not (eq kind 'quote)) (funcall orig event))
+     (t
+      (let ((offer (nhmac--query 'dnd-offer)))
+        (unwind-protect
+            (when offer
+              (funcall orig (list (car event) (nth 1 event) offer)))
+          (pgtk-drop-finish t (nth 2 (nth 2 event)) nil)))))))
 
 (advice-add 'ns-drag-n-drop :around #'nhmac--drag-n-drop)
 

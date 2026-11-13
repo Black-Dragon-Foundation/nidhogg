@@ -67,17 +67,24 @@ BUSY.  The settled state."
     (nhmac-resize--settle)))
 
 (defun nhmac-resize--reset (w h)
-  "Content W x H points, settled."
-  (set-frame-size nil w h t)
+  "Text area W x H points, settled.  Emacs's pixels are device pixels: at scale 2, 600 of them were 300 points, and
+band-outside's drag never grew the frame past 600 points (the live session, 2026-11-13)."
+  (let ((s (frame-scale-factor)))
+    (set-frame-size nil (round (* w s)) (round (* h s)) t))
   (nhmac-resize--settle))
 
 (defun nhmac-resize--fullscreen (value)
-  "Set the frame's `fullscreen' parameter to VALUE; wait (4 s at most) for the window to be in or out of full screen."
+  "Set the frame's `fullscreen' parameter to VALUE; wait (4 s at most) for the window to be in or out of full screen,
+its transition over.  While AppKit's exit animation runs the style mask still has full screen, so the band does not
+apply: the first press of min-size after green-button at scale 2 was not a band press (the live session, 2026-11-13)."
   (unless (eq (frame-parameter nil 'fullscreen) value)
     (set-frame-parameter nil 'fullscreen value))
-  (let ((deadline (+ (float-time) 4)))
-    (while (and (not (eq (and (plist-get (nhmac--query 'test-window-state (selected-frame)) :fullscreen) t)
-                         (and (memq value '(fullboth fullscreen)) t)))
+  (let ((deadline (+ (float-time) 4))
+        (want (and (memq value '(fullboth fullscreen)) t)))
+    (while (and (let ((st (nhmac--query 'test-window-state (selected-frame))))
+                  (not (and (eq (and (plist-get st :fullscreen) t) want)
+                            (eq (and (plist-get st :style-full) t) want)
+                            (not (plist-get st :fs-busy)))))
                 (< (float-time) deadline))
       (sit-for 0.1)))
   (nhmac-resize--settle))
