@@ -93,7 +93,9 @@ pumps' scope never takes inside a take (`:overlapping-takes' stays 0)."
             (while (and (not drop) (< (float-time) deadline))
               (setq ev (read-event nil nil 0.3))
               (when ev (push (car-safe ev) seen))
-              (when (eq (car-safe ev) 'drag-n-drop) (setq drop ev)))
+              ;; the drop, not the enter our own drag's drop comes after: (quote XdndSelection TIME)
+              (when (and (eq (car-safe ev) 'drag-n-drop) (eq (car-safe (nth 2 ev)) 'quote))
+                (setq drop ev)))
             (glitnir-gui--say "nhmac-dnd-drag-out: after the drag, events %S" (nreverse seen)))
           (glitnir-gui--say "nhmac-dnd-drag-out: result %S, drop %S, overlapping %S -> %S" result drop overlap
                             (plist-get (nhmac-stats) :overlapping-takes))
