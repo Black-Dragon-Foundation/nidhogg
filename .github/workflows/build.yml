@@ -53,12 +53,14 @@ permissions:
 # from a branch of this repository the small ones, the exact-key families (compiled Lisp, tarballs, configure's
 # checks, the pinned packages) and ccache, not the large prefix-restored ones (the native crates' 1.2 GB, Glitnir's
 # cargo targets), which it reads from nidhogg-31 anyway, and the pr-caches job keeps only its newest run's set; ci/*
-# branches, a fork's pull request and a tag none (they restore only).  GitHub scopes a pull request's entries to its
+# branches, a fork's pull request and a tag none (they restore only), except scratch/ng-mac-rounds, the one branch every
+# macOS round is pushed to, which saves as nidhogg-31 does so that each round restores the last one's caches (GitHub shares
+# a cache only within its ref and with the default branch).  GitHub scopes a pull request's entries to its
 # merge ref (refs/pull/N/merge): only that pull request's later runs read them, never nidhogg-31 or another branch.
 # Every run reads its own ref's and nidhogg-31's.
 env:
-  CACHE_SAVE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31') }}
-  CACHE_SAVE_ALL: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/nidhogg-31' }}
+  CACHE_SAVE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || github.ref == 'refs/heads/scratch/ng-mac-rounds')) }}
+  CACHE_SAVE_ALL: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || github.ref == 'refs/heads/scratch/ng-mac-rounds') }}
 
 concurrency:
   group: nidhogg-${{ github.ref }}
