@@ -517,6 +517,61 @@ theme's generation would change it on every theme change."
     (when (window-parameter window 'glitnir--blocks)
       (setq glitnir--blocks-any t))))
 
+(defun glitnir--ruler-colour (spec frame)
+  "Ruler colour SPEC, a face or colour or (FACE-OR-COLOUR . OPACITY), as (RGB . OPACITY) for FRAME, or nil."
+  (and spec (glitnir--ring (if (consp spec) spec (cons spec 1)) frame)))
+
+(defun glitnir--ruler-vector (spec frame)
+  "Return ruler SPEC as the vector C reads, for FRAME.
+SPEC is a plist: `:width' (the strip's width), `:right' (its gap from
+the window's right inner edge), `:height' (a mark's least height), all
+device pixels; `:band' (the colour of the band over the part of the
+buffer the window shows: a face, whose foreground is used, a colour
+name, or (FACE-OR-COLOUR . OPACITY)); `:marks', a list of
+\(POS X0 X1 COLOUR): a buffer position (a marker or an integer), the x
+range of its lane in the strip and its colour, as for `:band'.  The
+vector is [WIDTH RIGHT HEIGHT BAND-RGB BAND-OPACITY MARK...], each MARK
+[POS X0 X1 RGB OPACITY], RGB -1 for none."
+  (let ((band (glitnir--ruler-colour (plist-get spec :band) frame)))
+    (vconcat (vector (or (plist-get spec :width) 0) (or (plist-get spec :right) 0) (or (plist-get spec :height) 1)
+                     (if band (car band) -1) (if band (cdr band) 0))
+             (mapcar (lambda (m)
+                       (let ((c (glitnir--ruler-colour (nth 3 m) frame)))
+                         (vector (nth 0 m) (nth 1 m) (nth 2 m) (if c (car c) -1) (if c (cdr c) 0))))
+                     (plist-get spec :marks)))))
+
+(defun glitnir--recheck-ruler (window)
+  "Resolve WINDOW's overview ruler when its `glitnir-ruler' or the theme changed.
+The vector goes into the window parameter `glitnir--ruler', which C
+reads when the frame publishes: the strip at the window's right inner
+edge, its marks at their position's fraction of the buffer (characters,
+as the scroll bar measures) and the band over the part shown.  Nothing
+is done per redisplay: a scroll moves the band in C."
+  (let ((spec (window-parameter window 'glitnir-ruler))
+        (key (window-parameter window 'glitnir--ruler-key)))
+    (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
+                (and (null spec) (null key)))
+      (set-window-parameter window 'glitnir--ruler-key (and spec (cons spec glitnir--card-generation)))
+      (let ((v (and spec (glitnir--ruler-vector spec (window-frame window)))))
+        (unless (equal v (window-parameter window 'glitnir--ruler))
+          (set-window-parameter window 'glitnir--ruler v)
+          (force-window-update window))))
+    (when (window-parameter window 'glitnir--ruler)
+      (setq glitnir--blocks-any t))))
+
+(defun glitnir-ruler-position (posn)
+  "The buffer position at the y of POSN, a click on a window's overview ruler.
+The strip stands for the whole buffer, top to bottom, by characters, as
+C draws it; nil when POSN's window has no ruler."
+  (let ((w (posn-window posn)))
+    (when (and (windowp w) (window-parameter w 'glitnir--ruler))
+      (pcase-let* ((`(,_ ,top ,_ ,_) (window-pixel-edges w))
+                   (`(,_ ,btop ,_ ,bbot) (window-inside-pixel-edges w))
+                   (y (- (+ top (cdr (posn-x-y posn))) btop))
+                   (frac (min 1.0 (max 0.0 (/ (float y) (max 1 (- bbot btop)))))))
+        (with-current-buffer (window-buffer w)
+          (+ (point-min) (round (* frac (- (point-max) (point-min))))))))))
+
 (defvar glitnir--blocks-seen (make-hash-table :test 'eq :weakness 'key)
   "Per frame, the last value of its `glitnir--blocks' parameter.
 As `glitnir--recheck-frame-cards' gave it.")
@@ -533,6 +588,7 @@ This runs on every redisplay, so it walks the tree rather than building a window
           (when (glitnir--recheck-tree (window-child window)) (setq any t))
         (glitnir--recheck-cards window)
         (glitnir--recheck-blocks window)
+        (glitnir--recheck-ruler window)
         (when (window-parameter window 'glitnir--card) (setq any t)))
       (setq window (window-next-sibling window)))
     any))
