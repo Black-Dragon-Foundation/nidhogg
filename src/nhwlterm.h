@@ -599,6 +599,8 @@ extern bool nhwl_decor_target (struct frame *, struct window *, uint64_t *,
 extern bool glitnir_decor_draw_box (struct glyph_string *, int, int, int, int,
 				    int, int, bool, bool, XRectangle *);
 extern unsigned long glitnir_decor_colour_beneath (struct glyph_string *, int);
+extern bool glitnir_decor_fit_band (struct glyph_string *, int *, int *,
+				    unsigned long *);
 extern void glitnir_decor_after_glyphs (struct glyph_string *);
 extern void glitnir_decor_record (struct glyph_string *);
 extern void glitnir_decor_clear (struct frame *, int, int, int, int);
