@@ -805,8 +805,13 @@ names it."
           (nhmac-gui--say "%s: cards %S, rows %S" row cards
                           (mapcar (lambda (c)
                                     (condition-case e
-                                        (nhmac--query 'test-card-row (window-frame w) (nth 0 c)
-                                                      (- y (nth 2 c)) 0 12)
+                                        ;; the card's own pixels: the capture's row less the frame's place in it
+                                        ;; (`glitnir-nhmac--root-rect') and the card's; ARGB (round 9 read a
+                                        ;; capture row as the card's and got its transparent inside)
+                                        (let ((s (glitnir-nhmac--scale)))
+                                          (nhmac--query 'test-card-row (window-frame w) (nth 0 c)
+                                                        (- y (round (* 60 s)) (nth 2 c))
+                                                        (max 0 (- (nth 0 box) (round (* 20 s)) (nth 1 c) 2)) 12))
                                       (error (list 'error e))))
                                   cards)))))
     (should (and r box))
@@ -1585,7 +1590,15 @@ at its moving place, so a whole-area move would show the new layout from the sta
              (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: own layers %S (nhwl-scroll-layers %S); surface row %d: %S"
                              (nhwl--scroll-layers) nhwl-scroll-layers (/ (frame-pixel-height) 2)
                              (cl-loop for p across (nhmac--test-surface-region 0 (/ (frame-pixel-height) 2) 64 1)
-                                      collect (format "%06x" (logand p #xffffff))))))
+                                      collect (format "%06x" (logand p #xffffff))))
+             ;; round 9: the surface has the pattern; the screen's same row before the leg and after it (the surface
+             ;; never redrawn, or the screen not showing it)
+             (let* ((s (glitnir-nhmac--scale)) (x0 (round (* 20 s)))
+                    (y (+ (round (* 60 s)) (/ (frame-pixel-height) 2))))
+               (dolist (g (list (cons "before" before) (cons "after" after)))
+                 (nhmac-gui--say "glitnir-nhmac/layout-leg-shows-old-picture: screen row %d %s: %S" y (car g)
+                                 (cl-loop for x from x0 below (+ x0 64)
+                                          collect (format "%06x" (glitnir-nhmac--px (cdr g) x y))))))))
          (should (<= (cadr shown) 2))
          (should (> (car new) 100)))))))
 

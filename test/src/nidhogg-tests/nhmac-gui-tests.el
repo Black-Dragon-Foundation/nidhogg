@@ -246,12 +246,24 @@ and `mouse-pixel-position' follows motion."
       (should (eq (event-basic-type ev) 'wheel-down)))))
 
 ;; The wait: kqueue in the run loop, the helper, keys before process output
+(defconst nhmac-gui--frozen-counts
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "../../../nidhogg/test/nhmac-counts.eld"
+                                            (file-name-directory (or load-file-name buffer-file-name))))
+    (read (current-buffer)))
+  "Naglfar's frozen counts, ((ROW KEY N) ...): nidhogg/test/nhmac-counts.eld (plan Task 35 step 3).")
+
 (defun nhmac-gui--delta (before key)
   "How much the counter KEY of `nhmac-stats' grew since BEFORE.
-Each one asked for in a row is recorded (`nhmac-gui--record-count'): the counts nidhogg/test/nhmac-counts.eld
-freezes (plan Task 35)."
-  (let ((n (- (plist-get (nhmac-stats) key) (plist-get before key))))
+Each one asked for in a row is recorded (`nhmac-gui--record-count'), and one the running row has frozen in
+`nhmac-gui--frozen-counts' must be the frozen value: the row fails naming the count."
+  (let* ((n (- (plist-get (nhmac-stats) key) (plist-get before key)))
+         (test (ert-running-test))
+         (frozen (and test (seq-find (lambda (c) (and (eq (nth 0 c) (ert-test-name test)) (eq (nth 1 c) key)))
+                                     nhmac-gui--frozen-counts))))
     (nhmac-gui--record-count key n)
+    (when (and frozen (/= n (nth 2 frozen)))
+      (ert-fail (list 'frozen-count (ert-test-name test) key :expected (nth 2 frozen) :actual n)))
     n))
 
 (defun nhmac-gui--record-count (key n)
@@ -3241,7 +3253,17 @@ a bare frame (`nhmac-gui--bare-frame')."
                    ((or 'box 'hollow) (nhmac-gui--probe-all (format "%s cursor" c) cursor x0 top (1+ x0) (1+ top) 24))
                    ('bar (nhmac-gui--probe-all "bar cursor" cursor x0 (+ top 1) (+ x0 (* 2 k)) (- bottom 1) 24))
                    ('hbar (nhmac-gui--probe-all "hbar cursor" cursor (1+ x0) (- bottom (* 2 k)) (1- x1) bottom 24)))))
-          (when f (push f bad)))))
+          ;; round 9: no cursor colour anywhere in the image's box at either scale (round 8's too, behind the
+          ;; records): whether the cursor blinked off or the frame lacked focus, and what was drawn there
+          (when f
+            (nhmac--test-draw-watch x0 top (- x1 x0) (- bottom top))
+            (redraw-frame)
+            (redisplay t)
+            (setq f (append f (list :blink blink-cursor-mode :focus (frame-focus-state)
+                                    :selected (eq (selected-window) (frame-selected-window))
+                                    :records (nhmac--test-draw-log))))
+            (nhmac--test-draw-watch 0 0 0 0)
+            (push f bad)))))
     (setq-local cursor-type nil)
     (redisplay t)
     (nreverse bad)))

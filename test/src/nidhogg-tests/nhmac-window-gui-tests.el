@@ -111,7 +111,10 @@ too whenever Lisp runs, since `ns_select's `[NSApp run]' has returned by then."
   (unwind-protect
       (should (eq (plist-get (nhmac-win-gui--wait :miniaturized t) :miniaturized) t))
     (make-frame-visible)
-    (should (null (plist-get (nhmac-win-gui--wait :miniaturized nil) :miniaturized)))))
+    (should (null (plist-get (nhmac-win-gui--wait :miniaturized nil) :miniaturized)))
+    ;; round 9: back from the Dock, and the resize, keys and IME rows after it saw no events: whether it has focus
+    (sit-for 0.5)
+    (glitnir-gui--say "nhmac-miniaturize: back, focus %S" (frame-focus-state))))
 
 (ert-deftest nhmac-appearance-dark ()
   "A change of the system appearance records it in `ns-system-appearance' and runs the hook with `dark'."

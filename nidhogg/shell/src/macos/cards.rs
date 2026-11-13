@@ -150,17 +150,14 @@ impl Cards {
         self.shown.iter().map(|(id, (_, at))| (*id, *at)).collect()
     }
 
-    /// Card `id`'s last image's row `y` from column `x0`, `n` pixels, as #xRRGGBB words (test hook).
+    /// Card `id`'s last image's row `y` from column `x0`, `n` pixels, as #xAARRGGBB words (test hook).
     #[cfg(feature = "test-hooks")]
     pub fn row(&self, id: u64, y: u32, x0: u32, n: u32) -> Option<Vec<u32>> {
         let (_, (_, _, w, h)) = self.shown.get(&id)?;
         let px = self.last.get(&id)?;
         (y < *h && x0 < *w).then(|| {
             let start = (y * w + x0) as usize;
-            px[start..start + n.min(w - x0) as usize]
-                .iter()
-                .map(|p| p & 0xff_ffff)
-                .collect()
+            px[start..start + n.min(w - x0) as usize].to_vec()
         })
     }
 }

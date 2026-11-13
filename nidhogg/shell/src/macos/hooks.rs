@@ -563,7 +563,7 @@ impl MacShell {
                     .cards
                     .get(&w)
                     .and_then(|c| c.row(id, y as u32, x0 as u32, k as u32))
-                    .map(|r| format!("({})", r.iter().map(|p| format!("\"{p:06x}\"")).collect::<Vec<_>>().join(" ")))
+                    .map(|r| format!("({})", r.iter().map(|p| format!("\"{p:08x}\"")).collect::<Vec<_>>().join(" ")))
                     .ok_or(ShellError::State),
                 _ => Err(ShellError::Arg),
             }),
@@ -627,7 +627,10 @@ impl MacShell {
             "test-drag-log" => Ok(format!(
                 "{} {}",
                 DRAG_LOG.with(|l| l.borrow().clone()),
-                super::super::dnd::START_LOG.with(|l| l.borrow().clone())
+                super::super::dnd::START_LOG
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
             )),
             "test-chrome-log" => Ok(format!(
                 "({})",
