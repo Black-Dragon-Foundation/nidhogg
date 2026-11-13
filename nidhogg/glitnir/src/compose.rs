@@ -1077,6 +1077,26 @@ pub fn block_overlay(clip: Rect, blocks: &[crate::scene::Block], scale: f64) -> 
     data
 }
 
+/// A window's edges drawn alone over `clip` (its text area, root px), for a shell that shows them on a layer of its
+/// own over the frame's pixels: on a transparent image, what compose draws for them over the rows, so the image put
+/// over the frame is the composed edges.  Its premultiplied ARGB pixels, row by row; empty for an empty `clip`.
+pub fn edge_overlay(clip: Rect, edges: &[crate::edge::Edge], scale: f64) -> Vec<u32> {
+    if clip.is_empty() {
+        return Vec::new();
+    }
+    let mut data = vec![0u32; clip.w as usize * clip.h as usize];
+    let mut t = TargetView {
+        data: &mut data,
+        stride: clip.w as usize,
+        rect: clip,
+        scale,
+    };
+    for e in edges {
+        draw_edge(crate::kernels::kernels(), &mut t, e, clip);
+    }
+    data
+}
+
 /// A root's composes since its last frame-time record.
 #[derive(Debug, Default, Clone, Copy)]
 struct Tally {

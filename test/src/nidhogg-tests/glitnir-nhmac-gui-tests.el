@@ -861,6 +861,82 @@ cards; a child frame's window's ring shows the same way, on the child; each goes
        (should (null (plist-get (glitnir-nhmac--cards t) :cards)))
        (should-not (glitnir-nhmac--box (glitnir-nhmac--grab "block-ring-gone") glitnir-nhmac--block-ring))))))
 
+(defconst glitnir-nhmac--edge-arrow #x0080ff "An arrow edge's colour: one no other row shows.")
+(defconst glitnir-nhmac--edge-dash #xffa000 "A dashed edge's colour: one no other row shows.")
+
+(defun glitnir-nhmac--line-pos (w n col)
+  "The position of column COL on line N (from 0) of window W's buffer."
+  (with-current-buffer (window-buffer w)
+    (save-excursion (goto-char (point-min)) (forward-line n) (+ (point) col))))
+
+(ert-deftest nhmac-edges-drawn-like-cards ()
+  "Each window's edges show as one image of their own over the frame's pixels, beside its cards and blocks: the left
+window's arrow runs down across its ring block and shows on top of the ring where they cross, the right window's
+dashed line has gaps; with the parameters gone their images go."
+  :tags '(draws)
+  (glitnir-nhmac--with-cards
+   nil
+   (lambda (left right)
+     (dolist (w (list left right))
+       (with-current-buffer (window-buffer w) (dotimes (i 8) (insert (format "line %d of the edges\n" i)))))
+     (unwind-protect
+         (let* ((dy (/ (frame-char-height) 2))
+                (edge-tag (ash 1 59)) (block-tag (ash 1 61))
+                (tagged (lambda (tag) (cl-count-if (lambda (c) (/= 0 (logand (car c) tag)))
+                                                   (plist-get (glitnir-nhmac--cards t) :cards)))))
+           (glitnir-nhmac--ring-on left)
+           ;; down column 6 from line 1 to line 6: across the ring's top side (lines 2 to 4) and its bottom side
+           (set-window-parameter left 'glitnir-edges
+                                 `(((,(glitnir-nhmac--line-pos left 1 6) 0 ,dy) (,(glitnir-nhmac--line-pos left 6 6) 0 ,dy)
+                                    ,(glitnir-nhmac--hex glitnir-nhmac--edge-arrow) :arrow t)))
+           (set-window-parameter right 'glitnir-edges
+                                 `(((,(glitnir-nhmac--line-pos right 2 2) 0 ,dy) (,(glitnir-nhmac--line-pos right 2 30) 0 ,dy)
+                                    ,(glitnir-nhmac--hex glitnir-nhmac--edge-dash) :dash t)))
+           (should (= (funcall tagged edge-tag) 2))
+           (should (= (funcall tagged block-tag) 1))
+           (let* ((img (glitnir-nhmac--grab "edges"))
+                  (lbox (glitnir-nhmac--box img glitnir-nhmac--card-bg))
+                  (rbox (glitnir-nhmac--box img glitnir-nhmac--other-bg))
+                  (ring (glitnir-nhmac--box img glitnir-nhmac--block-ring 32))
+                  (arrow (glitnir-nhmac--box img glitnir-nhmac--edge-arrow 48))
+                  (dash (glitnir-nhmac--box img glitnir-nhmac--edge-dash 48))
+                  (near (lambda (x y rgb) (not (nhmac-gui--far (glitnir-nhmac--px img x y) rgb 48))))
+                  (s (max 1 (round (glitnir-nhmac--scale)))))
+             (nhmac-gui--say "nhmac-edges-drawn-like-cards: cards %S; left %S right %S ring %S arrow %S dash %S"
+                             (plist-get (nhmac--test-cards) :cards) lbox rbox ring arrow dash)
+             (should (and lbox rbox ring arrow dash))
+             ;; each in its own window
+             (should (and (>= (nth 0 arrow) (nth 0 lbox)) (<= (nth 2 arrow) (nth 2 lbox))))
+             (should (and (>= (nth 0 dash) (nth 0 rbox)) (<= (nth 2 dash) (nth 2 rbox))))
+             ;; the arrow runs from above the ring to below it
+             (should (< (nth 1 arrow) (nth 1 ring)))
+             (should (> (nth 3 arrow) (nth 3 ring)))
+             ;; where it crosses the ring's top side, the edge is on top: the ring's top row shows the arrow's colour
+             (let ((rows (cl-loop for y from (nth 1 ring) below (+ (nth 1 ring) s)
+                                  collect (cl-loop for x from (nth 0 arrow) to (nth 2 arrow)
+                                                   collect (format "%06x" (glitnir-nhmac--px img x y))))))
+               (nhmac-gui--say "nhmac-edges-drawn-like-cards: the ring's top rows across the arrow %S" rows)
+               (should (cl-loop for y from (nth 1 ring) below (+ (nth 1 ring) s)
+                                thereis (cl-loop for x from (nth 0 arrow) to (nth 2 arrow)
+                                                 thereis (funcall near x y glitnir-nhmac--edge-arrow)))))
+             ;; the dashes: along the dashed line's middle row, both its colour and gaps
+             (let* ((y (/ (+ (nth 1 dash) (nth 3 dash)) 2))
+                    (on (cl-loop for x from (nth 0 dash) to (nth 2 dash)
+                                 count (funcall near x y glitnir-nhmac--edge-dash))))
+               (nhmac-gui--say "nhmac-edges-drawn-like-cards: dash row %d: %d of %d" y on (1+ (- (nth 2 dash) (nth 0 dash))))
+               (should (> on 0))
+               (should (< on (1+ (- (nth 2 dash) (nth 0 dash)))))))
+           (set-window-parameter left 'glitnir-edges nil)
+           (set-window-parameter right 'glitnir-edges nil)
+           (should (= (funcall tagged edge-tag) 0))
+           (should (= (funcall tagged block-tag) 1))
+           (set-window-parameter left 'glitnir-blocks nil)
+           (should-not (glitnir-nhmac--box (glitnir-nhmac--grab "edges-gone") glitnir-nhmac--edge-arrow 48)))
+       (dolist (w (list left right))
+         (when (window-live-p w)
+           (set-window-parameter w 'glitnir-edges nil)
+           (set-window-parameter w 'glitnir-blocks nil)))))))
+
 ;; The overview ruler (docs/specs/nidhogg/2026-11-13-glitnir-overview-ruler-case.md in the org folder): block bars
 ;; whose clip is a strip in the right fringe, shown on macOS as the window's block image like any block.
 

@@ -353,18 +353,24 @@ pub fn sync(
         return Ok(sync_at(&mut state.backings, frame, windows)?);
     }
     if let Some(list) = images_at(&mut state.backings, frame, windows)? {
-        // the window's whole list: the cards, then its block images as they are (`blocks::sync`)
-        let blocks = state
+        // the window's whole list: the cards, then its block and edge images as they are (`blocks::sync`,
+        // `edges::sync`)
+        let (blocks, edges) = state
             .backings
             .frame_mut(frame)
-            .map(|f| f.blocks.sent.clone())
+            .map(|f| (f.blocks.sent.clone(), f.edges.sent.clone()))
             .unwrap_or_default();
         let mut full = list.clone();
-        full.extend(blocks.iter().map(|&(id, rect)| CardImage {
-            id,
-            rect,
-            argb: None,
-        }));
+        full.extend(
+            blocks
+                .iter()
+                .chain(edges.iter())
+                .map(|&(id, rect)| CardImage {
+                    id,
+                    rect,
+                    argb: None,
+                }),
+        );
         if let Ok((backend, ..)) = state.csd_parts(window) {
             // as for a child's chrome, a refused list is given again with the next change
             let _ = backend.set_cards(window, &full);

@@ -263,20 +263,21 @@ pub fn sync(
         return Ok(sync_at(&mut state.backings, frame, blocks)?);
     }
     if let Some(list) = images_at(&mut state.backings, frame, blocks)? {
-        let cards = state
+        // the window's whole list: its cards as they are, these block images, then its edge images as they are
+        // (`edges::sync`), last so the shell keeps them on top
+        let (cards, edges) = state
             .backings
             .frame_mut(frame)
-            .map(|f| f.cards.sent.clone())
+            .map(|f| (f.cards.sent.clone(), f.edges.sent.clone()))
             .unwrap_or_default();
-        let mut full: Vec<CardImage> = cards
-            .iter()
-            .map(|&(id, rect)| CardImage {
-                id,
-                rect,
-                argb: None,
-            })
-            .collect();
+        let kept = |&(id, rect)| CardImage {
+            id,
+            rect,
+            argb: None,
+        };
+        let mut full: Vec<CardImage> = cards.iter().map(kept).collect();
         full.extend(list.iter().cloned());
+        full.extend(edges.iter().map(kept));
         let given = state.backend().set_cards(window, &full).is_ok();
         let f = state.backings.frame_mut(frame)?;
         if given {

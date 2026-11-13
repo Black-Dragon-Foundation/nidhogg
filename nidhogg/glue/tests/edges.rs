@@ -156,4 +156,42 @@ mod edges {
         let (damage, _) = commit(key);
         assert!(damage.is_empty(), "{damage:?}");
     }
+
+    /// For a shell that shows the cards itself (macOS): a window's edges drawn alone over a clear text area as one
+    /// image, placed in the native area, once per change.  The line is its colour, opaque, and a pixel away from it
+    /// is clear; the same list again gives nothing; the edges gone leave an empty list.
+    #[test]
+    fn edges_drawn_alone_for_a_shell_once_per_change() {
+        use nhglue::edges::images_at;
+        let mut b = Backings::default();
+        let (key, _v) = frame(&mut b, 120);
+        // a level line across the middle of the text area, 1 px wide at scale 1
+        let y = CLIP.y + 50;
+        let e = [edge(&[(20, y), (180, y)], 0)];
+        let list = images_at(&mut b, key, &e).unwrap().expect("a change");
+        assert_eq!(list.len(), 1);
+        let c = &list[0];
+        assert_eq!(c.id, edge_id(SEQ));
+        assert_eq!(c.rect, (CLIP.x, CLIP.y, CLIP.w as u32, CLIP.h as u32));
+        let (x0, y0, w, _) = c.rect;
+        let px = c.argb.as_ref().expect("an image");
+        assert_eq!(px.len(), (CLIP.w * CLIP.h) as usize);
+        let at = |nx: i32, ny: i32| px[((ny - y0) * w as i32 + (nx - x0)) as usize];
+        // the line covers its row (or the two rows it straddles): somewhere on it the colour, near opaque
+        let on = at(100, y).max(at(100, y - 1));
+        assert!(on >> 24 >= 0x7f && on & 0xff_ffff != 0, "{on:#x}");
+        // well away from it, and past its ends: clear
+        assert_eq!(at(100, y + 10), 0);
+        assert_eq!(at(5, y), 0);
+        assert_eq!(count(&mut b, key), 1);
+        assert!(images_at(&mut b, key, &e).unwrap().is_none());
+        assert!(
+            images_at(&mut b, key, &[])
+                .unwrap()
+                .expect("a change")
+                .is_empty()
+        );
+        assert!(images_at(&mut b, key, &[]).unwrap().is_none());
+        assert_eq!(count(&mut b, key), 0);
+    }
 }

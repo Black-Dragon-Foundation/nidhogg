@@ -18,6 +18,7 @@ use crate::display::Display;
 use crate::guard::GlueError;
 use glitnir::geom::Rect;
 use glitnir::scene::{Edge, LayerDesc};
+use nhshell::api::CardImage;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -64,6 +65,9 @@ type Applied = (Rect, u32, Arc<[Edge]>);
 #[derive(Debug, Default)]
 pub struct Edges {
     applied: BTreeMap<u64, Applied>,
+    /// The images last given to a shell that shows them itself (`cards_on_layers`): id and place in the native area,
+    /// so the cards' and blocks' lists keep them.
+    pub(crate) sent: Vec<(u64, (i32, i32, u32, u32))>,
 }
 
 impl Edges {
@@ -191,8 +195,56 @@ pub fn sync_at(b: &mut Backings, key: u64, edges: &[NhgEdge]) -> Result<u32, i32
     Ok(u32::try_from(applied.len()).unwrap_or(u32::MAX))
 }
 
+/// [`sync_at`] for a shell that shows the cards on layers of its own (`cards_on_layers`, macOS): each window's edges
+/// drawn alone over its text area ([`glitnir::compose::edge_overlay`]), one image per window placed in the frame's
+/// native area, whenever any changed; `None` when nothing did (or the frame has no scale yet).  An empty list: the
+/// edges went.
+pub fn images_at(
+    b: &mut Backings,
+    key: u64,
+    edges: &[NhgEdge],
+) -> Result<Option<Vec<CardImage>>, i32> {
+    let f = b.frame_mut(key)?;
+    let (s120, origin) = (f.scale120(), f.origin());
+    if s120 == 0 {
+        return Ok(None);
+    }
+    let planned = plan(edges, s120, origin);
+    let applied = &mut f.edges.applied;
+    let same = planned.len() == applied.len()
+        && planned.iter().all(|(seq, (clip, v))| {
+            applied
+                .get(seq)
+                .is_some_and(|(r, q, old)| r == clip && *q == s120 && **old == **v)
+        });
+    if same {
+        return Ok(None);
+    }
+    *applied = planned
+        .iter()
+        .map(|(seq, (clip, v))| (*seq, (*clip, s120, Arc::from(v.as_slice()))))
+        .collect();
+    let s = f64::from(s120) / 120.0;
+    Ok(Some(
+        planned
+            .into_iter()
+            .map(|(seq, (clip, v))| CardImage {
+                id: edge_id(seq),
+                rect: (
+                    clip.x - origin.0,
+                    clip.y - origin.1,
+                    clip.w as u32,
+                    clip.h as u32,
+                ),
+                argb: Some(glitnir::compose::edge_overlay(clip, &v, s).into()),
+            })
+            .collect(),
+    ))
+}
+
 /// [`sync_at`] for frame `frame` of shell window `window`.  A shell that shows window cards on layers of its own
-/// (`cards_on_layers`, macOS) draws no edges yet: nothing is kept for it.
+/// (`cards_on_layers`, macOS) shows the edges the same way: [`images_at`]'s images, with the frame's cards and block
+/// images as they are, as the window's list.
 pub fn sync(
     state: &mut Display,
     window: u64,
@@ -201,16 +253,45 @@ pub fn sync(
 ) -> Result<u32, GlueError> {
     let on_layers =
         matches!(state.csd_parts(window), Ok((backend, ..)) if backend.cards_on_layers());
-    if on_layers {
-        return Ok(0);
+    if !on_layers {
+        return Ok(sync_at(&mut state.backings, frame, edges)?);
     }
-    Ok(sync_at(&mut state.backings, frame, edges)?)
+    if let Some(list) = images_at(&mut state.backings, frame, edges)? {
+        let (cards, blocks) = state
+            .backings
+            .frame_mut(frame)
+            .map(|f| (f.cards.sent.clone(), f.blocks.sent.clone()))
+            .unwrap_or_default();
+        let mut full: Vec<CardImage> = cards
+            .iter()
+            .chain(blocks.iter())
+            .map(|&(id, rect)| CardImage {
+                id,
+                rect,
+                argb: None,
+            })
+            .collect();
+        full.extend(list.iter().cloned());
+        let given = match state.csd_parts(window) {
+            Ok((backend, ..)) => backend.set_cards(window, &full).is_ok(),
+            Err(_) => false,
+        };
+        let f = state.backings.frame_mut(frame)?;
+        if given {
+            f.edges.sent = list.iter().map(|c| (c.id, c.rect)).collect();
+        } else {
+            // refused: given again at the next publish
+            f.edges.applied.clear();
+        }
+    }
+    Ok(u32::try_from(count(&mut state.backings, frame)).unwrap_or(u32::MAX))
 }
 
 /// The next sync gives every frame's edges again (a reconnect: the shell's surfaces start over).
 pub fn forget_all(b: &mut Backings) {
     for (_, f) in b.frames_mut() {
         f.edges.applied.clear();
+        f.edges.sent.clear();
     }
 }
 

@@ -142,6 +142,18 @@ impl Cards {
                 *at = c.rect;
             }
         }
+        // stacked in the list's order, each just above the one before (the cards, the blocks, then the edges, which
+        // overlap the blocks): a layer made later went in beneath the others
+        let mut below: Option<&Retained<CALayer>> = None;
+        for c in &list {
+            let Some((l, _)) = self.shown.get(&c.id) else {
+                continue;
+            };
+            if let Some(b) = below {
+                root.insertSublayer_above(l, Some(b));
+            }
+            below = Some(l);
+        }
     }
 
     /// The cards shown: id and place (device pixels), in id order (test hook).
