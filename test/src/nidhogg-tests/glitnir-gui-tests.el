@@ -217,6 +217,34 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
       (set-window-fringes w nil nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/a-ruler-beside-a-ring ()
+  "A window with a ring block and a ruler: the ring's line stays whole in the text area and the ruler's mark shows in
+the strip (each its own layer, its own clip)."
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-ring*" 1000)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((bar ,(copy-marker 1) ,(save-excursion (goto-char 1) (forward-line 2) (point-marker))
+                      :x1 6 :ring ("#ff0000" . 1))))
+              (set-window-parameter w 'glitnir-ruler '(:width 12 :right 2 :height 4 :marks ((1 0 12 ("#00ff00" . 1)))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,_ ,_ ,right ,_) (window-pixel-edges w))
+                       (`(,x ,ty ,_ ,_) (window-inside-pixel-edges w))
+                       (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2)))
+            (should (equal (glitnir-gui--pixel snap (list (+ x 2) (+ ty 1))) '(255 0 0)))
+            (should (equal (glitnir-gui--pixel snap (list (- x1 6) (+ ty 1))) '(0 255 0)))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (kill-buffer buf))))
+
 ;; The stacking list.
 
 (defun glitnir-gui--children (n)

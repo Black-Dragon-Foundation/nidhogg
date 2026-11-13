@@ -7,7 +7,8 @@ mod blocks {
     use glitnir::scene::{BlockKind, Placed};
     use nhglue::backing::{Backings, NhgBacking, NhgFrameGeom, NhgRect};
     use nhglue::blocks::{
-        NHG_BLOCK_BAR, NHG_BLOCK_OPEN_TOP, NHG_BLOCK_RULE, NhgBlock, block_id, count, sync_at,
+        NHG_BLOCK_BAR, NHG_BLOCK_OPEN_TOP, NHG_BLOCK_RULE, NHG_BLOCK_STRIP, NhgBlock, block_id,
+        count, sync_at,
     };
     use std::sync::Arc;
 
@@ -83,6 +84,49 @@ mod blocks {
     /// Root px of a rectangle with the native area's origin.
     fn at(r: NhgRect) -> Rect {
         Rect::new(r.x, r.y + STRIP, r.w, r.h)
+    }
+
+    /// A window with a ring and a ruler: the ruler's strip bars are a block layer of their own (`seq | STRIP_TAG`), whose
+    /// clip is the strip, and the ring keeps its layer at the text area; neither cuts the other.
+    #[test]
+    fn a_strip_is_a_layer_of_its_own() {
+        use nhglue::backing::STRIP_TAG;
+        let mut b = Backings::default();
+        let (key, _v) = frame(&mut b, 120);
+        let strip = NhgRect {
+            x: 200,
+            y: ROW,
+            w: 12,
+            h: 100,
+        };
+        let bar = NhgBlock {
+            clip: strip,
+            rect: NhgRect {
+                x: 203,
+                y: ROW + 50,
+                w: 6,
+                h: 3,
+            },
+            radius: 0,
+            ..block(strip, NHG_BLOCK_BAR | NHG_BLOCK_STRIP)
+        };
+        assert_eq!(
+            sync_at(&mut b, key, &[block(rows(1, 3, 10, 95), 0), bar]),
+            Ok(2)
+        );
+        let (_, c) = commit(key);
+        let ring = placed(&c, block_id(SEQ)).expect("the ring's layer");
+        assert_eq!(ring.rect, at(CLIP));
+        assert_eq!(ring.blocks.len(), 1);
+        let s = placed(&c, block_id(SEQ | STRIP_TAG)).expect("the strip's layer");
+        assert_eq!(s.rect, at(strip));
+        assert_eq!(s.blocks.len(), 1);
+        assert_eq!(s.blocks[0].kind, BlockKind::Bar);
+        // the ruler gone: only its layer goes
+        assert_eq!(sync_at(&mut b, key, &[block(rows(1, 3, 10, 95), 0)]), Ok(1));
+        let (_, c) = commit(key);
+        assert!(placed(&c, block_id(SEQ | STRIP_TAG)).is_none());
+        assert!(placed(&c, block_id(SEQ)).is_some());
     }
 
     /// Red row 2: the Flow pair (two blocks on the same rows) gives two rectangles with their own x0/x1; a block

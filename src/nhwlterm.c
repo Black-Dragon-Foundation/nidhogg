@@ -752,7 +752,8 @@ nhwl_bar_add (struct window *w, NhgRect clip, NhgRect rect, intmax_t rgb,
     nhwl_blocks = xpalloc (nhwl_blocks, &nhwl_blocks_cap, 1, -1,
 			   sizeof *nhwl_blocks);
   nhwl_blocks[nhwl_nblocks++]
-    = (NhgBlock) { w->sequence_number, clip, rect, NHG_BLOCK_BAR, 0,
+    = (NhgBlock) { w->sequence_number, clip, rect,
+		   NHG_BLOCK_BAR | NHG_BLOCK_STRIP, 0,
 		   (int32_t) rgb, opacity, (int32_t) rgb };
 }
 
@@ -785,9 +786,23 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 		* height / span))
 
   Lisp_Object op = AREF (v, 4);
-  ptrdiff_t start = marker_position (w->start);
-  ptrdiff_t end = (w->window_end_valid ? BUF_Z (b) - w->window_end_pos
-		   : start);
+  /* The part shown: the current matrix's first and last text rows (the
+     window's end is not kept valid between redisplays).  */
+  ptrdiff_t start = marker_position (w->start), end = start;
+  struct glyph_matrix *m = w->current_matrix;
+  if (m)
+    {
+      struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
+      for (struct glyph_row *row = MATRIX_FIRST_TEXT_ROW (m);
+	   row < bottom && row->enabled_p; row++)
+	{
+	  if (row == MATRIX_FIRST_TEXT_ROW (m))
+	    start = MATRIX_ROW_START_CHARPOS (row);
+	  end = MATRIX_ROW_END_CHARPOS (row);
+	  if (row->ends_at_zv_p)
+	    break;
+	}
+    }
   int y0 = NHWL_RULER_Y (start);
   int y1 = max (y0 + least, NHWL_RULER_Y (end));
   nhwl_bar_add (w, strip, (NhgRect) { strip.x, y0, width, min (y1, top + height) - y0 },
