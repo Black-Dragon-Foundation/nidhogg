@@ -350,7 +350,8 @@ The live session (2026-11-13): the frame's move to the lane's display left move-
 read, so `input-pending-p' stayed t, every `sit-for' returned at once, and a `set-frame-size' was never applied."
   (let ((n 0) ev)
     (while (and (< n 50) (input-pending-p)
-                (setq ev (let ((special-event-map (make-sparse-keymap))) (read-event nil nil 0))))
+                ;; a short wait, not 0: with 0 `read-event' returned nil with the move-frame events still queued
+                (setq ev (let ((special-event-map (make-sparse-keymap))) (read-event nil nil 0.05))))
       (setq n (1+ n))
       (let ((cmd (and (consp ev) (lookup-key special-event-map (vector (car ev))))))
         (glitnir-gui--say "gui-runner-take-special-events: %s: %S%s" (ert-test-name (ert-running-test)) ev
