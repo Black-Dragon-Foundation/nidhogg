@@ -318,6 +318,7 @@ pub fn images_at(
             chrome: Some(chrome),
             card: Some(card),
             blocks: std::sync::Arc::from([]),
+            edges: std::sync::Arc::from([]),
         })
         .collect();
     Ok(Some(
