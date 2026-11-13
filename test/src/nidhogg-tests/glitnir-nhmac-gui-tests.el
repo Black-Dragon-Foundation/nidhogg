@@ -949,6 +949,9 @@ moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-t
    (lambda ()
      (let ((w (selected-window)) (buf (window-buffer (selected-window))) (k (round (* 3 (glitnir-nhmac--scale)))))
        (with-current-buffer buf (dotimes (i 1000) (insert (format "line %d\n" (1+ i)))))
+       ;; point too: left at the end, it pulls the window there at the next redisplay (the live session: the window
+       ;; started at line 972, so the ring's lines 2 to 4 were not shown and C rightly gave no ring)
+       (set-window-point w 1)
        (set-window-start w 1)
        (unwind-protect
            (progn
@@ -971,7 +974,9 @@ moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-t
                (should (<= (abs (- (nth 1 band) (plist-get b :top))) k))
                (should (< (nth 3 band) mid)))
              ;; a scroll to line 496: the band moves to the middle, the marks stay
-             (set-window-start w (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point))))
+             (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point)))))
+               (set-window-point w p)
+               (set-window-start w p))
              (redisplay t)
              (let* ((b (glitnir-nhmac--ruler-boxes (glitnir-nhmac--grab "ruler-scrolled") w))
                     (marks (plist-get b :marks)) (band (plist-get b :band))
@@ -994,6 +999,9 @@ glue keeps each its own clip)."
    (lambda ()
      (let ((w (selected-window)) (buf (window-buffer (selected-window))))
        (with-current-buffer buf (dotimes (i 1000) (insert (format "line %d\n" (1+ i)))))
+       ;; point too: left at the end, it pulls the window there at the next redisplay (the live session: the window
+       ;; started at line 972, so the ring's lines 2 to 4 were not shown and C rightly gave no ring)
+       (set-window-point w 1)
        (set-window-start w 1)
        (unwind-protect
            (progn
