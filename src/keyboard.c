@@ -13611,6 +13611,14 @@ is_ignored_event (union buffered_input_event *event)
     case SELECTION_REQUEST_EVENT:
       ignore_event = Qselection_request;
       break;
+#ifdef HAVE_NHWL
+      /* `move-frame' is in `while-no-input-ignore-events' by default;
+	 the shell sends one when a frame enters another monitor (a
+	 child frame first shown, too).  */
+    case MOVE_FRAME_EVENT:
+      ignore_event = Qmove_frame;
+      break;
+#endif
 #ifdef USE_FILE_NOTIFY
     case FILE_NOTIFY_EVENT:
       ignore_event = Qfile_notify;

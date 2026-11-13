@@ -251,6 +251,32 @@ monitor is the new one."
        (gui-runner-recorder '(:cmd "output" :op "leave" :name "nh-1" :surface "toplevel"))
        (nhwl-gui--pump)))))
 
+(ert-deftest nhwl-gui/a-pending-move-frame-is-not-input ()
+  "A queued `move-frame' (here: the frame entered another monitor) is in `while-no-input-ignore-events' by default, so
+`input-pending-p' does not count it and `while-no-input' runs its body.  company-box fetched a child frame's first
+documentation under `while-no-input' as the frame entered its monitor, got nothing and never asked again."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((moved nil) (f (selected-frame))
+         (on-move (lambda (frame) (push frame moved))))
+    (nhwl-gui--with-second-output
+     (add-hook 'move-frame-functions on-move)
+     (unwind-protect
+         (progn
+           (gui-runner-read-all)
+           (gui-runner-recorder '(:cmd "output" :op "enter" :name "nh-1" :surface "toplevel"))
+           ;; the event is queued: only focus events are left out of this count
+           (should (nhwl-gui--wait (lambda () (let ((input-pending-p-filter-events nil)) (input-pending-p)))))
+           (should-not (input-pending-p))
+           (should (eq (while-no-input 'ran) 'ran))
+           ;; and it was the move: reading it runs the hook
+           (nhwl-gui--wait-ev (lambda () moved))
+           (should (equal moved (list f))))
+       (remove-hook 'move-frame-functions on-move)
+       ;; only the enter is undone: the frame is back to no output entered, as the session began
+       (gui-runner-recorder '(:cmd "output" :op "leave" :name "nh-1" :surface "toplevel"))
+       (nhwl-gui--wait-ev (lambda () (null (alist-get 'frames (nhwl-gui--monitor "nh-1")))))
+       (nhwl-gui--pump)))))
+
 ;;;; A full-screen frame whose output changes scale
 
 (defun nhwl-gui-scale--fill (s120 w h)
