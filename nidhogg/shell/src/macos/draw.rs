@@ -4,7 +4,7 @@
 //! so a Lisp thread that redisplays paints here too (under the global lock); its commit waits for the main thread's
 //! pump.  Only Core Graphics' C functions are used, declared here, so the shell takes no further crates.
 
-use crate::shapes::{Paint, Shape};
+use crate::shapes::{Paint, RRect, Shape};
 use glitnir::geom::Rect;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -89,6 +89,7 @@ unsafe extern "C" {
     fn CGContextAddArc(c: Ctx, x: f64, y: f64, r: f64, a0: f64, a1: f64, clockwise: i32);
     fn CGContextClosePath(c: Ctx);
     fn CGContextFillPath(c: Ctx);
+    fn CGContextEOFillPath(c: Ctx);
     fn CGContextStrokePath(c: Ctx);
     fn CGContextSetTextMatrix(c: Ctx, m: CGAffineTransform);
     fn CGContextSetTextDrawingMode(c: Ctx, mode: i32);
@@ -257,6 +258,71 @@ impl Canvas {
         }
     }
 
+    /// `r` as a closed sub-path, glitnir-decor.c's rrect_path: from the top edge's start clockwise on the screen,
+    /// an arc at each rounded corner.
+    fn rrect(&self, r: &RRect) {
+        let c = self.ctx;
+        let [tl, tr, br, bl] = r.radii;
+        let (x, y, w, h) = (r.x, r.y, r.w, r.h);
+        let q = std::f64::consts::FRAC_PI_2;
+        // SAFETY: CG path calls on our context.
+        unsafe {
+            CGContextMoveToPoint(c, x + tl, y);
+            CGContextAddLineToPoint(c, x + w - tr, y);
+            if tr > 0.0 {
+                CGContextAddArc(c, x + w - tr, y + tr, tr, -q, 0.0, 0);
+            }
+            CGContextAddLineToPoint(c, x + w, y + h - br);
+            if br > 0.0 {
+                CGContextAddArc(c, x + w - br, y + h - br, br, 0.0, q, 0);
+            }
+            CGContextAddLineToPoint(c, x + bl, y + h);
+            if bl > 0.0 {
+                CGContextAddArc(c, x + bl, y + h - bl, bl, q, 2.0 * q, 0);
+            }
+            CGContextAddLineToPoint(c, x, y + tl);
+            if tl > 0.0 {
+                CGContextAddArc(c, x + tl, y + tl, tl, 2.0 * q, 3.0 * q, 0);
+            }
+            CGContextClosePath(c);
+        }
+    }
+
+    /// A ring (`Shape::Ring`): between `outer` and `inner`, even-odd, in `argb`; with `relief`, `argb` above
+    /// `outer`'s anti-diagonal and the relief's colour below it (draw_ring's two clipped fills).
+    fn ring(&self, outer: &RRect, inner: &RRect, argb: u32, relief: Option<u32>) {
+        let (x0, y0) = (outer.x - 1.0, outer.y - 1.0);
+        let (x1, y1) = (outer.x + outer.w + 1.0, outer.y + outer.h + 1.0);
+        match relief {
+            None => self.ring_in(outer, inner, argb, &[]),
+            // the half above the anti-diagonal, then the half below it
+            Some(below) => {
+                self.ring_in(outer, inner, argb, &[(x0, y0), (x1, y0), (x0, y1)]);
+                self.ring_in(outer, inner, below, &[(x1, y0), (x1, y1), (x0, y1)]);
+            }
+        }
+    }
+
+    /// The ring between `outer` and `inner` in `argb`, inside the polygon `within` (all of it when empty).
+    fn ring_in(&self, outer: &RRect, inner: &RRect, argb: u32, within: &[(f64, f64)]) {
+        let c = self.ctx;
+        // SAFETY: CG calls on our context.
+        unsafe {
+            CGContextSaveGState(c);
+            if !within.is_empty() {
+                self.path(within);
+                CGContextClosePath(c);
+                CGContextClip(c);
+            }
+            CGContextBeginPath(c);
+            self.rrect(outer);
+            self.rrect(inner);
+            self.fill_colour(argb);
+            CGContextEOFillPath(c);
+            CGContextRestoreGState(c);
+        }
+    }
+
     fn shape(&self, s: &Shape) {
         let c = self.ctx;
         // SAFETY: CG calls on our context.
@@ -296,6 +362,12 @@ impl Canvas {
                     CGContextStrokePath(c);
                     CGContextSetLineDash(c, 0.0, std::ptr::null(), 0);
                 }
+                Shape::Ring {
+                    outer,
+                    inner,
+                    argb,
+                    relief,
+                } => self.ring(outer, inner, *argb, *relief),
                 Shape::Corners {
                     r,
                     radius,
@@ -445,19 +517,20 @@ impl Canvas {
                     y,
                     w,
                     rows,
-                    scale,
+                    scale: mag,
                     fg,
                     bg,
                 } => {
+                    // `mag`: a bitmap's magnification, whole device pixels per bit (not a backing scale)
                     if let Some(bg) = bg {
                         self.fill_colour(*bg);
                         CGContextFillRect(
                             c,
-                            cg(&Rect::new(*x, *y, w * scale, rows.len() as i32 * scale)),
+                            cg(&Rect::new(*x, *y, w * mag, rows.len() as i32 * mag)),
                         );
                     }
                     self.fill_colour(*fg);
-                    for r in crate::shapes::bitmap_runs(*x, *y, *w, rows, *scale) {
+                    for r in crate::shapes::bitmap_runs(*x, *y, *w, rows, *mag) {
                         CGContextFillRect(c, cg(&r));
                     }
                 }
@@ -470,4 +543,55 @@ impl Canvas {
 fn comps(argb: u32) -> [f64; 4] {
     let ch = |s: u32| f64::from((argb >> s) & 0xff) / 255.0;
     [ch(16), ch(8), ch(0), ch(24)]
+}
+
+/// Test hook (`test-font-probe`'s `glyph-rows`): glyph `glyph` of open font `font` painted alone, as a run is painted
+/// (`fg` over opaque `bg`, from x `w / 4`), its baseline `base` rows down a `w` x `h` canvas: each row's pixel furthest
+/// from `bg`, top down, as #xRRGGBB.  `None` when Core Graphics refuses the canvas.
+#[cfg(feature = "test-hooks")]
+pub fn glyph_rows(
+    font: u64,
+    glyph: u16,
+    fg: u32,
+    bg: u32,
+    w: i32,
+    h: i32,
+    base: i32,
+) -> Option<Vec<u32>> {
+    let mut px = vec![0u32; (w * h) as usize];
+    {
+        let mut slot = None;
+        let canvas = Canvas::over(&mut slot, &mut px, w, h)?;
+        canvas.paint(&Paint {
+            clip: Vec::new(),
+            shapes: vec![
+                Shape::Fill {
+                    r: Rect { x: 0, y: 0, w, h },
+                    argb: bg | 0xff00_0000,
+                    copy: true,
+                },
+                Shape::Glyphs {
+                    font,
+                    x: f64::from(w / 4),
+                    y: f64::from(base),
+                    glyphs: vec![glyph],
+                    xs: vec![0.0],
+                    argb: fg | 0xff00_0000,
+                    integral: false,
+                },
+            ],
+        });
+    }
+    let off = |p: u32| {
+        [0, 8, 16]
+            .iter()
+            .map(|s| ((p >> s) & 0xff).abs_diff((bg >> s) & 0xff))
+            .max()
+            .unwrap_or(0)
+    };
+    Some(
+        px.chunks(w as usize)
+            .map(|row| row.iter().copied().max_by_key(|&p| off(p)).unwrap_or(bg) & 0xff_ffff)
+            .collect(),
+    )
 }

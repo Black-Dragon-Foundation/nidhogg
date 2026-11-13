@@ -31,7 +31,8 @@
 (defmacro watchdog-modal--with-watchdog (&rest body)
   "Run BODY with the watchdog on at a 100 ms threshold; stop it after."
   (declare (indent 0))
-  `(let ((hang-file (make-temp-file "nh-wd-hang")))
+  `(let ((hang-file (progn (skip-unless (fboundp 'nidhogg-watchdog--start))
+                           (make-temp-file "nh-wd-hang"))))
      (unwind-protect
          (progn
            (nidhogg-watchdog--start 100 600000 hang-file)

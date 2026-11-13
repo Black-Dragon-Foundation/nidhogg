@@ -41,6 +41,7 @@ unsafe extern "C" {
         wheel3: i32,
     ) -> *mut CGEventOpaque;
     fn CGEventSetLocation(event: *mut CGEventOpaque, location: CGPoint);
+    fn CGEventSetIntegerValueField(event: *mut CGEventOpaque, field: u32, value: i64);
     fn CGEventCreateMouseEvent(
         source: *const c_void,
         kind: u32,
@@ -56,8 +57,12 @@ unsafe extern "C" {
     fn CFRelease(cf: *const c_void);
 }
 
-/// `kCGScrollEventUnitLine`.
+/// `kCGScrollEventUnitPixel` and `kCGScrollEventUnitLine`.
+const CG_SCROLL_PIXEL: u32 = 0;
 const CG_SCROLL_LINE: u32 = 1;
+/// `kCGScrollWheelEventScrollPhase` and `kCGScrollWheelEventMomentumPhase`.
+const CG_FIELD_SCROLL_PHASE: u32 = 99;
+const CG_FIELD_MOMENTUM_PHASE: u32 = 123;
 /// `kCGHIDEventTap`: where the window server takes events as if from the hardware.
 const CG_HID_TAP: u32 = 0;
 /// `kCGEventLeftMouseDown`, `kCGEventLeftMouseUp`, `kCGEventLeftMouseDragged`.
@@ -71,6 +76,14 @@ pub const MOUSE_UP: i64 = 1;
 pub const MOUSE_DRAG: i64 = 2;
 pub const MOUSE_MOVE: i64 = 3;
 pub const MOUSE_WHEEL: i64 = 4;
+/// The pointer leaving the view at `x`, `y` (outside it): `mouseExited:`, sent to the view as its tracking area would.
+pub const MOUSE_EXIT: i64 = 5;
+/// A trackpad's precise scroll: `button` points (positive down), `flags` its phases (`PHASE_*`).
+pub const MOUSE_PRECISE: i64 = 6;
+/// A precise scroll's phases in `flags`: the gesture's (`NSEventPhaseChanged`), or momentum's after the fingers left
+/// (`kCGMomentumScrollPhaseContinue`).
+pub const PHASE_GESTURE: i64 = 0;
+pub const PHASE_MOMENTUM: i64 = 1;
 
 fn one_char(c: i64) -> ShellResult<Retained<NSString>> {
     if c == 0 {
@@ -125,7 +138,7 @@ pub fn key(
 }
 
 /// Post a mouse event of `kind` at `x`, `y` (device pixels from the view's top left): `button` (0 left, 1 right, 2
-/// middle) for a press, release or drag, `button` lines (positive down) for a wheel.
+/// middle) for a press, release or drag, `button` lines (positive down) for a wheel, points for a precise scroll.
 pub fn mouse(
     mtm: MainThreadMarker,
     app: &NSApplication,
@@ -136,13 +149,18 @@ pub fn mouse(
     flags: i64,
 ) -> ShellResult {
     focus(app, w);
-    let scale = w.window.backingScaleFactor();
     let height = w.view.bounds().size.height;
     // window coordinates: points from the content's bottom left
-    let at = NSPoint::new(x / scale, height - y / scale);
-    let flags = NSEventModifierFlags(usize::try_from(flags).map_err(|_| ShellError::Arg)?);
-    if kind == MOUSE_WHEEL {
-        let lines = i32::try_from(button).map_err(|_| ShellError::Arg)?;
+    let (px, py) = w.scale().view_point(x, y, height);
+    let at = NSPoint::new(px, py);
+    if kind == MOUSE_WHEEL || kind == MOUSE_PRECISE {
+        let n = i32::try_from(button).map_err(|_| ShellError::Arg)?;
+        let (units, momentum) = match (kind, flags) {
+            (MOUSE_WHEEL, _) => (CG_SCROLL_LINE, None),
+            (_, PHASE_GESTURE) => (CG_SCROLL_PIXEL, Some(false)),
+            (_, PHASE_MOMENTUM) => (CG_SCROLL_PIXEL, Some(true)),
+            _ => return Err(ShellError::Arg),
+        };
         let top = NSScreen::screens(mtm)
             .firstObject()
             .map_or(0.0, |s| s.frame().size.height);
@@ -152,10 +170,16 @@ pub fn mouse(
         // Core Graphics one flipped against the main screen).
         // SAFETY: Core Graphics' constructor; the event is released once, after AppKit made its own copy.
         unsafe {
-            let cg =
-                CGEventCreateScrollWheelEvent2(std::ptr::null(), CG_SCROLL_LINE, 1, -lines, 0, 0);
+            let cg = CGEventCreateScrollWheelEvent2(std::ptr::null(), units, 1, -n, 0, 0);
             if cg.is_null() {
                 return Err(ShellError::NoMem);
+            }
+            // a pixel event is continuous (precise deltas); its phase: the gesture's changed (4), or none and
+            // momentum's continue (2)
+            match momentum {
+                Some(false) => CGEventSetIntegerValueField(cg, CG_FIELD_SCROLL_PHASE, 4),
+                Some(true) => CGEventSetIntegerValueField(cg, CG_FIELD_MOMENTUM_PHASE, 2),
+                None => {}
             }
             CGEventSetLocation(
                 cg,
@@ -168,6 +192,27 @@ pub fn mouse(
             CFRelease(cg.cast());
             let ev = ev.ok_or(ShellError::State)?;
             let () = msg_send![&*w.view, scrollWheel: &*ev];
+        }
+        return Ok(());
+    }
+    let flags = NSEventModifierFlags(usize::try_from(flags).map_err(|_| ShellError::Arg)?);
+    if kind == MOUSE_EXIT {
+        // AppKit hands an exit to its tracking area's owner itself; a posted one reaches no area
+        // SAFETY: AppKit's constructor with null user data; the view takes the event as AppKit would give it.
+        unsafe {
+            let ev = NSEvent::enterExitEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_trackingNumber_userData(
+                NSEventType::MouseExited,
+                at,
+                flags,
+                0.0,
+                w.window.windowNumber(),
+                None,
+                0,
+                0,
+                std::ptr::null_mut(),
+            )
+            .ok_or(ShellError::State)?;
+            let () = msg_send![&*w.view, mouseExited: &*ev];
         }
         return Ok(());
     }
@@ -231,5 +276,47 @@ pub fn real_mouse(mtm: MainThreadMarker, kind: i64, at: (f64, f64)) -> ShellResu
         CGEventPost(CG_HID_TAP, cg);
         CFRelease(cg.cast());
     }
+    Ok(())
+}
+
+/// Post a real left drag through the window server from `from` to `to` (screen points, origin bottom left): the press
+/// now, then from another thread, after `delay`, `steps` moves 20 ms apart and the release at `to`.  The caller starts
+/// a drag (`beginDraggingSession`) once the press has arrived; the moves and the release then reach that session as the
+/// pointer's would.  For the drag-out row.
+pub fn real_drag(
+    mtm: MainThreadMarker,
+    from: (f64, f64),
+    to: (f64, f64),
+    delay: std::time::Duration,
+    steps: u32,
+) -> ShellResult {
+    let top = NSScreen::screens(mtm)
+        .firstObject()
+        .map_or(0.0, |s| s.frame().size.height);
+    let cg = move |(x, y): (f64, f64)| CGPoint { x, y: top - y };
+    let post = move |kind: u32, at: CGPoint| {
+        // SAFETY: Core Graphics' constructor; the event is posted, then released once.  Both calls are thread-safe.
+        unsafe {
+            let ev = CGEventCreateMouseEvent(std::ptr::null(), kind, at, 0);
+            if !ev.is_null() {
+                CGEventPost(CG_HID_TAP, ev);
+                CFRelease(ev.cast());
+            }
+        }
+    };
+    post(CG_LEFT_DOWN, cg(from));
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        let n = steps.max(1);
+        for i in 1..=n {
+            let t = f64::from(i) / f64::from(n);
+            post(
+                CG_LEFT_DRAGGED,
+                cg((from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        post(CG_LEFT_UP, cg(to));
+    });
     Ok(())
 }

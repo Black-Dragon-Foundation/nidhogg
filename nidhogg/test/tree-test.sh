@@ -20,21 +20,40 @@ series_exception() {
   local file=${SERIES_EXCEPTIONS:-nidhogg/test/series-exceptions.txt}
   [ -f "$file" ] && grep -q "^$1" "$file"
 }
+# Sets REPLY to the subject of the commit that created file $1 (the oldest add on HEAD).  One walk of the history fills
+# flag_rule's table for every file: a walk per file read Emacs's whole history again for each of some 500 files, past
+# CI's limit.  Call it outside $(...): a subshell would fill the table and lose it.
+created_subject() {
+  if [ -z "$created_ready" ]; then
+    local line subj=
+    while IFS= read -r line; do
+      case $line in '@'*) subj=${line#@} ;; '') ;; *) created[$line]=$subj ;; esac   # newest first: the oldest stays
+    done < <(git log --diff-filter=A --format=@%s --name-only HEAD -- src lisp)
+    created_ready=1
+  fi
+  REPLY=${created[$1]-}
+}
 # Whether Lisp file $1, created by a commit of a flag group, has a later commit that belongs to none (an exception excepted).
+# The answer is kept in flag_rule's `edited' table: every group's pass asks it again of the same files.
 lisp_group_file_edited_by_others() {
-  local f=$1 pat sha subj created
+  local f=$1 pat sha subj r=1
+  [ -z "${edited[$f]-}" ] || return "${edited[$f]}"
   pat="^nidhogg: ($(IFS='|'; echo "${gname[*]}")):"
-  created=$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1)
-  printf '%s\n' "$created" | grep -qE "$pat" || return 1
-  while read -r sha subj; do
-    series_exception "$sha" && continue
-    printf '%s\n' "$subj" | grep -qE "$pat" || return 0
-  done < <(git log --no-merges --format='%H %s' HEAD -- "$f")   # merges never enter the final series
-  return 1
+  created_subject "$f"
+  if printf '%s\n' "$REPLY" | grep -qE "$pat"; then
+    while read -r sha subj; do
+      series_exception "$sha" && continue
+      printf '%s\n' "$subj" | grep -qE "$pat" || { r=0; break; }
+    done < <(git log --no-merges --format='%H %s' HEAD -- "$f")   # merges never enter the final series
+  fi
+  edited[$f]=$r
+  return $r
 }
 flag_rule() {
   local g name def ft b var first f sha body i j c n matched feat lowest d
   local -a gname=() gdef=() gfeat=() gbase=() flags=() feats=()
+  local -A created=() edited=()   # created_subject's and lisp_group_file_edited_by_others' tables, this run's only
+  local created_ready=
   for g in ${FLAG_GROUPS:-$FLAG_GROUPS_DEFAULT}; do
     IFS=: read -r name def ft <<<"$g"
     var=${name^^}_BASE; var=${var//-/_}; b=${!var:-}
@@ -68,7 +87,7 @@ flag_rule() {
         # always-false conditions such as '#if defined X && 0', which would show as a diff against the raw base.
         src/*.[chm])
           # A C file a flag group created is that group's own file (unguarded): the other groups' checks skip it.
-          sub=$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1)
+          created_subject "$f"; sub=$REPLY
           for j in "${!gname[@]}"; do
             case $sub in "nidhogg: ${gname[j]}:"*) [ "$i" != "$j" ] && [ -n "$(git rev-list -n 1 --grep="^nidhogg: ${gname[j]}:" "${gbase[i]}..HEAD")" ] && continue 2 ;; esac
           done
@@ -82,7 +101,8 @@ flag_rule() {
           [ "$(git rev-parse -q --verify "$up:$f")" != "$(git rev-parse "HEAD:$f")" ] || continue
           # A Lisp file a flag group created is the groups' own file: it passes while only flag-group commits touch it.
           # (Upstream files, and files whose history has any other commit, still go through the loadup-line rule.)
-          if [ -z "$(git log --diff-filter=A --format=%s HEAD -- "$f" | tail -n 1 | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ] &&
+          created_subject "$f"
+          if [ -z "$(printf '%s\n' "$REPLY" | grep -vE "^nidhogg: ($(IFS='|'; echo "${gname[*]}")):")" ] &&
              ! lisp_group_file_edited_by_others "$f"; then
             continue
           fi
@@ -101,6 +121,7 @@ flag_rule() {
   lowest=$(git merge-base --octopus "${gbase[@]}")
   while IFS= read -r sha; do
     c=$(git log -1 --format=%s "$sha")
+    series_exception "$sha" && continue   # misfiled: the release rebuild re-subjects it into its group
     for g in "${gname[@]}"; do case $c in "nidhogg: $g:"*) continue 2 ;; esac; done
     [ -z "$(git diff-tree --no-commit-id --name-only -r "$sha" -- src)" ] ||
       fail "$sha belongs to no flag group; it goes below the groups"
@@ -229,6 +250,11 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; putf "nidhogg: shell: s" src/nhwl.c 'int s;\n'; put "nidhogg: history: h" 'int a;\n#ifdef HAVE_NIDHOGG_HISTORY\nint h;\n#endif\n'
   putf "nidhogg: pgtk: p" src/nhwl.c 'int s;\nint t;\n'
   expect "another commit editing a C file a group created" "belongs to no flag group; it goes below the groups"
+  fixture; put "nidhogg: shell: s" 'int a;\n#ifdef HAVE_NHWL\nint s;\n#endif\n'
+  put "nidhogg: nhwl: misfiled" 'int a;\n#ifdef HAVE_NHWL\nint s;\nint t;\n#endif\n'
+  expect "a misfiled commit inside a group's define" "belongs to no flag group; it goes below the groups"
+  echo "$(git -C "$self/r" rev-parse HEAD) a listed exception" > "$self/exc"
+  SERIES_EXCEPTIONS="$self/exc" expect "the same commit listed as an exception" ""
   fixture; putf "nidhogg: shell: s" src/x.c 'int x;\n'; put "nidhogg: glitnir: g" "$in"; putf "nidhogg: shell: s2" src/x.c 'int x;\nint y;\n'
   expect "a shell commit editing an unguarded C file the shell group created" ""
   fixture; putf "nidhogg: shell: s" src/x.c 'int x;\n'; put "nidhogg: glitnir: g" "${in}int out;\n"
@@ -258,7 +284,7 @@ if [ "${TREE_TEST_SELF:-}" = 1 ]; then
   fixture; put "pgtk change without the prefix" "int a;\n/* p */\n"
   RULE=subj expect "a non-merge commit with a non-nidhogg subject" "commit subject does not start with 'nidhogg: '"
   unset RULE
-  echo "tree self-test: 38 cases ok"
+  echo "tree self-test: 40 cases ok"
   exit 0
 fi
 

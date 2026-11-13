@@ -114,6 +114,7 @@ the primitive itself, when it has one, comes first)."
 
 (ert-deftest watchdog/phases ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (wdph-running
     (with-temp-buffer
       (insert "abc")
@@ -141,6 +142,7 @@ the primitive itself, when it has one, comes first)."
     (should (eq (nidhogg-watchdog--test-phase) 'lisp))))
 
 (ert-deftest watchdog/process-wait-phase ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A wait that is not responsive (here: under `inhibit-redisplay') is
   ;; busy and labelled `process-wait'; after it returns, the rest of the
   ;; span is not.
@@ -155,6 +157,7 @@ the primitive itself, when it has one, comes first)."
 
 (ert-deftest watchdog/phase-restored-after-error ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A non-local exit pops the phases pushed inside its catch target
   ;; (`unwind_to_catch'): an error out of `json-parse-string', a `throw' out of a
   ;; filter.
@@ -171,6 +174,7 @@ the primitive itself, when it has one, comes first)."
 
 (ert-deftest watchdog/phase-kept-across-an-inner-catch ()
   :tags '(:cond)
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A catch established inside the phase and thrown to inside it, and
   ;; an error caught inside it, leave the phase alone.
   (wdph-running
@@ -188,6 +192,7 @@ the primitive itself, when it has one, comes first)."
 ;;;; Felt input
 
 (ert-deftest watchdog/felt-from-stored-input ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   (wdph-running
     (wdph--align)
     ;; Stored at 20 ms of a 300 ms span: felt, waited 280 ms.
@@ -213,6 +218,7 @@ the primitive itself, when it has one, comes first)."
     (should (eql (wdph--stat :requests) 0))))
 
 (ert-deftest watchdog/command-entry-is-felt ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A stall that ran a command is felt: its input waits for the result.
   (wdph-running
     (wdph--align)
@@ -228,6 +234,7 @@ the primitive itself, when it has one, comes first)."
 ;;;; Commands and typing
 
 (ert-deftest watchdog/typing-histogram ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Two typing commands of 10 and 20 ms: buckets <16 and <33.  The
   ;; first ends when the next command starts, the second at the wait.  A
   ;; command outside the typing set adds nothing.
@@ -250,6 +257,7 @@ the primitive itself, when it has one, comes first)."
     (should-error (nidhogg-watchdog--set-typing-commands (make-list 17 'x)))))
 
 (ert-deftest watchdog/merged-span-counts-commands ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; Three commands in one span (keys queued behind each other).
   (wdph-running
     (wdph--align)

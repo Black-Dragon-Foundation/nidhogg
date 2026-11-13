@@ -220,10 +220,11 @@ pub fn popup(
     CHOSEN.with(|c| c.set(None));
     #[cfg(feature = "test-hooks")]
     TRACKING.with(|t| *t.borrow_mut() = Some(m.clone()));
-    match window.and_then(|w| w.contentView().map(|v| (w.backingScaleFactor(), v))) {
+    match window.and_then(|w| w.contentView().map(|v| (super::scale::of_window(w), v))) {
         Some((scale, view)) => {
             let height = view.frame().size.height;
-            let at = NSPoint::new(x as f64 / scale, height - y as f64 / scale);
+            let (px, py) = scale.view_point(x as f64, y as f64, height);
+            let at = NSPoint::new(px, py);
             m.popUpMenuPositioningItem_atLocation_inView(None, at, Some(&view));
         }
         None => {

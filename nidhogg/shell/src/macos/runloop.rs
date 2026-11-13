@@ -35,6 +35,42 @@ pub enum MacEv {
     Screens,
     /// A drag in the window's resize band asks for this frame (`resize::NhWindow`).
     Resize(WindowId, NSRect),
+    /// A native full-screen transition started (`true`) or ended, entered, exited or failed.
+    FullScreen(WindowId, bool),
+    /// The run loop's turn after a transition ended: the state asked for during it goes out now.
+    FullScreenWant(WindowId),
+}
+
+/// How many of AppKit's full-screen notifications reached the window delegates, in the order will enter, will exit,
+/// did enter, did exit, failed to enter, failed to exit, then how many of them the backend applied (test diagnostics).
+pub static FS_NOTES: [std::sync::atomic::AtomicU32; 7] =
+    [const { std::sync::atomic::AtomicU32::new(0) }; 7];
+
+/// The full-screen log: when it started, and its entries.
+type FsLog = (Option<std::time::Instant>, Vec<(usize, u128)>);
+
+thread_local! {
+    /// The newest full-screen steps as (STEP, milliseconds since the first), at most 24 (test diagnostics: how long a
+    /// transition took, and whether a request was sent).  STEP 0 to 5 are FS_NOTES' notifications, 7 a toggle sent,
+    /// 8 a request held for a transition's end, 9 the run loop's turn after it.
+    pub static FS_LOG: std::cell::RefCell<FsLog> = const { std::cell::RefCell::new((None, Vec::new())) };
+}
+
+fn fs_note(i: usize) {
+    FS_NOTES[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    fs_log(i);
+}
+
+/// Add step `i` to [`FS_LOG`].
+pub fn fs_log(i: usize) {
+    FS_LOG.with(|l| {
+        let mut l = l.borrow_mut();
+        let t0 = *l.0.get_or_insert_with(std::time::Instant::now);
+        if l.1.len() >= 24 {
+            l.1.remove(0);
+        }
+        l.1.push((i, t0.elapsed().as_millis()));
+    });
 }
 
 thread_local! {
@@ -44,7 +80,7 @@ thread_local! {
 
 /// Hand `ev` to the backend now, or queue it for the next lend.
 pub fn deliver(ev: MacEv) {
-    SCOPE.with(|s| s.deliver(ev, |shell, e| shell.apply(e)));
+    SCOPE.with(|s| s.deliver(ev, MacShell::apply_taken));
 }
 
 define_class!(
@@ -91,6 +127,50 @@ define_class!(
         #[unsafe(method(windowDidResignKey:))]
         fn did_resign_key(&self, _n: &NSNotification) {
             deliver(MacEv::Key(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowWillEnterFullScreen:))]
+        fn will_enter_full_screen(&self, _n: &NSNotification) {
+            fs_note(0);
+            deliver(MacEv::FullScreen(*self.ivars(), true));
+        }
+
+        #[unsafe(method(windowWillExitFullScreen:))]
+        fn will_exit_full_screen(&self, _n: &NSNotification) {
+            fs_note(1);
+            deliver(MacEv::FullScreen(*self.ivars(), true));
+        }
+
+        #[unsafe(method(windowDidEnterFullScreen:))]
+        fn did_enter_full_screen(&self, _n: &NSNotification) {
+            fs_note(2);
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn did_exit_full_screen(&self, _n: &NSNotification) {
+            fs_note(3);
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidFailToEnterFullScreen:))]
+        fn did_fail_to_enter_full_screen(&self, _w: &objc2_app_kit::NSWindow) {
+            fs_note(4);
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+
+        #[unsafe(method(windowDidFailToExitFullScreen:))]
+        fn did_fail_to_exit_full_screen(&self, _w: &objc2_app_kit::NSWindow) {
+            fs_note(5);
+            deliver(MacEv::FullScreen(*self.ivars(), false));
+        }
+    }
+
+    impl WinDelegate {
+        /// The run loop's turn after a transition's end (`windowing::fullscreen_transition` asks for it).
+        #[unsafe(method(nhmacFullScreenWant:))]
+        fn full_screen_want(&self, _o: Option<&objc2::runtime::AnyObject>) {
+            deliver(MacEv::FullScreenWant(*self.ivars()));
         }
     }
 );

@@ -22,13 +22,14 @@ has "--prefix=\"\$P\""; has "P=/opt/x"; has "--with-nidhogg-wayland"; hasnt "pgt
 has "nidhogg/deps/fedora-45.build"; hasnt "docker"
 # Glitnir (the compositor): --with-glitnir by default on Linux and NS, --without-glitnir turns it off (and installs no Rust)
 has "--with-glitnir"; hasnt "grep -vxE"
+# macOS builds Nidhogg's own shell, which configure picks there by itself; the NS port is never built
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
-rcis 0; has "--with-glitnir"; has "--with-ns"; hasnt "grep -vxE"; hasnt "--with-nidhogg-wayland"
+rcis 0; has "--with-glitnir"; hasnt "--with-ns"; hasnt "--with-nidhogg-macos"; hasnt "grep -vxE"; hasnt "--with-nidhogg-wayland"
 # without Glitnir there is no shell, so Linux builds for the terminal
 run -- --dry-run --container fedora-45 --without-glitnir
 rcis 0; hasnt "--with-glitnir"; hasnt "--with-nidhogg-wayland"; has "--without-x"; has "grep -vxE 'cargo|rust|rustc'"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --without-glitnir
-rcis 0; hasnt "--with-glitnir"; has "--with-ns"; hasnt "--without-x"
+rcis 1; has "the macOS shell needs Glitnir"
 # the old switch still works, and it cannot be asked for without what it needs
 run -- --dry-run --container fedora-45 --nidhogg-wayland
 rcis 0; has "--with-nidhogg-wayland"
@@ -67,7 +68,7 @@ rcis 0; has "docker.io/library/archlinux:latest"; has "pacman -Syu --noconfirm -
 run NIDHOGG_BUILD_PKG_CACHE=/var/tmp/pc -- --dry-run --container arch
 rcis 0; has "/var/tmp/pc/pacman:/var/cache/pacman/pkg"
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
-rcis 0; has "--with-ns"; has "/Nidhogg.app"; has "P=/tmp/n"; hasnt "podman"
+rcis 0; hasnt "--with-ns"; has "/Nidhogg.app"; has "P=/tmp/n"; hasnt "podman"
 run -- --dry-run --container fedora-45
 rcis 0; has "cmp -s"
 run -- --dry-run --container fedora-45 --check nidhogg/check-subset.txt
@@ -113,6 +114,11 @@ rcis 0; hasnt "--enable-checking"
 run -- --dry-run --container fedora-45 --dev --checking
 rcis 0; has "--enable-checking"
 run -- --dry-run --container fedora-45 --checking
+rcis 1; has "dev builds only"
+# --test-hooks: the hooks alone (--enable-nidhogg-test-hooks), no --enable-checking: a timing build, dev only
+run -- --dry-run --container fedora-45 --dev --test-hooks
+rcis 0; has "--enable-nidhogg-test-hooks"; hasnt "--enable-checking"
+run -- --dry-run --container fedora-45 --test-hooks
 rcis 1; has "dev builds only"
 # --dev: native-compilation=yes, no JIT in the image, never packed, cache stamp carries the mode
 run -- --dry-run --container fedora-45 --dev
@@ -323,18 +329,30 @@ rcis 0; has "-v /tmp/ct-other:/cargotarget:z"
 rm -r "$ctb"
 # naglfar: --naglfar is the macOS shell (--with-nidhogg-macos, not --with-ns); elsewhere it only configures (--dry-config)
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --naglfar
-rcis 0; has "--with-nidhogg-macos"; hasnt "--with-ns "; hasnt "--with-nidhogg-wayland"; hasnt "--build="
+rcis 0; hasnt "--with-ns"; hasnt "--with-nidhogg-wayland"; hasnt "--build="
 run -- --dry-run --container fedora-45 --naglfar
 rcis 1; has "elsewhere only --dry-config"
 run -- --dry-run --container fedora-45 --naglfar --dry-config
-rcis 0; has "--with-nidhogg-macos"; has "--build=aarch64-apple-darwin"; has 'dry config: $B/obj/src/config.h'
+rcis 0; has "--build=aarch64-apple-darwin"; has 'dry config: $B/obj/src/config.h'
 run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --naglfar --without-glitnir
-rcis 1; has "--naglfar needs Glitnir"
+rcis 1; has "the macOS shell needs Glitnir"
+# the macOS release tarball is Naglfar's bundle: a release --naglfar build packs nextstep/Emacs.app as Nidhogg.app
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n --naglfar --stage pack --out /tmp/n/nidhogg-macos.tar.xz
+rcis 0; hasnt "--with-ns"; has 'mv nextstep/Emacs.app "$pk/Nidhogg.app"'; has 'tar -C "$B/pkg" -cJf'
 # naglfar-config (build-test.sh --config; real configures in podman, through the heavy slot): the Wayland configure
 # defines NHWL_WAYLAND; the macOS one (configured on Linux for a darwin host) the shared C and HAVE_NHMAC, and none of
 # Wayland, Cairo, fontconfig, FreeType, HarfBuzz or an image library; the workers and Glitnir stay on
 if [ "${1:-}" = --config ]; then
   def() { grep -Eq "^#define $2( |\$)" "$1"; }
+  # configure refuses the NS port for a darwin host, naming the macOS shell
+  cb=$(mktemp -d "${TMPDIR:-/tmp}/nh-config.XXXXXX")
+  if NIDHOGG_BUILD_CONF_EXTRA=--with-ns bash nidhogg/build.sh --container fedora-45 --dev --stage build --dry-config \
+       --build-dir "$cb" --prefix /opt/nh-config --naglfar > "$cb.log" 2>&1; then
+    fail "configure took --with-ns for a darwin host"
+  elif ! grep -q "with-ns is not built by Nidhogg: macOS uses --with-nidhogg-macos" "$cb.log"; then
+    fail "configure's --with-ns refusal: $(tail -n 5 "$cb.log")"
+  fi
+  echo "build-test: --with-ns refused ($cb)"
   for w in wayland naglfar; do
     cb=$(mktemp -d "${TMPDIR:-/tmp}/nh-config.XXXXXX")
     if [ $w = wayland ]; then a=--nidhogg-wayland; else a="--naglfar --dry-config"; fi

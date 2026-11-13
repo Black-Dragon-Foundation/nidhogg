@@ -526,12 +526,20 @@ mod coretext {
     use std::sync::atomic::Ordering::Relaxed;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    /// The scripts' characters (`nhg_font_start`), and each script's preferred family once asked.
+    /// The scripts' characters (`nhg_font_start`), and each script's preferred family in a language once asked.
     #[derive(Default)]
     struct Scripts {
         chars: HashMap<String, ScriptChars>,
-        preferred: HashMap<String, Option<String>>,
+        preferred: HashMap<(String, String), Option<String>>,
+        /// Each (open font, script, language)'s family from that font's cascade (`preferred_from`): asked on
+        /// redisplay's fallback path, so kept, and at most `CASCADED_MAX` of them (all go when it is full).
+        cascaded: HashMap<(u64, String, String), Option<String>>,
+        /// The listing `preferred` was asked under (`text::listing`).
+        generation: usize,
     }
+
+    /// How many cascade answers `Scripts` keeps: a session's faces' fonts times the scripts their text falls back for.
+    const CASCADED_MAX: usize = 256;
 
     fn scripts() -> MutexGuard<'static, Scripts> {
         static S: OnceLock<Mutex<Scripts>> = OnceLock::new();
@@ -544,31 +552,48 @@ mod coretext {
         let mut s = scripts();
         s.chars = named.into_iter().collect();
         s.preferred.clear();
+        s.cascaded.clear();
     }
 
-    /// The faces Core Text lists (`macfont_list`'s families, in Core Text's order); a face's id is its index plus one.
+    /// Core Text's face `i` (`text::face_at`) as the matcher sees it; its id is `i` plus one.
+    fn font_face(i: usize, f: &text::Face) -> FontFace {
+        FontFace {
+            id: i as u64 + 1,
+            family: f.family.clone(),
+            foundry: "apple".into(),
+            weight: crate::fontspec::weight_from_trait(crate::fontspec::adjusted_weight(
+                f.weight,
+                || f.appkit_weight(),
+            )),
+            slant: crate::fontspec::slant_from_trait(f.slant),
+            width: crate::fontspec::width_from_trait(f.width),
+            spacing: spacing(f.symbolic & text::TRAIT_MONO != 0),
+            // coverage is read lazily, in `fits`
+            scripts: Vec::new(),
+            languages: Vec::new(),
+            registries: Vec::new(),
+            color: f.symbolic & text::TRAIT_COLOR != 0,
+            bitmap_only: false,
+        }
+    }
+
+    /// The faces Core Text lists (`macfont_list`'s families, in Core Text's order), then those found by name.
     pub struct CoreText;
 
     impl FontSource for CoreText {
         fn faces(&self) -> Vec<FontFace> {
-            text::faces()
+            let (generation, listed) = text::listing();
+            listed
                 .iter()
                 .enumerate()
-                .map(|(i, f)| FontFace {
-                    id: i as u64 + 1,
-                    family: f.family.clone(),
-                    foundry: "apple".into(),
-                    weight: crate::fontspec::weight_from_trait(f.weight),
-                    slant: crate::fontspec::slant_from_trait(f.slant),
-                    width: crate::fontspec::width_from_trait(f.width),
-                    spacing: spacing(f.symbolic & text::TRAIT_MONO != 0),
-                    // coverage is read lazily, in `fits`
-                    scripts: Vec::new(),
-                    languages: Vec::new(),
-                    registries: Vec::new(),
-                    color: f.symbolic & text::TRAIT_COLOR != 0,
-                    bitmap_only: false,
-                })
+                .map(|(i, f)| font_face(text::key(generation, i), f))
+                .collect()
+        }
+
+        fn named(&self, family: &str) -> Vec<FontFace> {
+            text::named(family)
+                .into_iter()
+                .filter_map(|i| text::face_at(i).map(|f| font_face(i, f)))
                 .collect()
         }
 
@@ -582,9 +607,17 @@ mod coretext {
             names.iter().map(|s| (*s).to_string()).collect()
         }
 
-        fn preferred(&self, script: &str) -> Option<String> {
+        fn preferred(&self, script: &str, language: &str) -> Option<String> {
+            // a new listing (fonts installed or removed) may lay the characters out in another family
+            let generation = text::listing().0;
             let mut s = scripts();
-            if let Some(p) = s.preferred.get(script) {
+            if s.generation != generation {
+                s.preferred.clear();
+                s.cascaded.clear();
+                s.generation = generation;
+            }
+            let key = (script.to_owned(), language.to_owned());
+            if let Some(p) = s.preferred.get(&key) {
                 return p.clone();
             }
             // macfont asks only for a list's characters, not a vector's
@@ -594,20 +627,58 @@ mod coretext {
                 .filter(|c| !c.any && !c.chars.is_empty())?
                 .chars
                 .clone();
-            let p = text::preferred_family(&chars);
-            s.preferred.insert(script.to_owned(), p.clone());
+            let p = text::preferred_family_in(&chars, language);
+            s.preferred.insert(key, p.clone());
             p
+        }
+
+        /// The script's characters laid out in the open font `font`, so its own cascade picks the family (a face in
+        /// that font falling back, as a native app's text does); the plain preferred family when the font is not open
+        /// or the characters land in more than one font.
+        fn preferred_from(&self, font: u64, script: &str, language: &str) -> Option<String> {
+            let generation = text::listing().0;
+            let mut s = scripts();
+            if s.generation != generation {
+                s.preferred.clear();
+                s.cascaded.clear();
+                s.generation = generation;
+            }
+            let key = (font, script.to_owned(), language.to_owned());
+            if let Some(p) = s.cascaded.get(&key) {
+                return p.clone();
+            }
+            let chars = s
+                .chars
+                .get(script)
+                .filter(|c| !c.any && !c.chars.is_empty())
+                .map(|c| c.chars.clone());
+            drop(s);
+            let p = match chars {
+                Some(c) => text::cascade_family_for(font, &c, language),
+                None => None,
+            }
+            .or_else(|| self.preferred(script, language));
+            let mut s = scripts();
+            if s.cascaded.len() >= CASCADED_MAX {
+                s.cascaded.clear();
+            }
+            s.cascaded.insert(key, p.clone());
+            p
+        }
+
+        /// A registry's preferred family: its characters laid out in its language (macfont's charset string).
+        fn preferred_chars(&self, chars: &[u32], language: &str) -> Option<String> {
+            text::preferred_family_in(chars, language)
         }
 
         /// `macfont_supports_charset_and_languages_p`: the face's character set has the script's characters, and its
         /// languages the one asked for (`zh-Hans` is had by a face that lists `zh`).  A script without characters is
         /// had by every face.
         fn fits(&self, face: &FontFace, script: &str, language: &str) -> bool {
-            let faces = text::faces();
             let Some(f) = usize::try_from(face.id)
                 .ok()
                 .and_then(|i| i.checked_sub(1))
-                .and_then(|i| faces.get(i))
+                .and_then(text::face_at)
             else {
                 return false;
             };
@@ -624,6 +695,15 @@ mod coretext {
                 l.iter().any(|x| x == language)
                     || (language == "zh-Hans" && l.iter().any(|x| x == "zh"))
             }
+        }
+
+        /// The face's character set (`macfont_has_char` on an entity).
+        fn has_char(&self, id: u64, c: u32) -> Option<bool> {
+            let f = usize::try_from(id)
+                .ok()
+                .and_then(|i| i.checked_sub(1))
+                .and_then(text::face_at)?;
+            Some(f.has(c))
         }
     }
 
@@ -651,8 +731,7 @@ mod coretext {
 
     /// `macfont_open`: the face's font at `size` pixels, its spacing and synthesised traits from `flags`.
     pub fn open(id: u64, size: i32, flags: u32) -> Option<NhgFontMetrics> {
-        let faces = text::faces();
-        let face = faces.get(usize::try_from(id).ok()?.checked_sub(1)?)?;
+        let face = text::face_at(usize::try_from(id).ok()?.checked_sub(1)?)?;
         let synthetic_italic =
             flags & NHG_FONT_SYNTH_ITALIC != 0 && face.symbolic & text::TRAIT_ITALIC == 0;
         let synthetic_bold =
@@ -778,9 +857,298 @@ mod coretext {
         ct::STATS.calls.fetch_add(1, Relaxed);
     }
 
+    /// `macfont_variation_glyphs` on the font's own `cmap` (format 14): `None` when the font is not open.
+    pub fn variation_glyphs(handle: u64, c: u32, out: &mut [u32; 256]) -> Option<u32> {
+        let mut base = [0u16; 2];
+        let mut glyph = [0u16; 2];
+        let units = char::from_u32(c)?.encode_utf16(&mut base).len();
+        // a default sequence is the base character's own glyph (`macfont_get_glyph_for_character`); asked first, as
+        // `with_cmap` holds the open fonts
+        ct::glyphs_for(handle, &base[..units], &mut glyph[..units]);
+        ct::with_cmap(handle, |cmap| match crate::uvs::subtable(cmap) {
+            Some(uvs) => crate::uvs::glyphs(uvs, c, u32::from(glyph[0]), out),
+            None => {
+                out.fill(0);
+                0
+            }
+        })
+    }
+
     pub fn close(handle: u64) {
         tables().remove(&handle);
         ct::close(handle);
+    }
+
+    /// The Core Text oracle (the architecture review's A4, judged on Core Text since the 2026-11-12 ruling): for a
+    /// fixed corpus of fonts, sizes and characters, this driver's metrics and glyph extents against Core Text's own
+    /// raw answers (`ct::raw`, `ct::glyphs_for`, `ct::bounds_for`) put through the stated rules below, written here a
+    /// second time on purpose, apart from `font_metrics` and `extents`; and each shaping run's glyphs against Core
+    /// Text's line.  Every difference is listed at once.  The fallback is the fontset's (C), judged by the GUI rows.
+    #[cfg(test)]
+    mod oracle {
+        use super::*;
+
+        /// The corpus: each family with the characters whose glyphs are judged.
+        const FONTS: &[(&str, &str)] = &[
+            ("Menlo", "Hg.W|_~"),
+            ("Monaco", "Hg.W"),
+            ("Courier", "Hg.W"),
+            ("Courier New", "Hg.W"),
+            ("Helvetica", "Hg.W"),
+            ("Helvetica Neue", "Hg.W"),
+            ("Times", "Hg.W"),
+            ("Lucida Grande", "Hg.Wα"),
+            ("PingFang SC", "中文字。"),
+            ("Hiragino Sans", "あア漢"),
+            ("Apple SD Gothic Neo", "한글"),
+            ("Apple Color Emoji", "😀🐉"),
+            ("Geeza Pro", "مرحبا"),
+            ("Kohinoor Devanagari", "नमस्ते"),
+            ("Thonburi", "กขค"),
+            ("Arial Hebrew", "אבג"),
+        ];
+        const SIZES: &[i32] = &[10, 12, 13, 16, 24];
+        const SHAPING: &[(&str, &str)] = &[
+            ("Geeza Pro", "مرحبا بالعالم"),
+            ("Kohinoor Devanagari", "नमस्ते दुनिया"),
+            ("Apple Color Emoji", "👩‍👩‍👧🇬🇧"),
+            ("Menlo", "é fi"),
+        ];
+
+        /// Rule: C's `round` (halves away from zero), as macfont rounds advances.
+        fn round(x: f64) -> i32 {
+            x.round() as i32
+        }
+        /// Rule: a font's metrics are C's truncation of x + 0.5.
+        fn c_round(x: f64) -> i32 {
+            (x + 0.5) as i32
+        }
+        /// Rule (AppKit's taller line): these families' ascent grows by 15% of ascent + descent.
+        const TALL: &[&str] = &["Courier", "Helvetica", "Times"];
+        const TALL_FACTOR: f64 = 0.15f32 as f64;
+        /// Rule (macfont): a Hiragino family's leading is quartered and the quarter moves into the ascent.
+        const HIRAGINO_LEADING: f64 = 0.25;
+        /// Rule (macfont's glyph cache): a width's fraction is kept in 14ths.
+        const FRAC: f64 = 14.0;
+        /// Rule (macfont): LCD smoothing's margin pads a glyph with ink on each side.
+        const MARGIN: f64 = 0.396f32 as f64;
+
+        /// Rule: a glyph of `adv` as (width, fraction in 14ths); with `mono`, a whole number (2 or more) of cells of
+        /// `space` is that many cells.
+        fn parts(mono: bool, space: i32, adv: f64) -> (i32, i32) {
+            if mono && space > 0 {
+                let m = round(adv / f64::from(space));
+                if m > 1 && round(adv / f64::from(m)) == space {
+                    return (
+                        space * m,
+                        round((adv / f64::from(m) - f64::from(space)) * FRAC),
+                    );
+                }
+                return (round(adv), 0);
+            }
+            let int = round(adv);
+            (
+                int,
+                if mono {
+                    0
+                } else {
+                    round((adv - f64::from(int)) * FRAC)
+                },
+            )
+        }
+
+        /// Rule: Core Text's advance and bounds (left, right, top, bottom; y up) as Emacs's (width, lbearing,
+        /// rbearing, ascent, descent).
+        fn glyph(mono: bool, space: i32, b: [f64; 5]) -> [i32; 5] {
+            let [adv, left, right, top, bottom] = b;
+            let (int, frac) = parts(mono, space, adv);
+            let (mut x, mut w) = (left, right - left);
+            if !mono {
+                x -= f64::from(frac) / (2.0 * FRAC);
+            } else if frac != 0 && space > 0 {
+                x -= f64::from(frac) / (2.0 * FRAC) * f64::from(int / space);
+            }
+            if w > 0.0 {
+                x -= MARGIN;
+                w += 2.0 * MARGIN;
+            }
+            [
+                int,
+                x.floor() as i32,
+                (x + w).ceil() as i32,
+                top.ceil() as i32,
+                -(bottom.floor() as i32),
+            ]
+        }
+
+        /// The upright regular face of `family` (Core Text's order), or the face found by name.
+        fn face_of(family: &str) -> Option<u64> {
+            text::faces()
+                .iter()
+                .enumerate()
+                .chain(
+                    text::named(family)
+                        .into_iter()
+                        .filter_map(|i| text::face_at(i).map(|f| (i, f))),
+                )
+                .filter(|(_, f)| f.family == family)
+                .min_by_key(|(_, f)| {
+                    (
+                        f.symbolic & (text::TRAIT_BOLD | text::TRAIT_ITALIC) != 0,
+                        ((f.weight).abs() * 1000.0) as i64,
+                    )
+                })
+                .map(|(i, _)| i as u64 + 1)
+        }
+
+        /// Core Text's glyph and raw advance and bounds for each of `chars` in the open font `handle`.
+        fn ct_glyphs(handle: u64, chars: &[char]) -> Vec<(u16, [f64; 5])> {
+            chars
+                .iter()
+                .map(|c| {
+                    let mut u = [0u16; 2];
+                    let units = c.encode_utf16(&mut u);
+                    let mut g = [0u16; 2];
+                    ct::glyphs_for(handle, units, &mut g);
+                    let mut b = [[0.0f64; 5]];
+                    ct::bounds_for(handle, &g[..1], &mut b);
+                    (g[0], b[0])
+                })
+                .collect()
+        }
+
+        #[test]
+        fn font_oracle() {
+            let (mut gaps, mut checked) = (Vec::new(), 0);
+            for &(family, chars) in FONTS {
+                let Some(id) = face_of(family) else {
+                    gaps.push(format!("{family}: no such face on this machine"));
+                    continue;
+                };
+                for &px in SIZES {
+                    let Some(m) = open(id, px, 0) else {
+                        gaps.push(format!("{family} {px}: not opened"));
+                        continue;
+                    };
+                    let raw = ct::raw(m.handle).expect("an open font");
+                    let mono = raw.symbolic & text::TRAIT_MONO != 0;
+                    let printable: Vec<char> = (' '..='~').collect();
+                    let pg = ct_glyphs(m.handle, &printable);
+                    let space = round(pg[0].1[0]);
+                    let (mut a, d, mut l) = (raw.ascent, raw.descent, raw.leading);
+                    if TALL.contains(&raw.family.as_str()) {
+                        a += (a + d) * TALL_FACTOR;
+                    } else if raw.family.starts_with("Hiragino") {
+                        l *= HIRAGINO_LEADING;
+                        a += l;
+                    }
+                    let average = if pg[1..].iter().all(|(g, _)| *g != 0) {
+                        (space
+                            + pg[1..]
+                                .iter()
+                                .map(|(_, b)| glyph(mono, space, *b)[0])
+                                .sum::<i32>())
+                            / 95
+                    } else {
+                        space
+                    };
+                    let want = [c_round(a), c_round(d + l), space, average];
+                    let ours = [m.ascent, m.descent, m.space_width, m.average_width];
+                    checked += 1;
+                    if want != ours {
+                        gaps.push(format!(
+                            "{family} {px}: ascent descent space average: Core Text under the rules {want:?}, \
+                             the driver {ours:?}"
+                        ));
+                    }
+                    let cs: Vec<char> = chars.chars().collect();
+                    for (c, (g, b)) in cs.iter().zip(ct_glyphs(m.handle, &cs)) {
+                        let mut t = tables();
+                        let Some(t) = t.get_mut(&m.handle) else {
+                            continue;
+                        };
+                        let src = Source(m.handle);
+                        let c = *c as u32;
+                        t.fill(c / NHG_FONT_PAGE as u32, &src);
+                        let ours = t.char_glyph(c).flatten().map(|og| {
+                            t.fill(NHG_FONT_FILL_GLYPHS | (og / NHG_FONT_PAGE as u32), &src);
+                            let gm = t.metrics(og).unwrap_or_default();
+                            (
+                                og,
+                                [gm.width, gm.lbearing, gm.rbearing, gm.ascent, gm.descent],
+                            )
+                        });
+                        let want = (g != 0).then(|| (u32::from(g), glyph(mono, space, b)));
+                        checked += 1;
+                        if want != ours {
+                            gaps.push(format!(
+                                "{family} {px} U+{c:04X}: (glyph, width lbearing rbearing ascent descent): Core Text \
+                                 under the rules {want:?}, the driver {ours:?}"
+                            ));
+                        }
+                    }
+                    close(m.handle);
+                }
+            }
+            for &(family, s) in SHAPING {
+                let Some(id) = face_of(family) else {
+                    continue;
+                };
+                for px in [12, 24] {
+                    let Some(m) = open(id, px, 0) else {
+                        continue;
+                    };
+                    let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
+                    let units: Vec<u16> = s.encode_utf16().collect();
+                    let line = text::shape(m.handle, &units);
+                    let ours = shape(m.handle, &chars).unwrap_or_default();
+                    checked += 1;
+                    match line {
+                        None => gaps.push(format!(
+                            "{family} {px} shaping {s:?}: Core Text needed another font"
+                        )),
+                        Some(line) => {
+                            // Rule: Core Text gives a right-to-left run's glyphs in display order; the gstring
+                            // is in logical order, so `mac_font_shape` reverses such a run
+                            let ct_glyphs: Vec<u32> = line
+                                .runs
+                                .iter()
+                                .flat_map(|r| {
+                                    let g: Vec<u32> =
+                                        r.glyphs.iter().map(|&g| u32::from(g)).collect();
+                                    if r.rtl {
+                                        g.into_iter().rev().collect()
+                                    } else {
+                                        g
+                                    }
+                                })
+                                .collect();
+                            let ct_width: i32 = line
+                                .runs
+                                .iter()
+                                .flat_map(|r| r.widths.iter().map(|&w| round(w)))
+                                .sum();
+                            let our_glyphs: Vec<u32> = ours.iter().map(|g| g.code).collect();
+                            let our_width: i32 = ours.iter().map(|g| g.m.width).sum();
+                            if ct_glyphs != our_glyphs || ct_width != our_width {
+                                gaps.push(format!(
+                                    "{family} {px} shaping {s:?}: glyphs and width: Core Text {ct_glyphs:?} \
+                                     {ct_width}, the driver {our_glyphs:?} {our_width}"
+                                ));
+                            }
+                        }
+                    }
+                    close(m.handle);
+                }
+            }
+            assert!(checked > 0, "nothing was checked");
+            assert!(
+                gaps.is_empty(),
+                "{} of {checked} answers differ from Core Text's under the rules:\n{}",
+                gaps.len(),
+                gaps.join("\n")
+            );
+        }
     }
 }
 
@@ -813,6 +1181,14 @@ pub fn open(id: u64, size: i32, flags: u32) -> Option<NhgFontMetrics> {
         let _ = (id, size, flags);
         None
     }
+}
+
+/// How many times the installed fonts changed (Core Text's registered-fonts notifications); 0 without Core Text.
+pub fn changes() -> u32 {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    return nhshell::macos::text::notes();
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    0
 }
 
 pub fn close(handle: u64) {
@@ -855,6 +1231,31 @@ pub fn shape(handle: u64, chars: &[u32]) -> Option<Vec<NhgShaped>> {
     #[cfg(not(all(feature = "macos", target_os = "macos")))]
     {
         let _ = (handle, chars);
+        None
+    }
+}
+
+/// Each of the 256 variation selectors' glyph for `c` in the open font `handle` into `out` (`macfont_variation_glyphs`:
+/// 0 for a sequence the font lacks, the base glyph for a default one), and how many it has.  `None` without Core Text
+/// or for a font that is not open.
+pub fn variation_glyphs(handle: u64, c: u32, out: &mut [u32; 256]) -> Option<u32> {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    return coretext::variation_glyphs(handle, c, out);
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    {
+        let _ = (handle, c, out);
+        None
+    }
+}
+
+/// The file the open font `handle` is read from (`nhshell::macos::fonts::file`).  `None` without Core Text, for a font
+/// that is not open, or when Core Text names no file.
+pub fn file(handle: u64) -> Option<String> {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    return nhshell::macos::fonts::file(handle);
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    {
+        let _ = handle;
         None
     }
 }

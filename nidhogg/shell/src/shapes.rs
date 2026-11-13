@@ -31,6 +31,15 @@ pub enum Shape {
         corners: u32,
         argb: u32,
     },
+    /// A box's ring (Glitnir's rounded box, glitnir-decor.c's draw_ring): what lies between `outer` and `inner`,
+    /// filled even-odd, in `argb`; with `relief`, the part above the anti-diagonal of `outer` is `argb` and the part
+    /// below it `relief`'s colour (a raised or sunken box).
+    Ring {
+        outer: RRect,
+        inner: RRect,
+        argb: u32,
+        relief: Option<u32>,
+    },
     /// A 1-bit bitmap at (`x`, `y`), `w` bits wide: bit `j` of row `i` is set when bit `w - 1 - j` of `rows[i]` is,
     /// and each bit covers `scale` by `scale` pixels.  Set bits take `fg`; unset ones take `bg`, or are left alone when
     /// it is `None`.
@@ -70,6 +79,23 @@ pub enum Shape {
     },
 }
 
+/// A rectangle with rounded corners: `radii` clockwise from the top left (0: square).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RRect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub radii: [f64; 4],
+}
+
+impl RRect {
+    fn translate(&mut self, dx: f64, dy: f64) {
+        self.x += dx;
+        self.y += dy;
+    }
+}
+
 /// What one record paints: its shapes, inside the union of `clip` (no clip when empty).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Paint {
@@ -105,6 +131,10 @@ impl Paint {
                 Shape::Glyphs { x, y, .. } => {
                     *x += fx;
                     *y += fy;
+                }
+                Shape::Ring { outer, inner, .. } => {
+                    outer.translate(fx, fy);
+                    inner.translate(fx, fy);
                 }
             }
         }

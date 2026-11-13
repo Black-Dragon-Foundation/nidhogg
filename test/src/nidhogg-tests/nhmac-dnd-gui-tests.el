@@ -7,6 +7,7 @@
 ;; of its own, as AppKit does for another application's drag.  A drag out needs a window-server dragging session.
 
 (require 'ert)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 
 (defun nhmac-dnd--naglfar-p ()
   (and (featurep 'nidhogg-macos) (fboundp 'nhmac--query)))
@@ -21,6 +22,8 @@
       (when (and (eq (car-safe ev) 'drag-n-drop) (eq (car-safe (nth 2 ev)) 'quote))
         (setq drop ev)))
     (should drop)
+    (glitnir-gui--say "nhmac-dnd--drop: %S; frame %S, window edges %S" drop
+             (list (frame-pixel-width) (frame-pixel-height)) (window-pixel-edges))
     (funcall (key-binding [drag-n-drop]) drop)))
 
 (ert-deftest nhmac-dnd-drop-file ()
@@ -29,7 +32,8 @@
   (let ((file (make-temp-file "nhmac-drop" nil ".txt" "dropped\n")))
     (save-window-excursion
       (nhmac-dnd--drop t file)
-      (let ((b (get-file-buffer file)))
+      ;; by its true name too (/private/var/... for a temporary file under /var)
+      (let ((b (find-buffer-visiting file)))
         (should b)
         (kill-buffer b)))))
 
@@ -46,8 +50,62 @@
         (set-window-buffer win old)))))
 
 (ert-deftest nhmac-dnd-drag-out ()
-  "`x-begin-drag' to a test drop target in a second window; the nested loop holds `:overlapping-takes' at 0."
+  "A drag out of a frame through the window server (a real press, `ns-begin-drag', real moves and a release over a
+second frame): the second frame gets the text as a `drag-n-drop' event, `ns-begin-drag' returns the copy, and the
+pumps' scope never takes inside a take (`:overlapping-takes' stays 0)."
   (skip-unless (nhmac-dnd--naglfar-p))
-  (ert-skip "pending: a window-server dragging session (no synthetic one on the hosted runner)"))
+  (let ((access (nhmac--query 'test-post-access)))
+    (unless (eq access t)
+      (ert-skip (format "the runner's grant does not allow posting events (CGPreflightPostEventAccess %S)" access))))
+  (let* ((a (selected-frame))
+         (b (make-frame '((width . 40) (height . 10))))
+         (text "nhmac dragged text")
+         (overlap (plist-get (nhmac-stats) :overlapping-takes))
+         result drop)
+    (unwind-protect
+        (with-temp-buffer
+          (set-window-buffer (frame-selected-window b) (current-buffer))
+          (let ((pa (frame-position a)) (pb (frame-position b)))
+            ;; side by side, B right of A
+            (set-frame-position b (+ (car pa) (frame-outer-width a) 20) (cdr pa))
+            (sit-for 0.5)
+            (glitnir-gui--say "nhmac-dnd-drag-out: A at %S, B moved from %S to %S" pa pb (frame-position b)))
+          (select-frame-set-input-focus a)
+          (sit-for 0.3)
+          (while (read-event nil nil 0.1))
+          ;; from A's text to B's (round 6: 40, 40 was A's tool bar)
+          (let ((ea (window-inside-pixel-edges (frame-selected-window a)))
+                (eb (window-inside-pixel-edges (frame-selected-window b))))
+            (nhmac--call 'test-real-drag a (+ (nth 0 ea) 40) (+ (nth 1 ea) 10)
+                         b (+ (nth 0 eb) 60) (+ (nth 1 eb) 10) 300))
+          ;; the press reaches the view first: it is the event the drag starts from
+          ;; round 2: result nil, no drop.  The events read here and after the drag say which step stopped: no press
+          ;; (the drag had nothing to start from), or a press and no drag session
+          (let ((deadline (+ (float-time) 2)) (seen nil) ev)
+            (while (and (< (float-time) deadline)
+                        (not (eq (event-basic-type (setq ev (read-event nil nil 0.2))) 'mouse-1)))
+              (when ev (push ev seen)))
+            ;; round 4: no press.  Where the press was posted and which window (by number) is under it
+            (glitnir-gui--say "nhmac-dnd-drag-out: press %S after %S; drag %s" ev (nreverse seen)
+                              (nhmac--query 'test-drag-log)))
+          (setq result (ns-begin-drag a `((string . ,text)) 'XdndActionCopy nil nil))
+          (let ((deadline (+ (float-time) 3)) (seen nil) ev)
+            (while (and (not drop) (< (float-time) deadline))
+              (setq ev (read-event nil nil 0.3))
+              (when ev (push (car-safe ev) seen))
+              (when (eq (car-safe ev) 'drag-n-drop) (setq drop ev)))
+            (glitnir-gui--say "nhmac-dnd-drag-out: after the drag, events %S" (nreverse seen)))
+          (glitnir-gui--say "nhmac-dnd-drag-out: result %S, drop %S, overlapping %S -> %S" result drop overlap
+                            (plist-get (nhmac-stats) :overlapping-takes))
+          ;; round 6: a press on A's tool bar, a session begun and no move seen in it: the press's age and the
+          ;; buttons down when the session began
+          (glitnir-gui--say "nhmac-dnd-drag-out: at the start %s" (nhmac--query 'test-drag-log))
+          (should (eq result 'XdndActionCopy))
+          (should drop)
+          (should (eq (posn-window (event-start drop)) (frame-selected-window b)))
+          (funcall (key-binding [drag-n-drop]) drop)
+          (should (string-match-p text (buffer-string)))
+          (should (= (plist-get (nhmac-stats) :overlapping-takes) overlap)))
+      (delete-frame b))))
 
 ;;; nhmac-dnd-gui-tests.el ends here

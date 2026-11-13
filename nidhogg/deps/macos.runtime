@@ -3,9 +3,7 @@ gcc
 libgccjit
 gnutls
 tree-sitter
-librsvg
 sqlite
 gmp
-webp
 little-cms2
 libxml2

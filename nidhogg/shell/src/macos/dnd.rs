@@ -78,8 +78,7 @@ fn record(
     make: fn(DndEv) -> ShellEvent,
 ) {
     let p = view.convertPoint_fromView(info.draggingLocation(), None);
-    let scale = view.window().map_or(1.0, |w| w.backingScaleFactor());
-    let (x, y) = crate::mac_input::device_point(p.x, p.y, view.bounds().size.height, scale);
+    let (x, y) = super::scale::of_view(view).device_point(p.x, p.y, view.bounds().size.height);
     let ops = info.draggingSourceOperationMask().0;
     let actions = dnd_map::actions_of(ops);
     deliver(MacEv::Input(
@@ -252,9 +251,11 @@ pub fn start(
     items: &[(&str, &[u8])],
     actions: u32,
 ) -> ShellResult {
-    let press = PRESS
-        .with(|p| p.borrow().clone())
-        .ok_or(ShellError::State)?;
+    let Some(press) = PRESS.with(|p| p.borrow().clone()) else {
+        #[cfg(feature = "test-hooks")]
+        start_log("(:no-press)".into());
+        return Err(ShellError::State);
+    };
     let item = NSPasteboardItem::new();
     for (mime, bytes) in items {
         item.setData_forType(
@@ -280,13 +281,38 @@ pub fn start(
     let at = view.convertPoint_fromView(press.locationInWindow(), None);
     // SAFETY: a frame and no image contents, which AppKit takes (the drag shows no icon).
     unsafe { dragging.setDraggingFrame_contents(NSRect::new(at, NSSize::new(16.0, 16.0)), None) };
+    // round 6: the session saw no move (Lisp then read drag-mouse-1): how old the press was and whether the button
+    // was still down when the session began
+    #[cfg(feature = "test-hooks")]
+    let (age, buttons) = (
+        objc2_foundation::NSProcessInfo::processInfo().systemUptime() - press.timestamp(),
+        NSEvent::pressedMouseButtons(),
+    );
     let _session = view.beginDraggingSessionWithItems_event_source(
         &NSArray::from_retained_slice(&[dragging]),
         &press,
         ProtocolObject::from_ref(&*source),
     );
+    #[cfg(feature = "test-hooks")]
+    start_log(format!(
+        "(:press-age-ms {:.0} :buttons {buttons} :press-type {})",
+        age * 1000.0,
+        press.r#type().0
+    ));
     SOURCE.with(|s| *s.borrow_mut() = Some(source));
     Ok(())
+}
+
+/// The last drag start: the press's age and the buttons held then, or that no press was held (`test-drag-log`).  Not
+/// a thread-local: round 9's start ran (the call returned 0, no drop) and the hook read an empty one.
+#[cfg(feature = "test-hooks")]
+pub static START_LOG: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+#[cfg(feature = "test-hooks")]
+fn start_log(s: String) {
+    *START_LOG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = s;
 }
 
 /// `ShellBackend::drag_cancel`.

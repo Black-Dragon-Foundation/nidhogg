@@ -69,6 +69,12 @@ struct nhwl_bitmap_record
 #ifdef NHWL_WAYLAND
   cairo_pattern_t *pattern;
 #endif
+#ifdef HAVE_NHMAC
+  /* The XBM bits (rows of (WIDTH + 7) / 8 bytes, the leftmost pixel
+     in each byte's low bit), xmalloc'd; Naglfar draws stipples from
+     them.  */
+  char *bits;
+#endif
 };
 
 #define RGB_TO_ULONG(r, g, b) (((r) << 16) | ((g) << 8) | (b))
@@ -219,6 +225,13 @@ struct nhwl_display_info
   bool reconnecting, reconnect_settling;
   struct atimer *reconnect_timer;
   uint32_t reconnect_timeout_ms;
+
+#ifdef HAVE_NHMAC
+  /* The commit's deadline after a publish (nhwl_publish): the shell
+     commits at its next pump or wait, and this timer commits for Lisp
+     that runs on without waiting.  */
+  struct atimer *present_deadline;
+#endif
 };
 
 /* This is a chain of structures for all the displays currently in use.  */
@@ -660,6 +673,7 @@ extern int nhmac_menu_choice (const NhgAction *, struct input_event *);
 /* nhmacfont.c */
 extern void syms_of_nhmacfont (void);
 extern struct font_driver const nhmacfont_driver;
+extern Lisp_Object nhmac_cascade_spec (Lisp_Object, struct face *);
 /* nhmacdraw.c: the primitives under nhwldraw.c's shared geometry,
    emitting draw records (their Cairo twins are nhwldraw.c's own).  */
 extern void nhwl_fill_rectangle (struct frame *, unsigned long, int, int,
@@ -671,6 +685,9 @@ extern void nhwl_fill_trapezoid_for_relief (struct frame *, unsigned long,
 extern void nhwl_erase_corners_for_relief (struct frame *, unsigned long,
 					   int, int, int, int, double,
 					   double, int);
+extern void nhmac_draw_ring (struct frame *, int, int, int, int, int, int,
+			     double, unsigned, unsigned long, unsigned long,
+			     bool);
 extern void nhwl_set_clip_rectangles (struct frame *, nhwl_cr *,
 				      XRectangle *, int);
 extern void nhwl_clip_to_row (struct window *, struct glyph_row *,
@@ -691,6 +708,7 @@ extern void nhmac_glyph_run (struct glyph_string *, uint64_t, int, int,
 extern bool nhmac_image_stand_in (struct frame *, struct image *,
 				  struct image *);
 extern void nhmac_image_stand_drop (struct image *);
+extern void syms_of_nhmacdraw (void);
 #endif
 extern void syms_of_nhwlcsd (void);
 extern void nhwl_selection_clear_event (uint32_t, struct input_event *);

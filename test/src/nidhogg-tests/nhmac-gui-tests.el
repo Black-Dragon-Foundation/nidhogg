@@ -14,48 +14,25 @@
   "Print FMT with ARGS as a line of the lane's log (stderr), not to *Messages*."
   (princ (concat (apply #'format fmt args) "\n") #'external-debugging-output))
 
-(defun nhmac-gui--ns-build-p ()
-  "The stock NS port (not Naglfar): the baselines are measured here."
-  (and (eq window-system 'ns) (not (featurep 'nidhogg-macos))))
+;; Timing rows are judged on the bars of drgnx's test/perf/budgets.eld (a key's p95 within one 60 Hz frame, 16 ms, its
+;; max 50 ms), font rows on Core Text's own answers, image rows on ImageIO's: no row compares Naglfar with NS.
+(defun nhmac-gui--rank (xs q)
+  "The Q quantile of the numbers XS, nearest rank."
+  (let ((v (vconcat (sort (copy-sequence xs) #'<))))
+    (aref v (max 0 (1- (ceiling (* q (length v))))))))
 
-;; The interposer and the counters harness
-(ert-deftest nhmac-interposer-counts-ns ()
-  "20 keys into a buffer lock a surface and spin the run loop inside a redisplay (NS baseline: the counts are logged).
-NS coalesces: a run measured 16 locks per 20 keys at scale 1 and 10 at scale 2, so the bound is only that both happen."
-  (skip-unless (nhmac-gui--ns-build-p))
-  (mac-counts-require)
-  (switch-to-buffer (generate-new-buffer " *mac-counts*"))
-  (mac-counts-install)
-  (mac-counts-redisplay t)
-  (let ((before (mac-counts-read)))
-    (dotimes (_ 20)
-      (execute-kbd-macro "x")
-      (mac-counts-redisplay t))
-    (let* ((after (mac-counts-read))
-           (d (lambda (k) (- (plist-get after k) (plist-get before k)))))
-      (nhmac-gui--say "nhmac-counts: 20 keys: locks %d bytes %d spins %d spins-in-redisplay %d"
-               (funcall d :surface-locks) (funcall d :surface-bytes) (funcall d :spins) (funcall d :spins-in-redisplay))
-      (should (>= (funcall d :surface-locks) 1))
-      (should (>= (funcall d :spins-in-redisplay) 1)))))
-
-(ert-deftest nhmac-ns-menu-dump ()
-  "NS's real menu bar, built through menu.c, is dumped to a file: the fixture Naglfar's flattener is checked against."
-  (skip-unless (nhmac-gui--ns-build-p))
-  (mac-counts-require)
-  (let ((file (expand-file-name "nhmac-ns-menu.tsv" (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory))))
-    (when (file-exists-p file) (delete-file file))
-    (mac-counts-menu-dump file)
-    (should (file-exists-p file))
-    (with-temp-buffer
-      (insert-file-contents file)
-      (should (> (count-lines (point-min) (point-max)) 20))
-      (should (re-search-forward "^1\t[^\t]*\t" nil t)))))
+(defun nhmac-gui--within-budget (row times p95 max)
+  "Log ROW's TIMES (microseconds) and assert their p95 is under P95 and their largest under MAX (milliseconds)."
+  (let ((p (nhmac-gui--rank times 0.95)) (m (apply #'max times)))
+    (nhmac-gui--say "%s: %d samples, median %d us, p95 %d us (bar %d ms), max %d us (bar %d ms)" row (length times)
+                    (nhmac-gui--rank times 0.5) p p95 m max)
+    (should (< p (* 1000 p95)))
+    (should (< m (* 1000 max)))))
 
 ;; The window system's names: Naglfar reports NS's, so ns-win.el and packages take their macOS branches
 (ert-deftest nhmac-window-system-is-ns ()
   "`window-system', `initial-window-system' and the terminal's type read `ns', and the shell provides
 `nidhogg-macos' and `ns'."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (featurep 'nidhogg-macos))
   (should (featurep 'ns))
   (should (eq window-system 'ns))
@@ -67,7 +44,6 @@ NS coalesces: a run measured 16 locks per 20 keys at scale 1 and 10 at scale 2, 
   "`make-frame' gives a visible NSWindow whose root view hosts the shell's layer (no subviews), sized in device
 pixels; the display's width is the main screen's."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((f (make-frame '((width . 60) (height . 20)))))
     (unwind-protect
         (let ((info (progn (redisplay t) (sit-for 0.2) (nhmac--window-info f))))
@@ -86,7 +62,6 @@ pixels; the display's width is the main screen's."
 `setFrame:' and `makeKeyAndOrderFront:' with the scope free are applied at once; inside a borrow (with a modal session
 and a nested event loop) they queue, and each queued event is applied once when the lend ends; a deferred effect runs
 with the borrow put back.  No two borrows are ever live."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((before (nhmac-stats))
          (r (nhmac--test-reentry))
          (after (nhmac-stats)))
@@ -103,7 +78,6 @@ with the borrow put back.  No two borrows are ever live."
   "A query that runs a modal session, with a window resized inside it: the delegate takes the lent state, nothing
 is left queued, and the display is not poisoned."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   ;; a frame deleted with no pump after it (at scale 2, its window's callbacks queue outside a lend): what waits from
   ;; before the session is not the session's
   (delete-frame (make-frame '((width . 20) (height . 5))) t)
@@ -135,7 +109,6 @@ is left queued, and the display is not poisoned."
 (ert-deftest nhmac-keys-basic ()
   "Plain characters, the named keys and control chords posted as AppKit key events arrive as NS reads them; C-g
 ends a `sit-for' early."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--flush)
   (let ((plain "abcdefghijklmnopqrstuvwxyz0123"))
     (mapc #'nhmac--test-post-key plain)
@@ -171,10 +144,62 @@ ends a `sit-for' early."
     (cons (+ (nth 0 edges) (car xy) (/ (frame-char-width) 2))
           (+ (nth 1 edges) (cdr xy) (/ (frame-char-height) 2)))))
 
+(ert-deftest nhmac-menu-bar-takes-no-frame-lines ()
+  "The menu bar is the system's (as NS's): `menu-bar-lines' 1 leaves the frame's text at its top, with no strip above
+the root window, and turning it off and on changes no size."
+  :tags '(draws)
+  (let* ((f (selected-frame)) (mb (frame-parameter f 'menu-bar-lines))
+         (tb (frame-parameter f 'tool-bar-lines)) (tab (frame-parameter f 'tab-bar-lines))
+         (top (lambda () (nth 1 (window-pixel-edges (frame-root-window f))))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter f 'tool-bar-lines 0)
+          (set-frame-parameter f 'tab-bar-lines 0)
+          (set-frame-parameter f 'menu-bar-lines 1)
+          (redisplay t)
+          (let ((on (list (funcall top) (frame-pixel-height f))))
+            (set-frame-parameter f 'menu-bar-lines 0)
+            (redisplay t)
+            (let ((off (list (funcall top) (frame-pixel-height f))))
+              (nhmac-gui--say "nhmac-menu-bar-takes-no-frame-lines: on (top height) %S, off %S" on off)
+              (should (= (car on) 0))
+              (should (equal on off)))))
+      (set-frame-parameter f 'menu-bar-lines mb)
+      (set-frame-parameter f 'tab-bar-lines tab)
+      (set-frame-parameter f 'tool-bar-lines tb)
+      (nhmac-gui--settle))))
+
+(ert-deftest nhmac-pointer-leaving-leaves-the-sensor ()
+  "The pointer moved onto a mouse sensor's text, then off the frame's window: the sensor is entered, then left (the
+view's `mouseExited:', which gives the frame a leave: note_mouse_sensor_leave), as on Wayland."
+  :tags '(draws)
+  (let ((log nil) (mouse-sensor-enabled t))
+    (switch-to-buffer (generate-new-buffer " *nhmac-sensor*"))
+    (insert (propertize "aaaa" 'mouse-sensor-functions (list (lambda (_w _pos dir) (push dir log))))
+            " bbbb\n")
+    (redisplay t)
+    (unwind-protect
+        (let ((a (nhmac-gui--pos-xy 2)))
+          (nhmac--test-post-mouse 'move (car a) (cdr a))
+          ;; the posted events reach Emacs at the pump, and read_char runs the sensors (bounded reads)
+          (let ((n 0))
+            (while (and (< n 40) (not (memq 'entered log)))
+              (read-event nil nil 0.05)
+              (setq n (1+ n))))
+          (nhmac-gui--say "nhmac-pointer-leaving-leaves-the-sensor: after the move %S" log)
+          (should (memq 'entered log))
+          (nhmac--test-post-mouse 'exit (- (* 20 (frame-scale-factor))) (cdr a))
+          (let ((n 0))
+            (while (and (< n 40) (not (memq 'left log)))
+              (read-event nil nil 0.05)
+              (setq n (1+ n))))
+          (nhmac-gui--say "nhmac-pointer-leaving-leaves-the-sensor: after the exit %S" log)
+          (should (eq (car log) 'left)))
+      (kill-buffer))))
+
 (ert-deftest nhmac-mouse-basic ()
   "A click posted as AppKit mouse events lands on its character, a drag spans its region, a wheel notch scrolls,
 and `mouse-pixel-position' follows motion."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (with-current-buffer (get-buffer-create " *nhmac-mouse*")
     (erase-buffer)
     (dotimes (i 200) (insert (format "line %03d of the mouse buffer\n" i)))
@@ -221,19 +246,46 @@ and `mouse-pixel-position' follows motion."
       (should (eq (event-basic-type ev) 'wheel-down)))))
 
 ;; The wait: kqueue in the run loop, the helper, keys before process output
+(defconst nhmac-gui--frozen-counts
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "../../../nidhogg/test/nhmac-counts.eld"
+                                            (file-name-directory (or load-file-name buffer-file-name))))
+    (read (current-buffer)))
+  "Naglfar's frozen counts, ((ROW KEY N) ...): nidhogg/test/nhmac-counts.eld (plan Task 35 step 3).")
+
 (defun nhmac-gui--delta (before key)
-  "How much the counter KEY of `nhmac-stats' grew since BEFORE."
-  (- (plist-get (nhmac-stats) key) (plist-get before key)))
+  "How much the counter KEY of `nhmac-stats' grew since BEFORE.
+Each one asked for in a row is recorded (`nhmac-gui--record-count'), and one the running row has frozen in
+`nhmac-gui--frozen-counts' must be the frozen value: the row fails naming the count."
+  (let* ((n (- (plist-get (nhmac-stats) key) (plist-get before key)))
+         (test (ert-running-test))
+         (frozen (and test (seq-find (lambda (c) (and (eq (nth 0 c) (ert-test-name test)) (eq (nth 1 c) key)))
+                                     nhmac-gui--frozen-counts))))
+    (nhmac-gui--record-count key n)
+    (when (and frozen (/= n (nth 2 frozen)))
+      (ert-fail (list 'frozen-count (ert-test-name test) key :expected (nth 2 frozen) :actual n)))
+    n))
+
+(defun nhmac-gui--record-count (key n)
+  "Append (ROW KEY SCALE N) to nhmac-counts.eld under GLITNIR_GUI_OUT, when that is set and a row is running."
+  (let ((dir (getenv "GLITNIR_GUI_OUT")) (test (ert-running-test)))
+    (when (and dir test)
+      (let ((scale (condition-case nil (plist-get (nhmac--test-surface 0 0) :scale) (error nil))))
+        (write-region (format "%S\n" (list (ert-test-name test) key scale n)) nil
+                      (expand-file-name "nhmac-counts.eld" dir) t 'silent)))))
 
 (defun nhmac-gui--feed (name type gaps)
   "Start NAME, writing 100 lines 10 ms apart through TYPE (`pipe' or `pty').
 Its filter keeps NAME's line count and longest gap between outputs in
-the hash table GAPS, as (LINES . GAP)."
+the hash table GAPS, as (LINES . GAP).  Its sentinel marks it `drained':
+Emacs runs a process's sentinel only after it read the output left in
+the process's fd (status_notify), so a drained process has given all."
   (let ((last (float-time)))
     (puthash name (cons 0 0.0) gaps)
     (make-process
      :name name :connection-type type :noquery t
      :command '("sh" "-c" "i=0; while [ $i -lt 100 ]; do echo $i; i=$((i+1)); sleep 0.01; done")
+     :sentinel (lambda (p _event) (unless (process-live-p p) (process-put p 'drained t)))
      :filter (lambda (_p s)
                (let ((now (float-time)) (r (gethash name gaps)))
                  (puthash name (cons (+ (car r) (cl-count ?\n s))
@@ -241,11 +293,26 @@ the hash table GAPS, as (LINES . GAP)."
                           gaps)
                  (setq last now))))))
 
+(defun nhmac-gui--drain (procs secs &optional each tick)
+  "Wait (SECS at most from now) until every process of PROCS is drained (`nhmac-gui--feed'), each wait TICK seconds at
+most (default 5) and EACH called after it; then delete them.  Not `process-live-p': a process is dead from the
+SIGCHLD on, before Emacs has read what it left in its fd, and deleting it then throws those lines away (round 3:
+kq-pipe 97 of 100, its last lines in its pipe).  Logs each process's status and whether it drained."
+  (let ((start (float-time)))
+    (unwind-protect
+        (while (and (seq-remove (lambda (p) (process-get p 'drained)) procs)
+                    (< (- (float-time) start) secs))
+          (accept-process-output nil (or tick 5))
+          (when each (funcall each)))
+      (dolist (p procs)
+        (nhmac-gui--say "nhmac-gui--drain: %s %S, drained %S" (process-name p) (process-status p)
+                        (process-get p 'drained))
+        (delete-process p)))))
+
 (ert-deftest nhmac-kq-fds ()
   "A pipe, a pty and a pipe served by the helper, under load: every line arrives with no gap near the wait's 5 s
 timeout (0 missed), the kqueue's source never ends a sleep with nothing ready (0 empty wake-ups), and the helper
 serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: which kqueue refuses (EINVAL)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (p (append '("/dev/null" "/dev/tty") (file-expand-wildcards "/dev/cu.*")))
     (nhmac-gui--say "nhmac-kq-probe: %s %S" p (nhmac--test-kq-probe p)))
   (let* ((gaps (make-hash-table :test #'equal))
@@ -258,11 +325,8 @@ serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: w
     (accept-process-output nil 0.05)
     (nhmac--test-helper-next)
     (push (nhmac-gui--feed "kq-helper" 'pipe gaps) procs)
-    (unwind-protect
-        (while (and (seq-some #'process-live-p procs) (< (- (float-time) start) 30))
-          (accept-process-output nil 5)
-          (setq helper-fds (max helper-fds (plist-get (nhmac-stats) :helper-fds))))
-      (mapc #'delete-process procs))
+    (nhmac-gui--drain procs (- 30 (- (float-time) start))
+                      (lambda () (setq helper-fds (max helper-fds (plist-get (nhmac-stats) :helper-fds)))))
     (maphash (lambda (k v) (nhmac-gui--say "nhmac-kq-fds: %s %d lines, longest gap %.3f s" k (car v) (cdr v))) gaps)
     (nhmac-gui--say "nhmac-kq-fds: stats %S" (nhmac-stats))
     (maphash (lambda (_k v)
@@ -277,18 +341,12 @@ serves its fd.  /dev/null, /dev/tty and every /dev/cu.* are probed and logged: w
   "No layer under the wait loses a readiness: the kernel's kqueue, directly and through a second kqueue (the run
 loop's source's shape), on a pipe and on a pty (0 misses in 2000 bytes each); and the whole wait, with one pipe or
 one pty alone, never sleeps through output (no gap near its 2 s timeout, three rounds each)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((layers (nhmac--test-kq-layers 2000))
         (gaps (make-hash-table :test #'equal)))
     (nhmac-gui--say "nhmac-kq-layers: kernel %S" layers)
     (dotimes (i 3)
       (dolist (type '(pipe pty))
-        (let ((p (nhmac-gui--feed (format "kq-%s-%d" type i) type gaps))
-              (start (float-time)))
-          (unwind-protect
-              (while (and (process-live-p p) (< (- (float-time) start) 20))
-                (accept-process-output nil 2))
-            (delete-process p)))))
+        (nhmac-gui--drain (list (nhmac-gui--feed (format "kq-%s-%d" type i) type gaps)) 20 nil 2)))
     (maphash (lambda (k v) (nhmac-gui--say "nhmac-kq-layers: %s %d lines, longest gap %.3f s" k (car v) (cdr v)))
              gaps)
     (should (equal layers '(:pipe-direct 0 :pipe-nested 0 :pty-direct 0 :pty-nested 0)))
@@ -301,7 +359,6 @@ one pty alone, never sleeps through output (no gap near its 2 s timeout, three r
   "Under a `yes' flood, 50 keys posted one at a time each reach Lisp at once and in order: the pump that begins
 every wait stores a key before the wait reads the flood, so keys never wait behind output, and none takes the
 helper's hop (`:helper-hops-keys' 0)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   ;; each phase's seconds, so a slow row names the phase it spent them in
   (let ((phases nil) (t0 (float-time)))
     (nhmac-gui--flush)
@@ -368,7 +425,6 @@ Each round takes the mutex, notifies a condition (ALL t and nil in turn) and yie
 rounds, through `acquire_global_lock', the condition's return, `condition-notify' with ALL nil and t, and
 `thread-join': every round completes, no park outlives a waiter (`:parks-with-waiters' 0), and the count is 0 at the
 end.  The lock waits over 2 ms are logged, not gated."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((before (nhmac-stats))
          (stop (list nil))
          (c (nhmac-gui--contenders 4 stop))
@@ -385,7 +441,6 @@ end.  The lock waits over 2 ms are logged, not gated."
 (ert-deftest nhmac-lock-handoff-signal ()
   "3 waiters on one condition, one `condition-notify' with ALL nil per round: exactly one proceeds each round, and the
 lock-waiter count is back to 0 after each (a signal marks one waiter, not all)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((m (make-mutex)) (c (make-condition-variable m))
          (tickets 0) (taken 0) (stop nil)
          (waiters (cl-loop for i below 3 collect
@@ -452,7 +507,6 @@ lock-waiter count is back to 0 after each (a signal marks one waiter, not all)."
 (ert-deftest nhmac-quit-reaches-busy-loop ()
   "A C-g queued in AppKit while Lisp runs a busy loop (no input read, no redisplay, no wait) quits it: the loop's
 input polls pump AppKit.  The loop ends itself after 5 s, failing the row."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--flush)
   (let ((start (float-time)) quit)
     (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
@@ -468,7 +522,6 @@ input polls pump AppKit.  The loop ends itself after 5 s, failing the row."
 (ert-deftest nhmac-keys-under-yield-loop ()
   "While a Lisp thread spins on `thread-yield', and again under 4-thread contention, keys, a process's output, a
 timer and C-g all reach Lisp: the main thread's yield loop pumps and polls, it never parks with waiters."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((stop (list nil))
          (spinner (make-thread (lambda () (while (not (car stop)) (thread-yield))) "nhmac-spin")))
     (unwind-protect (nhmac-gui--live-under-load)
@@ -484,7 +537,6 @@ timer and C-g all reach Lisp: the main thread's yield loop pumps and polls, it n
 (ert-deftest nhmac-thread-input-hands-the-pump ()
   "A Lisp thread that reads input (its `read_socket' asks for a pump) never pumps AppKit itself: the pump is handed
 to the main thread, the display lives and keys still arrive."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--flush)
   (let* ((before (nhmac-stats))
          (th (make-thread (lambda () (dotimes (_ 20) (input-pending-p) (thread-yield))) "nhmac-input")))
@@ -496,7 +548,6 @@ to the main thread, the display lives and keys still arrive."
 (ert-deftest nhmac-thread-wakes-idle-main ()
   "A thread waiting on a condition is woken by another Lisp thread's notify while the main thread idles in its
 wait, with no AppKit event: the notifier's want of the lock ends the main thread's park."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--flush)
   (let* ((m (make-mutex)) (c (make-condition-variable m))
          (go nil) (woken nil) (notified nil)
@@ -523,7 +574,6 @@ wait, with no AppKit event: the notifier's want of the lock ends the main thread
 abort.  With its only display gone Emacs ends with status 70 (nhwl_connection_lost, as xterm does), so the exception
 is raised in a child Emacs on the same window server, never in the runner; the child has 30 s."
   :tags '(runs-last)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((buf (generate-new-buffer " *nhmac-poison*"))
          (proc (make-process
                 :name "nhmac-poison" :buffer buf :connection-type 'pipe
@@ -567,7 +617,6 @@ second later prints whether the frame is visible, its draws, the shell's startup
 its frame, each become visible and draw.  Guards the start that once drew nothing at scale 1; a failing start's facts
 (its configure waits, the startup trace, the shell's view) are the message.  Each child has 30 s."
   :tags '(runs-last)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (skip-unless (= (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")) 1))
   (let ((emacs (expand-file-name invocation-name invocation-directory))
         (bad nil))
@@ -608,9 +657,11 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
   (plist-get (nhmac-gui--surface) :slots))
 
 (defun nhmac-gui--redisplay ()
-  "Redisplay, then wait (bounded) until the commit pacer holds none of the selected frame's commits: what the
-redisplay drew is on the layer, and counted."
+  "Redisplay, then wait as Emacs waits (its wait commits what the redisplay published: the commit is off the
+redisplay path), bounded, until the commit pacer holds none of the selected frame's commits: what the redisplay drew
+is on the layer, and counted."
   (redisplay)
+  (accept-process-output nil 0.001)
   (nhmac-gui--wait-unheld 1))
 
 (defun nhmac-gui--fill-ring ()
@@ -664,7 +715,6 @@ without, back to back."
 most, in the three §5.4 cases (end of line, mid-line, the worst plain key); never a whole surface.  The keys come
 at the fastest key repeat, on a ring that has made all its slots."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (let ((row (nhmac-gui--row-bytes))
         (keys 10))
@@ -693,7 +743,6 @@ at the fastest key repeat, on a ring that has made all its slots."
 (ert-deftest nhmac-commits-per-redisplay ()
   "A redisplay after a key commits the frame's tree at most once."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "commits")
   (let ((d (nhmac-gui--type 20)))
     (nhmac-gui--say "nhmac-commits-per-redisplay: 20 keys: %d commits" (plist-get d :commits))
@@ -702,9 +751,7 @@ at the fastest key repeat, on a ring that has made all its slots."
   (kill-buffer))
 
 (ert-deftest nhmac-no-spins-in-redisplay ()
-  "Redisplay turns no run loop: 0 passes of the main run loop outside the pumps while typing (NS's figure, from the
-interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts-ns')."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
+  "Redisplay turns no run loop: 0 passes of the main run loop outside the pumps while typing."
   (nhmac-gui--typing-buffer "spins")
   (let ((d (nhmac-gui--type 20)))
     (nhmac-gui--say "nhmac-no-spins-in-redisplay: 20 keys: %d spins outside the pumps" (plist-get d :spins-in-redisplay))
@@ -713,7 +760,6 @@ interposer in the NS lane of the same run, is logged by `nhmac-interposer-counts
 
 (ert-deftest nhmac-no-implicit-transaction ()
   "No implicit Core Animation transaction is left open when a publish ends, while typing."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "implicit")
   (should (= (plist-get (nhmac-gui--type 20) :implicit-open-at-update-end) 0))
   (kill-buffer))
@@ -724,7 +770,6 @@ Each key comes once the window server has handed back a surface, as a typed key 
 a key posted while it still composites the last commits is held by the pacer, whose release is the run loop's
 \(`nhmac-surface-busy-burst' is that row)."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "key")
   ;; the blinking cursor's timer redraws the cursor on its own (one commit of the cursor's cell); the row counts the
   ;; key's commits
@@ -746,11 +791,12 @@ a key posted while it still composites the last commits is held by the pacer, wh
               (let ((ev (read-event nil nil 2)))
                 (should (eq ev ?k))
                 (insert ev))
-              ;; a commit the pacer held is published by its release, without a pump
-              (nhmac-gui--redisplay)
+              (redisplay)
+              ;; the key's pump and waits, then its commit: the next wait's (off the redisplay path); a commit the
+              ;; pacer held is published by its release, without a pump
               (let ((pumps (nhmac-gui--delta before :pumps))
-                    (commits (nhmac-gui--delta before :commits))
-                    (sleeps (nhmac-gui--delta before :sleeps)))
+                    (sleeps (nhmac-gui--delta before :sleeps))
+                    (commits (progn (nhmac-gui--redisplay) (nhmac-gui--delta before :commits))))
                 (nhmac-gui--say "nhmac-key-to-commit-counts: key %d: pumps %d commits %d fd waits %d (a surface \
 free after %.3f s)"
                                 i pumps commits sleeps free)
@@ -766,7 +812,6 @@ free after %.3f s)"
 (ert-deftest nhmac-surface-busy-typing ()
   "While typing (keys at the fastest key repeat) the ring always has a surface the window server does not hold."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer "busy")
   (let ((d (nhmac-gui--type 30 nil t)))
@@ -776,23 +821,53 @@ free after %.3f s)"
     (should (= (plist-get d :held-timeouts) 0)))
   (kill-buffer))
 
+(defvar nhmac-gui--taken nil "Events `nhmac-gui--read-shell' took off the queue, oldest first.")
+
+(defun nhmac-gui--read-shell ()
+  "Read the shell's events as Emacs reads them where it reads keys (`input-pending-p', without a redisplay that would
+publish anyway).  `input-pending-p' reads them only while no event is pending (keyboard.c's `get_input_pending'), so
+a pending event is taken off first, into `nhmac-gui--taken'; `nhmac-gui--put-back' returns them."
+  (let (e)
+    (while (and (input-pending-p) (setq e (read-event nil nil 0)))
+      (setq nhmac-gui--taken (nconc nhmac-gui--taken (list e))))))
+
+(defun nhmac-gui--put-back ()
+  "Return the events `nhmac-gui--read-shell' took, in their order, ahead of any unread ones."
+  (setq unread-command-events (append nhmac-gui--taken unread-command-events)
+        nhmac-gui--taken nil))
+
 (defun nhmac-gui--wait-unheld (secs)
   "Wait as Emacs waits for input until the commit pacer holds no commit of the selected frame, at most SECS; whether
-it does not.  The pacer's request for the publish comes as a shell event, which Emacs reads where it reads keys (here
-`input-pending-p', without a redisplay that would publish anyway)."
+it does not.  The pacer's request for the publish comes as a shell event (`nhmac-gui--read-shell')."
   (let ((end (+ (float-time) secs)))
-    (while (and (plist-get (nhmac-gui--surface) :held) (< (float-time) end))
-      (input-pending-p)
-      (accept-process-output nil 0.01))
+    ;; one wait first: it commits what the last redisplay published (the commit is off the redisplay path)
+    (accept-process-output nil 0.001)
+    (unwind-protect
+        (while (and (plist-get (nhmac-gui--surface) :held) (< (float-time) end))
+          (nhmac-gui--read-shell)
+          (accept-process-output nil 0.01))
+      (when (plist-get (nhmac-gui--surface) :held)
+        ;; what could keep the shell's events from being read: an event still pending, or the taken ones
+        (nhmac-gui--say "nhmac-gui--wait-unheld: held after %s s; pending %S, unread %S, taken %S; \
+a read of 50 ms %S, then pending %S, last input %S" secs
+                        (input-pending-p) unread-command-events
+                        (mapcar (lambda (e) (or (car-safe e) e)) nhmac-gui--taken)
+                        (let ((e (read-event nil nil 0.05)))
+                          (when e (push e nhmac-gui--taken))
+                          (or (car-safe e) e))
+                        (input-pending-p) (or (car-safe last-input-event) last-input-event)))
+      (nhmac-gui--put-back))
     (not (plist-get (nhmac-gui--surface) :held))))
 
 (defun nhmac-gui--wait-free (secs)
   "Wait as Emacs waits for input until the selected frame's next commit would find a surface the window server does
 not hold, at most SECS; how many seconds that took, or nil if it never did."
   (let ((start (float-time)))
-    (while (and (not (plist-get (nhmac-gui--surface) :free)) (< (- (float-time) start) secs))
-      (input-pending-p)
-      (accept-process-output nil 0.01))
+    (unwind-protect
+        (while (and (not (plist-get (nhmac-gui--surface) :free)) (< (- (float-time) start) secs))
+          (nhmac-gui--read-shell)
+          (accept-process-output nil 0.01))
+      (nhmac-gui--put-back))
     (and (plist-get (nhmac-gui--surface) :free) (- (float-time) start))))
 
 (ert-deftest nhmac-surface-busy-burst ()
@@ -800,7 +875,6 @@ not hold, at most SECS; how many seconds that took, or nil if it never did."
 commit pacer holds a commit while every other surface is held, so no held surface is drawn into (0 busy), and no hold
 reaches its bound on a composited window (0 held timeouts)."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer "burst")
   (let ((d (nhmac-gui--type 30)))
@@ -829,7 +903,6 @@ The surfaces read as free again when it returns; the held commit is owed."
 Emacs sits in its wait (the pacer's timer asks for it): the layer then shows the newest surface, and the hold ended
 without reaching its bound."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "last")
   (let ((before (nhmac-stats)))
     (nhmac-gui--hold-one)
@@ -848,7 +921,6 @@ without reaching its bound."
   "After a held commit shows, the pacer's timer is disarmed: it was armed for the hold (its release may come from a
 pump's check before the timer fires), and does not fire over 2 s of idle after."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "idle")
   (let ((before (nhmac-stats)))
     (nhmac-gui--hold-one)
@@ -866,8 +938,9 @@ pump's check before the timer fires), and does not fire over 2 s of idle after."
   "A commit held past the pacer's bound (every surface forced to read as held throughout) is drawn into the oldest
 anyway, counted as a held timeout and a busy surface, so a stuck window server never freezes the frame."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "bound")
+  ;; the buffer's own commit first (the commit is off the redisplay path): the row's commit is the one held
+  (nhmac-gui--redisplay)
   (let ((before (nhmac-stats)) (t0 (float-time)) shown)
     (nhmac--test-force-in-use t)
     (unwind-protect
@@ -877,9 +950,12 @@ anyway, counted as a held timeout and a busy surface, so a stuck window server n
           (should (plist-get (nhmac-gui--surface) :held))
           (setq shown (nhmac-gui--wait-unheld 1)))
       (nhmac--test-force-in-use nil))
-    (nhmac-gui--say "nhmac-held-commit-bound: unheld %S after %.3f s, %d held, %d held timeouts, %d busy" shown
+    (nhmac-gui--say "nhmac-held-commit-bound: unheld %S after %.3f s, %d held, %d held timeouts, %d busy; %d pumps, \
+%d pacer fires, %d commits, %d deadline commits" shown
                     (- (float-time) t0) (nhmac-gui--delta before :held) (nhmac-gui--delta before :held-timeouts)
-                    (nhmac-gui--delta before :surface-busy))
+                    (nhmac-gui--delta before :surface-busy) (nhmac-gui--delta before :pumps)
+                    (nhmac-gui--delta before :pacer-fires) (nhmac-gui--delta before :commits)
+                    (nhmac-gui--delta before :deadline-flushes))
     (should shown)
     (should (>= (- (float-time) t0) 0.05))
     (should (= (nhmac-gui--delta before :held-timeouts) 1))
@@ -890,7 +966,6 @@ anyway, counted as a held timeout and a busy surface, so a stuck window server n
   "The typing rows measure on a ring that has made all its slots: right after the ring starts over (the colour space
 changed) it has fewer, which their check sees, and the warm-up fills it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (let ((srgb ns-use-srgb-colorspace))
     (switch-to-buffer (generate-new-buffer " *nhmac-fill*"))
@@ -914,7 +989,6 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
 (ert-deftest nhmac-scroll-bytes ()
   "Scrolling a window by a line copies the scrolled rows, not the surface."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--require-composited)
   (nhmac-gui--typing-buffer (mapconcat #'number-to-string (number-sequence 1 300) "\n"))
   (goto-char (point-min))
@@ -933,15 +1007,37 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
   (kill-buffer))
 
 (ert-deftest nhmac-commit-shows-without-spin ()
-  "After `redisplay' the layer shows the newest surface, read back in the process, with no run-loop turn."
+  "After `redisplay' and Lisp that runs on for 20 ms the layer shows the newest surface, read back in the process,
+with no run-loop turn: the commit's deadline commits it.  The redisplay is forced: an event still queued from an
+earlier row makes a plain `redisplay' return at once (round 2: 0 commits, 0 deadline commits), which is not the case
+judged here; whether one was pending is logged."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (nhmac-gui--typing-buffer "shows")
   (let ((before (nhmac-stats)))
     (insert "y")
-    (redisplay)
+    (nhmac-gui--say "nhmac-commit-shows-without-spin: input pending %S" (input-pending-p))
+    (redisplay t)
+    (let ((end (+ (float-time) 0.02)))
+      (while (< (float-time) end)))
     (let ((s (nhmac-gui--surface)))
-      (nhmac-gui--say "nhmac-commit-shows-without-spin: %S" s)
+      (nhmac-gui--say "nhmac-commit-shows-without-spin: %S; %d commits, %d deadline commits, %d pumps" s
+                      (nhmac-gui--delta before :commits) (nhmac-gui--delta before :deadline-flushes)
+                      (nhmac-gui--delta before :pumps))
+      ;; round 6: 0 commits and 0 deadline commits, red at both scales: whether the redisplay drew, and what the
+      ;; pacer held or deferred
+      (nhmac-gui--say "nhmac-commit-shows-without-spin: deltas %S"
+                      (mapcar (lambda (k) (cons k (nhmac-gui--delta before k)))
+                              '(:draws :held :held-timeouts :pacer-arms :pacer-fires :deferred-commits :handed-pumps
+                                       :takes :applied)))
+      ;; round 8: draws and no commit of either kind in the 20 ms (the deadline is 8 ms): how long the deadline
+      ;; took, Lisp still running on
+      (unless (plist-get s :contents-is-newest)
+        (let* ((t0 (float-time)) (end (+ t0 1.0)) newest)
+          (while (and (not (setq newest (plist-get (nhmac-gui--surface) :contents-is-newest)))
+                      (< (float-time) end)))
+          (nhmac-gui--say "nhmac-commit-shows-without-spin: newest %S after %.0f ms more; %d deadline commits"
+                          newest (* 1000 (- (float-time) t0))
+                          (- (plist-get (nhmac-stats) :deadline-flushes) (plist-get before :deadline-flushes)))))
       (should (eq (plist-get s :contents-is-newest) t))
       (should (equal (plist-get s :gravity) "topLeft"))
       (should (= (plist-get s :scale) (/ (plist-get (nhmac--window-info) :device-width)
@@ -954,10 +1050,50 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
     (should (>= (nhmac-gui--delta before :commits) 1)))
   (kill-buffer))
 
+(ert-deftest nhmac-redisplay-has-no-flush ()
+  "The commit is off the redisplay path (as NS's, Core Animation's at the run loop's turn): a redisplay that drew
+commits nothing and flushes nothing inside it; the next wait commits it."
+  :tags '(draws)
+  (nhmac-gui--typing-buffer "no-flush")
+  (redisplay t)
+  (sit-for 0.05)
+  (dotimes (i 5)
+    (let ((before (nhmac-stats)))
+      (insert "z")
+      (redisplay)
+      (let ((inside (nhmac-gui--delta before :commits)) (ns (nhmac-gui--delta before :commit-ns)))
+        (sit-for 0.02)
+        (nhmac-gui--say "nhmac-redisplay-has-no-flush: key %d: %d commits (%d ns) inside, %d after a wait"
+                        i inside ns (nhmac-gui--delta before :commits))
+        (should (= inside 0))
+        (should (= ns 0))
+        (should (>= (nhmac-gui--delta before :commits) 1)))))
+  (kill-buffer))
+
+(ert-deftest nhmac-redisplay-then-busy-shows ()
+  "Lisp that keeps running after a redisplay, waiting for nothing, still has its frame shown: the commit's deadline
+flushes it within a few milliseconds, without a pump."
+  :tags '(draws)
+  (nhmac-gui--typing-buffer "busy-shows")
+  (redisplay t)
+  (sit-for 0.05)
+  (dotimes (i 5)
+    (let ((before (nhmac-stats)))
+      (insert "q")
+      (redisplay)
+      (let ((end (+ (float-time) 0.05)))
+        (while (< (float-time) end)))
+      (let ((s (nhmac-gui--surface)))
+        (nhmac-gui--say "nhmac-redisplay-then-busy-shows: key %d: %d commits, %d pumps in 50 ms of Lisp, newest %S"
+                        i (nhmac-gui--delta before :commits) (nhmac-gui--delta before :pumps)
+                        (plist-get s :contents-is-newest))
+        (should (>= (nhmac-gui--delta before :commits) 1))
+        (should (eq (plist-get s :contents-is-newest) t)))))
+  (kill-buffer))
+
 (ert-deftest nhmac-colour-tagged ()
   "The surfaces' colour space follows `ns-use-srgb-colorspace': sRGB, else Generic RGB."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (unwind-protect
       (progn
         (setq ns-use-srgb-colorspace nil)
@@ -970,55 +1106,78 @@ changed) it has fewer, which their check sees, and the warm-up fills it."
         (should (eq (plist-get (nhmac-gui--surface) :srgb) 'srgb)))
     (setq ns-use-srgb-colorspace t)))
 
-(ert-deftest nhmac-paired-key-to-commit ()
-  "Key to commit, timed in the process: 50 typed keys, each a command and a redisplay, written to
-GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line).  Both builds run it in turn (--pair, ABAB);
-nidhogg/test/nhmac-pair.sh compares the pairs: not slower than NS on the median and p95 of the differences,
-with a sign test.
-Both builds are timed to the same point: the change handed to the window server, the flush to the screen left out.
-NS's flush comes after its redisplay (Core Animation's commit at the end of the run-loop turn), so its time is the
-key's command and redisplay; Naglfar commits and flushes its layer transaction inside the redisplay, so that
-redisplay's commit time (`nhmac-stats' :commit-ns) is taken off."
-  (let* ((naglfar (not (nhmac-gui--ns-build-p)))
-         (build (if naglfar "naglfar" "ns"))
-         (file (expand-file-name (format "pair-%s.txt" build)
-                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
-         (commit-ns (lambda () (if naglfar (plist-get (nhmac-stats) :commit-ns) 0)))
-         times)
-    (switch-to-buffer (generate-new-buffer " *nhmac-pair*"))
-    (insert "paired timing")
+(defun nhmac-gui--timing-build ()
+  "Skip, saying why, on a build with Emacs's assertions: its collections alone take several times as long, so the
+timing rows run on the lane's timing build (build.sh --test-hooks, no --enable-checking)."
+  (when (string-match-p "--enable-checking" system-configuration-options)
+    (ert-skip "a timing row: this build has --enable-checking; the lane's timing build runs it")))
+
+(ert-deftest nhmac-key-to-commit ()
+  "Key to commit, timed in the process: 50 typed keys, each a command, a redisplay and the commit of its layer
+transaction (Naglfar commits inside the redisplay).  The bar is drgnx's typing budget: p95 under 16 ms (one 60 Hz
+frame), max under 50 ms."
+  :tags '(timing)
+  (nhmac-gui--timing-build)
+  (let (times)
+    (switch-to-buffer (generate-new-buffer " *nhmac-key*"))
+    (insert "key to commit")
     (redisplay t)
     (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
     (dotimes (_ 50)
-      (let* ((c0 (funcall commit-ns)) (t0 (float-time)))
+      (let ((t0 (float-time)))
         (execute-kbd-macro "x")
         (redisplay)
-        (let ((t1 (float-time)))
-          (push (round (- (* 1e6 (- t1 t0)) (/ (- (funcall commit-ns) c0) 1000.0))) times))))
-    (with-temp-buffer
-      (dolist (us (nreverse times)) (insert (format "%d\n" us)))
-      (write-region (point-min) (point-max) file t 'silent))
-    (should (file-exists-p file))
-    (kill-buffer)))
+        (push (round (* 1e6 (- (float-time) t0))) times)))
+    (kill-buffer)
+    (nhmac-gui--within-budget "nhmac-key-to-commit" times 16 50)))
 
-;; Where the paired row's time goes (the M1 gate's paired timing): the same 50 keys, each split into the command and
-;; the redisplay, and on Naglfar the redisplay's shell stages from `nhmac-stats' (painting the draw records, filling
-;; the surfaces, committing and flushing the layer transaction); the rest of the redisplay is C and the glue.
+;; Where a key's time goes: the same 50 keys, each split into the command and the redisplay, and the redisplay's shell
+;; stages from `nhmac-stats' (painting the draw records, filling the surfaces, committing and flushing the layer
+;; transaction); the rest of the redisplay is C and the glue.
 (defun nhmac-gui--median (xs)
   "The median of the numbers XS."
   (let ((v (vconcat (sort (copy-sequence xs) #'<)))) (aref v (/ (length v) 2))))
 
-(ert-deftest nhmac-pair-stages ()
-  "The paired row's keys split by stage, medians in microseconds, written to GLITNIR_GUI_OUT/stages-BUILD.txt.
+(ert-deftest nhmac-cpu-per-key ()
+  "The main thread's CPU time per typed key (the architecture review's A6, G1's measure), each key a command, a
+redisplay and the wait that commits it, as typing is: 20 samples of 10 keys.  The bar (the coordinator's, 2026-11-12):
+median at most 4 ms, a quarter of a 60 Hz frame, and p95 at most 8 ms, so a slow tail cannot hide behind the median."
+  :tags '(timing)
+  (nhmac-gui--timing-build)
+  (let (samples gcs)
+    (switch-to-buffer (generate-new-buffer " *nhmac-cpu*"))
+    (insert "cpu per key")
+    (redisplay t)
+    (dotimes (_ 10) (execute-kbd-macro "w") (redisplay) (accept-process-output nil 0.001))
+    (should (nhmac-gui--main-thread-cpu))
+    (setq gcs (cons gcs-done gc-elapsed))
+    (dotimes (_ 20)
+      (let ((c0 (nhmac-gui--main-thread-cpu)))
+        (dotimes (_ 10)
+          (execute-kbd-macro "x")
+          (redisplay)
+          (accept-process-output nil 0.001))
+        (push (round (/ (* 1e6 (- (nhmac-gui--main-thread-cpu) c0)) 10)) samples)))
+    (kill-buffer)
+    (setq samples (nreverse samples))
+    (nhmac-gui--say "nhmac-cpu-per-key: %S us per key; median %d, p95 %d; %d GCs in %.3f s" samples
+                    (nhmac-gui--rank samples 0.5) (nhmac-gui--rank samples 0.95)
+                    (- gcs-done (car gcs)) (- gc-elapsed (cdr gcs)))
+    (should (<= (nhmac-gui--rank samples 0.5) 4000))
+    (should (<= (nhmac-gui--rank samples 0.95) 8000))))
+
+(ert-deftest nhmac-key-stages ()
+  "A key's time split by stage, medians in microseconds, written to GLITNIR_GUI_OUT/stages-naglfar.txt.
 It measures; it asserts only that it ran."
-  (let* ((naglfar (not (nhmac-gui--ns-build-p)))
-         (build (if naglfar "naglfar" "ns"))
+  :tags '(timing)
+  (let* ((naglfar t)
+         (build "naglfar")
          (file (expand-file-name (format "stages-%s.txt" build)
                                  (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
          (us (lambda (a b) (/ (- b a) 1000.0)))
          cmd redisp paint fill commit)
-    (switch-to-buffer (generate-new-buffer " *nhmac-pair*"))
-    (insert "paired timing")
+    (switch-to-buffer (generate-new-buffer " *nhmac-stages*"))
+    (insert "key stages")
     (redisplay t)
     (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
     (dotimes (_ 50)
@@ -1041,7 +1200,7 @@ It measures; it asserts only that it ran."
                             (nhmac-gui--median (cl-mapcar (lambda (r p f c) (- r p f c)) redisp paint fill commit)))
                   (format "%s: command %.0f redisplay %.0f us" build (nhmac-gui--median cmd)
                           (nhmac-gui--median redisp)))))
-      (nhmac-gui--say "nhmac-pair-stages: %s" line)
+      (nhmac-gui--say "nhmac-key-stages:%s" line)
       (write-region (concat line "\n") nil file t 'silent))
     ;; Naglfar: 50 more keys with the glue's entry points timed (no stats read between them), per key: the redisplay,
     ;; the time inside the glue (the shell's stages are inside it) and each entry point's calls and time
@@ -1061,40 +1220,141 @@ It measures; it asserts only that it ran."
                              (mapconcat (lambda (e) (format "%s %.1f calls %.0f us" (nth 0 e) (/ (nth 1 e) 50.0)
                                                             (funcall per (nth 2 e))))
                                         entries ", "))))
-          (nhmac-gui--say "nhmac-pair-stages: %s" line)
+          (nhmac-gui--say "nhmac-key-stages:%s" line)
           (write-region (concat line "\n") nil file t 'silent))))
+    ;; G1's measure (A6): the main thread's CPU time per key, typing for 2 s with nothing else running (judged by
+    ;; `nhmac-cpu-per-key'; logged here beside the stages)
+    (let ((c0 (nhmac-gui--main-thread-cpu)) (end (+ (float-time) 2)) (keys 0))
+      (while (< (float-time) end) (execute-kbd-macro "x") (redisplay) (cl-incf keys))
+      (let* ((c1 (nhmac-gui--main-thread-cpu))
+             (line (format "%s: main-thread CPU %s per key over %d keys" build
+                           (if (and c0 c1) (format "%.1f us" (/ (* 1e6 (- c1 c0)) keys)) "unknown") keys)))
+        (nhmac-gui--say "nhmac-key-stages:%s" line)
+        (write-region (concat line "\n") nil file t 'silent)))
     ;; both builds: macOS's `sample' profiles this process (1 ms interval) while it types for 3 s, so the C side's
     ;; time can be compared function by function; the call tree goes to GLITNIR_GUI_OUT/sample-BUILD.txt
     (when (executable-find "sample")
       (let* ((out (expand-file-name (format "sample-%s.txt" build) (file-name-directory file)))
              (p (let ((process-environment (nhmac-gui--capture-env)))
-                  (start-process "nhmac-sample" nil "sample" (number-to-string (emacs-pid)) "4" "1"
-                                 "-mayDie" "-file" out)))
+                  (start-process "nhmac-sample" (generate-new-buffer " *nhmac-sample*") "sample"
+                                 (number-to-string (emacs-pid)) "4" "1" "-mayDie" "-file" out)))
              (end (+ (float-time) 4)))
         (sleep-for 0.5)
-        (while (< (float-time) end) (execute-kbd-macro "x") (redisplay))
-        (while (and (process-live-p p) (< (float-time) (+ end 10))) (accept-process-output p 0.2))
-        (nhmac-gui--say "nhmac-pair-stages: %s: sample %s %s" build out (file-exists-p out))))
+        ;; the heap and the GCs of the sampled typing, to compare the builds (G1: Naglfar's GCs mark more)
+        (let ((heap (garbage-collect)) (gcs gcs-done) (gct gc-elapsed) (keys 0))
+          (while (< (float-time) end) (execute-kbd-macro "x") (redisplay) (cl-incf keys))
+          (nhmac-gui--say "nhmac-key-stages:%s: %d keys, %d GCs in %.3f s, gc-cons-threshold %d, heap %S"
+                          build keys (- gcs-done gcs) (- gc-elapsed gct) gc-cons-threshold heap)
+          ;; G1: Naglfar's GC time is in mark_char_table under the intervals' marking: which char-tables the text
+          ;; properties hold, in the mode line's strings and in the buffers
+          (nhmac-gui--say "nhmac-key-stages:%s: char-tables in text properties %S" build
+                          (nhmac-gui--property-char-tables)))
+        ;; sample symbolicates after its 4 s, which took over 10 s on the runner; the profile is a diagnostic, so a
+        ;; sample still writing after a minute is dropped
+        (while (and (process-live-p p) (< (float-time) (+ end 60))) (accept-process-output p 0.2))
+        ;; sample's own output says why a file is missing
+        (nhmac-gui--say "nhmac-key-stages:%s: sample %s %s, exit %S: %s" build out (file-exists-p out)
+                        (process-exit-status p)
+                        (with-current-buffer (process-buffer p) (string-trim (buffer-string))))
+        ;; a sample still running past the bound goes without asking: killing its buffer would prompt
+        (set-process-query-on-exit-flag p nil)
+        (delete-process p)
+        (kill-buffer (process-buffer p))))
     (kill-buffer)
     (should (file-exists-p file))))
 
 ;; Draw records painted with Core Graphics
+(defun nhmac-gui--main-thread-cpu ()
+  "This process's main thread's CPU time so far (user + system, seconds), from `ps -M': its first thread row.
+Nil when ps gives no such row."
+  (with-temp-buffer
+    (when (eq 0 (ignore-errors (call-process "ps" nil t nil "-M" "-p" (number-to-string (emacs-pid)))))
+      (let* ((rows (split-string (buffer-string) "\n" t))
+             (head (and rows (split-string (car rows))))
+             (first (and (cdr rows) (split-string (cadr rows))))
+             ;; ps's times are [[H:]M:]S.FF
+             (secs (lambda (str)
+                     (and str (let ((n 0))
+                                (dolist (part (split-string str ":"))
+                                  (setq n (+ (* n 60) (string-to-number part))))
+                                n))))
+             (col (lambda (name) (let ((i (seq-position head name))) (and i (nth i first))))))
+        (let ((st (funcall secs (funcall col "STIME"))) (ut (funcall secs (funcall col "UTIME"))))
+          (and st ut (+ st ut)))))))
+
+(defun nhmac-gui--property-char-tables ()
+  "Who holds char-tables through text properties: a list of (WHERE PROPERTY SUBTYPE COUNT), WHERE the mode line or a
+buffer's name, and then (intervals WHERE N) for each buffer with intervals.  The mode line's constructs are walked
+through symbols' values (6 deep); property values through conses (each element and the tail) and vectors (3 deep).
+Never signals: an object it cannot walk is skipped (G1's GC diagnostic, run on both builds)."
+  (let ((found (make-hash-table :test #'equal)) (seen (make-hash-table :test #'eq)) (counts nil))
+    (cl-labels ((value (where prop v depth)
+                  (cond ((char-table-p v)
+                         (cl-incf (gethash (list where prop (char-table-subtype v)) found 0)))
+                        ((<= depth 0))
+                        ((consp v)
+                         ;; any list, proper or not: each element up to 20, then a non-nil tail
+                         (let ((n 0))
+                           (while (and (consp v) (< n 20))
+                             (value where prop (car v) (1- depth))
+                             (setq v (cdr v) n (1+ n)))
+                           (when (and v (not (consp v))) (value where prop v (1- depth)))))
+                        ((and (vectorp v) (not (recordp v)))
+                         (dotimes (i (min 20 (length v))) (value where prop (aref v i) (1- depth))))))
+                (intervals (where obj)
+                  (let ((ivs (ignore-errors (object-intervals obj))))
+                    (when (and ivs (bufferp obj)) (push (list 'intervals where (length ivs)) counts))
+                    (dolist (iv ivs)
+                      (let ((pl (nth 2 iv)))
+                        (while (consp pl)
+                          (value where (car pl) (car-safe (cdr pl)) 3)
+                          (setq pl (cdr-safe (cdr pl))))))))
+                (construct (c depth)
+                  (unless (or (<= depth 0) (and (or (consp c) (stringp c)) (gethash c seen)))
+                    (when (or (consp c) (stringp c)) (puthash c t seen))
+                    (cond ((stringp c) (intervals 'mode-line c))
+                          ((and (symbolp c) c (boundp c)) (construct (symbol-value c) (1- depth)))
+                          ((consp c)
+                           (let ((n 0))
+                             (while (and (consp c) (< n 40))
+                               (construct (car c) (1- depth))
+                               (setq c (cdr c) n (1+ n)))))))))
+      (condition-case err
+          (progn
+            (construct mode-line-format 6)
+            (dolist (b (buffer-list))
+              (intervals (buffer-name b) b)))
+        (error (push (list 'error err) counts))))
+    (let (out)
+      (maphash (lambda (k n) (push (append k (list n)) out)) found)
+      (append out (nreverse counts)))))
+
 (defun nhmac-gui--pixel-at (x y)
   "The committed surface's premultiplied ARGB at device pixel X, Y of the selected frame, once the commit pacer holds
 none of its commits (bounded)."
   (nhmac-gui--wait-unheld 1)
   (plist-get (nhmac--test-surface x y) :pixel))
 
+(defun nhmac-gui--draw-px (n)
+  "N logical pixels as the selected frame's device pixels (its window's scale, rounded)."
+  (round (* n (plist-get (nhmac--test-surface 0 0) :scale))))
+
 (defun nhmac-gui--draw-scene ()
-  "A buffer of three 12-pixel stretches: plain #336699, boxed in #ff0000 (3 pixels), then #ffffff; drawn.
-Returns the frame position of the first stretch's top left."
+  "A buffer of three stretches 12 logical pixels wide: plain #336699, boxed in #ff0000 (3 pixels), then #ffffff;
+drawn.  A box's line widths are logical pixels (xfaces.c scales them by the frame's scale) while a stretch's
+`:width' is device pixels, so the stretches are given in device pixels at the scale: at scale 2 a 12-pixel stretch
+with two 6-pixel lines has no inside left (round 2's red at s2).  Returns the frame position of the first stretch's
+top left."
   (switch-to-buffer (generate-new-buffer " *nhmac-draw*"))
   (setq-local cursor-type nil)
-  (insert (propertize " " 'display '(space :width (12)) 'face '(:background "#336699"))
-          (propertize " " 'display '(space :width (12))
-                      'face '(:background "#336699" :box (:line-width 3 :color "#ff0000")))
-          (propertize " " 'display '(space :width (12)) 'face '(:background "#ffffff"))
-          "\n")
+  ;; a new spec for each stretch: characters whose `display' values are `eq' are one display element, so a shared
+  ;; spec made one stretch of the three (round 4: positions 2 to 4 all at x 12)
+  (let ((w (lambda () `(space :width (,(nhmac-gui--draw-px 12))))))
+    (insert (propertize " " 'display (funcall w) 'face '(:background "#336699"))
+            (propertize " " 'display (funcall w)
+                        'face '(:background "#336699" :box (:line-width 3 :color "#ff0000")))
+            (propertize " " 'display (funcall w) 'face '(:background "#ffffff"))
+            "\n"))
   (redraw-frame)
   (redisplay t)
   (let ((xy (posn-x-y (posn-at-point (point-min))))
@@ -1106,7 +1366,6 @@ Returns the frame position of the first stretch's top left."
 nor its background (it shows what is beneath), while the middle of its top edge is the box's colour.  A square box,
 the shell drawing no rounded path, fails here."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (switch-to-buffer (generate-new-buffer " *nhmac-rounded*"))
   (setq-local cursor-type nil)
   (insert (propertize " " 'display '(space :width (40))
@@ -1127,29 +1386,46 @@ the shell drawing no rounded path, fails here."
   (kill-buffer))
 
 (ert-deftest nhmac-draw-fills-boxes-cursors ()
-  "Fills, a box and a bar cursor reach the committed surface with their exact colours (sRGB, opaque).
-A same-run comparison with NS's pixels needs a capture of the stock build; until then the colours are
-checked against the faces, tolerance 0 for fills and box lines."
+  "Fills, a box and a bar cursor reach the committed surface with their exact colours (sRGB, opaque): the faces'
+colours, tolerance 0 for fills and box lines."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((o (nhmac-gui--draw-scene))
          (x (car o)) (y (cdr o)) (h (frame-char-height)))
     (nhmac-gui--say "nhmac-draw-fills-boxes-cursors: origin %S, stats %S" o (nhmac-stats))
+    ;; where each colour runs along the middle row, on the surface and in the backing, and the stretches' places:
+    ;; a failure below then says whether a stretch or a box line has another width at this scale, or was not copied
+    (let ((runs (lambda (px)
+                  (let (out)
+                    (cl-loop for p across px for i from 0
+                             do (let ((c (logand p #xffffff)))
+                                  (if (and out (= (caar out) c)) (cl-incf (cdar out)) (push (cons c 1) out))))
+                    (mapcar (lambda (r) (format "#x%06x x%d" (car r) (cdr r))) (nreverse out))))))
+      (nhmac-gui--say "nhmac-draw-fills-boxes-cursors: row y+h/2 from x: surface %S; backing %S; stretches at %S"
+                      (funcall runs (nhmac-gui--surface-rect x (+ y (/ h 2)) (nhmac-gui--draw-px 40) 1))
+                      (condition-case err
+                          (pcase-let ((`(,w ,_ ,bytes) (glitnir-snapshot nil 'raw)))
+                            (funcall runs (vconcat (cl-loop for i from 0 below (nhmac-gui--draw-px 40)
+                                                            for o = (* 4 (+ (* (+ y (/ h 2)) w) x i))
+                                                            collect (logior (ash (aref bytes (+ o 2)) 16)
+                                                                            (ash (aref bytes (1+ o)) 8)
+                                                                            (aref bytes o))))))
+                        (error err))
+                      (mapcar (lambda (pos) (car (posn-x-y (posn-at-point pos)))) '(1 2 3 4))))
     (should (> (plist-get (nhmac-stats) :draws) 0))
     ;; the plain stretch's middle
-    (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff336699))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 6)) (+ y (/ h 2))) #xff336699))
     ;; the boxed stretch: its top line, then its inside
-    (should (= (nhmac-gui--pixel-at (+ x 18) (+ y 1)) #xffff0000))
-    (should (= (nhmac-gui--pixel-at (+ x 18) (+ y (/ h 2))) #xff336699))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 18)) (+ y 1)) #xffff0000))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 18)) (+ y (/ h 2))) #xff336699))
     ;; the white stretch
-    (should (= (nhmac-gui--pixel-at (+ x 30) (+ y (/ h 2))) #xffffffff))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 30)) (+ y (/ h 2))) #xffffffff))
     ;; a bar cursor 4 pixels wide in the cursor colour, at the white stretch (the trace from here)
     (nhmac--pump-trace)
     (set-face-background 'cursor "#00ff00")
     (setq-local cursor-type '(bar . 4))
     (goto-char (+ (point-min) 2))
     (redisplay t)
-    (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xff00ff00))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 25)) (+ y (/ h 2))) #xff00ff00))
     ;; and gone again: the stretch's own colour where it was; the trace names both publishes and their damage
     (let ((draws (plist-get (nhmac-stats) :draws)))
       (setq-local cursor-type nil)
@@ -1158,13 +1434,12 @@ checked against the faces, tolerance 0 for fills and box lines."
       (redisplay t)
       (setq draws (- (plist-get (nhmac-stats) :draws) draws))
       (ert-info ((format "pump decisions %S, %d draws, surface %S" (nhmac--pump-trace) draws (nhmac-gui--surface)))
-        (should (= (nhmac-gui--pixel-at (+ x 25) (+ y (/ h 2))) #xffffffff)))))
+        (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 25)) (+ y (/ h 2))) #xffffffff)))))
   (kill-buffer))
 
 (ert-deftest nhmac-draw-other-thread ()
   "A Lisp thread's redisplay paints, but its commit waits for the main thread's next pump."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((o (nhmac-gui--draw-scene))
          (x (car o)) (y (cdr o)) (h (frame-char-height))
          (before (nhmac-stats))
@@ -1182,44 +1457,169 @@ checked against the faces, tolerance 0 for fills and box lines."
     ;; the main thread's pump commits it
     (sit-for 0.1)
     (should (eq (plist-get (nhmac-gui--surface) :contents-is-newest) t))
-    (should (= (nhmac-gui--pixel-at (+ x 6) (+ y (/ h 2))) #xff00ff00)))
+    (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 6)) (+ y (/ h 2))) #xff00ff00)))
   (kill-buffer))
 
-;; Core Text text, compared with NS's in the same run
+;; Core Text text, judged on Core Text's own answers
 (defconst nhmac-gui--font-bg "#f0e0d0" "The text rows' background: no window chrome or desktop has it.")
 
-(defun nhmac-gui--font-file (ext &optional ns)
-  "The NS text row's output, nhmac-ns-font-scaleS.EXT: in this lane's GLITNIR_GUI_OUT, or with NS, in the NS lane's
-(Naglfar's lane writes to its naglfar/ subdirectory)."
-  (let ((out (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
-    (expand-file-name (format "nhmac-ns-font-scale%s.%s" (or (getenv "GLITNIR_GUI_SCALE") "1") ext)
-                      (if ns (expand-file-name ".." out) out))))
+(defun nhmac-gui--font-file (ext)
+  "A capture's file, nhmac-capture-scaleS.EXT, in this lane's GLITNIR_GUI_OUT (kept with the lane's logs)."
+  (expand-file-name (format "nhmac-capture-scale%s.%s" (or (getenv "GLITNIR_GUI_SCALE") "1") ext)
+                    (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
+
+;;;; What Core Text's answers become: the driver's stated rules, each named.  The rows ask Core Text for a font's raw
+;;;; metrics, glyphs, advances and bounds (`test-ct-font', unrounded device pixels) and apply these rules themselves;
+;;;; the rules are macfont's, which is what Mac users of Emacs see (the coordinator's ruling, 2026-11-12).
+
+(defun nhmac-gui--round-half-away (x)
+  "X rounded to the nearest integer, halves away from zero (Rust's and C's `round'; Emacs's `round' goes to even)."
+  (if (< x 0) (- (floor (+ (- x) 0.5))) (floor (+ x 0.5))))
+
+(defun nhmac-gui--c-round (x)
+  "Rule: a font's metrics are rounded as macfont rounds them, C's truncation of X + 0.5."
+  (truncate (+ x 0.5)))
+
+(defconst nhmac-gui--tall-families '("Courier" "Helvetica" "Times")
+  "Rule (AppKit's taller line): these families' ascent grows by 15% of ascent + descent (macfont's `.15f').")
+
+(defconst nhmac-gui--tall-factor 0.15000000596046448 "Rule: the tall families' factor, the float 0.15 widened.")
+
+(defconst nhmac-gui--hiragino-leading 0.25
+  "Rule (macfont): a Hiragino family's leading is quartered, and the quarter moves into the ascent.")
+
+(defconst nhmac-gui--frac-scale 14.0 "Rule (macfont's glyph cache): a width's fraction is kept in 14ths.")
+
+(defconst nhmac-gui--smoothing-margin 0.3959999978542328
+  "Rule (macfont): LCD smoothing's margin, the float 0.396 widened, pads a glyph with ink on each side.")
+
+(defun nhmac-gui--ct (family size chars)
+  "Core Text's answers for the open FAMILY at SIZE pixels and CHARS (a string), `test-ct-font''s plist; nil when the
+font is not open."
+  (apply #'nhmac--query 'test-ct-font family size (append chars nil)))
+
+(defun nhmac-gui--ct-width-parts (mono space adv)
+  "Rule (`macfont_glyph_extents'): a glyph of advance ADV as (WIDTH . FRACTION-IN-14THS); with MONO, a width that is a
+whole number of cells of SPACE is that many cells, the fraction what each cell's advance is off the space."
+  (let ((m (and mono (> space 0) (nhmac-gui--round-half-away (/ adv space)))))
+    (if (and m (> m 1) (= (nhmac-gui--round-half-away (/ adv m)) space))
+        (cons (* space m) (nhmac-gui--round-half-away (* (- (/ adv m) space) nhmac-gui--frac-scale)))
+      (let ((int (nhmac-gui--round-half-away adv)))
+        (cons int (if mono 0 (nhmac-gui--round-half-away (* (- adv int) nhmac-gui--frac-scale))))))))
+
+(defun nhmac-gui--ct-glyph (mono space g)
+  "Rule: the glyph G of `test-ct-font' (CHAR GLYPH ADVANCE LEFT RIGHT TOP BOTTOM) as Emacs's (WIDTH LBEARING RBEARING
+ASCENT DESCENT): the rounded width moves the bounds by half its fraction, smoothing's margin pads them, and they are
+rounded outwards (`CGRectIntegral')."
+  (pcase-let* ((`(,_ ,_ ,adv ,left ,right ,top ,bottom) g)
+               (`(,int . ,frac) (nhmac-gui--ct-width-parts mono space adv))
+               (x left) (w (- right left)))
+    (cond ((not mono) (setq x (- x (/ frac (* 2 nhmac-gui--frac-scale)))))
+          ((and (/= frac 0) (> space 0))
+           (setq x (- x (* (/ frac (* 2 nhmac-gui--frac-scale)) (/ int space))))))
+    (when (> w 0)
+      (setq x (- x nhmac-gui--smoothing-margin) w (+ w (* 2 nhmac-gui--smoothing-margin))))
+    (list int (floor x) (ceiling (+ x w)) (ceiling top) (- (floor bottom)))))
+
+(defun nhmac-gui--ct-metrics (ct printable)
+  "Rule (`macfont_open'): the font of CT (`test-ct-font', for the space then PRINTABLE's characters) as Emacs's
+\(ASCENT DESCENT AVERAGE-WIDTH SPACE-WIDTH): ascent and descent with the leading, the tall families' and Hiragino's
+rules, rounded; the space's width; the average of the space and U+0021-U+007E when the font has them all."
+  (let* ((family (plist-get ct :family))
+         (a (plist-get ct :ascent)) (d (plist-get ct :descent)) (l (plist-get ct :leading))
+         (glyphs (plist-get ct :glyphs))
+         (space (car (nhmac-gui--ct-width-parts nil 0 (nth 2 (car glyphs)))))
+         (rest (cdr glyphs)))
+    (cond ((member family nhmac-gui--tall-families) (setq a (+ a (* (+ a d) nhmac-gui--tall-factor))))
+          ((string-prefix-p "Hiragino" family) (setq l (* l nhmac-gui--hiragino-leading) a (+ a l))))
+    (list (nhmac-gui--c-round a) (nhmac-gui--c-round (+ d l))
+          (if (and (= (length printable) 94) (cl-every (lambda (g) (/= (nth 1 g) 0)) rest))
+              (/ (apply #'+ space (mapcar (lambda (g) (car (nhmac-gui--ct-glyph (plist-get ct :mono) space g))) rest))
+                 95)
+            space)
+          space)))
+
+(defconst nhmac-gui--printable (apply #'string (number-sequence ?! ?~)) "U+0021-U+007E, the average's characters.")
+
+(defconst nhmac-gui--crop-marker "#00ff00"
+  "The colour of the rule the capture scenes draw across the top of their window's text area.")
+
+(defun nhmac-gui--marker-line ()
+  "A line of `nhmac-gui--crop-marker' as wide as the window's text area: `nhmac-gui--text-crop' crops below it and
+within its width, so the title bar, a tool bar and scroll bars (each build has its own) are never in a crop."
+  (concat (propertize " " 'display '(space :align-to right) 'face `(:background ,nhmac-gui--crop-marker)) "\n"))
+
+(defun nhmac-gui--say-frame-layout (what)
+  "Log WHAT and where the selected frame puts its parts: borders, bars, the window's pixel edges, the frame's sizes."
+  (nhmac-gui--say "%s: layout %S" what
+                  (list :params (mapcar (lambda (p) (cons p (frame-parameter nil p)))
+                                        '(internal-border-width vertical-scroll-bars scroll-bar-width tool-bar-lines
+                                          tab-bar-lines menu-bar-lines undecorated))
+                        :char (cons (frame-char-width) (frame-char-height))
+                        :text (cons (frame-text-width) (frame-text-height))
+                        :pixel (cons (frame-pixel-width) (frame-pixel-height))
+                        :inner (cons (frame-inner-width) (frame-inner-height))
+                        :window (window-pixel-edges) :body (window-body-pixel-edges)
+                        :geometry (condition-case err (frame-geometry) (error (list 'error err))))))
+
+(defmacro nhmac-gui--bare-frame (&rest body)
+  "Run BODY with the selected frame in Menlo 12, 80 by 24 characters, showing one window, no tool bar, no scroll
+bars, no internal border and an empty echo area; put them back after.  The builds' default fonts differ, and the size in characters follows the font.  drgnx never shows Emacs's tool bar, and an earlier window (a *Compile-Log* of the test files'
+loading) or message differs between the builds' captures; without its tool bar NS keeps the frame's outer size and
+Naglfar its text size, so the size is set after."
+  (declare (indent 0))
+  `(let ((conf (current-window-configuration))
+         (tb (frame-parameter nil 'tool-bar-lines))
+         (font (frame-parameter nil 'font))
+         (sb (frame-parameter nil 'vertical-scroll-bars))
+         (ib (frame-parameter nil 'internal-border-width))
+         (cols (frame-width)) (lines (frame-height)))
+     (unwind-protect
+         (progn
+           (set-frame-parameter nil 'tool-bar-lines 0)
+           (set-frame-parameter nil 'vertical-scroll-bars nil)
+           (set-frame-parameter nil 'internal-border-width 0)
+           (set-frame-font "Menlo-12" nil (list (selected-frame)))
+           (set-frame-size nil 80 24)
+           (delete-other-windows)
+           (message nil)
+           (redisplay t)
+           (nhmac-gui--say-frame-layout "bare frame")
+           ,@body)
+       (set-window-configuration conf)
+       (set-frame-parameter nil 'tool-bar-lines tb)
+       (set-frame-parameter nil 'vertical-scroll-bars sb)
+       (set-frame-parameter nil 'internal-border-width ib)
+       (set-frame-font font nil (list (selected-frame)))
+       (set-frame-size nil cols lines))))
 
 (defmacro nhmac-gui--with-font-scene (&rest body)
-  "Run BODY with the frame in Menlo 12, black on `nhmac-gui--font-bg', no cursor, mode line or fringes, showing a
-blank line and then a line of ASCII; the frame's font and colours are put back after."
+  "Run BODY with the frame in Menlo 12, black on `nhmac-gui--font-bg', no cursor, mode line or fringes, showing the
+crop marker (`nhmac-gui--marker-line'), a blank line and then a line of ASCII, in a bare frame
+\(`nhmac-gui--bare-frame'); the frame's font and colours are put back after."
   (declare (indent 0))
   `(let ((font (frame-parameter nil 'font))
          (fg (frame-parameter nil 'foreground-color))
          (bg (frame-parameter nil 'background-color)))
-     (unwind-protect
-         (progn
-           (set-frame-font "Menlo-12" nil (list (selected-frame)))
-           (set-foreground-color "#000000")
-           (set-background-color nhmac-gui--font-bg)
-           (switch-to-buffer (generate-new-buffer " *nhmac-font*"))
-           (setq-local cursor-type nil mode-line-format nil)
-           (set-window-fringes nil 0 0)
-           (insert "\n    Hello, world! 0123456789 {}[]()<>;:'\",./?\n")
-           (redraw-frame)
-           (redisplay t)
-           (sit-for 0.5)
-           ,@body)
-       (kill-buffer)
-       (set-window-fringes nil nil nil)
-       (set-frame-font font nil (list (selected-frame)))
-       (set-foreground-color fg)
-       (set-background-color bg))))
+     (nhmac-gui--bare-frame
+       (unwind-protect
+           (progn
+             (set-frame-font "Menlo-12" nil (list (selected-frame)))
+             (set-foreground-color "#000000")
+             (set-background-color nhmac-gui--font-bg)
+             (switch-to-buffer (generate-new-buffer " *nhmac-font*"))
+             (setq-local cursor-type nil mode-line-format nil)
+             (set-window-fringes nil 0 0)
+             (insert (nhmac-gui--marker-line) "\n    Hello, world! 0123456789 {}[]()<>;:'\",./?\n")
+             (redraw-frame)
+             (redisplay t)
+             (sit-for 0.5)
+             ,@body)
+         (kill-buffer)
+         (set-window-fringes nil nil nil)
+         (set-frame-font font nil (list (selected-frame)))
+         (set-foreground-color fg)
+         (set-background-color bg)))))
 
 (defun nhmac-gui--font-metrics ()
   "The default face's font's (ascent descent average-width space-width), from `font-info'."
@@ -1250,6 +1650,8 @@ environment (`nhmac-gui--capture-env')."
          (args (list "-x" "-t" "bmp" "-R" r file))
          (rc nil) (output nil))
     (when (file-exists-p file) (delete-file file))
+    ;; a wait first, as Emacs waits: it commits what the last redisplay published (off the redisplay path)
+    (accept-process-output nil 0.02)
     (with-temp-buffer
       (setq rc (let ((process-environment (nhmac-gui--capture-env)))
                  (apply #'call-process "screencapture" nil t nil args))
@@ -1260,7 +1662,9 @@ environment (`nhmac-gui--capture-env')."
                            (if size (format "%d bytes" size) "missing")
                            (condition-case e (frame-position) (error e))
                            (frame-pixel-width) (frame-pixel-height) (getenv "GLITNIR_GUI_FRAME"))))
-      (message "nhmac-gui--capture: %s" report)
+      ;; *Messages* only: in the echo area the report wraps to three lines, the mini-window grows and the next
+      ;; capture shows other window heights than the one before it
+      (let ((inhibit-message t)) (message "nhmac-gui--capture: %s" report))
       (unless (and (eql rc 0) size)
         (ert-fail (list "nhmac-gui--capture failed" report))))
     file))
@@ -1289,24 +1693,44 @@ environment (`nhmac-gui--capture-env')."
   "Whether #xRRGGBB colours A and B differ by more than TOL in a channel."
   (cl-some (lambda (sh) (> (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))) tol)) '(16 8 0)))
 
-(defun nhmac-gui--text-crop (img)
-  "The text in IMG (from `nhmac-gui--bmp-read'): the commonest colour is the frame's background; inside the box of
-the pixels near it (16 pixels in, past the window's rounded corners), the box of the pixels away from it.
-Returns (W H PIXELS) of that box."
+(defun nhmac-gui--text-crop (img &optional pad)
+  "The text in IMG (from `nhmac-gui--bmp-read'): inside the box of the pixels near the frame's background, the box
+of the pixels away from it.  Where IMG shows the crop marker (`nhmac-gui--marker-line'), the background is
+`nhmac-gui--font-bg' (a small window shows less of it than of the desktop) and that inside is below the marker and
+within its width widened by PAD pixels on each side (a fringe), inside the background box less the window's rim (2
+pixels a point) on the sides and its rounded corners (16 pixels a point) at the bottom; elsewhere the background is the commonest colour and the inside is the box less 16
+pixels on each side.  Returns (W H PIXELS) of that box."
   (pcase-let* ((`(,w ,h ,px) img)
                (counts (make-hash-table))
-               (bg (progn (mapc (lambda (p) (puthash p (1+ (gethash p counts 0)) counts)) px)
-                          (let ((best nil) (n 0))
-                            (maphash (lambda (k v) (when (> v n) (setq best k n v))) counts)
-                            best)))
-               (x0 w) (y0 h) (x1 -1) (y1 -1))
+               (marker (string-to-number (substring nhmac-gui--crop-marker 1) 16))
+               (x0 w) (y0 h) (x1 -1) (y1 -1)
+               (mx0 w) (mx1 -1) (my1 -1))
     (dotimes (y h)
       (dotimes (x w)
-        (unless (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
-          (setq x0 (min x0 x) y0 (min y0 y) x1 (max x1 x) y1 (max y1 y)))))
-    (let ((tx0 w) (ty0 h) (tx1 -1) (ty1 -1))
-      (cl-loop for y from (+ y0 16) to (- y1 16) do
-               (cl-loop for x from (+ x0 16) to (- x1 16) do
+        (let ((p (aref px (+ (* y w) x))))
+          (puthash p (1+ (gethash p counts 0)) counts)
+          (unless (nhmac-gui--far p marker 8)
+            (setq mx0 (min mx0 x) mx1 (max mx1 x) my1 (max my1 y))))))
+    (let ((bg (if (>= mx1 0)
+                  (string-to-number (substring nhmac-gui--font-bg 1) 16)
+                (let ((best nil) (n 0))
+                  (maphash (lambda (k v) (when (> v n) (setq best k n v))) counts)
+                  best))))
+      (dotimes (y h)
+        (dotimes (x w)
+          (unless (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
+            (setq x0 (min x0 x) y0 (min y0 y) x1 (max x1 x) y1 (max y1 y)))))
+    (pcase-let ((`(,cx0 ,cy0 ,cx1 ,cy1)
+                 (if (>= mx1 0)
+                     ;; the window's edges are the window server's rim (2 pixels a point) and its rounded bottom corners
+                     ;; (16 a point)
+                     (let ((sc (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
+                       (list (max (+ x0 (* 2 sc)) (- mx0 (or pad 0))) (1+ my1)
+                             (min (- x1 (* 2 sc)) (+ mx1 (or pad 0))) (- y1 (* 16 sc))))
+                   (list (+ x0 16) (+ y0 16) (- x1 16) (- y1 16))))
+                (tx0 w) (ty0 h) (tx1 -1) (ty1 -1))
+      (cl-loop for y from cy0 to cy1 do
+               (cl-loop for x from cx0 to cx1 do
                         (when (nhmac-gui--far (aref px (+ (* y w) x)) bg 2)
                           (setq tx0 (min tx0 x) ty0 (min ty0 y) tx1 (max tx1 x) ty1 (max ty1 y)))))
       (if (< tx1 0)
@@ -1315,59 +1739,119 @@ Returns (W H PIXELS) of that box."
           (dotimes (y ch)
             (dotimes (x cw)
               (aset out (+ (* y cw) x) (aref px (+ (* (+ ty0 y) w) tx0 x)))))
-          (list cw ch out))))))
+          (list cw ch out)))))))
 
 ;; These loop over every pixel of a 900 by 700 point capture: interpreted in a checking build, a capture's read and
 ;; crop took minutes (nhmac-images-worker: about 300 s a file); compiled, they take seconds.
 (mapc #'byte-compile '(nhmac-gui--bmp-read nhmac-gui--far nhmac-gui--text-crop))
 
-(ert-deftest nhmac-ns-font-dump ()
-  "NS's Menlo 12: its metrics and a capture of its text, for nhmac-font-ascii in the Naglfar lane."
-  (skip-unless (nhmac-gui--ns-build-p))
-  (nhmac-gui--with-font-scene
-    (with-temp-file (nhmac-gui--font-file "eld")
-      (prin1 (nhmac-gui--font-metrics) (current-buffer)))
-    (nhmac-gui--capture (nhmac-gui--font-file "bmp"))
-    (should (file-exists-p (nhmac-gui--font-file "bmp")))
-    (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "bmp")))) 0))))
+(defun nhmac-gui--surface-rect (x y w h)
+  "The committed surface's device pixels X, Y, W by H of the selected frame, rows top down, as one vector."
+  (nhmac-gui--wait-unheld 1)
+  (nhmac--test-surface-region x y w h))
+
+(defun nhmac-gui--ink-p (argb bg)
+  "Whether the surface pixel ARGB is ink on the background BG (#xRRGGBB): over 24/255 off it in a channel."
+  (nhmac-gui--far (logand argb #xffffff) bg 24))
+
+(defun nhmac-gui--ink-boxes (text start)
+  "Check the committed surface's ink for TEXT shown at START in the selected window, one font: each glyph's box is its
+position plus Core Text's bounds under the rules (`nhmac-gui--ct-glyph').  A list of failures, each naming the
+character, its expected box (X0 Y0 X1 Y1, device pixels) and what was found: a glyph box without ink, ink outside
+every box, or a glyph not where the widths before it put it.  Ink outside the boxes is the glyph's own when Core Text,
+painting the glyph of its column alone (the `glyph-rows' probe), puts ink on that row too: its antialiasing reaches a
+row past the bounds (round 8: \"6\" and \"?\" one row above, alone as on the surface)."
+  (let* ((font (font-at start)) (size (font-get font :size)) (family (symbol-name (font-get font :family)))
+         (ct (nhmac-gui--ct family size (concat " " text)))
+         (mono (plist-get ct :mono))
+         (space (car (nhmac-gui--ct-width-parts nil 0 (nth 2 (car (plist-get ct :glyphs))))))
+         (edges (window-inside-pixel-edges))
+         (xy0 (posn-x-y (posn-at-point start)))
+         (top (+ (nth 1 edges) (cdr xy0)))
+         (base (+ top (aref (query-font font) 4)))
+         (pen (+ (nth 0 edges) (car xy0)))
+         (bg (string-to-number (substring nhmac-gui--font-bg 1) 16))
+         boxes bad)
+    (cl-loop for g in (cdr (plist-get ct :glyphs)) for i from 0
+             do (pcase-let ((`(,w ,lb ,rb ,a ,d) (nhmac-gui--ct-glyph mono space g))
+                            (at (+ (nth 0 edges) (car (posn-x-y (posn-at-point (+ start i)))))))
+                  (unless (= at pen)
+                    (push (list (string (nth 0 g)) 'position :expected pen :actual at) bad))
+                  (when (> rb lb)
+                    (push (list (string (nth 0 g)) (+ pen lb) (- base a) (+ pen rb) (+ base d)) boxes))
+                  (setq pen (+ pen w))))
+    (let* ((x0 (nth 0 edges)) (y0 top) (x1 (+ pen 4)) (y1 (+ top (line-pixel-height)))
+           (w (- x1 x0)) (h (- y1 y0))
+           (px (nhmac-gui--surface-rect x0 y0 w h))
+           (inside (lambda (x y b) (and (<= (nth 1 b) x) (< x (nth 3 b)) (<= (nth 2 b) y) (< y (nth 4 b)))))
+           (alone-cache nil)
+           (alone (lambda (c)
+                    (with-memoization (alist-get c alone-cache nil nil #'equal)
+                      (nhmac--query 'test-font-probe 'glyph-rows family size (string-to-char c) 0 bg))))
+           (alone-ink (lambda (x y)
+                        (cl-some (lambda (b)
+                                   (and (<= (nth 1 b) x) (< x (nth 3 b))
+                                        (let* ((rows (funcall alone (car b)))
+                                               (row (nth (+ 1 (car rows) (- y base)) rows)))
+                                          (and (stringp row)
+                                               (nhmac-gui--far (string-to-number row 16) bg 24)))))
+                                 boxes))))
+      (dolist (b boxes)
+        (unless (cl-loop for y from (max y0 (nth 2 b)) below (min y1 (nth 4 b))
+                         thereis (cl-loop for x from (max x0 (nth 1 b)) below (min x1 (nth 3 b))
+                                          thereis (nhmac-gui--ink-p (aref px (+ (* (- y y0) w) (- x x0))) bg)))
+          (push (list (car b) 'no-ink :expected (cdr b)) bad)))
+      (dotimes (y h)
+        (dotimes (x w)
+          (when (and (nhmac-gui--ink-p (aref px (+ (* y w) x)) bg)
+                     (not (cl-some (lambda (b) (funcall inside (+ x x0) (+ y y0) b)) boxes))
+                     (not (funcall alone-ink (+ x x0) (+ y y0))))
+            (push (list 'ink-outside-every-box :actual (list (+ x x0) (+ y y0))
+                        :pixel (format "#x%08x" (aref px (+ (* y w) x)))
+                        ;; the boxes of its column and the baseline, to tell a glyph's own ink from a stray
+                        :column (seq-filter (lambda (b) (and (<= (nth 1 b) (+ x x0)) (< (+ x x0) (nth 3 b)))) boxes)
+                        :base base
+                        ;; the column's pixels down the line, from its top: where the glyph's bottom lands tells a
+                        ;; baseline drawn off the integral one from antialiasing bleeding over its box
+                        :down (cl-loop for yy below h collect (format "%x" (logand #xffffff (aref px (+ (* yy w) x))))))
+                  bad)))))
+    (nreverse bad)))
 
 (ert-deftest nhmac-font-ascii ()
-  "Menlo 12: `font-info''s ascent, descent, average width and space width are NS's times the scale (NS counts in
-points, Naglfar in device pixels), and the text's pixels are within 1/255 of NS's, both captured from the screen."
+  "Menlo 12: `font-info''s ascent, descent, average width and space width are Core Text's metrics under the stated
+rules (`nhmac-gui--ct-metrics'); on the committed surface each glyph of the line has ink, all of it inside the glyph
+boxes (`nhmac-gui--ink-boxes')."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
-    (should (file-exists-p (nhmac-gui--font-file "eld" t)))
-    (nhmac-gui--with-font-scene
-      (let ((ns (with-temp-buffer
-                  (insert-file-contents (nhmac-gui--font-file "eld" t))
-                  (read (current-buffer))))
-            (mine (nhmac-gui--font-metrics)))
-        (nhmac-gui--say "nhmac-font-ascii: scale %d: NS %S, Naglfar %S, stats %S" scale ns mine (nhmac-stats))
-        (should (equal mine (mapcar (lambda (v) (* v scale)) ns))))
-      (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "bmp" t))))
-                   (`(,mw ,mh ,mpx) (nhmac-gui--text-crop
-                                     (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "bmp")))))
-                   (worst 0) (off 0))
-        (nhmac-gui--say "nhmac-font-ascii: text NS %dx%d, Naglfar %dx%d" nw nh mw mh)
-        ;; an empty crop is a capture that missed the frame, never a size to compare
-        (should (> nw 0))
-        (should (> mw 0))
-        (should (equal (list mw mh) (list nw nh)))
-        (dotimes (i (length npx))
-          (let ((a (aref npx i)) (b (aref mpx i)))
-            (dolist (sh '(16 8 0))
-              (let ((d (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255)))))
-                (setq worst (max worst d))
-                (when (> d 1) (cl-incf off))))))
-        (nhmac-gui--say "nhmac-font-ascii: worst channel difference %d, %d channels over 1" worst off)
-        (should (<= worst 1))))))
+  (nhmac-gui--with-font-scene
+    (let* ((start (save-excursion (goto-char (point-min)) (search-forward "Hello") (match-beginning 0)))
+           (font (font-at start))
+           (ct (nhmac-gui--ct "Menlo" (font-get font :size) (concat " " nhmac-gui--printable)))
+           (want (and ct (nhmac-gui--ct-metrics ct nhmac-gui--printable)))
+           (mine (nhmac-gui--font-metrics)))
+      (nhmac-gui--say "nhmac-font-ascii: Core Text %S under the rules %S, font-info %S" ct want mine)
+      (should ct)
+      (should (equal mine want))
+      (let ((bad (nhmac-gui--ink-boxes (buffer-substring-no-properties
+                                        start (save-excursion (goto-char start) (line-end-position)))
+                                       start)))
+        (nhmac-gui--say "nhmac-font-ascii: ink: %S" (seq-take bad 20))
+        ;; round 6 (scale 1): faint ink one row above the bounds of "6" and "?".  Core Text's own paint of each such
+        ;; glyph alone (whether the rasteriser puts ink above the bounds, or the surface's run does)
+        (dolist (b (seq-take bad 4))
+          (when (eq (car b) 'ink-outside-every-box)
+            (dolist (col (plist-get (cdr b) :column))
+              (nhmac-gui--say "nhmac-font-ascii: %s painted alone (base row, rows): %S" (car col)
+                              (condition-case e
+                                  (nhmac--query 'test-font-probe 'glyph-rows "Menlo" (font-get font :size)
+                                                (string-to-char (car col)) 0
+                                                (string-to-number (substring nhmac-gui--font-bg 1) 16))
+                                (error e))))))
+        (should-not bad)))))
 
 (ert-deftest nhmac-font-open-close ()
   "Fonts open at many sizes and close when the font cache is cleared, again and again; each opens at its size and the
 frame's text still reaches the surface."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
     (dotimes (i 30)
       (let* ((pt (+ 9 (% i 7)))
@@ -1377,16 +1861,21 @@ frame's text still reaches the surface."
       (when (= (% i 7) 6)
         (clear-font-cache)))
     (nhmac-gui--with-font-scene
-      ;; some pixel of the text line is dark
+      ;; some pixel of the text line is dark: the "Hello" line, below the marker line and a blank one
       (let* ((edges (window-inside-pixel-edges))
-             (y0 (+ (nth 1 edges) (frame-char-height)))
+             (start (save-excursion (goto-char (point-min)) (search-forward "Hello") (match-beginning 0)))
+             (y0 (+ (nth 1 edges) (cdr (posn-x-y (posn-at-point start)))))
              (dark nil))
         (cl-loop for y from y0 below (+ y0 (frame-char-height)) until dark do
                  (cl-loop for x from (nth 0 edges) below (+ (nth 0 edges) (* 20 (frame-char-width))) until dark do
                           (let ((p (nhmac-gui--pixel-at x y)))
                             (when (and p (< (logand (ash p -8) 255) 64))
                               (setq dark (list x y p))))))
-        (nhmac-gui--say "nhmac-font-open-close: a text pixel %S, stats %S" dark (nhmac-stats))
+        (nhmac-gui--say "nhmac-font-open-close: a text pixel %S; searched from %S, the first pixel %S, the line %S; stats %S"
+                        dark (list (nth 0 edges) y0) (nhmac-gui--pixel-at (nth 0 edges) y0)
+                        (save-excursion (goto-char start)
+                                        (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+                        (nhmac-stats))
         (should dark)))))
 
 ;; Images through ImageIO
@@ -1410,82 +1899,101 @@ frame's text still reaches the surface."
         (push out files)))
     (sort files #'string<)))
 
+(defun nhmac-gui--image-pixel-size (file)
+  "FILE's pixel size (W . H) as sips reads it (ImageIO's own header read), or nil."
+  (with-temp-buffer
+    (call-process "sips" nil t nil "-g" "pixelWidth" "-g" "pixelHeight" file)
+    (goto-char (point-min))
+    (let ((w (and (re-search-forward "pixelWidth: \\([0-9]+\\)" nil t) (string-to-number (match-string 1))))
+          (h (and (re-search-forward "pixelHeight: \\([0-9]+\\)" nil t) (string-to-number (match-string 1)))))
+      (and w h (cons w h)))))
+
 (defmacro nhmac-gui--with-image-scene (file &rest body)
-  "Run BODY with FILE's image alone at the top left of a buffer on `nhmac-gui--font-bg', no cursor, mode line or
-fringes; the frame's colours are put back after."
+  "Run BODY with FILE's image alone below the crop marker (`nhmac-gui--marker-line') of a buffer on
+`nhmac-gui--font-bg', no cursor, mode line or fringes, in a bare frame (`nhmac-gui--bare-frame'); the frame's colours
+are put back after."
   (declare (indent 1))
   `(let ((bg (frame-parameter nil 'background-color)))
-     (unwind-protect
-         (progn
-           (set-background-color nhmac-gui--font-bg)
-           (switch-to-buffer (generate-new-buffer " *nhmac-img*"))
-           (setq-local cursor-type nil mode-line-format nil)
-           (set-window-fringes nil 0 0)
-           (insert "\n    ")
-           (insert-image (create-image ,file nil nil :scale 1))
-           (redraw-frame)
-           (redisplay t)
-           (sit-for 0.5)
-           ,@body)
-       (kill-buffer)
-       (set-window-fringes nil nil nil)
-       (set-background-color bg))))
-
-(ert-deftest nhmac-ns-images-dump ()
-  "NS's sizes of the shared images, and at scale 1 a capture of each, for nhmac-images-native in the Naglfar lane."
-  (skip-unless (nhmac-gui--ns-build-p))
-  (let (sizes)
-    (dolist (f (nhmac-gui--image-files))
-      (push (cons (file-name-nondirectory f) (image-size (create-image f nil nil :scale 1) t)) sizes)
-      (when (equal (getenv "GLITNIR_GUI_SCALE") "1")
-        (nhmac-gui--with-image-scene f
-          (nhmac-gui--capture (nhmac-gui--font-file (concat (file-name-nondirectory f) ".bmp"))))))
-    (with-temp-file (nhmac-gui--font-file "images.eld")
-      (prin1 sizes (current-buffer)))
-    (should (= (length sizes) 8))))
+     (nhmac-gui--bare-frame
+       (unwind-protect
+           (progn
+             (set-background-color nhmac-gui--font-bg)
+             (switch-to-buffer (generate-new-buffer " *nhmac-img*"))
+             (setq-local cursor-type nil mode-line-format nil)
+             (set-window-fringes nil 0 0)
+             (insert (nhmac-gui--marker-line) "\n    ")
+             (insert-image (create-image ,file nil nil :scale 1))
+             (redraw-frame)
+             (redisplay t)
+             (sit-for 0.5)
+             ,@body)
+         (kill-buffer)
+         (set-window-fringes nil nil nil)
+         (set-background-color bg)))))
 
 (ert-deftest nhmac-images-native ()
-  "PNG, JPEG, GIF (animated), TIFF, WebP and HEIC decode through ImageIO at NS's sizes; at scale 1 their pixels on
-screen are within 2/255 of NS's in the same run (NS points are pixels there)."
+  "PNG, JPEG, GIF (animated), TIFF, WebP and HEIC decode through ImageIO at their files' sizes; at scale 1 (an image's
+pixels are device pixels there) each opaque image's pixels on the committed surface are within 2/255 of ImageIO's own
+decode of the file in sRGB (`test-imageio-pixels')."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (dolist (type '(png jpeg gif tiff webp heic))
     (should (image-type-available-p type)))
-  (let ((ns (with-temp-buffer
-              (insert-file-contents (nhmac-gui--font-file "images.eld" t))
-              (read (current-buffer)))))
-    (dolist (f (nhmac-gui--image-files))
-      (let* ((name (file-name-nondirectory f))
-             (size (image-size (create-image f nil nil :scale 1) t)))
-        (nhmac-gui--say "nhmac-images-native: %s NS %S Naglfar %S" name (cdr (assoc name ns)) size)
-        (should (equal size (cdr (assoc name ns))))
-        (when (equal (getenv "GLITNIR_GUI_SCALE") "1")
-          (nhmac-gui--with-image-scene f
-            (pcase-let* ((`(,nw ,nh ,npx) (nhmac-gui--text-crop
-                                          (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t))))
-                         (`(,mw ,mh ,mpx) (nhmac-gui--text-crop
-                                          (nhmac-gui--bmp-read
-                                           (nhmac-gui--capture (nhmac-gui--font-file (concat name ".bmp"))))))
-                         (worst 0))
-              ;; an empty crop is a capture that missed the frame, never a size to compare
-              (should (> nw 0))
-              (should (> mw 0))
-              (should (equal (list mw mh) (list nw nh)))
-              (dotimes (i (length npx))
-                (let ((a (aref npx i)) (b (aref mpx i)))
-                  (dolist (sh '(16 8 0))
-                    (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
-              (nhmac-gui--say "nhmac-images-native: %s %dx%d, worst channel difference %d" name mw mh worst)
-              (should (<= worst 2))))))))
+  (dolist (f (nhmac-gui--image-files))
+    (let* ((name (file-name-nondirectory f))
+           (size (image-size (create-image f nil nil :scale 1) t))
+           (pixels (nhmac-gui--image-pixel-size f)))
+      (nhmac-gui--say "nhmac-images-native: %s size %S file %S" name size pixels)
+      (should (equal size pixels))
+      (when (equal (getenv "GLITNIR_GUI_SCALE") "1")
+        ;; decoded inline: a deferred image draws its empty box until the worker lands it (nhmac-images-worker
+        ;; compares the worker's)
+        (let* ((nidhogg-workers-images nil) (nidhogg-image-defer nil)
+               (io (nhmac--query 'test-imageio-pixels f))
+               (shown (nhmac-gui--image-screen f))
+               (worst 0) (where nil))
+          (should io)
+          (should (equal (take 2 shown) (take 2 io)))
+          ;; a pixel ImageIO leaves translucent shows the background through it on the surface: only opaque ones
+          ;; are compared
+          (dotimes (i (length (nth 2 io)))
+            (let ((a (aref (nth 2 io) i)) (b (aref (nth 2 shown) i)))
+              (when (= (ash a -24) 255)
+                (dolist (sh '(16 8 0))
+                  (let ((d (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255)))))
+                    (when (> d worst) (setq worst d where (list (% i (car io)) (/ i (car io)) a b))))))))
+          (nhmac-gui--say "nhmac-images-native: %s %dx%d, worst channel difference %d at %S" name (car io) (nth 1 io)
+                          worst where)
+          (should (<= worst 2))))))
   ;; an animated GIF's frames, count and delay
   (let ((img (create-image nhmac-gui--gif2 'gif t :index 1 :scale 1)))
-    (should (equal (image-metadata img) '(count 2 delay 0.1)))
+    ;; Naglfar reads GIFs with giflib (gif_load, as every other port), whose metadata also carries the file's
+    ;; extension blocks (`extension-data'); NS's ImageIO gives count and delay alone
+    (should (equal (plist-get (image-metadata img) 'count) 2))
+    (should (equal (plist-get (image-metadata img) 'delay) 0.1))
     (switch-to-buffer (generate-new-buffer " *nhmac-gif*"))
     (setq-local cursor-type nil)
     (insert-image img)
     (redisplay t)
     (let ((xy (posn-x-y (posn-at-point (point-min))))
           (edges (window-inside-pixel-edges)))
+      (nhmac-gui--say "nhmac-images-native: gif frame 1 at %S in %S, size %S, frame %dx%d scale %s, pixels %S"
+                      xy edges (image-size img t) (frame-pixel-width) (frame-pixel-height) (frame-scale-factor)
+                      (mapcar (lambda (d) (format "%x" (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) d)
+                                                                            (+ (nth 1 edges) (cdr xy) d))))
+                              '(0 1 2 4 8 16)))
+      ;; where the blue frame is drawn when it is not at its position: the frame's top left 48x128 pixels
+      (unless (eql (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)
+        (nhmac-gui--say "nhmac-images-native: the first blue pixel %S"
+                        (catch 'found
+                          (dotimes (y 64)
+                            (dotimes (x 24)
+                              (when (eql (nhmac-gui--pixel-at (* 2 x) (* 2 y)) #xff0000ff)
+                                (throw 'found (list (* 2 x) (* 2 y))))))))
+        ;; and whether it lands later (the image worker's stand-in drawn first)
+        (sleep-for 0.5)
+        (redisplay t)
+        (nhmac-gui--say "nhmac-images-native: after 0.5 s, %x"
+                        (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1))))
       (should (= (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
     (kill-buffer)))
 
@@ -1517,7 +2025,7 @@ screen capture are not in the comparison."
   "PNG, JPEG, GIF and WebP decoded off the main thread by the image worker (Glitnir's decoders, ImageIO behind them
 and for JPEG) land and draw the pixels the inline load draws, within 2/255."
   :tags '(draws)
-  (skip-unless (and (not (nhmac-gui--ns-build-p)) (equal (getenv "GLITNIR_GUI_SCALE") "1")))
+  (skip-unless (equal (getenv "GLITNIR_GUI_SCALE") "1"))
   (should (fboundp 'nidhogg-workers--test-decide))
   (dolist (type '(png jpeg gif webp))
     (should (nidhogg-workers--deferrable-p type)))
@@ -1528,6 +2036,8 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
                (t0 (float-time))
                (inline (nhmac-gui--image-screen f))
                (landed (plist-get (nidhogg-workers--test-image-info) :landed))
+               (rust (and (string-suffix-p ".gif" name) (fboundp 'nidhogg-workers--test-image-rust)
+                          (nidhogg-workers--test-image-rust t)))
                (off (unwind-protect
                         (progn (nidhogg-workers--test-decide 'offload)
                                (nhmac-gui--image-screen f t))
@@ -1536,16 +2046,26 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
                ;; a control: the inline load again, so a difference between two inline loads (ImageIO)
                ;; is told apart from one the worker makes
                (again (and (string-suffix-p ".jpg" name) (nhmac-gui--image-screen f)))
-               (worst 0))
+               (worst 0) (off-pixels 0) (first-row nil))
+          ;; a GIF's transparent index is the frame background on both paths (gif_load, Glitnir's gif.rs): which
+          ;; decoder the worker used, and the background both should show
+          (when rust
+            (nhmac-gui--say "nhmac-images-worker: %s on the worker: %S; frame background %s"
+                            name (nidhogg-workers--test-image-rust) (frame-parameter nil 'background-color)))
           ;; the worker took it: one more landing
           (should (> (plist-get (nidhogg-workers--test-image-info) :landed) landed))
           (should (equal (take 2 off) (take 2 inline)))
           (dotimes (i (length (nth 2 inline)))
             (let ((a (aref (nth 2 inline) i)) (b (aref (nth 2 off) i)))
+              (unless (= a b)
+                (cl-incf off-pixels)
+                (unless first-row (setq first-row (/ i (car inline)))))
               (dolist (sh '(16 8 0))
                 (setq worst (max worst (abs (- (logand (ash a (- sh)) 255) (logand (ash b (- sh)) 255))))))))
-          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d%s; reads %.1f s, compare %.1f s"
-                          name (car inline) (nth 1 inline) worst
+          (nhmac-gui--say "nhmac-images-worker: %s %dx%d, worst channel difference %d (%d pixels, from row %S; \
+first pixel inline #x%06x, worker #x%06x)%s; reads %.1f s, compare %.1f s"
+                          name (car inline) (nth 1 inline) worst off-pixels first-row
+                          (aref (nth 2 inline) 0) (aref (nth 2 off) 0)
                           (if again
                               (format " (inline against inline: %d)"
                                       (let ((m 0))
@@ -1563,7 +2083,6 @@ and for JPEG) land and draw the pixels the inline load draws, within 2/255."
   "While a zoomed image's decode is parked on the worker, the picture it replaces draws scaled into the new box (the
 glue's stand-in), and the stand-in goes when the decode lands."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((file (expand-file-name "../../data/image/black.jpg" (getenv "GLITNIR_GUI_TESTS")))
          (old `(image :type jpeg :file ,file :scale 1))
          (new `(image :type jpeg :file ,file :scale 2))
@@ -1619,14 +2138,13 @@ glue's stand-in), and the stand-in goes when the decode lands."
     (insert-image xbm)
     (insert-image pbm)
     (redisplay t)
-    ;; where each image sits, on NS (the reference) and on Naglfar alike, in the lane's log
-    (nhmac-gui--say "nhmac-images-builtin: %s: edges %S line height %S; xbm size %S posn %S; pbm size %S posn %S"
-                    (if (nhmac-gui--ns-build-p) "NS" "Naglfar") (window-inside-pixel-edges) (line-pixel-height)
+    ;; where each image sits, in the lane's log
+    (nhmac-gui--say "nhmac-images-builtin: edges %S line height %S; xbm size %S posn %S; pbm size %S posn %S"
+                    (window-inside-pixel-edges) (line-pixel-height)
                     (image-size xbm t) (posn-at-point (point-min)) (image-size pbm t) (posn-at-point (1+ (point-min))))
     (nhmac-gui--say "nhmac-images-builtin: messages: %S"
                     (with-current-buffer (messages-buffer)
                       (buffer-substring-no-properties (max (point-min) (- (point-max) 600)) (point-max)))))
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((xy (posn-x-y (posn-at-point (point-min))))
         (edges (window-inside-pixel-edges)))
     (let ((x (+ (nth 0 edges) (car xy))) (y (+ (nth 1 edges) (cdr xy))))
@@ -1643,7 +2161,6 @@ glue's stand-in), and the stand-in goes when the decode lands."
   "Scales, quarter turns and flips draw through the image's matrix: the sizes follow the spec, and an 8x8 XBM's lit
 top row lands where the turn puts it, its pixels doubled (not smoothed) when scaled up."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (equal (image-transforms-p) '(scale rotate90)))
   (let ((png (expand-file-name "../../data/image/blank-100x200.png" (getenv "GLITNIR_GUI_TESTS"))))
     (should (equal (image-size (create-image png nil nil :scale 2) t) '(200 . 400)))
@@ -1693,7 +2210,6 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
   "SVG through resvg with svg_load_image's keywords: the size from the image and :scale, currentColor the
 :foreground over the :background, the image's :css after Emacs's, and the splash screen's SVG."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (image-type-available-p 'svg))
   (let ((svg "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"4\">\
 <rect width=\"4\" height=\"4\" fill=\"currentColor\"/></svg>"))
@@ -1714,7 +2230,6 @@ top row lands where the turn puts it, its pixels doubled (not smoothed) when sca
   "XPM through the glue's reader: the splash screen's XPM at the size its header gives, and None transparent over
 the background beside a named colour."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (image-type-available-p 'xpm))
   (let* ((file (image-search-load-path "splash.xpm"))
          (head (with-temp-buffer
@@ -1729,7 +2244,6 @@ the background beside a named colour."
 
 (ert-deftest nhmac-images-image-tests ()
   "test/src/image-tests.el passes on Naglfar."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (load (expand-file-name "../image-tests" (getenv "GLITNIR_GUI_TESTS")) nil t)
   (let ((stats (ert-run-tests "\\`image-tests-" #'ignore)))
     (nhmac-gui--say "nhmac-images-image-tests: %d run, %d unexpected, %d skipped"
@@ -1752,7 +2266,6 @@ the background beside a named colour."
 (ert-deftest nhmac-images-no-homebrew ()
   "The binary links no image library outside the system: otool -L names none outside /System and /usr/lib.
 The filter checks itself first on a Homebrew libpng line (caught), the system ImageIO and a Homebrew gnutls (not)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (should (equal (nhmac-gui--outside-image-libs
                   '("\t/opt/homebrew/opt/libpng/lib/libpng16.16.dylib (compatibility version 61.0.0)"
                     "\t/System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO (compatibility version 1.0.0)"
@@ -1824,7 +2337,6 @@ else (no contents, so no shadow render either), in one commit, with no picture d
 The root's cursor is off meanwhile: every redisplay draws the selected window's cursor again (xdisp.c's
 `display_and_set_cursor' does not check `phys_cursor_on_p'), with or without a move, which would count as draws."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((c (nhmac-gui--child))
         (root-buf (window-buffer (frame-selected-window (selected-frame)))))
     (unwind-protect
@@ -1863,7 +2375,6 @@ The root's cursor is off meanwhile: every redisplay draws the selected window's 
 parent.  On Core Animation the shadow is a layer beside the content, not a margin of the surface (as on Wayland):
 the surface is the native area, all of it takes input."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (c (nhmac-gui--child '((shadow . (:blur 16 :offset (0 . 6) :opacity 0.35))) 100 100)))
     (unwind-protect
@@ -1909,11 +2420,54 @@ settle (no configure took it back), and the content size times the scale is the 
          (<= (abs (- (* scale (nth 0 points)) (plist-get s :w))) 1)
          (<= (abs (- (* scale (nth 1 points)) (plist-get s :h))) 1))))
 
+(ert-deftest nhmac-tool-bar-off-and-on-window-follows ()
+  "The tool bar turned off and on again: the window shows the frame's surface at the surface's size (its points times
+the scale), and a later `set-frame-size' (smaller: a larger one may pass the screen) is followed."
+  :tags '(draws)
+  (let* ((f (selected-frame)) (tb (frame-parameter f 'tool-bar-lines))
+         (fits (lambda (what)
+                 (nhmac-gui--settle)
+                 (let* ((s (nhmac--test-surface 0 0)) (k (plist-get s :scale)) (p (plist-get s :points)))
+                   (nhmac-gui--say "nhmac-tool-bar-off-and-on-window-follows: %s: frame %dx%d, %S" what
+                                   (frame-pixel-width f) (frame-pixel-height f) s)
+                   (and (<= (abs (- (* k (nth 0 p)) (plist-get s :w))) 1)
+                        (<= (abs (- (* k (nth 1 p)) (plist-get s :h))) 1))))))
+    (unwind-protect
+        (progn
+          (set-frame-parameter f 'tool-bar-lines 1)
+          (should (funcall fits "on"))
+          (set-frame-parameter f 'tool-bar-lines 0)
+          (should (funcall fits "off"))
+          (set-frame-parameter f 'tool-bar-lines 1)
+          (should (funcall fits "on again"))
+          (let ((before (cons (frame-pixel-width f) (frame-pixel-height f))))
+            (set-frame-size f (- (frame-text-width f) 32) (- (frame-text-height f) 32) t)
+            (should (nhmac-gui--window-follows "set-frame-size after the tool bar" before))))
+      (set-frame-parameter f 'tool-bar-lines tb)
+      (nhmac-gui--settle))))
+
+(ert-deftest nhmac-set-frame-size-past-the-screen ()
+  "A frame sized taller than its screen: AppKit keeps the window on the screen, and the frame takes the height its
+window got (as NS's does), so the window shows the frame's surface at the surface's size."
+  :tags '(draws)
+  (let* ((f (selected-frame)) (w (frame-text-width f)) (h (frame-text-height f)))
+    (unwind-protect
+        (progn
+          (set-frame-size f w (+ (display-pixel-height) 200) t)
+          (nhmac-gui--settle)
+          (nhmac-gui--settle)
+          (let* ((s (nhmac--test-surface 0 0)) (k (plist-get s :scale)) (p (plist-get s :points)))
+            (nhmac-gui--say "nhmac-set-frame-size-past-the-screen: display %d, frame %dx%d, %S"
+                            (display-pixel-height) (frame-pixel-width f) (frame-pixel-height f) s)
+            (should (<= (abs (- (* k (nth 1 p)) (plist-get s :h))) 1))
+            (should (<= (abs (- (frame-pixel-height f) (plist-get s :h))) 1))))
+      (set-frame-size f w h t)
+      (nhmac-gui--settle))))
+
 (ert-deftest nhmac-set-frame-size ()
   "`set-frame-size', `set-frame-width' and `set-frame-height' on a top-level frame: its window takes the size of
 the surface the frame draws at its new size, and no configure takes the frame back to the old one."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame))
          (size (lambda () (cons (frame-pixel-width f) (frame-pixel-height f))))
          (w (frame-text-width f))
@@ -1935,7 +2489,6 @@ the surface the frame draws at its new size, and no configure takes the frame ba
   "A child moved across its root's right edge goes into an overhang panel once per crossing and comes back once,
 with no picture drawn; captures across the switch show exactly one copy of it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (rw (frame-pixel-width root))
          (c (nhmac-gui--child nil 40 40))
@@ -1975,7 +2528,6 @@ with no picture drawn; captures across the switch show exactly one copy of it."
   "`parent-frame' changed all three ways with no picture drawn: a child becomes a top-level window, the top-level
 a child again, and the child moves to another root."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (other (make-frame '((width . 40) (height . 10))))
          (c nil)
@@ -1991,12 +2543,14 @@ a child again, and the child moves to another root."
           (setq c (nhmac-gui--child))
           (dotimes (_ 3) (nhmac-gui--settle))
           (setq windows (length (nhmac--test-windows)))
-          (let ((before (nhmac-stats)))
+          (let ((before (progn (nhmac--pump-trace) (nhmac-stats))))
             (set-frame-parameter c 'parent-frame nil)
             (nhmac-gui--settle)
-            (nhmac-gui--say "nhmac-parent-frame-changes: to a top-level: %d draws; scale %s, %S px at %S"
+            ;; the pump decisions and paints name what drew, when something did
+            (nhmac-gui--say "nhmac-parent-frame-changes: to a top-level: %d draws; scale %s, %S px at %S; pumps %S"
                             (nhmac-gui--delta before :draws) (frame-scale-factor c)
-                            (list (frame-pixel-width c) (frame-pixel-height c)) (frame-position c))
+                            (list (frame-pixel-width c) (frame-pixel-height c)) (frame-position c)
+                            (and (> (nhmac-gui--delta before :draws) 0) (nhmac--pump-trace)))
             (should-not (frame-parent c))
             (should (nhmac-gui--windows-become (1+ windows)))
             (should (eq (plist-get (nhmac--window-info c) :visible) t))
@@ -2036,7 +2590,6 @@ a child again, and the child moves to another root."
   "A child frame moved under a root of another scale takes that scale and re-opens its font at it once, as a frame
 the window server moves to such a screen does (`nidhogg-frame-scale-change-functions' run once)."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (other (make-frame '((width . 40) (height . 10))))
          (c nil) (reopens 0)
@@ -2044,6 +2597,11 @@ the window server moves to such a screen does (`nidhogg-frame-scale-change-funct
     (unwind-protect
         (progn
           (dotimes (_ 3) (nhmac-gui--settle))
+          ;; a new frame opens on the root's screen: move it to one of another scale (the lane's virtual display
+          ;; and the runner's own, at scale 2), as nhmac-scale-round-trip-keeps-the-font does
+          (let ((m (nhmac-gui--other-monitor
+                    (lambda (m) (/= (alist-get 'scale-factor m 1.0) (frame-scale-factor root))))))
+            (when m (nhmac-gui--move-to other m)))
           (skip-unless (/= (frame-scale-factor other) (frame-scale-factor root)))
           (select-frame root)
           (setq c (nhmac-gui--child))
@@ -2067,7 +2625,6 @@ the window server moves to such a screen does (`nidhogg-frame-scale-change-funct
 (ert-deftest nhmac-one-window-per-root ()
   "The window server lists one window per root frame: child frames add none, an overhanging one adds its panel."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame))
          (windows (length (nhmac--test-windows)))
          (a (nhmac-gui--child nil 20 20))
@@ -2090,7 +2647,7 @@ the window server moves to such a screen does (`nidhogg-frame-scale-change-funct
 (ert-deftest nhmac-font-calls-per-glyph ()
   "After warm-up, redisplaying a window of 1,000 glyphs in Menlo 12 makes no `nhg_font_*' call: C reads glyphs and
 metrics from the font's glyph table.  A character on a page not read yet makes calls (the fill), so the counter counts."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
+  :tags '(parity)
   (let ((font (frame-parameter nil 'font))
         (buf (generate-new-buffer " *nhmac-glyphs*")))
     (unwind-protect
@@ -2107,20 +2664,20 @@ metrics from the font's glyph table.  A character on a page not read yet makes c
           (dotimes (_ 2) (redraw-frame) (redisplay t))
           (let ((before (nhmac-stats)))
             (dotimes (_ 5) (redraw-frame) (redisplay t))
-            (message "nhmac-font-calls-per-glyph: warm %S" (nhmac-stats))
+            (nhmac-gui--say "nhmac-font-calls-per-glyph: warm %S" (nhmac-stats))
             (should (= (nhmac-gui--delta before :font-calls) 0)))
           ;; Greek: a page no glyph above is on
           (let ((before (nhmac-stats)))
             (goto-char (point-min))
             (insert "αβγ\n")
             (redisplay t)
-            (message "nhmac-font-calls-per-glyph: a miss %S" (nhmac-stats))
+            (nhmac-gui--say "nhmac-font-calls-per-glyph: a miss %S" (nhmac-stats))
             (should (> (nhmac-gui--delta before :font-calls) 0))
             (should (> (nhmac-gui--delta before :font-fills) 0))))
       (kill-buffer buf)
       (set-frame-font font nil (list (selected-frame))))))
 
-;; Task 23: listing, fallback and Core Text shaping, compared with NS's in the same run
+;; Task 23: listing, fallback and Core Text shaping, judged on Core Text's own answers
 (require 'composite)
 
 (defconst nhmac-gui--parity-fonts
@@ -2129,23 +2686,6 @@ metrics from the font's glyph table.  A character on a page not read yet makes c
   "The fonts the parity rows compare, each with the text whose glyphs are compared.")
 
 (defconst nhmac-gui--parity-heights '(100 120 160) "The `:height's the parity rows compare at.")
-
-(defun nhmac-gui--lane-file (name ext &optional ns)
-  "The NS row NAME's output nhmac-ns-NAME-scaleS.EXT, in this lane's GLITNIR_GUI_OUT, or with NS, the NS lane's."
-  (let ((out (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
-    (expand-file-name (format "nhmac-ns-%s-scale%s.%s" name (or (getenv "GLITNIR_GUI_SCALE") "1") ext)
-                      (if ns (expand-file-name ".." out) out))))
-
-(defun nhmac-gui--lane-read (name)
-  "The NS lane's NAME output, read."
-  (with-temp-buffer
-    (insert-file-contents (nhmac-gui--lane-file name "eld" t))
-    (read (current-buffer))))
-
-(defun nhmac-gui--lane-write (name value)
-  "Write VALUE as the NS row NAME's output."
-  (with-temp-file (nhmac-gui--lane-file name "eld")
-    (let ((print-length nil) (print-level nil)) (prin1 value (current-buffer)))))
 
 (defmacro nhmac-gui--with-text (face text &rest body)
   "Run BODY in a buffer showing TEXT in FACE (a face spec), black on `nhmac-gui--font-bg', the window's only text,
@@ -2178,208 +2718,249 @@ point at its start, after a full redisplay; the frame's colours are put back aft
   (mapcar (lambda (g) (and g (list (aref g 3) (aref g 4) (aref g 5) (aref g 6) (aref g 7) (aref g 8))))
           (font-get-glyphs font 0 (length text) text)))
 
-(defun nhmac-gui--font-facts (family height text)
-  "FAMILY at HEIGHT, nil when it is not the font shown: (:info (PIXEL-SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH
-LINE-HEIGHT) :glyphs GLYPHS) for TEXT, and at :height 120 :underline (THICKNESS DROP): the underline's rows, and how
-far below the text's bottom it ends, both from captures."
-  (nhmac-gui--with-text (list :family family :height height) text
-    (let ((font (font-at (point))))
-      (when (and font (string-equal-ignore-case (symbol-name (font-get font :family)) family))
-        (let* ((q (query-font font))
-               (facts (list :info (list (aref q 2) (aref q 4) (aref q 5) (aref q 6) (aref q 7) (line-pixel-height))
-                            :glyphs (nhmac-gui--glyph-facts font text))))
-          (when (= height 120)
-            (let* ((plain (nth 1 (nhmac-gui--text-crop (nhmac-gui--bmp-read
-                                                         (nhmac-gui--capture (nhmac-gui--lane-file "tmp" "bmp")))))))
-              (let ((inhibit-read-only t))
-                (goto-char (point-max))
-                (insert (propertize "    " 'face (list :family family :height height :underline t))))
-              (redisplay t)
-              (sit-for 0.3)
-              (let ((both (nth 1 (nhmac-gui--text-crop (nhmac-gui--bmp-read
-                                                         (nhmac-gui--capture (nhmac-gui--lane-file "tmp" "bmp")))))))
-                (erase-buffer)
-                (insert "\n    " (propertize "    " 'face (list :family family :height height :underline t)))
-                (redisplay t)
-                (sit-for 0.3)
-                (let ((line (nth 1 (nhmac-gui--text-crop (nhmac-gui--bmp-read
-                                                           (nhmac-gui--capture (nhmac-gui--lane-file "tmp" "bmp")))))))
-                  (setq facts (append facts (list :underline (list line (- both plain)))))))))
-          facts)))))
+(defun nhmac-gui--font-facts (font text)
+  "FONT's facts as Emacs has them: (:info (PIXEL-SIZE ASCENT DESCENT SPACE-WIDTH AVERAGE-WIDTH LINE-HEIGHT) :glyphs
+GLYPHS) for TEXT (`query-font', `line-pixel-height', `font-get-glyphs')."
+  (let ((q (query-font font)))
+    (list :info (list (aref q 2) (aref q 4) (aref q 5) (aref q 6) (aref q 7) (line-pixel-height))
+          :glyphs (nhmac-gui--glyph-facts font text))))
 
-(defun nhmac-gui--parity-facts ()
-  "Every parity font's facts at every parity height: ((FAMILY HEIGHT FACTS) ...)."
-  (let (out)
-    (dolist (f nhmac-gui--parity-fonts (nreverse out))
-      (dolist (h nhmac-gui--parity-heights)
-        (push (list (car f) h (nhmac-gui--font-facts (car f) h (cdr f))) out)))))
+(defun nhmac-gui--ct-facts (family size text)
+  "FAMILY at SIZE pixels as Core Text answers under the stated rules, in `nhmac-gui--font-facts''s form: the pixel
+size is the size asked for, the line height the taller ascent plus the taller descent of the font and the default
+face's font (`nhmac-gui--with-text' puts four spaces of the default face before the text; called in its buffer), or
+the frame's character height when that is taller.  Nil when the font is not open."
+  (let ((ct (nhmac-gui--ct family size (concat " " nhmac-gui--printable text))))
+    (when ct
+      (pcase-let* ((glyphs (plist-get ct :glyphs))
+                   (mono (plist-get ct :mono))
+                   (`(,a ,d ,avg ,space)
+                    (nhmac-gui--ct-metrics (plist-put (copy-sequence ct) :glyphs (take 95 glyphs))
+                                           nhmac-gui--printable)))
+        (list :info (list size a d space avg
+                          ;; the line also holds the default face's spaces: its ascent and descent each the taller.
+                          ;; The spaces' own font: round 8 (scale 2) opened the default face's name with
+                          ;; `font-info', which gave its size in points (Menlo 12, not the 24 px the line shows)
+                          (let ((q (query-font (font-at (1+ (point-min))))))
+                            (max (+ (max a (aref q 4)) (max d (aref q 5))) (frame-char-height))))
+              :glyphs (mapcar (lambda (g) (cons (nth 1 g) (nhmac-gui--ct-glyph mono space g)))
+                              (nthcdr 95 glyphs)))))))
 
-(defun nhmac-gui--near (ns mine scale)
-  "Whether MINE equals NS times SCALE, numbers within 1 at scale 2 (NS rounds in points, Naglfar in device pixels);
-lists element by element."
-  (cond ((and (numberp ns) (numberp mine)) (<= (abs (- mine (* ns scale))) (if (= scale 1) 0 1)))
-        ((and (consp ns) (consp mine)) (and (= (length ns) (length mine)) (cl-every (lambda (a b) (nhmac-gui--near a b scale)) ns mine)))
-        (t (equal ns mine))))
+(defun nhmac-gui--underline-rule (font)
+  "Rule (Emacs's underline placement, xterm.c's `x_draw_glyph_string', with `x-use-underline-position-properties' t
+and `underline-minimum-offset'): FONT's underline as (POSITION THICKNESS), POSITION below the baseline.  The font's
+own values are Core Text's rounded (`macfont_open': thickness T + 0.5 and position -P + 0.5, truncated)."
+  (let* ((ct (nhmac-gui--ct (symbol-name (font-get font :family)) (font-get font :size) " "))
+         (thick (max 1 (nhmac-gui--c-round (plist-get ct :underline-thickness))))
+         (pos (nhmac-gui--c-round (- (plist-get ct :underline-position))))
+         (pos (if (>= pos 0) pos (/ (1+ (aref (query-font font) 5)) 2))))
+    (list (max pos underline-minimum-offset) thick)))
 
-(ert-deftest nhmac-ns-font-parity-dump ()
-  "NS's metrics, glyph extents and underlines of the parity fonts, for nhmac-font-metrics-parity in the Naglfar lane;
-its fallback fonts for nhmac-font-fallback-same; its shaping for nhmac-font-shaping."
-  (skip-unless (nhmac-gui--ns-build-p))
-  ;; the fallback and shaping dumps first: they need no capture, so a capture failure below does not take them along
-  (nhmac-gui--lane-write "font-fallback" (nhmac-gui--fallback-facts))
-  (nhmac-gui--lane-write "font-shaping" (nhmac-gui--shaping-facts))
-  (let ((facts (nhmac-gui--parity-facts)))
-    (message "nhmac-ns-font-parity-dump: %S" facts)
-    (nhmac-gui--lane-write "font-parity" facts)
-    (should (cl-some (lambda (r) (nth 2 r)) facts))))
+(defun nhmac-gui--underline-found (start end)
+  "Where the underline of the text from START to END lies on the committed surface: (POSITION THICKNESS), POSITION
+the first ink row below the baseline in the run's middle column, THICKNESS the ink rows from there down."
+  (let* ((font (font-at start))
+         (edges (window-inside-pixel-edges))
+         (a (posn-x-y (posn-at-point start))) (b (posn-x-y (posn-at-point end)))
+         (x (+ (nth 0 edges) (/ (+ (car a) (car b)) 2)))
+         (top (+ (nth 1 edges) (cdr a)))
+         (base (+ top (aref (query-font font) 4)))
+         (h (line-pixel-height))
+         (col (nhmac-gui--surface-rect x top 1 h))
+         (bg (string-to-number (substring nhmac-gui--font-bg 1) 16))
+         (first nil) (n 0))
+    (cl-loop for y from (- base top) below h
+             for ink = (nhmac-gui--ink-p (aref col y) bg)
+             do (cond ((and ink (not first)) (setq first y n 1))
+                      ((and ink first (= y (+ first n))) (cl-incf n))))
+    (and first (list (- (+ top first) base) n))))
 
 (ert-deftest nhmac-font-metrics-parity ()
   "For Menlo, SF Mono, Helvetica, PingFang SC and Apple Color Emoji at :height 100, 120 and 160: the pixel size,
-ascent, descent, space and average widths, line height, each glyph's code and extents, and the underline's thickness
-and drop equal NS's in the same run (times the scale; within a device pixel at scale 2).  A font NS does not have is
-reported and skipped; one NS has and Naglfar does not is a failure."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
-        (ns (nhmac-gui--lane-read "font-parity"))
-        (bad nil) (compared 0))
-    (dolist (row ns)
-      (pcase-let ((`(,family ,height ,want) row))
-        (if (not want)
-            (message "nhmac-font-metrics-parity: %s is not on this machine (NS), skipped" family)
-          (let ((got (nhmac-gui--font-facts family height (cdr (assoc family nhmac-gui--parity-fonts)))))
-            (cl-incf compared)
-            (message "nhmac-font-metrics-parity: %s %d: NS %S, Naglfar %S" family height want got)
-            (unless (and got
-                         (nhmac-gui--near (plist-get want :info) (plist-get got :info) scale)
-                         (equal (mapcar #'car (plist-get want :glyphs)) (mapcar #'car (plist-get got :glyphs)))
-                         (nhmac-gui--near (mapcar #'cdr (plist-get want :glyphs)) (mapcar #'cdr (plist-get got :glyphs))
-                                          scale)
-                         ;; the underline is captured in device pixels on both
-                         (or (= scale 2) (equal (plist-get want :underline) (plist-get got :underline))))
-              (push (list family height) bad))))))
-    (message "nhmac-font-metrics-parity: %d compared, differ: %S" compared bad)
+ascent, descent, space and average widths, line height and each glyph's code and extents are Core Text's answers under
+the stated rules (`nhmac-gui--ct-facts'); at :height 120 the underline on the surface lies where Emacs's rule puts it
+\(`nhmac-gui--underline-rule').  A font this machine lacks is reported and skipped.  Each difference names the font,
+the height, the fact, and the expected and actual values."
+  :tags '(parity)
+  (let ((bad nil) (compared 0))
+    (dolist (f nhmac-gui--parity-fonts)
+      (dolist (height nhmac-gui--parity-heights)
+        (nhmac-gui--with-text (list :family (car f) :height height) (cdr f)
+          (let ((font (font-at (point))))
+            (if (not (and font (string-equal-ignore-case (symbol-name (font-get font :family)) (car f))))
+                (nhmac-gui--say "nhmac-font-metrics-parity: %s is not on this machine (%S), skipped" (car f) font)
+              (let ((got (nhmac-gui--font-facts font (cdr f)))
+                    (want (nhmac-gui--ct-facts (car f) (font-get font :size) (cdr f))))
+                (cl-incf compared)
+                (nhmac-gui--say "nhmac-font-metrics-parity: %s %d: Core Text %S, Emacs %S" (car f) height want got)
+                (dolist (k '(:info :glyphs))
+                  (unless (equal (plist-get got k) (plist-get want k))
+                    (push (list (car f) height k :expected (plist-get want k) :actual (plist-get got k)) bad)))
+                ;; round 6 (scale 2): PingFang SC 100's line 1 px taller than the rule.  The line's fonts, each with
+                ;; its ascent and descent, and the row's own heights (a font the rule does not count, or a rounding)
+                (unless (equal (nth 5 (plist-get got :info)) (nth 5 (plist-get want :info)))
+                  (let ((fonts nil))
+                    (save-excursion
+                      (goto-char (line-beginning-position))
+                      (while (< (point) (line-end-position))
+                        (let* ((fo (font-at (point))) (q (and fo (query-font fo))))
+                          (unless (assoc fo fonts)
+                            (push (list fo (and q (aref q 4)) (and q (aref q 5)) (char-after)) fonts)))
+                        (forward-char 1)))
+                    (nhmac-gui--say "nhmac-font-metrics-parity: %s %d: line fonts %S, window-line-height %S" (car f)
+                                    height (nreverse fonts) (window-line-height))))
+                (when (= height 120)
+                  (let ((inhibit-read-only t) (s (point-max)))
+                    (goto-char s)
+                    (insert (propertize "    " 'face (list :family (car f) :height height :underline t)))
+                    (redisplay t)
+                    (let ((rule (nhmac-gui--underline-rule (font-at s)))
+                          (found (nhmac-gui--underline-found s (1- (point-max)))))
+                      (nhmac-gui--say "nhmac-font-metrics-parity: %s underline: rule %S, surface %S" (car f) rule found)
+                      (unless (equal rule found)
+                        (push (list (car f) height :underline :expected rule :actual found) bad)))))))))))
+    (nhmac-gui--say "nhmac-font-metrics-parity: %d compared, differ: %S" compared bad)
     (should (> compared 0))
     (should-not bad)))
 
 (defconst nhmac-gui--fallback-text "中あ한😀αא€ก"
-  "Characters Menlo lacks, or has: each one's font is compared.")
+  "Characters Menlo lacks, or has: each one's font is judged.")
 
 (defun nhmac-gui--fallback-facts ()
-  "Each of `nhmac-gui--fallback-text''s characters with the family of the font it is shown in, the frame's font
-Menlo 12."
+  "Each of `nhmac-gui--fallback-text''s characters with the family of the font it is shown in, and the family Core
+Text's cascade picks for it from the frame's font (`test-ct-cascade'): ((CHAR SHOWN CASCADE) ...), Menlo 12."
   (let ((font (frame-parameter nil 'font)))
     (unwind-protect
         (progn
           (set-frame-font "Menlo-12" nil (list (selected-frame)))
           (nhmac-gui--with-text 'default nhmac-gui--fallback-text
-            (cl-loop for i from 0 below (length nhmac-gui--fallback-text)
-                     collect (let ((f (font-at (+ (point) i))))
-                               (list (aref nhmac-gui--fallback-text i)
-                                     (and f (symbol-name (font-get f :family))))))))
+            (let ((cascade (apply #'nhmac--query 'test-ct-cascade "Menlo" (aref (font-info (face-font 'default)) 2)
+                                  (append nhmac-gui--fallback-text nil))))
+              (cl-loop for i from 0 below (length nhmac-gui--fallback-text)
+                       collect (let ((f (font-at (+ (point) i))))
+                                 (list (aref nhmac-gui--fallback-text i)
+                                       (and f (symbol-name (font-get f :family)))
+                                       (nth i cascade)))))))
       (set-frame-font font nil (list (selected-frame))))))
 
 (ert-deftest nhmac-font-fallback-same ()
-  "With Menlo 12 as the frame's font, CJK, emoji, Greek, Hebrew, Thai and the euro sign are shown in the same
-families as on NS."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let ((ns (nhmac-gui--lane-read "font-fallback"))
-        (mine (nhmac-gui--fallback-facts)))
-    (message "nhmac-font-fallback-same: NS %S, Naglfar %S" ns mine)
-    (should (cl-every #'cadr mine))
-    (should (equal mine ns))))
+  "With Menlo 12 as the frame's font, CJK, emoji, Greek, Hebrew, Thai and the euro sign are each shown in the family
+Core Text's own cascade picks for it from Menlo (`CTFontCreateForString')."
+  :tags '(parity)
+  (let ((facts (nhmac-gui--fallback-facts)))
+    (nhmac-gui--say "nhmac-font-fallback-same: (char shown cascade) %S" facts)
+    (should (cl-every #'cadr facts))
+    (should-not (cl-remove-if (lambda (r) (equal (nth 1 r) (nth 2 r))) facts))))
 
 (defconst nhmac-gui--shaping-texts '(("مرحبا بالعالم" . R2L) ("नमस्ते दुनिया" . L2R))
   "Arabic and Devanagari text, and the direction each is shaped in.")
 
-(defun nhmac-gui--shaping-facts ()
-  "Each shaping text's font family and its glyphs as Core Text shapes them (`font-shape-gstring'): each glyph's
-(FROM TO CODE WIDTH XOFF YOFF WADJUST)."
-  (mapcar
-   (lambda (td)
-     (let ((text (car td)))
-       (nhmac-gui--with-text 'default text
-         (let* ((font (font-at (point)))
-                (g (font-shape-gstring (composition-get-gstring 0 (length text) font text) (cdr td))))
-           (list (symbol-name (font-get font :family))
-                 (and g
-                      (cl-loop for i from 0 below (lgstring-glyph-len g)
-                               for gl = (lgstring-glyph g i)
-                               while gl
-                               collect (let ((adj (lglyph-adjustment gl)))
-                                         (list (lglyph-from gl) (lglyph-to gl) (lglyph-code gl) (lglyph-width gl)
-                                               (if adj (aref adj 0) 0) (if adj (aref adj 1) 0)
-                                               (if adj (aref adj 2) (lglyph-width gl)))))))))))
-   nhmac-gui--shaping-texts))
+(defun nhmac-gui--shaping-facts (text dir)
+  "TEXT shaped in DIR in the font it is shown in: (FAMILY SIZE GLYPHS), GLYPHS each (FROM TO CODE WIDTH) of
+`font-shape-gstring'."
+  (nhmac-gui--with-text 'default text
+    (let* ((font (font-at (point)))
+           (g (font-shape-gstring (composition-get-gstring 0 (length text) font text) dir)))
+      (list (symbol-name (font-get font :family)) (font-get font :size)
+            (and g (cl-loop for i from 0 below (lgstring-glyph-len g)
+                            for gl = (lgstring-glyph g i)
+                            while gl
+                            collect (list (lglyph-from gl) (lglyph-to gl) (lglyph-code gl) (lglyph-width gl))))))))
 
 (ert-deftest nhmac-font-shaping ()
-  "Arabic and Devanagari runs give the same fonts, clusters and glyph ids as on NS, and the same widths and offsets
-(times the scale; within a device pixel at scale 2)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
-  (let ((scale (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
-        (ns (nhmac-gui--lane-read "font-shaping"))
-        (mine (nhmac-gui--shaping-facts)))
-    (message "nhmac-font-shaping: NS %S, Naglfar %S" ns mine)
-    (should (cl-every #'cadr mine))
-    (cl-loop for (nf nglyphs) in ns
-             for (mf mglyphs) in mine
-             do (should (equal mf nf))
-                (should (equal (mapcar (lambda (g) (seq-take g 3)) mglyphs)
-                               (mapcar (lambda (g) (seq-take g 3)) nglyphs)))
-                (should (nhmac-gui--near (mapcar (lambda (g) (nthcdr 3 g)) nglyphs)
-                                         (mapcar (lambda (g) (nthcdr 3 g)) mglyphs) scale)))))
+  "Arabic and Devanagari runs are shaped as Core Text lays them out in the same font (`test-ct-shape', the driver's
+line: kerning off): the same glyph ids in the same order, each glyph's cluster holding the character Core Text maps it
+from, and the run's width Core Text's typographic widths each rounded (rule: a glyph's width is its rounded advance).
+Rule: Core Text gives a right-to-left run's glyphs in display order, Emacs's glyph string is in logical order, so
+`mac_font_shape' reverses such a run; the row compares in logical order."
+  :tags '(parity)
+  (dolist (td nhmac-gui--shaping-texts)
+    (pcase-let* ((`(,family ,size ,glyphs) (nhmac-gui--shaping-facts (car td) (cdr td)))
+                 (runs (apply #'nhmac--query 'test-ct-shape family size (append (car td) nil)))
+                 (ct (apply #'append (mapcar (lambda (r) (if (car r) (reverse (cdr r)) (cdr r))) runs))))
+      (nhmac-gui--say "nhmac-font-shaping: %s %s %s: Emacs %S, Core Text %S" (cdr td) family size glyphs runs)
+      (should glyphs)
+      (should runs)
+      (should (equal (mapcar #'caddr glyphs) (mapcar #'cadr ct)))
+      (cl-loop for g in glyphs for c in ct
+               do (should (<= (nth 0 g) (nth 0 c) (nth 1 g))))
+      (should (= (apply #'+ (mapcar #'cadddr glyphs))
+                 (apply #'+ (mapcar (lambda (c) (nhmac-gui--round-half-away (nth 4 c))) ct)))))))
 
-(ert-deftest nhmac-paired-cjk-emoji-scroll ()
-  "Scrolling CJK and emoji text by a line, timed in the process: 50 scrolls, each a redisplay, written to
-GLITNIR_GUI_OUT/pair-BUILD.txt (microseconds, one per line), as nhmac-paired-key-to-commit's times are; both builds
-run it in turn (--pair, nidhogg/test/nhmac-pair.sh --row), which judges Naglfar not slower."
-  (let* ((build (if (nhmac-gui--ns-build-p) "ns" "naglfar"))
-         (file (expand-file-name (format "pair-%s.txt" build)
-                                 (or (getenv "GLITNIR_GUI_OUT") temporary-file-directory)))
-         times)
-    (switch-to-buffer (generate-new-buffer " *nhmac-pair-cjk*"))
+(ert-deftest nhmac-font-at-every-script ()
+  "Each shaping text shown in the default face has a font: `font-at' gives a font object at its first character, as
+on NS.  Logged: what `font-at' gave, the character's script and how many fonts `list-fonts' finds for the script."
+  :tags '(draws)
+  (dolist (td nhmac-gui--shaping-texts)
+    (nhmac-gui--with-text 'default (car td)
+      (let* ((font (font-at (point)))
+             (script (aref char-script-table (char-after)))
+             (listed (list-fonts (font-spec :script script))))
+        (nhmac-gui--say "nhmac-font-at-every-script: %s %S: font-at %S, %d fonts listed, first %S"
+                        script (char-after) font (length listed) (car listed))
+        ;; why a listed font is not taken: the fontset's specs, and the first font's answer for the character
+        (let ((fo (and listed (open-font (car listed) 12))))
+          (nhmac-gui--say "nhmac-font-at-every-script: fontset %S; opened %S, has-char %S, glyphs %S"
+                          (fontset-font t (char-after)) fo (and fo (font-has-char-p fo (char-after)))
+                          (and fo (font-get-glyphs fo 0 1 (string (char-after))))))
+        (should (fontp font 'font-object))))))
+
+(ert-deftest nhmac-cjk-emoji-scroll ()
+  "Scrolling CJK and emoji text by a line, timed in the process: 50 scrolls, each a redisplay and its commit.  The bar
+is drgnx's scrolling budget: p95 under 16 ms, max under 50 ms.  Logged: where the scrolls' time went (the shell's
+paint, fill and commit, the font driver's calls and fills, the collections)."
+  :tags '(timing)
+  (nhmac-gui--timing-build)
+  (let (times s0 s1 (gcs gcs-done) (gct gc-elapsed))
+    (switch-to-buffer (generate-new-buffer " *nhmac-cjk*"))
     (dotimes (i 400)
       (insert (format "%3d 中文字体的回退和表情 😀🐉🌸 日本語のテキスト 한국어 %s\n" i (make-string (% i 7) ?字))))
     (goto-char (point-min))
     (redisplay t)
     (dotimes (_ 10) (scroll-up 1) (redisplay))
+    (setq s0 (nhmac-stats) gcs gcs-done gct gc-elapsed)
     (dotimes (_ 50)
       (let ((t0 (float-time)))
         (scroll-up 1)
         (redisplay)
         (push (round (* 1e6 (- (float-time) t0))) times)))
-    (with-temp-buffer
-      (dolist (us (nreverse times)) (insert (format "%d\n" us)))
-      (write-region (point-min) (point-max) file t 'silent))
-    (should (file-exists-p file))
-    (kill-buffer)))
+    (setq s1 (nhmac-stats))
+    (kill-buffer)
+    (nhmac-gui--say "nhmac-cjk-emoji-scroll: per scroll: paint %.0f fill %.0f commit %.0f us; font calls %d fills %d; %d GCs in %.3f s"
+                    (/ (- (plist-get s1 :paint-ns) (plist-get s0 :paint-ns)) 50000.0)
+                    (/ (- (plist-get s1 :fill-ns) (plist-get s0 :fill-ns)) 50000.0)
+                    (/ (- (plist-get s1 :commit-ns) (plist-get s0 :commit-ns)) 50000.0)
+                    (- (plist-get s1 :font-calls) (plist-get s0 :font-calls))
+                    (- (plist-get s1 :font-fills) (plist-get s0 :font-fills))
+                    (- gcs-done gcs) (- gc-elapsed gct))
+    (nhmac-gui--within-budget "nhmac-cjk-emoji-scroll" times 16 50)))
 
 (ert-deftest nhmac-advances-for-fit ()
   "For the parity fonts at :height 120, each glyph's `font-get-glyphs' width is Core Text's own advance
 (CTFontGetAdvancesForGlyphs, test-ct-advances) rounded, at the frame's device scale: a skrifa-vs-Core Text
 difference in drgnx's fit row is then the fitter's, not the driver's."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((bad nil) (compared 0))
     (dolist (f nhmac-gui--parity-fonts)
       (nhmac-gui--with-text (list :family (car f) :height 120) (cdr f)
         (let ((font (font-at (point))))
           (if (not (string-equal-ignore-case (symbol-name (font-get font :family)) (car f)))
-              (message "nhmac-advances-for-fit: %s is not on this machine, skipped" (car f))
+              (nhmac-gui--say "nhmac-advances-for-fit: %s is not on this machine, skipped" (car f))
             (let* ((glyphs (font-get-glyphs font 0 (length (cdr f)) (cdr f)))
                    (codes (mapcar (lambda (g) (aref g 3)) glyphs))
                    (widths (mapcar (lambda (g) (aref g 4)) glyphs))
                    (ct (apply #'nhmac--query 'test-ct-advances (symbol-name (font-get font :family))
                               (font-get font :size) codes)))
               (cl-incf compared)
-              (message "nhmac-advances-for-fit: %s: widths %S, Core Text %S" (car f) widths ct)
+              (nhmac-gui--say "nhmac-advances-for-fit: %s: widths %S, Core Text %S" (car f) widths ct)
               (unless (and ct (equal widths (mapcar (lambda (a) (floor (+ a 0.5))) ct)))
                 (push (car f) bad)))))))
     (should (> compared 0))
     (should-not bad)))
 
-;; Task 24: every draw record, compared with NS's in the same run
+;; Task 24: every draw record, each probed on the committed surface where Emacs's rules put it
 (defun nhmac-gui--draw-k ()
-  "Device pixels per NS point for the scene's pixel sizes: the lane's scale on Naglfar, 1 on NS (which counts points)."
-  (if (nhmac-gui--ns-build-p) 1 (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1"))))
+  "Device pixels per point for the scene's pixel sizes: the lane's scale."
+  (string-to-number (or (getenv "GLITNIR_GUI_SCALE") "1")))
 
 (defconst nhmac-gui--draw-cursors '(box hollow bar hbar)
   "The cursor kinds the draw rows show over an image.")
@@ -2391,9 +2972,11 @@ difference in drgnx's fit row is then the fitter's, not the driver's."
 (defmacro nhmac-gui--with-draw-scene (&rest body)
   "Run BODY showing a buffer that uses every face attribute and glyph kind the draw records carry (decorations, boxes
 and reliefs, stretches, glyphless and composed characters, images, fringe bitmaps), in Menlo 12 on
-`nhmac-gui--font-bg', with pixel sizes in NS points (times `nhmac-gui--draw-k').  Point is on the first image."
+`nhmac-gui--font-bg', with pixel sizes in points (times `nhmac-gui--draw-k'), below the crop marker
+\(`nhmac-gui--marker-line'), in a bare frame (`nhmac-gui--bare-frame').  Point is on the first image."
   (declare (indent 0))
-  `(let* ((k (nhmac-gui--draw-k))
+  `(nhmac-gui--bare-frame
+    (let* ((k (nhmac-gui--draw-k))
           (font (frame-parameter nil 'font))
           (fg (frame-parameter nil 'foreground-color))
           (bg (frame-parameter nil 'background-color))
@@ -2412,6 +2995,7 @@ and reliefs, stretches, glyphless and composed characters, images, fringe bitmap
            (set-window-fringes nil (* 8 k) (* 8 k))
            (set-window-scroll-bars nil 0 nil 0 nil)
            (let ((b (lambda (s &rest face) (insert (propertize s 'face face)))))
+             (insert (nhmac-gui--marker-line))
              (insert (propertize " " 'display '(left-fringe right-triangle)))
              (funcall b "under" :underline t) (insert " ")
              (funcall b "wave" :underline '(:style wave :color "red")) (insert " ")
@@ -2449,131 +3033,312 @@ and reliefs, stretches, glyphless and composed characters, images, fringe bitmap
        (set-window-scroll-bars nil nil nil nil nil)
        (set-frame-font font nil (list (selected-frame)))
        (set-foreground-color fg)
-       (set-background-color bg))))
+       (set-background-color bg)))))
 
-(defun nhmac-gui--draw-geometry ()
-  "Where each line of the draw scene starts and ends, and where the images are: (X . Y) of `posn-at-point' at every
-line's start and end and at each image."
+(defun nhmac-gui--run-box (text)
+  "Where the buffer's first TEXT is drawn, in the frame's device pixels: (X0 TOP X1 BASE BOTTOM), X1 past its last
+glyph, TOP its row's top, BOTTOM past its row, BASE the row's baseline (the row's height less its first character's
+font's descent: the scene's rows have one font's descent).  The row's top, not the glyph's: `posn-at-point' gives
+the glyph's, below the row's top in a row a taller element heightens (round 6: 2 px), and the overline, the
+reliefs and the box are drawn from the row's top."
   (save-excursion
-    (let (out)
-      (goto-char (point-min))
-      (while (not (eobp))
-        (push (posn-x-y (posn-at-point (point))) out)
-        (end-of-line)
-        (push (posn-x-y (posn-at-point (point))) out)
-        (forward-line 1))
-      (nreverse out))))
+    (goto-char (point-min))
+    (search-forward text)
+    (let* ((s (match-beginning 0)) (e (match-end 0))
+           (edges (window-inside-pixel-edges))
+           (p (posn-at-point s))
+           (a (posn-x-y p))
+           (b (posn-x-y (posn-at-point e)))
+           (top (+ (nth 1 edges) (nth 2 (window-line-height (cdr (posn-actual-col-row p)))))))
+      (goto-char s)
+      (let ((h (line-pixel-height)))
+        (list (+ (nth 0 edges) (car a)) top (+ (nth 0 edges) (car b))
+              (+ top (- h (aref (query-font (font-at s)) 5))) (+ top h))))))
 
-(defun nhmac-gui--crop-diff (a b)
-  "Crops A and B (`nhmac-gui--text-crop'): (SAME-SIZE WORST OFF), WORST the largest channel difference and OFF how
-many pixels differ by more than 24 in a channel."
-  (pcase-let ((`(,aw ,ah ,apx) a) (`(,bw ,bh ,bpx) b) (worst 0) (off 0))
-    (if (not (and (= aw bw) (= ah bh)))
-        (list nil 255 (* aw ah))
-      (dotimes (i (length apx))
-        (let ((d (cl-loop for sh in '(16 8 0)
-                          maximize (abs (- (logand (ash (aref apx i) (- sh)) 255)
-                                           (logand (ash (aref bpx i) (- sh)) 255))))))
-          (setq worst (max worst d))
-          (when (> d 24) (cl-incf off))))
-      (list t worst off))))
+(defun nhmac-gui--rgb (hex)
+  "The colour named HEX (#RRGGBB or a colour name) as #xRRGGBB."
+  (let ((c (color-values hex)))
+    (logior (ash (/ (nth 0 c) 257) 16) (ash (/ (nth 1 c) 257) 8) (/ (nth 2 c) 257))))
 
-(defun nhmac-gui--draw-captures ()
-  "The draw scene's captures: the scene without a cursor, then each of `nhmac-gui--draw-cursors' over the image.
-An alist of (NAME . FILE) in this lane's output directory."
-  (let ((out (list (cons "draw" (nhmac-gui--capture (nhmac-gui--font-file "draw.bmp"))))))
-    (dolist (c nhmac-gui--draw-cursors)
-      (setq-local cursor-type (nhmac-gui--draw-cursor c (nhmac-gui--draw-k)))
-      (redisplay t)
-      (sit-for 0.3)
-      (push (cons (format "draw-%s" c) (nhmac-gui--capture (nhmac-gui--font-file (format "draw-%s.bmp" c)))) out))
-    (nreverse out)))
+(defun nhmac-gui--backing-colours (x0 y0 x1 y1 &optional raw)
+  "The backing's colours in X0 Y0 to X1 Y1 (device pixels, end exclusive), the commonest first, at most 4, as
+\"#xRRGGBB xN\"; RAW is a `glitnir-snapshot' raw picture (taken when nil).  The backing holds what the draw records
+painted before the surface copy: a record found here and not on the surface was painted but not copied.  Same origin
+as the surface; a rect outside it, or no backing, gives a string saying so."
+  (condition-case err
+      (pcase-let* ((`(,w ,h ,bytes) (or raw (glitnir-snapshot nil 'raw)))
+                   (seen (make-hash-table)))
+        (if (or (< x0 0) (< y0 0) (> x1 w) (> y1 h))
+            (format "outside the %dx%d backing" w h)
+          (cl-loop for y from y0 below (max (1+ y0) y1)
+                   do (cl-loop for x from x0 below (max (1+ x0) x1)
+                               for i = (* 4 (+ (* y w) x))
+                               ;; ARGB32 in the machine's (little-endian) order: B G R A
+                               do (cl-incf (gethash (logior (ash (aref bytes (+ i 2)) 16) (ash (aref bytes (1+ i)) 8)
+                                                            (aref bytes i))
+                                                    seen 0))))
+          (seq-take (mapcar (lambda (e) (format "#x%06x x%d" (car e) (cdr e)))
+                            (sort (let (l) (maphash (lambda (k v) (push (cons k v) l)) seen) l)
+                                  (lambda (a b) (> (cdr a) (cdr b)))))
+                    4)))
+    (error (format "no backing: %S" err))))
+
+(defun nhmac-gui--probe (record want x0 y0 x1 y1 &optional tol)
+  "Probe RECORD: the surface's pixels in X0 Y0 to X1 Y1 (device pixels, end exclusive) hold the colour WANT
+\(#xRRGGBB, within TOL in each channel, default 24).  Nil when they do, else the failure (RECORD :expected (WANT RECT)
+:actual (the colours found, the commonest first))."
+  (let* ((w (max 1 (- x1 x0))) (h (max 1 (- y1 y0)))
+         (px (nhmac-gui--surface-rect x0 y0 w h))
+         (seen (make-hash-table)))
+    (unless (cl-some (lambda (p) (not (nhmac-gui--far (logand p #xffffff) want (or tol 24)))) px)
+      (cl-loop for p across px do (cl-incf (gethash (logand p #xffffff) seen 0)))
+      (list record :expected (list (format "#x%06x" want) (list x0 y0 x1 y1))
+            :actual (seq-take (mapcar (lambda (e) (format "#x%06x x%d" (car e) (cdr e)))
+                                      (sort (let (l) (maphash (lambda (k v) (push (cons k v) l)) seen) l)
+                                            (lambda (a b) (> (cdr a) (cdr b)))))
+                              4)
+            :backing (nhmac-gui--backing-colours x0 y0 x1 y1)))))
+
+(defun nhmac-gui--probe-all (record want x0 y0 x1 y1 &optional tol)
+  "As `nhmac-gui--probe', but every pixel of the rect must be WANT."
+  (let* ((w (max 1 (- x1 x0))) (h (max 1 (- y1 y0)))
+         (px (nhmac-gui--surface-rect x0 y0 w h))
+         (off (cl-count-if (lambda (p) (nhmac-gui--far (logand p #xffffff) want (or tol 0))) px)))
+    (unless (= off 0)
+      (list record :expected (list (format "#x%06x" want) (list x0 y0 x1 y1))
+            :actual (format "%d of %d pixels off, first #x%06x" off (length px)
+                            (logand (seq-find (lambda (p) (nhmac-gui--far (logand p #xffffff) want (or tol 0))) px)
+                                    #xffffff))
+            :backing (nhmac-gui--backing-colours x0 y0 x1 y1)))))
+
+(defun nhmac-gui--lighter-p (a b)
+  "Whether colour A is lighter than B (#xRRGGBB, by the sum of the channels)."
+  (> (apply #'+ (mapcar (lambda (sh) (logand (ash a (- sh)) 255)) '(16 8 0)))
+     (apply #'+ (mapcar (lambda (sh) (logand (ash b (- sh)) 255)) '(16 8 0)))))
 
 (defmacro nhmac-gui--with-fringe-scene (&rest body)
   "Run BODY showing only fringe bitmaps: empty lines with an arrow in each fringe, then the empty-line indicator, the
-fringe in black on `nhmac-gui--font-bg', fringes 8 NS points wide."
+fringe in black on `nhmac-gui--font-bg', fringes 8 points wide, below the marker line (`nhmac-gui--marker-line'), in
+a bare frame (`nhmac-gui--bare-frame')."
   (declare (indent 0))
   `(let ((k (nhmac-gui--draw-k))
          (bg (frame-parameter nil 'background-color))
          (ffg (face-foreground 'fringe)) (fbg (face-background 'fringe)))
-     (unwind-protect
-         (progn
-           (set-background-color nhmac-gui--font-bg)
-           (set-face-attribute 'fringe nil :foreground "#000000" :background nhmac-gui--font-bg)
-           (switch-to-buffer (generate-new-buffer " *nhmac-fringe*"))
-           (setq-local cursor-type nil mode-line-format nil indicate-empty-lines t)
-           (set-window-fringes nil (* 8 k) (* 8 k))
-           (set-window-scroll-bars nil 0 nil 0 nil)
-           (insert (propertize " " 'display '(left-fringe right-triangle))
-                   (propertize " " 'display '(right-fringe left-arrow)) "\n"
-                   (propertize " " 'display '(left-fringe up-arrow))
-                   (propertize " " 'display '(right-fringe filled-rectangle)) "\n")
-           (goto-char (point-min))
-           (redraw-frame)
-           (redisplay t)
-           (sit-for 0.5)
-           ,@body)
-       (kill-buffer)
-       (set-face-attribute 'fringe nil :foreground (or ffg 'unspecified) :background (or fbg 'unspecified))
-       (set-window-fringes nil nil nil)
-       (set-window-scroll-bars nil nil nil nil nil)
-       (set-background-color bg))))
+     (nhmac-gui--bare-frame
+       (unwind-protect
+           (progn
+             (set-background-color nhmac-gui--font-bg)
+             (set-face-attribute 'fringe nil :foreground "#000000" :background nhmac-gui--font-bg)
+             (switch-to-buffer (generate-new-buffer " *nhmac-fringe*"))
+             (setq-local cursor-type nil mode-line-format nil indicate-empty-lines t)
+             (set-window-fringes nil (* 8 k) (* 8 k))
+             (set-window-scroll-bars nil 0 nil 0 nil)
+             (insert (nhmac-gui--marker-line)
+                     (propertize " " 'display '(left-fringe right-triangle))
+                     (propertize " " 'display '(right-fringe left-arrow)) "\n"
+                     (propertize " " 'display '(left-fringe up-arrow))
+                     (propertize " " 'display '(right-fringe filled-rectangle)) "\n")
+             (goto-char (point-min))
+             (redraw-frame)
+             (redisplay t)
+             (sit-for 0.5)
+             ,@body)
+         (kill-buffer)
+         (set-face-attribute 'fringe nil :foreground (or ffg 'unspecified) :background (or fbg 'unspecified))
+         (set-window-fringes nil nil nil)
+         (set-window-scroll-bars nil nil nil nil nil)
+         (set-background-color bg)))))
 
-(ert-deftest nhmac-ns-draw-dump ()
-  "NS's draw scene: its geometry and a capture of it without a cursor and with each cursor kind over the image, for
-nhmac-draw-all-records in the Naglfar lane; and the fringe scene's capture, for nhmac-draw-fringe-bitmaps."
-  (skip-unless (nhmac-gui--ns-build-p))
-  (nhmac-gui--with-draw-scene
-    ;; measured in the scene's buffer, before `with-temp-file' makes its own current
-    (let ((g (nhmac-gui--draw-geometry)))
-      (should g)
-      (with-temp-file (nhmac-gui--font-file "draw.eld")
-        (prin1 g (current-buffer))))
-    (dolist (c (nhmac-gui--draw-captures))
-      (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c)))) 0))))
-  (nhmac-gui--with-fringe-scene
-    (nhmac-gui--capture (nhmac-gui--font-file "fringe.bmp"))
-    (should (> (car (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "fringe.bmp")))) 0))))
+(defun nhmac-gui--prop-box (prop value)
+  "The device-pixel box (X0 TOP X1 BOTTOM) of the first character whose PROP is VALUE (`equal')."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((m (text-property-search-forward prop value #'equal)))
+      (let* ((s (prop-match-beginning m)) (edges (window-inside-pixel-edges))
+             (a (posn-x-y (posn-at-point s))) (b (posn-x-y (posn-at-point (1+ s)))))
+        (goto-char s)
+        (list (+ (nth 0 edges) (car a)) (+ (nth 1 edges) (cdr a)) (+ (nth 0 edges) (car b))
+              (+ (nth 1 edges) (cdr a) (line-pixel-height)))))))
+
+(defun nhmac-gui--draw-probes (k)
+  "The draw scene's records, each probed where Emacs's rules put it (K device pixels per point); the failures."
+  (let* ((black #x000000) (bg (nhmac-gui--rgb nhmac-gui--font-bg))
+         (mid (lambda (b) (/ (+ (nth 0 b) (nth 2 b)) 2)))
+         (bad nil)
+         (note (lambda (f) (when f (push f bad)))))
+    ;; underline: Emacs's rule's rows, in the foreground
+    (pcase-let* ((`(,x0 ,_ ,x1 ,base ,_) (nhmac-gui--run-box "under"))
+                 (`(,pos ,thick) (nhmac-gui--underline-rule
+                                  (font-at (save-excursion (goto-char (point-min)) (search-forward "under")
+                                                           (match-beginning 0))))))
+      (funcall note (nhmac-gui--probe-all "underline" black x0 (+ base pos) x1 (+ base pos thick) 24)))
+    ;; wave and dashes: their colour below the baseline; dashes leave a gap
+    (pcase-let ((`(,x0 ,_ ,x1 ,base ,bottom) (nhmac-gui--run-box "wave")))
+      (funcall note (nhmac-gui--probe "wave underline" #xff0000 x0 base x1 bottom)))
+    (pcase-let ((`(,x0 ,_ ,x1 ,base ,bottom) (nhmac-gui--run-box "dash")))
+      (funcall note (nhmac-gui--probe "dashed underline" #x0000ff x0 base x1 bottom))
+      (let* ((w (- x1 x0)) (h (- bottom base)) (px (nhmac-gui--surface-rect x0 base w h))
+             (gap (cl-loop for x below w
+                           thereis (cl-loop for y below h
+                                            never (not (nhmac-gui--far (logand (aref px (+ (* y w) x)) #xffffff)
+                                                                       #x0000ff 24))))))
+        (unless gap (push (list "dashed underline: a gap" :expected "a column without blue" :actual "none"
+                                (list x0 base x1 bottom))
+                          bad))))
+    ;; overline and strike-through
+    (pcase-let ((`(,x0 ,top ,x1 ,_ ,_) (nhmac-gui--run-box "over")))
+      (funcall note (nhmac-gui--probe "overline" black x0 top x1 (+ top k))))
+    (pcase-let* ((`(,x0 ,top ,x1 ,base ,_) (nhmac-gui--run-box "strike"))
+                 (q (query-font (font-at (save-excursion (goto-char (point-min)) (search-forward "strike")
+                                                         (match-beginning 0)))))
+                 ;; xterm.c's rule: the middle of the glyphs' ascent + descent
+                 (y (+ (- base (aref q 4)) (/ (+ (aref q 4) (aref q 5)) 2))))
+      (ignore top)
+      (funcall note (nhmac-gui--probe "strike-through" #xff0000 x0 (- y k) x1 (+ y k 1))))
+    (pcase-let ((`(,x0 ,top ,x1 ,_ ,_) (nhmac-gui--run-box "both")))
+      (funcall note (nhmac-gui--probe "overline (blue)" #x0000ff x0 top x1 (+ top k))))
+    ;; boxes and reliefs
+    (pcase-let ((`(,x0 ,top ,_ ,_ ,bottom) (nhmac-gui--run-box "box")))
+      (funcall note (nhmac-gui--probe-all "box (left line)" #x0000ff x0 (+ top k) (+ x0 k) (- bottom k))))
+    ;; the top is read one row in: a relief wider than 1 has its outermost top and left line in the bottom's colour
+    ;; (xterm.c's x_draw_relief_rect, as nhwl_draw_relief_rect; round 8 read that line once the box's top was the
+    ;; row's)
+    (dolist (r '(("raised" . t) ("pressed" . nil)))
+      (pcase-let* ((b (nhmac-gui--run-box (car r)))
+                   (x (funcall mid b))
+                   (hi (logand (aref (nhmac-gui--surface-rect x (1+ (nth 1 b)) 1 1) 0) #xffffff))
+                   (lo (logand (aref (nhmac-gui--surface-rect x (1- (nth 4 b)) 1 1) 0) #xffffff)))
+        (unless (and (eq (cdr r) (nhmac-gui--lighter-p hi bg)) (eq (cdr r) (nhmac-gui--lighter-p bg lo)))
+          (push (list (concat (car r) " relief") :expected (if (cdr r) "top lighter, bottom darker than the background"
+                                                              "top darker, bottom lighter than the background")
+                      :actual (list :top (format "#x%06x" hi) :bottom (format "#x%06x" lo) :background (format "#x%06x" bg))
+                      :backing (list :top (nhmac-gui--backing-colours x (1+ (nth 1 b)) (1+ x) (+ 2 (nth 1 b)))
+                                     :bottom (nhmac-gui--backing-colours x (1- (nth 4 b)) (1+ x) (nth 4 b))))
+                bad))))
+    (pcase-let ((`(,x0 ,top ,x1 ,_ ,_) (nhmac-gui--run-box "inner")))
+      (funcall note (nhmac-gui--probe "inner box" (nhmac-gui--rgb "dark green") x0 top x1 (+ top (* 2 k)))))
+    ;; inverse video's background is the foreground; a taller face's background fills its row's top
+    (let* ((b (nhmac-gui--run-box "inverse")) (x (funcall mid b)))
+      (funcall note (nhmac-gui--probe-all "inverse video" black x (nth 1 b) (1+ x) (1+ (nth 1 b)))))
+    (let* ((b (nhmac-gui--run-box "tall")) (x (funcall mid b)))
+      (funcall note (nhmac-gui--probe-all "tall face's background" (nhmac-gui--rgb "light blue")
+                                          x (nth 1 b) (1+ x) (1+ (nth 1 b)))))
+    ;; stretches: exact
+    (dolist (s '(((space :width 4) . "orange") ((space :align-to 30) . "pink")))
+      (pcase-let ((`(,x0 ,top ,x1 ,bottom) (nhmac-gui--prop-box 'display (car s))))
+        (funcall note (nhmac-gui--probe-all (format "stretch %S" (car s)) (nhmac-gui--rgb (cdr s))
+                                            (1+ x0) (1+ top) (1- x1) (1- bottom)))))
+    ;; glyphless and composed characters have ink
+    (dolist (c (list (string #xE000) (string #xE001)))
+      (pcase-let ((`(,x0 ,top ,x1 ,_ ,bottom) (nhmac-gui--run-box c)))
+        (funcall note (nhmac-gui--probe (format "glyphless U+%X" (aref c 0)) black x0 top x1 bottom 96))))
+    ;; the PBM image: its first cell the foreground, its second white; the relief image's margin the background
+    (pcase-let ((`(,x0 ,top ,_ ,_) (nhmac-gui--prop-box 'display (get-char-property (point) 'display))))
+      (let ((cell (* 2 k)))
+        (funcall note (nhmac-gui--probe-all "image cell (0 0)" #x003399 x0 top (+ x0 cell) (+ top cell)))
+        (funcall note (nhmac-gui--probe-all "image cell (1 0)" #xffffff (+ x0 cell) top (+ x0 (* 2 cell)) (+ top cell)))))
+    (nreverse bad)))
+
+(defun nhmac-gui--cursor-probes (k)
+  "Each cursor kind over the scene's first image, at point, probed where Emacs draws it; the failures."
+  (let* ((cursor (nhmac-gui--rgb (frame-parameter nil 'cursor-color)))
+         (img (nhmac-gui--prop-box 'display (get-char-property (point) 'display)))
+         (bad nil))
+    (pcase-let ((`(,x0 ,top ,x1 ,bottom) img))
+      (dolist (c nhmac-gui--draw-cursors)
+        (setq-local cursor-type (nhmac-gui--draw-cursor c k))
+        (redisplay t)
+        (let ((f (pcase c
+                   ;; a box cursor on an image is the image with a rectangle in the cursor's colour around it
+                   ((or 'box 'hollow) (nhmac-gui--probe-all (format "%s cursor" c) cursor x0 top (1+ x0) (1+ top) 24))
+                   ('bar (nhmac-gui--probe-all "bar cursor" cursor x0 (+ top 1) (+ x0 (* 2 k)) (- bottom 1) 24))
+                   ('hbar (nhmac-gui--probe-all "hbar cursor" cursor (1+ x0) (- bottom (* 2 k)) (1- x1) bottom 24)))))
+          ;; round 9: no cursor colour anywhere in the image's box at either scale (round 8's too, behind the
+          ;; records): whether the cursor blinked off or the frame lacked focus, and what was drawn there
+          (when f
+            (nhmac--test-draw-watch x0 top (- x1 x0) (- bottom top))
+            (redraw-frame)
+            (redisplay t)
+            (setq f (append f (list :blink blink-cursor-mode :focus (frame-focus-state)
+                                    :selected (eq (selected-window) (frame-selected-window))
+                                    :records (nhmac--test-draw-log))))
+            (nhmac--test-draw-watch 0 0 0 0)
+            (push f bad)))))
+    (setq-local cursor-type nil)
+    (redisplay t)
+    (nreverse bad)))
+
+(defun nhmac-gui--line-geometry ()
+  "Lines whose top is not the sum of the heights of the lines above it: ((LINE :expected Y :actual Y) ...)."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((y 0) (n 0) bad)
+      (while (not (eobp))
+        (let ((at (cdr (posn-x-y (posn-at-point (point))))))
+          (unless (= at y) (push (list n :expected y :actual at) bad))
+          (setq y (+ y (line-pixel-height)) n (1+ n)))
+        (forward-line 1))
+      (nreverse bad))))
 
 (ert-deftest nhmac-draw-all-records ()
-  "The draw scene on Naglfar against NS's in the same run: its geometry is NS's times the scale; at scale 1 (NS points
-are pixels) each capture, without a cursor and with each cursor kind over the image, is NS's size, and at most 0.1%
-of its pixels differ by more than 24/255 in a channel.  At scale 2 the pixel differences are reported: Naglfar's
-one-pixel lines (waves, reliefs, cursor bars) are device pixels there, NS's are points."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
-  (should (file-exists-p (nhmac-gui--font-file "draw.eld" t)))
+  "Every draw record of the scene, probed on the committed surface where Emacs's rules put it, at the lane's scale
+\(device pixels): each line's top is the sum of the heights above it; the underline lies on Emacs's rule's rows; the
+wave and dashes have their colours below the baseline and the dashes a gap; the overlines and the strike-through their
+colours; the box's line, the reliefs (raised: top lighter, bottom darker), the inner box; inverse video and a taller
+face's background; the stretches exactly; glyphless characters' ink; the image's cells; each cursor kind over the
+image.  Each failure names the record, the expected colour and rect, and what was found."
+  :tags '(draws)
   (nhmac-gui--with-draw-scene
-    (let ((ns (with-temp-buffer (insert-file-contents (nhmac-gui--font-file "draw.eld" t)) (read (current-buffer))))
-          (mine (nhmac-gui--draw-geometry)))
-      (message "nhmac-draw-all-records: scale %d geometry NS %S Naglfar %S" k ns mine)
-      (should (equal mine (mapcar (lambda (p) (cons (* k (car p)) (* k (cdr p)))) ns))))
-    (dolist (c (nhmac-gui--draw-captures))
-      (let* ((name (car c))
-             (d (nhmac-gui--crop-diff
-                 (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file (concat name ".bmp") t)))
-                 (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c)))))
-             (n (let ((cr (nhmac-gui--text-crop (nhmac-gui--bmp-read (cdr c))))) (* (nth 0 cr) (nth 1 cr)))))
-        (message "nhmac-draw-all-records: scale %d %s: same size %S, worst %d, %d of %d pixels off; stats %S"
-                 k name (nth 0 d) (nth 1 d) (nth 2 d) n (nhmac-stats))
-        (when (= k 1)
-          (should (nth 0 d))
-          (should (<= (* 1000 (nth 2 d)) n)))))))
+    (let ((geometry (nhmac-gui--line-geometry))
+          (records (nhmac-gui--draw-probes k))
+          (cursors (nhmac-gui--cursor-probes k)))
+      (nhmac-gui--say "nhmac-draw-all-records: scale %d: geometry %S; records %S; cursors %S" k geometry records cursors)
+      ;; round 4: the overline, the strike-through and the raised relief's bottom were in neither the backing nor the
+      ;; surface.  The records C paints over each run when the frame is drawn again, in order: none, one that
+      ;; misses, or one painted over later are different causes
+      (when (and records (fboundp 'nhmac--test-draw-watch))
+        (dolist (name '("over" "strike" "raised"))
+          (pcase-let ((`(,x0 ,top ,x1 ,_ ,bottom) (nhmac-gui--run-box name)))
+            (nhmac--test-draw-watch x0 top (- x1 x0) (- bottom top))
+            (redraw-frame)
+            (redisplay t)
+            (nhmac-gui--say "nhmac-draw-all-records: %s at %S: records %S" name (list x0 top x1 bottom)
+                            (nhmac--test-draw-log))))
+        (nhmac--test-draw-watch 0 0 0 0))
+      (should-not geometry)
+      (should-not records)
+      (should-not cursors))))
+
+(defconst nhmac-gui--fringe-bits
+  '((right-triangle . 34) (left-arrow . 24) (up-arrow . 28) (filled-rectangle . 91))
+  "How many bits the standard fringe bitmaps of the fringe scene set (fringe.c's `*_bits').")
 
 (ert-deftest nhmac-draw-fringe-bitmaps ()
-  "Fringe bitmaps against NS's in the same run: at a scale NS draws each bit as a point, so Naglfar's fringes, as
-wide as NS's, draw it as scale by scale pixels.  The bitmaps' crop is NS's size and has as many dark pixels."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
-  (should (file-exists-p (nhmac-gui--font-file "fringe.bmp" t)))
+  "Fringe bitmaps scale with the UI scale: each bit is K by K device pixels at scale K, so each fringe's dark pixels
+on the scene's first two rows are the bitmap's set bits (`nhmac-gui--fringe-bits') times K squared."
+  :tags '(draws)
   (nhmac-gui--with-fringe-scene
-    (let* ((dark (lambda (c) (cl-count-if (lambda (p) (< (logand (ash p -8) 255) 128)) (nth 2 c))))
-           (ns (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--font-file "fringe.bmp" t))))
-           (mine (nhmac-gui--text-crop (nhmac-gui--bmp-read (nhmac-gui--capture (nhmac-gui--font-file "fringe.bmp")))))
-           (d (nhmac-gui--crop-diff ns mine)))
-      (message "nhmac-draw-fringe-bitmaps: scale %d: NS %dx%d %d dark, Naglfar %dx%d %d dark; diff %S"
-               k (nth 0 ns) (nth 1 ns) (funcall dark ns) (nth 0 mine) (nth 1 mine) (funcall dark mine) d)
-      (should (> (nth 0 ns) 0))
-      (should (equal (list (nth 0 mine) (nth 1 mine)) (list (nth 0 ns) (nth 1 ns))))
-      (should (= (funcall dark mine) (funcall dark ns))))))
+    (let* ((edges (window-inside-pixel-edges))
+           (fr (window-fringes))
+           (bad nil))
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line 1)
+        (dolist (row '((right-triangle . left-arrow) (up-arrow . filled-rectangle)))
+          (let* ((top (+ (nth 1 edges) (cdr (posn-x-y (posn-at-point (point))))))
+                 (h (line-pixel-height)))
+            (dolist (side (list (list 'left (car row) (- (nth 0 edges) (nth 0 fr)) (nth 0 fr))
+                                (list 'right (cdr row) (nth 2 edges) (nth 1 fr))))
+              (pcase-let* ((`(,where ,bitmap ,x ,w) side)
+                           (px (nhmac-gui--surface-rect x top w h))
+                           (dark (cl-count-if (lambda (p) (< (logand (ash p -8) 255) 128)) px))
+                           (want (* (cdr (assq bitmap nhmac-gui--fringe-bits)) k k)))
+                (nhmac-gui--say "nhmac-draw-fringe-bitmaps: scale %d %s %s: %d dark, want %d (fringe %dx%d at %d,%d)"
+                                k where bitmap dark want w h x top)
+                (unless (= dark want)
+                  (push (list bitmap where :expected want :actual dark :rect (list x top (+ x w) (+ top h))) bad)))))
+          (forward-line 1)))
+      (should-not bad))))
 
 ;;; nhmac-gui-tests.el ends here
 
@@ -2581,7 +3346,6 @@ wide as NS's, draw it as scale by scale pixels.  The bitmaps' crop is NS's size 
   "A signal that lands on the wait's helper thread while it watches a fd does not stop the watch: a pipe the helper
 serves, interrupted 40 times while its 100 lines come, gets every line with no gap near a second.  (A signal lands on
 any thread that does not block it: Emacs's SIGCHLD can reach the helper.)"
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((gaps (make-hash-table :test #'equal))
         (start (float-time))
         p)
@@ -2589,10 +3353,7 @@ any thread that does not block it: Emacs's SIGCHLD can reach the helper.)"
     (setq p (nhmac-gui--feed "kq-helper-signals" 'pipe gaps))
     (accept-process-output nil 0.05)
     (nhmac--test-signal-helper 40)
-    (unwind-protect
-        (while (and (process-live-p p) (< (- (float-time) start) 30))
-          (accept-process-output nil 5))
-      (delete-process p))
+    (nhmac-gui--drain (list p) (- 30 (- (float-time) start)))
     (let ((v (gethash "kq-helper-signals" gaps)))
       (nhmac-gui--say "nhmac-kq-helper-signals: %d lines, longest gap %.3f s, stats %S" (car v) (cdr v)
                       (nhmac-stats))
@@ -2628,7 +3389,6 @@ fonts, and the move-frame event) have run when this returns; `accept-process-out
   "The root frame moved to a monitor of another scale and back: its font is re-opened at each scale's device size
 \(a point is 1/72 inch, so the pixel size is the height in points times the scale), and comes back to the size it had."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (s0 (frame-scale-factor f))
          (other (nhmac-gui--other-monitor (lambda (m) (/= (alist-get 'scale-factor m 1.0) s0))))
          (home (frame-monitor-attributes f)) (pos (frame-position f))
@@ -2650,10 +3410,37 @@ fonts, and the move-frame event) have run when this returns; `accept-process-out
     (should (= px1 (floor (+ (* pt s1) 0.5))))
     (should (= px2 px0))))
 
+(ert-deftest nhmac-scale-move-keeps-the-points ()
+  "The root frame moved to a monitor of another scale keeps its size in points, as an AppKit window (and NS's
+frame) does: its device-pixel size follows the scale, and the window shows its surface whole."
+  :tags '(draws)
+  (let* ((f (selected-frame)) (s0 (frame-scale-factor f))
+         (other (nhmac-gui--other-monitor (lambda (m) (/= (alist-get 'scale-factor m 1.0) s0))))
+         (home (frame-monitor-attributes f)) (pos (frame-position f))
+         (pt0 (cons (/ (frame-pixel-width f) s0) (/ (frame-pixel-height f) s0)))
+         s1 pt1 surface)
+    (skip-unless other)
+    (unwind-protect
+        (progn
+          (nhmac-gui--move-to f other)
+          (nhmac-gui--settle)
+          (setq s1 (frame-scale-factor f)
+                pt1 (cons (/ (frame-pixel-width f) s1) (/ (frame-pixel-height f) s1))
+                surface (nhmac--test-surface 0 0)))
+      (nhmac-gui--move-to f home)
+      (set-frame-position f (car pos) (cdr pos))
+      (nhmac-gui--settle))
+    (nhmac-gui--say "nhmac-scale-move-keeps-the-points: scale %s %S points, scale %s %S points, %S" s0 pt0 s1 pt1
+                    surface)
+    (should (/= s1 s0))
+    (should (<= (abs (- (car pt1) (car pt0))) 1))
+    (should (<= (abs (- (cdr pt1) (cdr pt0))) 1))
+    (should (equal (plist-get surface :points)
+                   (list (round (/ (plist-get surface :w) s1)) (round (/ (plist-get surface :h) s1)))))))
+
 (ert-deftest nhmac-no-session-calls ()
   "A Naglfar frame names no compositor session: making a frame calls none of the Wayland shell's session functions
 \(they are not loaded here, so each call would only log a void-function error)."
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((f (make-frame '((width . 20) (height . 5)))))
     (unwind-protect
         (progn
@@ -2670,7 +3457,6 @@ it started at.  Either way the font's pixel size is its height in points times t
 the size on the screen (points) it was made with: the text follows.  (Each re-open runs
 `nidhogg-frame-scale-change-functions'.)"
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((root (selected-frame)) (f nil) (made nil) (reopens 0) (monitors 0) (moves 0)
          (on-scale (lambda (frame) (when (eq frame f) (cl-incf reopens))))
          (on-monitors (lambda (_) (cl-incf monitors)))
@@ -2711,7 +3497,6 @@ the size on the screen (points) it was made with: the text follows.  (Each re-op
 (ert-deftest nhmac-glyphs-measured-once ()
   "Redrawing text already shown makes no font driver call: its glyphs and their metrics are in the glyph tables."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (switch-to-buffer (generate-new-buffer " *nhmac-glyphs*"))
   (unwind-protect
       (progn
@@ -2731,7 +3516,6 @@ the size on the screen (points) it was made with: the text follows.  (Each re-op
   "A new frame AppKit puts on a screen of another scale shows the columns and lines it was made with: the window keeps
 its points, and everything in it (font, fringes, borders) scales with it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((f nil))
     (unwind-protect
         (progn
@@ -2756,7 +3540,6 @@ first draw on, with no size change after it: nothing is measured at a size or sc
 position it opens beside the selected frame, at its scale (the lane's root sits on its scale's screen); with `left'
 and `top' it opens there, at the scale of the screen there (the main screen, the lane's other scale)."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let ((root (selected-frame)))
     (pcase-dolist (`(,case ,params ,want)
                    `((beside nil ,(frame-scale-factor root))
@@ -2782,7 +3565,6 @@ and `top' it opens there, at the scale of the screen there (the main screen, the
 (ert-deftest nhmac-monitor-change-runs-move-frame-functions ()
   "A root frame moved to another monitor runs `move-frame-functions' with it."
   :tags '(draws)
-  (skip-unless (not (nhmac-gui--ns-build-p)))
   (let* ((f (selected-frame)) (other (nhmac-gui--other-monitor #'always))
          (home (frame-monitor-attributes f)) (pos (frame-position f)) (ran nil)
          (hook (lambda (frame) (when (eq frame f) (push (frame-monitor-attributes frame) ran)))))

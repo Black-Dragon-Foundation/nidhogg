@@ -205,13 +205,25 @@ fn keypad(c: char) -> Option<u32> {
 /// A key press: `ignoring` is `charactersIgnoringModifiers`, `chars` is `characters`, `flags` the modifier flags.
 /// `None` for a key with no character (a dead key's first press).
 pub fn key(ignoring: &str, chars: &str, flags: usize, repeat: bool) -> Option<KeyEv> {
-    let c = ignoring.chars().next().or_else(|| chars.chars().next())?;
+    let map = MODMAP.with(Cell::get);
+    // an Option key that is no modifier (the right one by its own choice) gives its composed character, as NS's
+    // `characters`: the key is that character, and so is its text
+    let option = if flags & NS_RIGHT_OPTION != 0 {
+        map.right_alternate.unwrap_or(map.alternate)
+    } else {
+        map.alternate
+    };
+    let composes = flags & NS_OPTION != 0 && option == Choice::None;
+    let c = if composes && flags & (NS_CONTROL | NS_COMMAND) == 0 {
+        chars.chars().next().or_else(|| ignoring.chars().next())?
+    } else {
+        ignoring.chars().next().or_else(|| chars.chars().next())?
+    };
     let ks = if flags & NS_NUMERIC_PAD != 0 {
         keypad(c).unwrap_or_else(|| keysym(c))
     } else {
         keysym(c)
     };
-    let map = MODMAP.with(Cell::get);
     let mut k = KeyEv {
         keycode: 0,
         keysym: ks,
@@ -222,9 +234,8 @@ pub fn key(ignoring: &str, chars: &str, flags: usize, repeat: bool) -> Option<Ke
     };
     // text only from a plain (or shifted) printable key: chords and named keys go by their keysym
     let printable = !(0xfe00..0x0100_0000).contains(&ks);
-    // an Option key that is no modifier gives its composed character (option-e dead keys aside)
     let mut chord = NS_CONTROL | NS_COMMAND;
-    if map.alternate != Choice::None {
+    if flags & NS_OPTION != 0 && !composes {
         chord |= NS_OPTION;
     }
     if printable && flags & chord == 0 {
@@ -269,11 +280,6 @@ pub fn wheel(dx: f64, dy: f64, precise: bool) -> ScrollEv {
             ..ScrollEv::default()
         }
     }
-}
-
-/// A point in the window's content view, flipped (AppKit's origin is bottom-left) and in device pixels.
-pub fn device_point(x: f64, y: f64, view_height: f64, scale: f64) -> (f64, f64) {
-    (x * scale, (view_height - y) * scale)
 }
 
 #[cfg(test)]
@@ -370,7 +376,6 @@ mod tests {
         assert_eq!(w.v120y, 240);
         let w = wheel(0.0, 3.5, true);
         assert_eq!((w.dy, w.v120y, w.source), (-3.5, 0, NHSHELL_SCROLL_FINGER));
-        assert_eq!(device_point(10.0, 30.0, 100.0, 2.0), (20.0, 140.0));
     }
 
     #[test]
@@ -418,6 +423,16 @@ mod tests {
             ..ModMap::default()
         });
         let k = key("e", "\u{e9}", NS_OPTION, false).unwrap();
+        assert_eq!(&k.utf8[..2], "\u{e9}".as_bytes());
+        // the key is the composed character too (the glue reads a printable keysym as the character)
+        assert_eq!(k.keysym, 0x0100_00e9);
+        // a right Option that is none while the left is meta composes as well
+        set_modmap(ModMap {
+            right_alternate: Some(Choice::None),
+            ..ModMap::default()
+        });
+        let k = key("e", "\u{e9}", NS_OPTION | NS_RIGHT_OPTION, false).unwrap();
+        assert_eq!(k.keysym, 0x0100_00e9);
         assert_eq!(&k.utf8[..2], "\u{e9}".as_bytes());
         set_modmap(ModMap::default());
         let k = key("e", "\u{e9}", NS_OPTION, false).unwrap();

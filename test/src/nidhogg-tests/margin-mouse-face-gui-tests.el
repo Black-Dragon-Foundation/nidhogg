@@ -8,6 +8,15 @@
 ;; the lit run, (BEG-ROW BEG-COL END-ROW END-COL) in glyphs of the area, or nil.
 
 (require 'ert)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
+
+(defun margin-mouse-face-gui--where (row)
+  "Log what places the selected window's rows for ROW: its header and tab lines, start, edges and scale (round 6:
+a run one row low at scale 1 on macOS)."
+  (glitnir-gui--say "%s: header %S tab %S start %S edges %S inside %S scale %S line 2 posn %S" row
+                    (window-header-line-height) (window-tab-line-height) (window-start) (window-pixel-edges)
+                    (window-inside-pixel-edges) (frame-scale-factor)
+                    (save-excursion (goto-char (point-min)) (forward-line 1) (posn-at-point (point)))))
 
 (defun margin-mouse-face-gui--xy (line col)
   "Frame pixel coordinates inside column COL of the left margin on LINE (from 1) of the selected window."
@@ -60,6 +69,7 @@
 
 (ert-deftest margin-mouse-face-gui/the-pointer-lights-a-margin-string ()
   (margin-mouse-face-gui--with
+    (margin-mouse-face-gui--where 'margin-mouse-face-gui/the-pointer-lights-a-margin-string)
     ;; line 2's dot, glyph 1 of the margin's row: lit
     (should (equal (margin-mouse-face-gui--at 2 1) '(1 1 1 2)))
     ;; the same run again: still lit, nothing redrawn

@@ -118,6 +118,7 @@ Each is MS or (MS LIVE-MB FELT).  A stall line goes in too (skipped)."
                 "\n")))))
 
 (ert-deftest watchdog/gcrow-collection-line ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; A forced collection with the mode on: one line, origin `explicit',
   ;; the C ring's exact pause, the heap from `garbage-collect-heapsize'.
   (watchdog-gcrow--with-log
@@ -152,6 +153,7 @@ Each is MS or (MS LIVE-MB FELT).  A stall line goes in too (skipped)."
         (should (= 0 nidhogg-watchdog-gc--c-only nidhogg-watchdog-gc--lisp-only))))))
 
 (ert-deftest watchdog/gcrow-origin ()
+  (skip-unless (fboundp 'nidhogg-watchdog--start))
   ;; The origin is the caller's binding of `nidhogg-watchdog-gc-origin';
   ;; an automatic collection with no binding is `auto'.
   (watchdog-gcrow--with-log

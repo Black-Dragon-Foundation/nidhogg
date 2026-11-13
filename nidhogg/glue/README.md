@@ -291,7 +291,7 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
 ## The calls
 
 Every `nhg_*` entry point of `include/nhglue.h`. **Pixels** says whether the call reads (R) or writes (W) a frame's
-backing pixels; the rest touch none (-). **macOS** is what a macOS backend would do for the same call; "same" means
+backing pixels; the rest touch none (-). **macOS** is what the macOS backend (Naglfar, `shell/src/macos`) does for the same call; "same" means
 the glue's own logic carries over and only the shell's request changes. A call the platform has no counterpart for is
 accepted and does nothing, as for a missing Wayland protocol.
 
@@ -308,7 +308,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_panic_message` / `nhg_test_panic` / `nhg_last_error` / `nhg_give_up` / `nhg_debug_check_frame` | - | panic, error and checking-build helpers | same |
 | `nhg_app_call` / `nhg_app_query` | - | a platform request by kind, its arguments and answer as Lisp text (`nhmac--call`, `nhmac--query`) | the AppKit requests (`app.rs`); a query may run a modal session; on Wayland every kind is `NHG_E_UNSUPPORTED` |
 | `nhg_layer_ensure` | - | make the frame's Glitnir layer match a geometry | same (Glitnir is the compositor-independent scene) |
-| `nhg_backing` | R W | size the frame's backing and describe it | same; CoreAnimation layers could use an IOSurface instead |
+| `nhg_backing` | R W | size the frame's backing and describe it | same; a commit copies the damage into a ring of IOSurfaces that the window's Core Animation layer shows |
 | `nhg_damage` / `nhg_damage_all` | - | damage rectangles of the frame | same |
 | `nhg_snapshot` / `nhg_tree_snapshot` | R | borrow the backing; the tree's picture as the compositor was given it | same |
 | `nhg_backing_forget` | - | drop a frame's scene and backing | same |
@@ -340,7 +340,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_blocks_sync` / `nhg_blocks_count` | - | a frame's window blocks (rings and rules around rows) as block layers; count them | same |
 | `nhg_bell_flash` / `nhg_bell_restore` | W | the visible bell's rows inverted and put back | same |
 | `nhg_frame_param` | - | what changing a frame parameter does (validation, clamps, defaults, what to redo): `params.rs` | same |
-| `nhg_font_id` / `nhg_font_name` / `nhg_font_list` / `nhg_font_match` | - | font-spec records and `macfont_list`/`macfont_match` matching over a font source (`fontspec.rs`; none on Linux) | Core Text source |
+| `nhg_font_id` / `nhg_font_name` / `nhg_font_list` / `nhg_font_match` / `nhg_font_has_char` | - | font-spec records and `macfont_list`/`macfont_match`/`macfont_has_char` over a font source (`fontspec.rs`; none on Linux) | Core Text source |
 | (action) `NHG_ACT_MENU` | - | none | a choice from the native menu bar: `code` the item's place, `flags` the tree's generation; C turns it into the menu-bar events of the item's key path |
 | `nhg_startup` / `nhg_relocate` | - | none (unsupported; no path moves) | first in `main`, no display: `LANG` from `NSLocale` when unset (no outer pool: each call drains its own); `ns_relocate` into the app bundle |
 | `nhg_inhibit_idle` | - | hold or release an idle inhibitor | `IOPMAssertion` |
@@ -354,7 +354,8 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_layout_leg` | - | a window's layout leg vector to the shell, the newest capture's number back | same |
 | `nhg_wait` / `nhg_wake` / `nhg_set_lock_waiters` | - | not used (Emacs's own select) | the main wait on the run loop, its wake from any thread, and the lock waiters' count it watches |
 | `nhg_draw` / `nhg_draw_glyphs` / `nhg_draw_image` | W | not used (Cairo draws) | `image.c`'s and the glyph strings' drawing records painted with Core Graphics (`draw.rs`); an image through its matrix, wrapped once as a `CGImage` |
-| `nhg_font_start` / `nhg_font_open` / `nhg_font_close` / `nhg_font_table` / `nhg_font_fill` / `nhg_font_shape` | - | `NHG_E_UNSUPPORTED` (fontconfig and Cairo) | the Core Text font driver: faces listed with their scripts' coverage, opened at a size with synthesised traits, glyphs and their metrics in a glyph table C reads without a call (a miss fills a page), rounded as `macfont` rounds them, and runs shaped by Core Text as `macfont_shape` shapes them |
+| `nhg_font_start` / `nhg_font_open` / `nhg_font_close` / `nhg_font_file` / `nhg_font_table` / `nhg_font_fill` / `nhg_font_shape` | - | `NHG_E_UNSUPPORTED` (fontconfig and Cairo) | the Core Text font driver: faces listed with their scripts' coverage, opened at a size with synthesised traits, glyphs and their metrics in a glyph table C reads without a call (a miss fills a page), rounded as `macfont` rounds them, and runs shaped by Core Text as `macfont_shape` shapes them |
+| `nhg_font_changes` | - | 0 (no Core Text) | how many times the installed fonts changed (Core Text's registered-fonts notifications): the driver drops Emacs's own font lists when it changes, so a font installed or removed while Emacs runs is listed or gone at the next `list-fonts` |
 | `nhg_image_type` / `nhg_xpm_names` / `nhg_image_decode` / `nhg_image_take` / `nhg_image_free` / `nhg_image_forget` | - | `NHG_E_UNSUPPORTED` (image.c's own libraries); an XPM decodes on any platform, its colour names resolved by `image.c` first | `image.c`'s native route: ImageIO, an XPM through `xpm.rs`, into the plain containers; a freed container's picture forgotten |
 | `nhg_image_stand_in` / `nhg_image_stand_drop` / `nhg_draw_stand_in` | W | not used (a Cairo pattern shares the ready surface) | the image worker's stand-ins (`stand.rs`): a pending image drawn with a ready one's pixels, copied, through the matrix the Cairo branch composes |
 | `nhg_image_transform` | - | the matrix `image_set_transform` makes for Cairo (platform-free) | the image's matrix, stored for drawing |
@@ -362,7 +363,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_svg_size` / `nhg_svg_render` | - | `NHG_E_UNSUPPORTED` (librsvg) | SVG through the shell's resvg route (`svg.rs`), with `svg_load_image`'s CSS, colours and size |
 | `nhg_wait` / `nhg_wake` / `nhg_set_lock_waiters` | - | not used (Emacs's `pselect`) | the main wait: the run loop and the fds through kqueue, holding the global lock; a wake from any thread; parked only while no Lisp thread wants the lock |
 | `nhg_draw` / `nhg_draw_glyphs` / `nhg_draw_image` | W | not used (Cairo draws) | draw records (`draw.rs`) painted with Core Graphics: fills, reliefs, lines, glyph runs, images through their matrix |
-| `nhg_font_start` / `nhg_font_open` / `nhg_font_close` / `nhg_font_table` / `nhg_font_fill` / `nhg_font_shape` | - | `NHG_E_UNSUPPORTED` (fontconfig and Cairo) | the Core Text font driver's source, faces, shaping, and glyph tables of glyphs and their metrics (`glyphs.rs`), rounded as `macfont.m` rounds them (`font.rs`) |
+| `nhg_font_start` / `nhg_font_open` / `nhg_font_close` / `nhg_font_file` / `nhg_font_table` / `nhg_font_fill` / `nhg_font_shape` | - | `NHG_E_UNSUPPORTED` (fontconfig and Cairo) | the Core Text font driver's source, faces, shaping, and glyph tables of glyphs and their metrics (`glyphs.rs`), rounded as `macfont.m` rounds them (`font.rs`) |
 | `nhg_image_type` / `nhg_xpm_names` / `nhg_image_decode` / `nhg_image_take` / `nhg_image_free` / `nhg_image_forget` | - | not used (`image.c`'s own decoders) | `image.c`'s native route: ImageIO for PNG, JPEG, GIF, TIFF, WebP and HEIC, the glue's reader for XPM (`image.rs`, `xpm.rs`); the drawn `CGImage` forgotten with its pixels |
 | `nhg_image_stand_in` / `nhg_image_stand_drop` / `nhg_draw_stand_in` | W | not used (Cairo patterns) | the image worker's stand-in for a pending image: a copy of the ready image's pixels, scaled into the pending box through the ready image's matrix (`stand.rs`) |
 | `nhg_image_transform` | - | not used (Cairo's pattern matrix) | `image_set_transform`'s matrix as the Cairo branch makes it, kept in the image and drawn through |

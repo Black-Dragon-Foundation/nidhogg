@@ -357,9 +357,15 @@ pub fn visible(state: &mut Display, window: u64, on: bool) -> Result<(), GlueErr
             f.cfg.configured
         )
     });
+    let was_iconified = f.facts.flags & NHG_FACT_ICONIFIED != 0;
     f.facts.flags &= !(NHG_FACT_VISIBLE | NHG_FACT_ICONIFIED);
     if on {
         f.facts.flags |= NHG_FACT_VISIBLE;
+    }
+    if on && was_iconified {
+        // an iconified frame shown again: on macOS the shell's map is the Dock's deminiaturize (the window stayed
+        // mapped); Wayland has no un-minimize, and mapping a mapped top-level changes nothing
+        state.backend().set_mapped(window, true)?;
     }
     Ok(())
 }

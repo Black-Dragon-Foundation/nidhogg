@@ -36,6 +36,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "frame.h"
 #include "keyboard.h"
 #include "character.h"
+#include "coding.h"
 #include "composite.h"
 #include "font.h"
 
@@ -95,12 +96,52 @@ nhmac_spec_record (Lisp_Object spec, NhgFontSpec *r)
     ? XFIXNUM (AREF (spec, FONT_SPACING_INDEX)) : -1;
   r->size = FIXNUMP (AREF (spec, FONT_SIZE_INDEX))
     ? XFIXNUM (AREF (spec, FONT_SIZE_INDEX)) : 0;
+  /* :otf names a script by its OTF tag, which macfont takes as the
+     spec's script (macfont_get_open_type_spec); :script comes first.  */
   v = assq_no_quit (QCscript, extra);
   if (CONSP (v))
     r->script = nhmac_name_id (XCDR (v));
+  else
+    {
+      v = assq_no_quit (QCotf, extra);
+      if (CONSP (v) && CONSP (XCDR (v)) && SYMBOLP (XCAR (XCDR (v)))
+	  && !NILP (XCAR (XCDR (v))))
+	{
+	  Lisp_Object s = assq_no_quit (XCAR (XCDR (v)), Votf_script_alist);
+
+	  if (CONSP (s) && SYMBOLP (XCDR (s)))
+	    r->script = nhmac_name_id (XCDR (s));
+	}
+    }
   v = assq_no_quit (QClang, extra);
   if (CONSP (v))
     r->language = nhmac_name_id (XCDR (v));
+  v = assq_no_quit (QCnhmac_cascade, extra);
+  if (CONSP (v) && FIXNATP (XCDR (v)))
+    r->cascade = XFIXNAT (XCDR (v));
+}
+
+/* SPEC as fontset.c's fallback for FACE lists it: when SPEC names no
+   family and FACE's ASCII font is this driver's, a copy whose
+   `:nhmac-cascade' is that font's handle, so the listing's preferred
+   family is the one Core Text's cascade from that font picks (a native
+   app's fallback), and the font cache keeps each font's answer apart.
+   Otherwise SPEC itself.  */
+Lisp_Object
+nhmac_cascade_spec (Lisp_Object spec, struct face *face)
+{
+  struct font *font = face && face->ascii_face ? face->ascii_face->font : NULL;
+  Lisp_Object copy;
+
+  if (!font || font->driver != &nhmacfont_driver
+      || !NILP (AREF (spec, FONT_FAMILY_INDEX)))
+    return spec;
+  copy = copy_font_spec (spec);
+  ASET (copy, FONT_EXTRA_INDEX,
+	Fcons (Fcons (QCnhmac_cascade,
+		      make_uint (((struct nhmac_font_info *) font)->handle)),
+	       AREF (copy, FONT_EXTRA_INDEX)));
+  return copy;
 }
 
 /* The glue's entity E as a font entity of this driver.  The face's id
@@ -175,7 +216,7 @@ nhmac_query (Lisp_Object spec, bool all)
 {
   static bool started;
   NhgFontSpec r;
-  NhgFontEntity out[256];
+  NhgFontEntity stack[256], *out = stack;
   size_t n = 0;
   int32_t rc;
   Lisp_Object list = Qnil;
@@ -187,19 +228,47 @@ nhmac_query (Lisp_Object spec, bool all)
     }
   nhmac_spec_record (spec, &r);
   block_input ();
-  rc = all ? NHG (nhg_font_list (&r, out, ARRAYELTS (out), &n))
+  rc = all ? NHG (nhg_font_list (&r, out, ARRAYELTS (stack), &n))
     : NHG (nhg_font_match (&r, out, 1, &n));
+  /* More fonts than the stack holds (a spec with no family or script
+     fits every face): ask again with room for them all.  */
+  if (all && rc == NHG_OK && n > ARRAYELTS (stack))
+    {
+      size_t cap = n;
+
+      out = xnmalloc (cap, sizeof *out);
+      rc = NHG (nhg_font_list (&r, out, cap, &n));
+      n = min (n, cap);
+    }
   unblock_input ();
-  if (rc != NHG_OK)
-    return Qnil;
-  for (size_t i = n; i > 0; i--)
-    list = Fcons (nhmac_entity (&out[i - 1]), list);
+  if (rc == NHG_OK)
+    for (size_t i = min (n, all ? n : 1); i > 0; i--)
+      list = Fcons (nhmac_entity (&out[i - 1]), list);
+  if (out != stack)
+    xfree (out);
   return list;
 }
 
+/* The driver's cache.  When the installed fonts changed since the last
+   call (a font registered or removed while Emacs runs), its lists are
+   dropped first: Emacs keeps a driver's lists while a frame uses it, and
+   `clear-font-cache' clears only an unused driver's, so a list made
+   before the change would stand for good.  Only the lists go: an open
+   font stays with the faces that hold it.  */
 static Lisp_Object
 nhmacfont_get_cache (struct frame *f)
 {
+  static uint32_t seen;
+  uint32_t now = 0;
+
+  if (NHG (nhg_font_changes (&now)) == NHG_OK && now != seen)
+    {
+      seen = now;
+      /* Each entry is (TYPE NUM-FRAMES . LISTS).  */
+      for (Lisp_Object v = XCDR (nhmac_font_cache); CONSP (v); v = XCDR (v))
+	if (CONSP (XCAR (v)) && CONSP (XCDR (XCAR (v))))
+	  XSETCDR (XCDR (XCAR (v)), Qnil);
+    }
   return nhmac_font_cache;
 }
 
@@ -214,6 +283,27 @@ nhmacfont_match (struct frame *f, Lisp_Object spec)
 {
   Lisp_Object l = nhmac_query (spec, false);
   return CONSP (l) ? XCAR (l) : Qnil;
+}
+
+/* Whether FONT has C (macfont_has_char): an entity's face answers from
+   its character set without opening it; an object is left to
+   encode_char (-1).  */
+static int
+nhmacfont_has_char (Lisp_Object font, int c)
+{
+  Lisp_Object val;
+  int32_t has = -1;
+
+  if (!FONT_ENTITY_P (font))
+    return -1;
+  val = assq_no_quit (QCfont_entity, AREF (font, FONT_EXTRA_INDEX));
+  if (!CONSP (val) || !CONSP (XCDR (val)))
+    return -1;
+  block_input ();
+  if (NHG (nhg_font_has_char (XFIXNUM (XCAR (XCDR (val))), c, &has)) != NHG_OK)
+    has = -1;
+  unblock_input ();
+  return has;
 }
 
 static Lisp_Object
@@ -278,6 +368,16 @@ nhmacfont_open (struct frame *f, Lisp_Object entity, int pixel_size)
   font->default_ascent = 0;
   font->vertical_centering = 0;
   font->props[FONT_NAME_INDEX] = Ffont_xlfd_name (font_object, Qnil, Qt);
+  /* font-info's FILENAME, as ftfont gives it: the file Core Text reads
+     the face from (drgnx's hub reads its advances there instead of
+     asking the editor for each character; macfont gives none).  */
+  {
+    char path[4096];
+    size_t len;
+    if (NHG (nhg_font_file (m.handle, path, sizeof path, &len)) == NHG_OK)
+      font->props[FONT_FILE_INDEX]
+	= DECODE_FILE (make_unibyte_string (path, len));
+  }
   unblock_input ();
   return font_object;
 }
@@ -291,6 +391,8 @@ nhmacfont_close (struct font *font)
     return;
   NHG (nhg_font_close (info->handle));
   info->handle = 0;
+  /* The glue freed the table's pages with the font.  */
+  info->table = NULL;
 }
 
 /* Character C's glyph, from the font's table; a page not read yet is
@@ -302,7 +404,7 @@ nhmacfont_encode_char (struct font *font, int c)
   unsigned page = (unsigned) c / NHG_FONT_PAGE;
   uint32_t glyph;
 
-  if (c < 0 || page >= NHG_FONT_CHAR_PAGES)
+  if (c < 0 || page >= NHG_FONT_CHAR_PAGES || !info->table)
     return FONT_INVALID_CODE;
   if (!info->table->chars[page])
     NHG (nhg_font_fill (info->handle, page));
@@ -318,7 +420,7 @@ nhmac_glyph_metrics (struct nhmac_font_info *info, unsigned g)
 {
   unsigned page = g / NHG_FONT_PAGE;
 
-  if (page >= NHG_FONT_GLYPH_PAGES)
+  if (page >= NHG_FONT_GLYPH_PAGES || !info->table)
     return NULL;
   if (!info->table->glyphs[page])
     NHG (nhg_font_fill (info->handle, page | NHG_FONT_FILL_GLYPHS));
@@ -343,7 +445,17 @@ nhmacfont_text_extents (struct font *font, const unsigned int *code,
 	: (NhgGlyphMetrics) { 0, font->space_width, font->space_width,
 			      font->ascent, font->descent };
 
-      if (metrics)
+      if (metrics && i == 0)
+	{
+	  /* The first glyph's extents start the run's: a glyph whose
+	     ink begins right of its origin has a positive lbearing,
+	     which a start of 0 would hide (Menlo's period).  */
+	  metrics->lbearing = g.lbearing;
+	  metrics->rbearing = g.rbearing;
+	  metrics->ascent = g.ascent;
+	  metrics->descent = g.descent;
+	}
+      else if (metrics)
 	{
 	  if (total + g.lbearing < metrics->lbearing)
 	    metrics->lbearing = total + g.lbearing;
@@ -422,6 +534,23 @@ nhmacfont_shape (Lisp_Object lgstring, Lisp_Object direction)
   return used ? make_fixnum (used) : Qnil;
 }
 
+/* The glyphs of C's 256 variation sequences (macfont_variation_glyphs),
+   from the font's cmap format-14 table; how many the font has.  */
+static int
+nhmacfont_variation_glyphs (struct font *font, int c, unsigned variations[256])
+{
+  uint32_t v[256], n = 0;
+
+  block_input ();
+  if (NHG (nhg_font_variation_glyphs (((struct nhmac_font_info *) font)->handle,
+				      c, v, &n)) != NHG_OK)
+    n = 0;
+  unblock_input ();
+  for (int i = 0; i < 256; i++)
+    variations[i] = n ? v[i] : 0;
+  return n;
+}
+
 struct font_driver const nhmacfont_driver =
   {
     .type = LISPSYM_INITIALLY (Qnaglfar),
@@ -429,12 +558,14 @@ struct font_driver const nhmacfont_driver =
     .get_cache = nhmacfont_get_cache,
     .list = nhmacfont_list,
     .match = nhmacfont_match,
+    .has_char = nhmacfont_has_char,
     .open_font = nhmacfont_open,
     .close_font = nhmacfont_close,
     .encode_char = nhmacfont_encode_char,
     .text_extents = nhmacfont_text_extents,
     .draw = nhmacfont_draw,
     .shape = nhmacfont_shape,
+    .get_variation_glyphs = nhmacfont_variation_glyphs,
   };
 
 void
@@ -442,6 +573,7 @@ syms_of_nhmacfont (void)
 {
   DEFSYM (Qnaglfar, "naglfar");
   DEFSYM (QCminspace, ":minspace");
+  DEFSYM (QCnhmac_cascade, ":nhmac-cascade");
   nhmac_font_cache = list1 (Qnil);
   staticpro (&nhmac_font_cache);
 }

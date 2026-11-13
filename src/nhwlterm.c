@@ -841,13 +841,13 @@ nhwl_blocks_add (Lisp_Object window)
     }
 }
 
-/* Before F's tree (its root R) is published: F and each drawable child
+/* Before F's tree is published: F and each drawable child
    frame under it give the glue their windows' blocks, while the frame
    has some (its parameter glitnir--blocks) or block layers left.  Each
    frame is a Glitnir root of its own, so a child frame's blocks are in
    its own coordinates and follow its moves and scale.  */
 static void
-nhwl_blocks_sync (struct frame *f, struct frame *r)
+nhwl_blocks_sync (struct frame *f)
 {
   struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
   struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
@@ -863,15 +863,54 @@ nhwl_blocks_sync (struct frame *f, struct frame *r)
       nhwl_nblocks = 0;
       nhwl_blocks_add (FRAME_ROOT_WINDOW (f));
       nhwl_glue_rc (dpyinfo,
-		    NHG (nhg_blocks_sync (dpyinfo->glue,
-					  FRAME_NHWL_OUTPUT (r)->window,
+		    NHG (nhg_blocks_sync (dpyinfo->glue, out->window,
 					  out->glitnir_id, nhwl_blocks,
 					  nhwl_nblocks)));
     }
   FOR_EACH_FRAME (tail, frame)
     if (nhwl_child_of (XFRAME (frame), f))
-      nhwl_blocks_sync (XFRAME (frame), r);
+      nhwl_blocks_sync (XFRAME (frame));
 }
+
+#ifdef HAVE_NHMAC
+/* How long a published frame may wait for its commit while Lisp runs on
+   after a redisplay without waiting (the shell commits at its next pump
+   or wait; NS's Core Animation at its run loop's turn).  */
+#define NHWL_PRESENT_DEADLINE_NS (8 * 1000 * 1000)
+
+static void nhwl_present_deadline (struct atimer *);
+
+static void
+nhwl_present_deadline_arm (struct nhwl_display_info *dpyinfo)
+{
+  if (!dpyinfo->present_deadline)
+    dpyinfo->present_deadline
+      = start_atimer (ATIMER_RELATIVE,
+		      make_timespec (0, NHWL_PRESENT_DEADLINE_NS),
+		      nhwl_present_deadline, dpyinfo);
+}
+
+/* The deadline came: the shell commits what it holds.  Inside a
+   redisplay the commit waits for the redisplay's own publish.  */
+static void
+nhwl_present_deadline (struct atimer *timer)
+{
+  struct nhwl_display_info *dpyinfo = timer->client_data;
+
+  dpyinfo->present_deadline = NULL;
+  if (!dpyinfo->glue)
+    return;
+  if (redisplaying_p)
+    {
+      nhwl_present_deadline_arm (dpyinfo);
+      return;
+    }
+  block_input ();
+  nhwl_glue_rc (dpyinfo, NHG (nhg_flush_presents (dpyinfo->glue)));
+  unblock_input ();
+}
+
+#endif
 
 /* A consistency point for F's tree (F, its root, a top-level, tip or popup
    frame, and the child frames under it, sync subsurfaces): Emacs is not
@@ -902,13 +941,17 @@ nhwl_publish (struct frame *f)
   nhwl_nsurfaces = 0;
   nhwl_surface_add (r, 0, true);
   nhwl_layers_sync (r);
-  nhwl_blocks_sync (r, r);
+  nhwl_blocks_sync (r);
   int32_t rc = nhwl_glue_rc (dpyinfo,
 			     NHG (nhg_present (dpyinfo->glue, out->window,
 					       nhwl_surfaces, nhwl_nsurfaces,
 					       flags, out->t_key_ns)));
   if (rc > 0 && (rc & NHG_PRESENTED_KEY_DONE))
     out->t_key_ns = 0;
+#ifdef HAVE_NHMAC
+  if (rc > 0)
+    nhwl_present_deadline_arm (dpyinfo);
+#endif
   unblock_input ();
 }
 
@@ -2710,28 +2753,36 @@ static void
 nhwl_scale_changed (struct frame *f, uint32_t scale120)
 {
   double was = nhwl_frame_res (f);
-#ifdef NHWL_WAYLAND
-  /* The window keeps its size on the screen (its logical size) and the
-     text follows: a Wayland client sizes its own window, so the frame
-     takes that logical size in device pixels at the new scale.  (On macOS
-     AppKit keeps the window's points and reports its new size.)  */
+  /* The window keeps its size on the screen (its logical size, AppKit's
+     points) and the text follows: the frame takes that logical size in
+     device pixels at the new scale.  On macOS too: AppKit keeps the
+     window's points but reports no new size, and a frame that kept its
+     device pixels would be shown at the old scale's size in points.  */
   uint32_t old = FRAME_NHWL_OUTPUT (f)->scale120;
   int lw = nhwl_to_logical (FRAME_PIXEL_WIDTH (f), old);
   int lh = nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), old);
-#endif
 
   FRAME_NHWL_OUTPUT (f)->scale120 = FRAME_DISPLAY_INFO (f)->scale120 = scale120;
   FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = NHWL_DPI * scale120 / 120.0;
   nhwl_res_changed (f, was);
+  /* Faces hold device widths made at the scale (their boxes, xfaces.c):
+     realized again.  */
+  face_change = true;
   nhwl_csd_layout (f);
-#ifdef NHWL_WAYLAND
-  /* A maximized, fullscreen or tiled window has the compositor's size,
-     which nhwl_set_window_size leaves alone: it takes the last
-     configure's logical size at the new scale instead.  The compositor
-     sends that configure before the scale when an output changes scale
-     (mutter does), and it was fitted at the old one.  */
+  /* Default fringes are 8 logical pixels (frame.c's
+     default_fringe_width): their device width follows the scale.  */
+  if (!FIXNUMP (get_frame_param (f, Qleft_fringe)))
+    gui_set_left_fringe (f, Qnil, Qnil);
+  if (!FIXNUMP (get_frame_param (f, Qright_fringe)))
+    gui_set_right_fringe (f, Qnil, Qnil);
   if (old && old != scale120)
     {
+#ifdef NHWL_WAYLAND
+      /* A maximized, fullscreen or tiled window has the compositor's size,
+	 which nhwl_set_window_size leaves alone: it takes the last
+	 configure's logical size at the new scale instead.  The compositor
+	 sends that configure before the scale when an output changes scale
+	 (mutter does), and it was fitted at the old one.  */
       struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
       int dw, dh;
 
@@ -2750,10 +2801,10 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
 	    change_frame_size (f, dw, dh, false, true, false);
 	}
       else
+#endif
 	nhwl_set_window_size (f, false, (int) (((int64_t) lw * scale120 + 60) / 120),
 			      (int) (((int64_t) lh * scale120 + 60) / 120));
     }
-#endif
   SET_FRAME_GARBAGED (f);
 }
 
@@ -4609,6 +4660,11 @@ nhwl_delete_terminal (struct terminal *terminal)
 
   /* Its client data is DPYINFO, freed below.  */
   nhwl_reconnect_disarm (dpyinfo);
+#ifdef HAVE_NHMAC
+  if (dpyinfo->present_deadline)
+    cancel_atimer (dpyinfo->present_deadline);
+  dpyinfo->present_deadline = NULL;
+#endif
 
   if (dpyinfo->glue)
     {

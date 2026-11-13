@@ -27,7 +27,7 @@ use crate::caps::NhShellCaps;
 use crate::event::{
     ConfigureEv, FocusEv, MenuEv, NHSHELL_STATE_ACTIVATED, OutputEv, Record, ScaleEv, ShellEvent,
 };
-use crate::scope::{Scope, ScopeStats};
+use crate::scope::{Scope, ScopeStats, Taken};
 use crate::vars::Settings;
 use crate::wait::{self, Change, Reg, WaitOps, Woke};
 use glitnir::geom::Rect;
@@ -54,6 +54,9 @@ mod chrome;
 
 #[path = "cards.rs"]
 mod cards;
+/// A root's windows' layout legs, run by Core Animation.
+#[path = "legs.rs"]
+mod legs;
 /// A child's show and hide transitions, run by Core Animation.
 #[path = "motion.rs"]
 mod motion;
@@ -82,6 +85,11 @@ pub struct MacShell {
     deferred: Vec<WindowId>,
     /// The commit pacer's timer: armed while a window holds a commit.
     pacer: pacer::Timer,
+    /// The AppKit calls an applied event asked for (a window frame, a full-screen toggle, a zoom): run once the
+    /// scope has the borrow back (`Taken::defer`), so the delegate callbacks they cause are applied in turn.
+    effects: Vec<Box<dyn FnOnce()>>,
+    /// Window titles a Lisp thread's redisplay set: AppKit takes them at the main thread's next pump.
+    titles: Vec<(WindowId, String)>,
     /// Child windows, each parent's children bottom to top, the parents whose children changed places, and children
     /// gone whose containers leave at their root's next commit.
     kids: HashMap<WindowId, child::Kid>,
@@ -92,6 +100,8 @@ pub struct MacShell {
     owed: BTreeSet<WindowId>,
     /// Each root's window cards (`set_cards`), shown by the root tree's commit.
     cards: BTreeMap<WindowId, cards::Cards>,
+    /// Each root's windows' layout captures and legs, started by the root tree's commit.
+    legs: BTreeMap<WindowId, legs::Legs>,
     /// The window under the pointer in each root's tree, and the press that holds it (root, window).
     hover: HashMap<WindowId, WindowId>,
     grab: Option<(WindowId, WindowId)>,
@@ -196,12 +206,15 @@ impl MacShell {
             srgb: true,
             deferred: Vec::new(),
             pacer: pacer::Timer::default(),
+            effects: Vec::new(),
+            titles: Vec::new(),
             kids: HashMap::new(),
             order: HashMap::new(),
             order_dirty: BTreeSet::new(),
             retired: Vec::new(),
             owed: BTreeSet::new(),
             cards: BTreeMap::new(),
+            legs: BTreeMap::new(),
             hover: HashMap::new(),
             grab: None,
             #[cfg(feature = "test-hooks")]
@@ -244,11 +257,31 @@ impl MacShell {
     /// are applied after.  `f` reaches the backend only through the scope.
     fn lent<R>(&mut self, f: impl FnOnce(&Scope<MacShell, MacEv>) -> R) -> R {
         let _pumping = layers::Pumping::enter();
-        SCOPE.with(|s| s.lend(self, || f(s), |shell, e| shell.apply(e)))
+        SCOPE.with(|s| s.lend(self, || f(s), MacShell::apply_taken))
+    }
+
+    /// A callback's event on the scope's borrow: the AppKit calls it asks for run once the borrow is put back.
+    pub(super) fn apply_taken(t: &mut Taken<'_, MacShell, MacEv>, ev: MacEv) {
+        t.apply_event(ev);
+        for effect in std::mem::take(&mut t.effects) {
+            t.defer(effect);
+        }
+    }
+
+    /// A callback's event applied outside the scope (a host call, a test hook): its AppKit calls run now.
+    pub(super) fn apply(&mut self, ev: MacEv) {
+        self.apply_event(ev);
+        self.run_effects();
+    }
+
+    fn run_effects(&mut self) {
+        for effect in std::mem::take(&mut self.effects) {
+            effect();
+        }
     }
 
     /// A callback's event, on the backend.  A test window's id names no window here: its events change nothing.
-    pub(super) fn apply(&mut self, ev: MacEv) {
+    fn apply_event(&mut self, ev: MacEv) {
         match ev {
             MacEv::Resized(id) => self.compare(id),
             MacEv::Screen(id) => self.screen_changed(id),
@@ -260,6 +293,9 @@ impl MacShell {
             MacEv::Input(id, ev) => match ev {
                 ShellEvent::PointerMotion(_) | ShellEvent::Button(_) | ShellEvent::Scroll(_) => {
                     self.pointer(id, ev)
+                }
+                ShellEvent::PointerLeave(p) => {
+                    self.pointer_left(id, objc2_foundation::NSPoint::new(p.x, p.y))
                 }
                 // keys go to the root's window (an overhang panel never becomes key)
                 _ => {
@@ -285,6 +321,17 @@ impl MacShell {
                 self.push(ShellEvent::Menu(MenuEv { generation, index }), 0);
             }
             MacEv::Resize(id, frame) => self.resize_step(id, frame),
+            MacEv::FullScreen(id, busy) => {
+                super::runloop::FS_NOTES[6].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(w) = self.windows.get_mut(&id) {
+                    super::windowing::fullscreen_transition(w, busy, &mut self.effects);
+                }
+            }
+            MacEv::FullScreenWant(id) => {
+                if let Some(w) = self.windows.get_mut(&id) {
+                    super::windowing::want(w, &mut self.effects);
+                }
+            }
         }
     }
 
@@ -339,14 +386,13 @@ impl MacShell {
         let size = (r.size.width.round() as i32, r.size.height.round() as i32);
         if size == w.size {
             // the size held (at its minimum): only the origin can move, and there is nothing to draw
-            w.window.setFrame_display(frame, false);
+            let window = w.window.clone();
+            self.effects
+                .push(Box::new(move || window.setFrame_display(frame, false)));
             return;
         }
-        let scale = w.window.backingScaleFactor();
-        let px = (
-            (f64::from(size.0) * scale).round() as i32,
-            (f64::from(size.1) * scale).round() as i32,
-        );
+        let s = w.scale();
+        let px = (s.px_i(size.0), s.px_i(size.1));
         w.size = size;
         w.resize.inflight = Some((frame, px));
         self.configure(id, size.0, size.1);
@@ -358,6 +404,11 @@ impl MacShell {
         let window = u64::try_from(n[0]).map_err(|_| ShellError::Arg)?;
         let rest = rest.trim_end_matches(')');
         let (appearance, titlebar) = rest.split_once(' ').unwrap_or((rest, "nil"));
+        // a child frame is a layer in its root's window: it has no window of its own to give a look (every new
+        // frame gets this call, from after-make-frame-functions)
+        if self.kids.contains_key(&window) {
+            return Ok(());
+        }
         windowing::look(
             &self.win(window)?.window,
             appearance,
@@ -446,7 +497,7 @@ impl MacShell {
         self.push(ShellEvent::EnterOutput(o), id);
     }
 
-    fn configure(&mut self, id: WindowId, w: i32, h: i32) {
+    pub(super) fn configure(&mut self, id: WindowId, w: i32, h: i32) {
         self.serial = self.serial.wrapping_add(1);
         let serial = self.serial;
         if let Some(win) = self.windows.get_mut(&id) {
@@ -474,6 +525,11 @@ impl MacShell {
     fn pump(&mut self) {
         #[cfg(feature = "test-hooks")]
         self.maybe_raise();
+        for (id, title) in std::mem::take(&mut self.titles) {
+            if let Some(w) = self.windows.get(&id) {
+                w.window.setTitle(&NSString::from_str(&title));
+            }
+        }
         if !self.deferred.is_empty() || !self.owed.is_empty() {
             let ids = std::mem::take(&mut self.deferred);
             self.commit(&ids);
@@ -517,6 +573,14 @@ fn layer_damage(g: u64, w: i32, h: i32) -> Vec<Rect> {
 }
 
 impl MacShell {
+    /// `root` as a top-level window, the windows layout legs are for (`State` for a child or no window).
+    fn layout_root(&self, root: WindowId) -> ShellResult<&Win> {
+        if self.kids.contains_key(&root) {
+            return Err(ShellError::State);
+        }
+        self.windows.get(&root).ok_or(ShellError::State)
+    }
+
     /// Commit the trees of `ids` (windows that drew) and of every root that owes one, each in one flushed transaction
     /// with its children's changes (main thread).
     fn commit(&mut self, ids: &[WindowId]) {
@@ -557,6 +621,7 @@ impl MacShell {
                 self.resize_step(*id, frame);
             }
         }
+        self.run_effects();
     }
 
     /// A watched variable's new value (`nhmac--variable-changed`): ARG is `(SYMBOL VALUE)` as Lisp prints it.  The
@@ -671,6 +736,12 @@ impl ShellBackend for MacShell {
         if self.kq.is_none() {
             return Err(ShellError::Unsupported);
         }
+        // what the last redisplay published shows before the main thread sleeps
+        if MainThreadMarker::new().is_some() && (!self.deferred.is_empty() || !self.owed.is_empty())
+        {
+            let ids = std::mem::take(&mut self.deferred);
+            self.commit(&ids);
+        }
         let mut regs = std::mem::take(&mut self.regs);
         wait::run(
             self,
@@ -763,7 +834,7 @@ impl ShellBackend for MacShell {
             Place::Shell => {}
         }
         win.window.makeKeyAndOrderFront(None);
-        win.scale120 = win.scale_now();
+        win.placed();
         let (w, h, scale) = (win.size.0, win.size.1, win.scale120);
         crate::trace::note(|| format!("window made: window {id} {w}x{h} points, scale120 {scale}"));
         win.surfaces.reset(self.srgb);
@@ -785,6 +856,7 @@ impl ShellBackend for MacShell {
         }
         self.children_gone(window);
         self.cards.remove(&window);
+        self.legs.remove(&window);
         self.windows
             .remove(&window)
             .map(drop)
@@ -796,6 +868,14 @@ impl ShellBackend for MacShell {
     }
 
     fn set_title(&mut self, window: WindowId, title: &str) -> ShellResult {
+        if MainThreadMarker::new().is_none() {
+            // a Lisp thread's redisplay: AppKit is the main thread's, which takes the title at its next pump
+            self.win(window)?;
+            self.titles.retain(|(id, _)| *id != window);
+            self.titles.push((window, title.to_string()));
+            wait::wake();
+            return Ok(());
+        }
         self.win(window)?
             .window
             .setTitle(&NSString::from_str(title));
@@ -828,7 +908,8 @@ impl ShellBackend for MacShell {
     }
 
     fn set_maximized(&mut self, window: WindowId, on: bool) -> ShellResult {
-        windowing::maximize(self.win(window)?, on);
+        let w = self.windows.get_mut(&window).ok_or(ShellError::State)?;
+        windowing::maximize(w, on);
         Ok(())
     }
 
@@ -958,12 +1039,46 @@ impl ShellBackend for MacShell {
     }
 
     fn set_cards(&mut self, window: WindowId, list: &[crate::api::CardImage]) -> ShellResult {
-        if !self.windows.contains_key(&window) || self.kids.contains_key(&window) {
+        // a top-level window's or a child's (its blocks): shown by its root tree's next commit
+        let root = self.root_of(window).ok_or(ShellError::State)?;
+        self.cards.entry(window).or_default().set(list)?;
+        self.owe(root);
+        Ok(())
+    }
+
+    fn layout_capture(&mut self, root: WindowId, key: u64, serial: u64, rect: Rect) -> ShellResult {
+        // the picture before the redraw: the newest surface, which the host's next drawing does not touch
+        let w = self.layout_root(root)?;
+        let old = w.surfaces.region(rect.x, rect.y, rect.w, rect.h);
+        self.legs
+            .entry(root)
+            .or_default()
+            .capture(key, serial, rect, old);
+        Ok(())
+    }
+
+    fn layout_leg(
+        &mut self,
+        root: WindowId,
+        key: u64,
+        leg: Option<glitnir::layout::LayoutLeg>,
+    ) -> ShellResult {
+        self.layout_root(root)?;
+        // a leg ended early goes at once: the new picture shows
+        if let Some(l) = self.legs.entry(root).or_default().leg(key, leg) {
+            layers::transaction(|| l.removeFromSuperlayer());
+        }
+        Ok(())
+    }
+
+    fn layout_captured(&self, root: WindowId, key: u64) -> ShellResult<crate::api::LayoutAck> {
+        if !self.windows.contains_key(&root) || self.kids.contains_key(&root) {
             return Err(ShellError::State);
         }
-        self.cards.entry(window).or_default().set(list)?;
-        self.owe(window);
-        Ok(())
+        Ok(self
+            .legs
+            .get(&root)
+            .map_or_else(crate::api::LayoutAck::default, |l| l.ack(key)))
     }
 
     fn set_chrome(
@@ -1023,9 +1138,12 @@ impl ShellBackend for MacShell {
             return self.kid_mapped(window, on);
         }
         let w = self.windows.get_mut(&window).ok_or(ShellError::State)?;
-        // an iconified window stays mapped; showing it is the Dock's deminiaturize
+        // an iconified window stays mapped; showing it is the Dock's deminiaturize, and it comes back key and in
+        // front, as NS's `ns_make_frame_visible` raises it with focus (round 9: back from the Dock but not key, the
+        // resize, keys and IME rows after it got no events)
         if on && w.window.isMiniaturized() {
             w.window.deminiaturize(None);
+            w.window.makeKeyAndOrderFront(None);
             return Ok(());
         }
         if on != w.mapped {
@@ -1113,7 +1231,10 @@ impl ShellBackend for MacShell {
     ) -> ShellResult {
         let view = self.win(window)?.view.clone();
         super::ime::with(window, |p| p.cursor = [x, y, w, h]);
-        super::ax::cursor_pushed(&view, window);
+        // Zoom follows the cursor from the main thread's own consistency points; a Lisp thread's only records it
+        if MainThreadMarker::new().is_some() {
+            super::ax::cursor_pushed(&view, window);
+        }
         Ok(())
     }
 
@@ -1237,8 +1358,36 @@ impl ShellBackend for MacShell {
             wait::wake();
             return Ok(true);
         }
-        self.commit(&ids);
+        // the commit leaves the redisplay (as NS's, which Core Animation commits when the run loop turns): the next
+        // pump, the wait before it sleeps, or the host's deadline (`flush_presents`) commits it.  A window in a resize
+        // commits now, so the drag's frame and its picture change together.
+        let resizing = ids.iter().any(|id| {
+            self.windows
+                .get(id)
+                .is_some_and(|w| w.resize.inflight.is_some() || w.window.inLiveResize())
+        });
+        if resizing {
+            self.commit(&ids);
+            return Ok(true);
+        }
+        for id in ids {
+            if !self.deferred.contains(&id) {
+                self.deferred.push(id);
+            }
+        }
         Ok(true)
+    }
+
+    fn flush_presents(&mut self) -> ShellResult {
+        if MainThreadMarker::new().is_some() && (!self.deferred.is_empty() || !self.owed.is_empty())
+        {
+            surface::STATS
+                .deadline_flushes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let ids = std::mem::take(&mut self.deferred);
+            self.commit(&ids);
+        }
+        Ok(())
     }
 
     fn present_tree(&mut self, root: WindowId) -> ShellResult<bool> {
@@ -1287,6 +1436,8 @@ impl ShellBackend for MacShell {
     }
 
     fn app_call(&mut self, kind: &str, arg: &str) -> ShellResult {
+        // every request is AppKit's, whose calls are the main thread's: a Lisp thread's is refused
+        MainThreadMarker::new().ok_or(ShellError::State)?;
         #[cfg(feature = "test-hooks")]
         if let Some(r) = self.test_call(kind, arg) {
             return r;
@@ -1360,9 +1511,12 @@ impl ShellBackend for MacShell {
                 nsapp::warp(n[0] as f64, n[1] as f64);
                 Ok(())
             }
-            // "(WINDOW OTHER ABOVE)"
+            // "(WINDOW OTHER ABOVE)": a child frame is a layer, restacked among its siblings (`kid_stack`)
             "restack" => {
                 let (n, _) = crate::menu::split_numbers(arg, 3).ok_or(ShellError::Arg)?;
+                if self.kids.contains_key(&(n[0] as WindowId)) {
+                    return self.kid_stack(n[0] as WindowId, n[1] as WindowId, n[2] == 1);
+                }
                 let other = self.win(n[1] as WindowId)?.window.clone();
                 nsapp::restack(&self.win(n[0] as WindowId)?.window, &other, n[2] == 1);
                 Ok(())
@@ -1381,12 +1535,16 @@ impl ShellBackend for MacShell {
     }
 
     fn app_query(&mut self, kind: &str, arg: &str) -> ShellResult<String> {
+        // as `app_call`
+        MainThreadMarker::new().ok_or(ShellError::State)?;
         #[cfg(feature = "test-hooks")]
         if let Some(r) = self.test_query(kind, arg) {
             return r;
         }
         match kind {
             "stats" => Ok(stats_text(scope_stats())),
+            // each screen as AppKit has it (`screens::frames_text`)
+            "screens" => Ok(screens::frames_text(self.mtm)),
             "get-resource" => Ok(defaults::get(arg)),
             "reduced-motion" => Ok(if motion::reduced() { "t" } else { "nil" }.into()),
             "system-appearance" => Ok(if self.dark { "dark" } else { "light" }.to_string()),
@@ -1401,7 +1559,8 @@ impl ShellBackend for MacShell {
             "menu-popup" => self.menu_popup(arg),
             "mouse-position" => Ok(nsapp::mouse_position(self.mtm)),
             "ax-trusted" => Ok(if nsapp::ax_trusted() { "t" } else { "nil" }.to_string()),
-            "applescript" => Ok(nsapp::applescript(nsapp::text_arg(arg))),
+            // a nested AppleEvent loop: lent, as the other nested loops are
+            "applescript" => Ok(self.lent(|_| nsapp::applescript(nsapp::text_arg(arg)))),
             // "(ALLOW-DISPLAY-SLEEP WHY)"
             "sleep-block" => {
                 let (n, why) = crate::menu::split_numbers(arg, 1).ok_or(ShellError::Arg)?;

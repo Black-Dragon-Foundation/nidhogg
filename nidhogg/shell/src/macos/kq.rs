@@ -384,8 +384,9 @@ impl Helper {
 static HELPER_THREAD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Test hook: interrupt the helper thread `n` times, 20 ms apart, from a thread of its own, with SIGURG caught by a
-/// handler that does nothing and does not restart calls (a stand-in for SIGCHLD landing on the helper).  `false` when
-/// the helper has not started.
+/// handler that does nothing and does not restart calls (a stand-in for SIGCHLD landing on the helper).  The signal's
+/// previous action is put back 200 ms after the last one, so a later row finds SIGURG as it was (the watchdog's
+/// sampling signal refuses a claimed one).  `false` when the helper has not started.
 #[cfg(feature = "test-hooks")]
 pub fn signal_helper(n: u32) -> bool {
     extern "C" fn nothing(_: i32) {}
@@ -395,12 +396,14 @@ pub fn signal_helper(n: u32) -> bool {
     }
     // SAFETY: a handler that touches nothing, installed with no SA_RESTART; the thread handle stays valid (the helper
     // never exits).
-    unsafe {
+    let old = unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
+        let mut old: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = nothing as extern "C" fn(i32) as usize;
         libc::sigemptyset(&mut sa.sa_mask);
-        libc::sigaction(libc::SIGURG, &sa, std::ptr::null_mut());
-    }
+        libc::sigaction(libc::SIGURG, &sa, &mut old);
+        old
+    };
     let _ = std::thread::Builder::new()
         .name("nhmac-test-signals".into())
         .spawn(move || {
@@ -409,6 +412,10 @@ pub fn signal_helper(n: u32) -> bool {
                 // SAFETY: as above.
                 unsafe { libc::pthread_kill(t as libc::pthread_t, libc::SIGURG) };
             }
+            // the last signal delivered first (SIGURG's default action is to ignore it)
+            std::thread::sleep(Duration::from_millis(200));
+            // SAFETY: the action read above, put back.
+            unsafe { libc::sigaction(libc::SIGURG, &old, std::ptr::null_mut()) };
         });
     true
 }

@@ -26,6 +26,8 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
 
+#include <math.h>
+
 #include "lisp.h"
 #include "nhwlterm.h"
 #include "frame.h"
@@ -103,6 +105,22 @@ nhmac_argb (struct frame *f, unsigned long color, bool respect)
   return a << 24 | (color & 0xffffff);
 }
 
+/* Test diagnostics: the records whose rectangle meets a watched one, in
+   the order they were painted (`nhmac--test-draw-watch').  */
+static NhgRect nhmac_watch;
+static NhgDrawRec nhmac_watched[64];
+static int nhmac_nwatched;
+
+static void
+nhmac_watch_note (const NhgDrawRec *r)
+{
+  const NhgRect *a = &r->r, *w = &nhmac_watch;
+  if (w->w > 0 && nhmac_nwatched < ARRAYELTS (nhmac_watched)
+      && a->x < w->x + w->w && w->x < a->x + a->w
+      && a->y < w->y + w->h && w->y < a->y + a->h)
+    nhmac_watched[nhmac_nwatched++] = *r;
+}
+
 /* Paint record R into F's backing under the clip in force.  */
 static void
 nhmac_emit (struct frame *f, NhgDrawRec *r)
@@ -110,6 +128,7 @@ nhmac_emit (struct frame *f, NhgDrawRec *r)
   struct nhmac_clip *c = nhmac_top ();
   r->nclip = c->n;
   memcpy (r->clip, c->r, sizeof r->clip);
+  nhmac_watch_note (r);
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		NHG (nhg_draw (FRAME_NHG (f), FRAME_NHWL_OUTPUT (f)->glitnir_id,
 			       r, 1)));
@@ -171,7 +190,13 @@ nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
   nhwl_end_cr_clip (f);
 }
 
-/* Stipples are not drawn yet: the face's background, as with no stipple.  */
+/* The face's background, then its stipple in its foreground where the
+   stipple's bits are set, tiled from the frame's origin as X fills with
+   a FillOpaqueStippled GC (and NS with a pattern colour): NHG_DRAW_BITMAP
+   records of at most 16 bits a row, each bit a logical pixel (the frame's
+   whole scale, as fringe bitmaps), cut to the area.  A narrow stipple is
+   repeated across its record and down 64 rows, so a line takes a few
+   records.  */
 void
 nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
 			      int y, int width, int height)
@@ -180,6 +205,56 @@ nhwl_fill_background_by_face (struct frame *f, struct face *face, int x,
   nhmac_rect (f, NHG_DRAW_FILL, NHG_DRAW_COPY,
 	      nhmac_argb (f, face->background, true), x, y, width, height,
 	      0, 0);
+  Display_Info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  struct nhwl_bitmap_record *bm
+    = (face->stipple > 0 && face->stipple <= dpyinfo->bitmaps_last
+       ? &dpyinfo->bitmaps[face->stipple - 1] : NULL);
+  if (bm && bm->bits && bm->width > 0 && bm->height > 0
+      && width > 0 && height > 0)
+    {
+      XRectangle area = { x, y, width, height };
+      int k = clip_to_bounds (1, FRAME_NHWL_OUTPUT (f)->scale120 / 120, 8);
+      int bw = bm->width, bh = bm->height, stride = (bw + 7) / 8;
+      int reps = bw <= 16 ? 16 / bw : 1;
+      int vreps = max (1, 64 / bh);
+      int rows = bh * vreps;
+      uint32_t fg = nhmac_argb (f, face->foreground, true);
+      USE_SAFE_ALLOCA;
+      uint16_t *bits;
+      SAFE_NALLOCA (bits, 1, rows);
+      nhmac_clip_to (&area, 1);
+      for (int cx = 0; cx < bw; cx += 16)
+	{
+	  int cw = bw <= 16 ? bw * reps : min (16, bw - cx);
+	  int step = (bw <= 16 ? cw : bw) * k;
+	  for (int r = 0; r < rows; r++)
+	    {
+	      const unsigned char *row
+		= (const unsigned char *) bm->bits + (r % bh) * stride;
+	      uint16_t v = 0;
+	      for (int i = 0; i < cw; i++)
+		{
+		  int b = (cx + i) % bw;
+		  if (row[b / 8] >> (b % 8) & 1)
+		    v |= 1u << (cw - 1 - i);
+		}
+	      bits[r] = v;
+	    }
+	  int x0 = x - ((x - cx * k) % step + step) % step;
+	  int y0 = y - (y % (rows * k) + rows * k) % (rows * k);
+	  for (int ty = y0; ty < y + height; ty += rows * k)
+	    for (int tx = x0; tx < x + width; tx += step)
+	      {
+		NhgDrawRec r = { NHG_DRAW_BITMAP, NHG_DRAW_OVERLAY,
+				 { tx, ty, cw, rows }, fg, 0, k };
+		r.bits = bits;
+		nhmac_emit (f, &r);
+	      }
+	  if (bw <= 16)
+	    break;
+	}
+      SAFE_FREE ();
+    }
   nhwl_end_cr_clip (f);
 }
 
@@ -228,6 +303,22 @@ nhwl_erase_corners_for_relief (struct frame *f, unsigned long color, int x,
   nhmac_rect (f, NHG_DRAW_CORNERS, corners, nhmac_argb (f, color, false),
 	      x, y, width, height, radius, margin);
   nhwl_end_cr_clip (f);
+}
+
+/* A box's ring for glitnir-decor.c: one NHG_DRAW_RING record on X, Y, W, H
+   with radius RAD, lines HW high and VW wide, FLAGS its rounded corners and
+   sides (the record's); with RELIEF, FG above the anti-diagonal and BG
+   below.  */
+void
+nhmac_draw_ring (struct frame *f, int x, int y, int w, int h, int hw, int vw,
+		 double rad, unsigned flags, unsigned long fg,
+		 unsigned long bg, bool relief)
+{
+  NhgDrawRec r = { NHG_DRAW_RING, flags | (relief ? NHG_DRAW_RELIEF : 0),
+		   { x, y, w, h }, nhmac_argb (f, fg, false),
+		   nhmac_argb (f, bg, false), lround (rad),
+		   min (hw, 255) | min (vw, 255) << 8 };
+  nhmac_emit (f, &r);
 }
 
 void
@@ -410,6 +501,7 @@ nhmac_glyph_run (struct glyph_string *s, uint64_t font, int from, int to,
   nhwl_begin_cr_clip (f);
   r.nclip = nhmac_top ()->n;
   memcpy (r.clip, nhmac_top ()->r, sizeof r.clip);
+  nhmac_watch_note (&r);
   nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		NHG (nhg_draw_glyphs (FRAME_NHG (f),
 				      FRAME_NHWL_OUTPUT (f)->glitnir_id,
@@ -455,16 +547,32 @@ nhwl_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
       if (k > 1)
 	{
 	  /* NS draws a bitmap in points: at a scale, K pixels a bit while
-	     it fits its fringe, the whole bitmap centred on where it sits
-	     unscaled, cut to the fringe's column (the Wayland shell's
-	     nhwl_draw_fringe_scaled rule).  */
+	     it fits its fringe, centred across the fringe's column and cut
+	     to it (the Wayland shell's nhwl_draw_fringe_scaled rule).
+	     Down the row it keeps the bitmap's alignment, as a bitmap drawn
+	     in points does: fringe.c put a top-aligned one (up-arrow, the
+	     top angles) at the row's top, a bottom-aligned one at its
+	     bottom, and centred the rest; centring a top-aligned one put
+	     its first rows above the row, where the row's clip cut them
+	     (round 2: up-arrow 22 of 28 bits at scale 2).  */
+	  int top = (WINDOW_TO_FRAME_PIXEL_Y (w, row->y)
+		     + (left ? row->left_fringe_offset
+			: row->right_fringe_offset));
+	  int dy = p->y - p->dh - top;
+	  int y0 = p->y - p->dh + (bh - k * bh) / 2;
+	  if (dy == 0 && (row->height - bh) / 2 != 0)
+	    y0 = p->y - p->dh;
+	  else if (dy == row->visible_height - bh
+		   && dy != (row->height - bh) / 2)
+	    y0 = p->y - p->dh + bh - k * bh;
 	  XRectangle col = { left ? p->x - (fw - p->wd) / 2
 			     : p->x - (fw - p->wd + 1) / 2,
 			     p->y - p->dh - bh * k, fw, 3 * bh * k };
-	  r.r = (NhgRect) { p->x + (p->wd - k * p->wd) / 2,
-			    p->y - p->dh + (bh - k * bh) / 2, p->wd, bh };
+	  r.r = (NhgRect) { p->x + (p->wd - k * p->wd) / 2, y0, p->wd, bh };
 	  r.bits = p->bits;
 	  nhmac_clip_to (&col, 1);
+	  /* what it covers, inside the row's clip, reaches the surface */
+	  nhwl_damage (f, col.x, y0, fw, k * bh);
 	}
       nhmac_emit (f, &r);
     }
@@ -522,4 +630,49 @@ nhwl_draw_window_divider (struct window *w, int x0, int x1, int y0, int y1)
     }
   else
     nhwl_fill_rectangle (f, c, x0, y0, x1 - x0, y1 - y0, a);
+}
+
+DEFUN ("nhmac--test-draw-watch", Fnhmac__test_draw_watch,
+       Snhmac__test_draw_watch, 4, 4, 0,
+       doc: /* Test only: log the draw records that meet a rectangle.
+X, Y, W and H are device pixels of the frame's backing; W 0 stops.  The
+log starts empty; `nhmac--test-draw-log' reads it.  */)
+  (Lisp_Object x, Lisp_Object y, Lisp_Object w, Lisp_Object h)
+{
+  nhmac_watch = (NhgRect) { check_integer_range (x, INT_MIN, INT_MAX),
+			    check_integer_range (y, INT_MIN, INT_MAX),
+			    check_integer_range (w, 0, INT_MAX),
+			    check_integer_range (h, 0, INT_MAX) };
+  nhmac_nwatched = 0;
+  return Qnil;
+}
+
+DEFUN ("nhmac--test-draw-log", Fnhmac__test_draw_log, Snhmac__test_draw_log,
+       0, 0, 0,
+       doc: /* Test only: the draw records logged since `nhmac--test-draw-watch'.
+Each is (KIND FLAGS (X Y W H) FG BG CLIPS), CLIPS a list of (X Y W H),
+in the order they were painted (at most 64).  */)
+  (void)
+{
+  Lisp_Object out = Qnil;
+  for (int i = nhmac_nwatched - 1; i >= 0; i--)
+    {
+      NhgDrawRec *r = &nhmac_watched[i];
+      Lisp_Object clips = Qnil;
+      for (int j = min (r->nclip, 2) - 1; j >= 0; j--)
+	clips = Fcons (list4i (r->clip[j].x, r->clip[j].y, r->clip[j].w,
+			       r->clip[j].h), clips);
+      out = Fcons (list (make_fixnum (r->kind), make_fixnum (r->flags),
+			 list4i (r->r.x, r->r.y, r->r.w, r->r.h),
+			 make_uint (r->fg), make_uint (r->bg), clips),
+		   out);
+    }
+  return out;
+}
+
+void
+syms_of_nhmacdraw (void)
+{
+  defsubr (&Snhmac__test_draw_watch);
+  defsubr (&Snhmac__test_draw_log);
 }

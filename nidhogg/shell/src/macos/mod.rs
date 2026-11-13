@@ -11,6 +11,8 @@ mod defaults;
 mod dialogs;
 mod dnd;
 pub mod draw;
+#[cfg(feature = "test-hooks")]
+mod font_probe;
 pub mod fonts;
 pub mod images;
 mod ime;
@@ -26,6 +28,7 @@ mod pasteboard;
 mod power;
 mod resize;
 mod runloop;
+mod scale;
 mod screens;
 mod services;
 pub mod startup;

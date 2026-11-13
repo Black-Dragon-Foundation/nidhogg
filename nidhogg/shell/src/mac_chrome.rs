@@ -101,20 +101,42 @@ pub fn frame(c: &Chrome, w: u32, h: u32) -> (f64, f64, f64, f64) {
     )
 }
 
-/// How far a `w`×`h` layer's shadow reaches past it on each side (left, top, right, bottom), device pixels, 0 where
-/// it does not: what a window holding the layer must add around it to show the whole shadow.
+/// How far a `w`×`h` layer's shadow and ring reach past it on each side (left, top, right, bottom), device pixels, 0
+/// where they do not: what a window holding the layer must add around it to show them whole.
 pub fn reach(c: &Chrome, w: u32, h: u32) -> (u32, u32, u32, u32) {
+    let rw = c.ring();
     if !c.has_shadow() {
-        return (0, 0, 0, 0);
+        return (rw, rw, rw, rw);
     }
     let (x, y, fw, fh) = frame(c, w, h);
-    let past = |v: f64| v.max(0.0).ceil() as u32;
+    let past = |v: f64| (v.max(0.0).ceil() as u32).max(rw);
     (
         past(-x),
         past(-y),
         past(x + fw - f64::from(w)),
         past(y + fh - f64::from(h)),
     )
+}
+
+/// A `w`×`h` layer's ring, as Glitnir's compositor draws a chrome's ring (`CardRing::around`): a line `width` device
+/// pixels wide just outside the layer's rounded rectangle, so its outer edge is the layer grown by `width` on each
+/// side with the corner radius grown by as much.  `None` without a ring.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ring {
+    /// From the layer's top left (x, y, width, height), device pixels.
+    pub frame: (f64, f64, f64, f64),
+    pub radius: f64,
+    pub width: f64,
+}
+
+/// `c`'s ring around a `w`×`h` layer.
+pub fn ring(c: &Chrome, w: u32, h: u32) -> Option<Ring> {
+    let rw = f64::from(c.ring());
+    (rw > 0.0).then(|| Ring {
+        frame: (-rw, -rw, f64::from(w) + 2.0 * rw, f64::from(h) + 2.0 * rw),
+        radius: f64::from(c.radius_px.max(0.0)) + rw,
+        width: rw,
+    })
 }
 
 /// `img` drawn at `w`×`h` (the image's size for that layer) as Core Animation draws it with `contentsCenter` at
@@ -228,6 +250,41 @@ mod tests {
         let img = image(&c, m - 1, m + 10, 1.0);
         assert_eq!(img.own, Some((m - 1, m + 10)));
         assert_eq!(img.centre, (0, 0, img.w, img.h));
+    }
+
+    /// A ring lies just outside the layer, its corners following the layer's grown by its width, and the reach
+    /// covers it on every side, with or without a shadow.
+    #[test]
+    fn a_ring_lies_just_outside_the_layer() {
+        let c = Chrome {
+            ring_px: 2.0,
+            ring_argb: 0x7300_0000,
+            ..chrome(6.0, 0.0, 0.0)
+        };
+        let r = ring(&c, 100, 40).unwrap();
+        assert_eq!(r.frame, (-2.0, -2.0, 104.0, 44.0));
+        assert_eq!((r.radius, r.width), (8.0, 2.0));
+        let flat = Chrome {
+            shadow_opacity: 0.0,
+            ..c
+        };
+        assert_eq!(reach(&flat, 100, 40), (2, 2, 2, 2));
+        // a shadow reaching less than the ring above it (offset down, little blur) still leaves room for the ring
+        let (_, t, _, b) = reach(&Chrome { blur_px: 0.0, ..c }, 100, 40);
+        assert!(t >= 2 && b >= 12, "{t} {b}");
+        // no colour, no ring
+        assert_eq!(ring(&Chrome { ring_argb: 0, ..c }, 100, 40), None);
+        assert_eq!(
+            reach(
+                &Chrome {
+                    ring_argb: 0,
+                    ..flat
+                },
+                100,
+                40
+            ),
+            (0, 0, 0, 0)
+        );
     }
 
     /// The frame starts the reach and the spread before the layer, moved by the offset, and the image darkens below

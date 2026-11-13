@@ -2,12 +2,20 @@
 
 ;; test-class: cond
 
-;; Run by nidhogg/test/gui.sh (test/src/nidhogg-tests/gui-runner.el loads every *-gui-tests.el).  GLITNIR_GUI_SCALE is
+;; Run by nidhogg/test/gui.sh (test/src/nidhogg-tests/gui-runner.el loads every *-gui-tests.el), and on macOS by
+;; nidhogg/test/nhmac-gui.sh, where the rows that need the Wayland shell's scene tree skip (`glitnir-gui--skip-unless-tree').  GLITNIR_GUI_SCALE is
 ;; the monitor scale the run asked for.  The rows judge what the shell gave the compositor: `glitnir-snapshot' of a root
 ;; holds its whole tree, child frames at their places.  Frame sizes and positions on the native shell are device pixels.
 
 (require 'ert)
 (require 'cl-lib)
+
+(defun glitnir-gui--skip-unless-tree ()
+  "Skip the running row unless the shell is the Wayland one.
+The rows judge the scene tree the compositor was given (`glitnir-snapshot', `glitnir--stacking', the draw counts),
+which Naglfar has no counterpart of (its child frames are layers, read by glitnir-nhmac-gui-tests.el).  The rows
+that read none of it run on every backend."
+  (unless (featurep 'nidhogg-wayland) (ert-skip "reads the Wayland shell's scene tree (glitnir-snapshot, stacking)")))
 
 (defun glitnir-gui--drawn-since (draws)
   "Wait for the selected frame's tree to show something once more than DRAWS, a `glitnir--draw-count'."
@@ -36,6 +44,7 @@
 
 (ert-deftest glitnir-gui/snapshot-has-the-frame-size ()
   :tags '(gnome-smoke)
+  (glitnir-gui--skip-unless-tree)
   (pcase-let ((`(,w ,h ,bytes) (glitnir-snapshot nil 'raw)))
     (should (= w (frame-pixel-width)))
     (should (= h (frame-pixel-height)))
@@ -44,6 +53,7 @@
 
 (ert-deftest glitnir-gui/snapshot-png-is-a-png ()
   :tags '(gnome-smoke)
+  (glitnir-gui--skip-unless-tree)
   (let ((png (glitnir-snapshot nil)))
     (should-not (multibyte-string-p png))
     (should (string-prefix-p "\x89PNG" png))))
@@ -95,6 +105,7 @@
     f))
 
 (ert-deftest glitnir-gui/typing-paints-only-damage ()
+  (glitnir-gui--skip-unless-tree)
   (should (glitnir-active-p))
   (with-temp-buffer
     (switch-to-buffer (current-buffer))
@@ -107,6 +118,7 @@
       (should (< (plist-get s :painted-px) (/ (glitnir-gui--frame-px) 10))))))
 
 (ert-deftest glitnir-gui/last-paint-times-the-change ()
+  (glitnir-gui--skip-unless-tree)
   ;; Pattern C (handshake): the change's commit is waited for through `glitnir--draw-count', after a settled start,
   ;; so the newest paint is the one that shows it.  Its times are the perf lab's present source.
   (with-temp-buffer
@@ -121,6 +133,7 @@
                     (glitnir--now-ns)))))))
 
 (ert-deftest glitnir-gui/error-in-redisplay-keeps-drawing ()
+  (glitnir-gui--skip-unless-tree)
   (let ((buf (generate-new-buffer "*glitnir-err*")))
     (unwind-protect
         (progn
@@ -140,6 +153,7 @@
 
 (ert-deftest glitnir-gui/a-bar-block-fills-its-rows ()
   "A `bar' block over a window's first two rows: its x0..x1 filled in the line's colour on those rows only."
+  (glitnir-gui--skip-unless-tree)
   (let ((buf (glitnir-gui--text-buffer "*glitnir-bar*" 10)) (w (selected-window)))
     (unwind-protect
         (progn
@@ -242,6 +256,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
   (when (get-buffer "*glitnir-stack*") (kill-buffer "*glitnir-stack*")))
 
 (ert-deftest glitnir-gui/stacking-follows-raise-lower ()
+  (glitnir-gui--skip-unless-tree)
   (let ((fs (glitnir-gui--children 3)))
     (unwind-protect
         (pcase-let ((`(,a ,b ,c) fs))
@@ -257,6 +272,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
       (glitnir-gui--delete fs))))
 
 (ert-deftest glitnir-gui/map-raises-the-node ()
+  (glitnir-gui--skip-unless-tree)
   (let ((fs (glitnir-gui--children 2)))
     (unwind-protect
         (pcase-let ((`(,a ,b) fs))
@@ -268,6 +284,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
       (glitnir-gui--delete fs))))
 
 (ert-deftest glitnir-gui/zgroup-raises-and-lowers-child-frames ()
+  (glitnir-gui--skip-unless-tree)
   (let ((fs (glitnir-gui--children 2)))
     (unwind-protect
         (pcase-let ((`(,a ,b) fs))
@@ -280,6 +297,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
       (glitnir-gui--delete fs))))
 
 (ert-deftest glitnir-gui/reparent-moves-the-node ()
+  (glitnir-gui--skip-unless-tree)
   (let ((fs (glitnir-gui--children 3)))
     (unwind-protect
         (pcase-let ((`(,a ,b ,c) fs))
@@ -294,6 +312,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
       (glitnir-gui--delete fs))))
 
 (ert-deftest glitnir-gui/unparent-makes-a-root ()
+  (glitnir-gui--skip-unless-tree)
   (let* ((root (selected-frame)) (fs (glitnir-gui--children 2)) (d nil))
     (unwind-protect
         (pcase-let ((`(,a ,b) fs))
@@ -314,6 +333,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
       (glitnir-gui--delete (append fs (list d))))))
 
 (ert-deftest glitnir-gui/nested-child-stacks-in-its-parent ()
+  (glitnir-gui--skip-unless-tree)
   (let* ((fs (glitnir-gui--children 2)) (c nil))
     (unwind-protect
         (pcase-let ((`(,a ,b) fs))
@@ -327,6 +347,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
       (glitnir-gui--delete (append fs (list c))))))
 
 (ert-deftest glitnir-gui/delete-child-from-a-timer ()
+  (glitnir-gui--skip-unless-tree)
   ;; A timer deletes a shown child, then the parent of a shown nested child: the tree loses them and stays active.
   (let* ((fs (glitnir-gui--children 2)) (c nil) (deleted nil))
     (cl-flet ((delete-later (f)
@@ -360,6 +381,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
     c))
 
 (ert-deftest glitnir-gui/chrome-reaches-the-shell ()
+  (glitnir-gui--skip-unless-tree)
   (let ((c (glitnir-gui--chromed '(corner-radius . 8)
                                  '(shadow . (:blur 16 :offset (0 . 6) :spread 2 :opacity 0.35)))))
     (unwind-protect
@@ -382,6 +404,7 @@ marks; nothing is drawn in the text area; a click's y on the strip gives the pos
       (glitnir-gui--delete (list c)))))
 
 (ert-deftest glitnir-gui/per-frame-shadow-face-follows ()
+  (glitnir-gui--skip-unless-tree)
   (let ((c (glitnir-gui--chromed '(shadow . (:blur 16 :opacity 0.35)))))
     (unwind-protect
         (progn
@@ -471,6 +494,7 @@ PARAMS come first, so they win over the defaults here."
 
 (ert-deftest glitnir-gui/corner-shows-what-is-beneath ()
   :tags '(gnome-smoke)
+  (glitnir-gui--skip-unless-tree)
   (glitnir-gui--under)
   (let ((c nil))
     (unwind-protect
@@ -486,6 +510,7 @@ PARAMS come first, so they win over the defaults here."
 
 (ert-deftest glitnir-gui/shadow-darkens-below ()
   :tags '(gnome-smoke)
+  (glitnir-gui--skip-unless-tree)
   (glitnir-gui--under)
   (let ((c nil))
     (unwind-protect
@@ -501,6 +526,7 @@ PARAMS come first, so they win over the defaults here."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/no-residue-after-hide ()
+  (glitnir-gui--skip-unless-tree)
   (glitnir-gui--under)
   (let ((c nil) (before (glitnir-gui--painted)))
     (unwind-protect
@@ -513,6 +539,7 @@ PARAMS come first, so they win over the defaults here."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/geometry-parity ()
+  (glitnir-gui--skip-unless-tree)
   ;; Chrome widens a child frame's surface, never its frame: its geometry after each Lisp call is the same without.
   (glitnir-gui--under)
   (cl-flet ((run (params)
@@ -532,6 +559,7 @@ PARAMS come first, so they win over the defaults here."
     (should (equal (run glitnir-gui--chrome) (run nil)))))
 
 (ert-deftest glitnir-gui/no-chrome-child-identical ()
+  (glitnir-gui--skip-unless-tree)
   (glitnir-gui--under)
   (let ((c nil) (old child-frame-chrome))
     (unwind-protect
@@ -545,6 +573,7 @@ PARAMS come first, so they win over the defaults here."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/shadowed-child-off-shows-what-is-beneath ()
+  (glitnir-gui--skip-unless-tree)
   ;; With Glitnir off a child frame is its own pixels: the room its shadow takes around it shows what lies beneath, as
   ;; around a child without chrome, never the child's background (pattern D: one picture, read back).
   (glitnir-gui--under)
@@ -562,6 +591,7 @@ PARAMS come first, so they win over the defaults here."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/decorated-child-identical ()
+  (glitnir-gui--skip-unless-tree)
   ;; A decorated (not `undecorated') child frame gets no chrome, from the option or its own
   ;; parameters: its pixels are Glitnir off's.
   (glitnir-gui--under)
@@ -577,6 +607,7 @@ PARAMS come first, so they win over the defaults here."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/per-frame-border-face-follows ()
+  (glitnir-gui--skip-unless-tree)
   (let ((c (glitnir-gui--chromed '(corner-radius . 8))))
     (unwind-protect
         (pcase-let ((`(,x ,y ,_ ,h) (glitnir-gui--rect c)))
@@ -588,6 +619,7 @@ PARAMS come first, so they win over the defaults here."
       (glitnir-gui--delete (list c)))))
 
 (ert-deftest glitnir-gui/theme-switch-recolours-visible-popup ()
+  (glitnir-gui--skip-unless-tree)
   (glitnir-gui--under)
   (let ((c nil))
     (unwind-protect
@@ -606,6 +638,7 @@ PARAMS come first, so they win over the defaults here."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/option-change-applies-at-once ()
+  (glitnir-gui--skip-unless-tree)
   (glitnir-gui--under)
   (let ((c nil) (old child-frame-chrome))
     (unwind-protect
@@ -625,6 +658,7 @@ PARAMS come first, so they win over the defaults here."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/timer-move-without-redraw-commits ()
+  (glitnir-gui--skip-unless-tree)
   ;; A timer moves a shown popup and nothing is redrawn: the picture shows it at its new place.
   (glitnir-gui--under)
   (let ((c nil))
@@ -641,6 +675,7 @@ PARAMS come first, so they win over the defaults here."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/hide-from-timer-paints-without-popup ()
+  (glitnir-gui--skip-unless-tree)
   ;; A timer hides a shown popup and nothing is redrawn: the popup leaves the picture.
   (glitnir-gui--under)
   (let ((c nil) (before (glitnir-gui--painted)))
@@ -654,6 +689,7 @@ PARAMS come first, so they win over the defaults here."
       (when (frame-live-p c) (delete-frame c t)))))
 
 (ert-deftest glitnir-gui/visible-bell-clears ()
+  (glitnir-gui--skip-unless-tree)
   ;; The bell's inverted rows show, and once its 50 ms atimer has taken it back the picture is the one before.
   (glitnir-gui--under)
   (let* ((visible-bell t) (ring-bell-function nil)
@@ -731,17 +767,22 @@ deleted counts graphical frames deleted while shown, N frames graphical frames (
 
 (ert-deftest glitnir-gui/daemon-frame-born-with-the-child-minibuffer ()
   "A daemon's first graphical frame on a display, with the child-frame minibuffer asked for, leaves no other frame
-behind: the minibuffer frame C made for it to borrow from while it was made goes once it has its box."
+behind: the minibuffer frame C made for it to borrow from while it was made goes once it has its box.  The daemon
+makes it on this session's window system and display (round 2 on macOS: no WAYLAND_DISPLAY, so a nil display, a
+terminal frame, \"Unknown terminal type\" and a 60 s wait)."
   (let* ((dir (make-temp-file "nh-daemon-frame" t))
+         (ws (if (getenv "WAYLAND_DISPLAY") 'pgtk window-system))
+         (display (or (getenv "WAYLAND_DISPLAY") (frame-parameter nil 'display) (symbol-name ws)))
          (out (expand-file-name "out.eld" dir))
          (emacs (expand-file-name invocation-name invocation-directory))
          (name (format "nh-daemon-frame-%d" (emacs-pid))))
     (unwind-protect
         (progn
           (with-temp-file (expand-file-name "early-init.el" dir)
-            (insert "(setf (alist-get 'minibuffer (alist-get 'pgtk window-system-default-frame-alist)) 'child-frame)\n"))
+            (insert (format "(setf (alist-get 'minibuffer (alist-get '%s window-system-default-frame-alist)) 'child-frame)\n"
+                            ws)))
           (with-temp-file (expand-file-name "init.el" dir)
-            (insert (format "(add-hook 'after-init-hook (lambda () (run-at-time 0.2 nil (lambda () (let* ((f (make-frame-on-display (getenv \"WAYLAND_DISPLAY\"))) (m (window-frame (minibuffer-window f)))) (with-temp-file %S (prin1 (list :box (and (not (eq m f)) (eq (frame-parent m) f)) :roots (length (seq-filter (lambda (x) (and (display-graphic-p x) (not (frame-parent x)))) (frame-list)))) (current-buffer))) (kill-emacs 0))))))\n" out)))
+            (insert (format "(add-hook 'after-init-hook (lambda () (run-at-time 0.2 nil (lambda () (let* ((f (make-frame-on-display %S)) (m (window-frame (minibuffer-window f)))) (with-temp-file %S (prin1 (list :box (and (not (eq m f)) (eq (frame-parent m) f)) :roots (length (seq-filter (lambda (x) (and (display-graphic-p x) (not (frame-parent x)))) (frame-list)))) (current-buffer))) (kill-emacs 0))))))\n" display out)))
           (let* ((log (generate-new-buffer " *nh-daemon-frame*"))
                  (p (start-process "nh-daemon-frame" log emacs (concat "--fg-daemon=" name) "--init-directory" dir)))
             (set-process-query-on-exit-flag p nil)

@@ -143,6 +143,18 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Commit now what the shell left for its next pump or wait (macOS: the commit is off the redisplay path); the
+    /// host's deadline after a redisplay, for Lisp that runs on without waiting.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_flush_presents(d: *mut NhgDisplay) -> i32 |state| {
+        state.backend().flush_presents()?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Copy the shell's capabilities to `*out` (`NhgCaps`).
     ///
     /// # Safety
@@ -2554,8 +2566,8 @@ nhg_export! {
 }
 
 nhg_export! {
-    /// Every font that fits `spec` into `out` (`cap` records), the number written into `*n` (`macfont_list`'s
-    /// matching, `fontspec.rs`).  `NHG_E_UNSUPPORTED` when no font source is installed (the Linux shell has none: it
+    /// Every font that fits `spec` into `out` (`cap` records), how many there are into `*n`, more than `cap` when
+    /// `out` is too small (ask again with room for them all) (`macfont_list`'s matching, `fontspec.rs`).  `NHG_E_UNSUPPORTED` when no font source is installed (the Linux shell has none: it
     /// lists fonts with fontconfig).  Neither reads nor writes pixels.
     ///
     /// # Safety
@@ -2563,6 +2575,23 @@ nhg_export! {
     unlocked fn nhg_font_list(spec: *const crate::fontspec::NhgFontSpec, out: *mut crate::fontspec::NhgFontEntity, cap: usize, n: *mut usize) -> i32 {
         crate::font::note_call();
         font_query(spec, out, cap, n, true)
+    }
+}
+
+nhg_export! {
+    /// Whether face `font_id` (an entity's `font_id`) has character `c`, without opening it (`macfont_has_char` on an
+    /// entity): 1 or 0 into `*has`, -1 when the source cannot tell (or none is installed).
+    ///
+    /// # Safety
+    /// `has` is writable.
+    unlocked fn nhg_font_has_char(font_id: u64, c: u32, has: *mut i32) -> i32 {
+        crate::font::note_call();
+        if has.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { has.write(crate::fontspec::has_char(font_id, c)) };
+        Ok(NHG_OK)
     }
 }
 
@@ -2594,6 +2623,23 @@ nhg_export! {
             unsafe { std::slice::from_raw_parts(scripts, len) }
         };
         if crate::font::start(flat) { Ok(NHG_OK) } else { Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED)) }
+    }
+}
+
+nhg_export! {
+    /// How many times the installed fonts changed since the process started (Core Text's registered-fonts
+    /// notifications; 0 off macOS) into `*n`: when it changes, the driver drops Emacs's own lists, so a font installed
+    /// or removed while Emacs runs is listed or gone at the next `list-fonts`.
+    ///
+    /// # Safety
+    /// `n` is writable.
+    unlocked fn nhg_font_changes(n: *mut u32) -> i32 {
+        if n.is_null() {
+            return Err(GlueError::Arg);
+        }
+        // SAFETY: non-null and writable (the caller's promise).
+        unsafe { n.write(crate::font::changes()) };
+        Ok(NHG_OK)
     }
 }
 
@@ -2717,6 +2763,35 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// The file font `handle` is read from into `buf` (`cap` bytes, NUL-terminated), its length into `*len` (may be
+    /// NULL): `font-info`'s FILENAME.  `NHG_E_TOO_SMALL` when `cap` is not above the length; `NHG_E_STATE` for a font
+    /// that is not open or has no file; `NHG_E_UNSUPPORTED` without Core Text.
+    ///
+    /// # Safety
+    /// `buf` is null or holds `cap` writable bytes; `len` is null or writable.
+    unlocked fn nhg_font_file(handle: u64, buf: *mut c_char, cap: usize, len: *mut usize) -> i32 {
+        crate::font::note_call();
+        if !cfg!(all(feature = "macos", target_os = "macos")) {
+            return Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED));
+        }
+        let path = crate::font::file(handle).ok_or(GlueError::State)?;
+        if !len.is_null() {
+            // SAFETY: non-null and writable (the caller's promise).
+            unsafe { len.write(path.len()) };
+        }
+        if buf.is_null() || cap <= path.len() {
+            return Err(GlueError::Code(crate::abi::NHG_E_TOO_SMALL));
+        }
+        // SAFETY: `buf` holds `cap` > `path.len()` writable bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(path.as_ptr(), buf.cast::<u8>(), path.len());
+            buf.add(path.len()).write(0);
+        }
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Fill page `page` of font `handle`'s glyph table: a character page, or a glyph page with `NHG_FONT_FILL_GLYPHS`
     /// set; a page filled already is left alone.  C calls it holding Emacs's global lock, on a miss.  `NHG_E_STATE`
     /// for a font that is not open, `NHG_E_ARG` for a page past the table.
@@ -2760,6 +2835,32 @@ nhg_export! {
         }
         // SAFETY: non-null and writable (the caller's promise).
         unsafe { used.write(k) };
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
+    /// The glyph of each of the 256 variation sequences of character `c` in font `handle` into `out`
+    /// (`macfont_variation_glyphs`: VS1–VS16, then VS17–VS256; 0 for one the font lacks), and how many it has into
+    /// `*n`.  `NHG_E_STATE` for a font that is not open, `NHG_E_UNSUPPORTED` without Core Text.
+    ///
+    /// # Safety
+    /// `out` is null or holds 256 writable words; `n` is null or writable.
+    unlocked fn nhg_font_variation_glyphs(handle: u64, c: u32, out: *mut u32, n: *mut u32) -> i32 {
+        crate::font::note_call();
+        if out.is_null() || n.is_null() {
+            return Err(GlueError::Arg);
+        }
+        if !cfg!(all(feature = "macos", target_os = "macos")) {
+            return Err(GlueError::Shell(crate::abi::NHG_E_UNSUPPORTED));
+        }
+        let mut v = [0u32; 256];
+        let got = crate::font::variation_glyphs(handle, c, &mut v).ok_or(GlueError::State)?;
+        // SAFETY: 256 writable words and a writable count (the caller's promise).
+        unsafe {
+            std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len());
+            n.write(got);
+        }
         Ok(NHG_OK)
     }
 }

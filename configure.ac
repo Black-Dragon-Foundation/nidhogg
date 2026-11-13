@@ -113,6 +113,11 @@ AC_ARG_WITH([nidhogg-watchdog-signal],
   [AS_HELP_STRING([--with-nidhogg-watchdog-signal=NAME],
     [the signal the watchdog's monitor sends the main thread (default SIGURG)])],
   [], [with_nidhogg_watchdog_signal=SIGURG])
+dnl Nidhogg: the shell glue's test hooks without Emacs's checking, for timing builds compared with a release build.
+AC_ARG_ENABLE([nidhogg-test-hooks],
+  [AS_HELP_STRING([--enable-nidhogg-test-hooks],
+    [build the shell glue's test hooks without --enable-checking (a timing build)])],
+  [], [enable_nidhogg_test_hooks=no])
 dnl Nidhogg: worker threads (see README.md, "Work off the main thread").
 AC_ARG_WITH([nidhogg-workers],
   [AS_HELP_STRING([--with-nidhogg-workers],
@@ -593,7 +598,7 @@ OPTION_DEFAULT_OFF([glitnir],[build Glitnir (the compositor, Rust); needs cargo 
 dnl Nidhogg: the native Wayland shell (nidhogg/shell, Rust, with Glitnir inside) and the C glue src/nhwl*.c
 OPTION_DEFAULT_OFF([nidhogg-wayland],[use Nidhogg's own Wayland shell (no GTK); implies --with-glitnir; Linux only])
 dnl Nidhogg: the native macOS shell (Naglfar: nidhogg/shell's AppKit backend, Rust) over the same shared C
-OPTION_DEFAULT_OFF([nidhogg-macos],[use Nidhogg's own macOS shell (AppKit, Rust; no NS port); implies --with-glitnir; macOS only])
+OPTION_DEFAULT_OFF([nidhogg-macos],[use Nidhogg's own macOS shell (AppKit, Rust; no NS port); implies --with-glitnir; macOS only, and its default there])
 OPTION_DEFAULT_ON([xml2],[don't compile with XML parsing support])
 OPTION_DEFAULT_OFF([imagemagick],[compile with ImageMagick image support])
 OPTION_DEFAULT_ON([native-image-api], [don't use native image APIs (GDI+ on Windows)])
@@ -2666,7 +2671,14 @@ if test "${with_nidhogg_wayland}" = yes; then
   with_glitnir=yes
   with_ns=no
 fi
-dnl Nidhogg: --with-nidhogg-macos is the macOS window system, the same way: it replaces the NS port.
+dnl Nidhogg: --with-nidhogg-macos is the macOS window system, the same way: it replaces the NS port, whose sources stay
+dnl for clean merges and are never built.  On macOS it is the default.
+test "${with_ns}" != yes ||
+  AC_MSG_ERROR([--with-ns is not built by Nidhogg: macOS uses --with-nidhogg-macos])
+with_ns=no
+case "${host_os}" in
+  darwin*) test "${with_x}" = yes || with_nidhogg_macos=yes ;;
+esac
 if test "${with_nidhogg_macos}" = yes; then
   test "${with_x}" != yes && test "${with_ns}" != yes && test "${with_nidhogg_wayland}" != yes ||
     AC_MSG_ERROR([--with-nidhogg-macos cannot be combined with --with-x, --with-ns or --with-nidhogg-wayland])
@@ -4103,18 +4115,21 @@ if test "${with_glitnir}" = yes; then
     dnl native-static-libs); Glitnir's chrome is Core Animation layers, not Cairo tiles
     if test "$HAVE_NHMAC" = yes; then
       GLITNIR_CARGO_FLAGS="--no-default-features --features macos"
-      NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o nhmacterm.o nhmacdraw.o nhmacfont.o"
+      NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o glitnir-decor.o nhmacterm.o nhmacdraw.o nhmacfont.o"
     fi
   fi
   GLITNIR_LIBNAME=$glitnir_lib
   glitnir_home=`pwd`/src/glitnir-cargo-home
   glitnir_target=`pwd`/src/glitnir-target
   test -z "$MACOSX_DEPLOYMENT_TARGET" || GLITNIR_ENV="MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
-  dnl Under --enable-checking the glue gets its test hooks and Rust's debug assertions.  Cargo has no environment
-  dnl variable that turns on a feature, hence GLITNIR_CARGO_FLAGS; the profile setting does have one.
+  dnl Under --enable-checking the glue gets its test hooks and Rust's debug assertions; under
+  dnl --enable-nidhogg-test-hooks the hooks alone.  Cargo has no environment variable that turns on a feature, hence
+  dnl GLITNIR_CARGO_FLAGS; the profile setting does have one.
   if test "$HAVE_NHWL" = yes && test "x$ac_enable_checking" != x; then
     GLITNIR_CARGO_FLAGS="$GLITNIR_CARGO_FLAGS --features test-hooks"
     GLITNIR_ENV="$GLITNIR_ENV CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true"
+  elif test "$HAVE_NHWL" = yes && test "$enable_nidhogg_test_hooks" = yes; then
+    GLITNIR_CARGO_FLAGS="$GLITNIR_CARGO_FLAGS --features test-hooks"
   fi
   AC_MSG_CHECKING([the native libraries Glitnir links])
   rm -rf "$glitnir_target"

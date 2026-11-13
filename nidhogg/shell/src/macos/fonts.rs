@@ -65,6 +65,15 @@ unsafe extern "C" {
     fn CTFontGetUnderlineThickness(font: *const c_void) -> f64;
     fn CTFontGetSymbolicTraits(font: *const c_void) -> u32;
     fn CTFontCopyFamilyName(font: *const c_void) -> *const c_void;
+    fn CTFontCopyTable(font: *const c_void, tag: u32, options: u32) -> *const c_void;
+    fn CTFontCopyAttribute(font: *const c_void, attribute: *const c_void) -> *const c_void;
+    static kCTFontURLAttribute: *const c_void;
+    #[cfg(feature = "test-hooks")]
+    fn CTFontManagerRegisterFontsForURL(
+        url: *const c_void,
+        scope: u32,
+        error: *mut *const c_void,
+    ) -> bool;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -75,6 +84,15 @@ unsafe extern "C" {
         app: *const c_void,
         valid: *mut u8,
     ) -> isize;
+    fn CFDataGetLength(d: *const c_void) -> isize;
+    fn CFURLGetFileSystemRepresentation(
+        url: *const c_void,
+        resolve: u8,
+        buf: *mut u8,
+        cap: isize,
+    ) -> u8;
+    fn CFRelease(cf: *const c_void);
+    fn CFDataGetBytePtr(d: *const c_void) -> *const u8;
 }
 
 /// `AppleAntiAliasingThreshold` (`macfont_update_antialias_threshold`): text this size or smaller is drawn without
@@ -116,6 +134,8 @@ struct OpenFont {
     /// The family and size, for the test hooks.
     family: String,
     size: f64,
+    /// The font's `cmap` table, read the first time a variation sequence is asked of it.
+    cmap: OnceLock<Option<Vec<u8>>>,
 }
 
 fn open_fonts() -> &'static Mutex<(u64, HashMap<u64, OpenFont>)> {
@@ -176,9 +196,30 @@ pub fn open(
             synthetic_bold,
             family: m.family.clone(),
             size: m.size,
+            cmap: OnceLock::new(),
         },
     );
     Some((handle, m))
+}
+
+/// The open font `handle`'s raw metrics, read from Core Text again (`None`: not open): the test hooks' oracle.
+pub fn raw(handle: u64) -> Option<RawMetrics> {
+    with_font(handle, |f| {
+        // SAFETY: a live font; the family name's copy is +1.
+        unsafe {
+            RawMetrics {
+                ascent: CTFontGetAscent(f),
+                descent: CTFontGetDescent(f),
+                leading: CTFontGetLeading(f),
+                underline_position: CTFontGetUnderlinePosition(f),
+                underline_thickness: CTFontGetUnderlineThickness(f),
+                size: CTFontGetSize(f),
+                symbolic: CTFontGetSymbolicTraits(f),
+                family: Cf::new(CTFontCopyFamilyName(f))
+                    .map_or_else(String::new, |s| string(s.get())),
+            }
+        }
+    })
 }
 
 /// The open font `handle`'s synthesised italic and bold, and its size (`None`: not open).
@@ -211,6 +252,66 @@ pub fn close(handle: u64) {
 pub fn with_font<R>(handle: u64, f: impl FnOnce(*const c_void) -> R) -> Option<R> {
     let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
     open.1.get(&handle).map(|o| f(o.font.get()))
+}
+
+/// The file the open font `handle` is read from (its `kCTFontURLAttribute`, as a path), for `font-info`'s FILENAME:
+/// drgnx's hub reads its advances from it rather than asking the editor per character.  `None` when the font is not
+/// open, Core Text names no file, or the file is a collection (the face's index in it is not known).
+pub fn file(handle: u64) -> Option<String> {
+    with_font(handle, |ct| {
+        // SAFETY: a live font and the framework's constant; the URL (+1) is released once read.
+        unsafe {
+            let url = CTFontCopyAttribute(ct, kCTFontURLAttribute);
+            if url.is_null() {
+                return None;
+            }
+            let mut buf = [0u8; 4096];
+            let ok = CFURLGetFileSystemRepresentation(url, 1, buf.as_mut_ptr(), buf.len() as isize);
+            CFRelease(url);
+            let n = buf.iter().position(|&b| b == 0)?;
+            (ok != 0 && n > 0).then(|| String::from_utf8_lossy(&buf[..n]).into_owned())
+        }
+    })
+    .flatten()
+    .filter(|path| !collection(path))
+}
+
+/// Whether the font file at `path` is a collection (`ttcf`): its face's index is not known here, and a reader taking
+/// the first face would read another face's advances, so no file is named for it.
+fn collection(path: &str) -> bool {
+    use std::io::Read;
+    let mut tag = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut tag))
+        .map_or(true, |()| &tag == b"ttcf")
+}
+
+/// `f` on the open font `handle`'s `cmap` table (`CTFontCopyTable`, read once; empty when it has none); `None`: not
+/// open.
+pub fn with_cmap<R>(handle: u64, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+    let open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
+    let o = open.1.get(&handle)?;
+    let cmap = o.cmap.get_or_init(|| {
+        // SAFETY: a live font; the table's copy is +1, owned by `Cf`.
+        let t = Cf::new(unsafe { CTFontCopyTable(o.font.get(), u32::from_be_bytes(*b"cmap"), 0) })?;
+        // SAFETY: a live CFData.
+        let (p, n) = unsafe { (CFDataGetBytePtr(t.get()), CFDataGetLength(t.get())) };
+        // SAFETY: its `n` bytes, copied before `t` is released.
+        (!p.is_null() && n > 0)
+            .then(|| unsafe { std::slice::from_raw_parts(p, n as usize) }.to_vec())
+    });
+    Some(f(cmap.as_deref().unwrap_or(&[])))
+}
+
+/// Test hook: register the font file at `path` for this process (`CTFontManagerRegisterFontsForURL`, process scope),
+/// as an app installing a font while Emacs runs.  Core Text then posts its registered-fonts notification.
+#[cfg(feature = "test-hooks")]
+pub fn register(path: &str) -> bool {
+    let url = objc2_foundation::NSURL::fileURLWithPath(&NSString::from_str(path));
+    // SAFETY: a live file URL (toll-free bridged to CFURL); kCTFontManagerScopeProcess is 1; no error asked for.
+    unsafe {
+        CTFontManagerRegisterFontsForURL(Retained::as_ptr(&url).cast(), 1, std::ptr::null_mut())
+    }
 }
 
 /// The glyph of each UTF-16 unit of `units` into `out` (0: none; a surrogate pair's glyph at its first unit), one

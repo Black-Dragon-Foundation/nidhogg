@@ -6,6 +6,7 @@ use super::runloop::WinDelegate;
 use super::surface::Surfaces;
 use super::view::{self, NhView};
 use crate::api::WindowId;
+use crate::units::Scale;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -36,6 +37,12 @@ pub struct Win {
     pub configuring: Option<u32>,
     /// Non-native full screen: the frame and style to go back to.
     pub saved: Option<(NSRect, NSWindowStyleMask)>,
+    /// Native full screen: AppKit is in a transition (it ignores a toggle until the transition ends), and the state
+    /// asked for meanwhile, applied when it ends.
+    pub fs_busy: bool,
+    pub fs_want: Option<bool>,
+    /// Zoom asked for in native full screen or during a transition: applied once the window is out of full screen.
+    pub zoom_want: Option<bool>,
     /// Our own edge-drag resize: the frame the host is drawing for, and the newest one asked for since.
     pub resize: Pending,
 }
@@ -92,7 +99,6 @@ impl Win {
         window.setTitle(&NSString::from_str(title));
         let delegate = WinDelegate::new(mtm, id);
         window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        let scale120 = (window.backingScaleFactor() * 120.0).round() as u32;
         Win {
             window,
             view,
@@ -100,11 +106,15 @@ impl Win {
             surfaces: Surfaces::default(),
             _delegate: delegate,
             size: (w, h),
-            scale120,
+            // not placed yet: `placed` reads it once the window is on its screen
+            scale120: 0,
             output: 0,
             mapped: true,
             configuring: None,
             saved: None,
+            fs_busy: false,
+            fs_want: None,
+            zoom_want: None,
             resize: Pending::default(),
         }
     }
@@ -120,11 +130,8 @@ impl Win {
     /// resize: then the window's size is the one the host is told, and the surface follows it.  The size taken is
     /// the one the host knows, so no configure goes back.  Whether it changed.
     pub fn follow_surface(&mut self, sw: i32, sh: i32) -> bool {
-        let scale = self.window.backingScaleFactor();
-        let want = (
-            (f64::from(sw) / scale).round() as i32,
-            (f64::from(sh) / scale).round() as i32,
-        );
+        let s = self.scale();
+        let want = (s.pt_i(sw), s.pt_i(sh));
         if want == self.size {
             // drawn at the size it was told: whatever configure it had, it applied (the ack may never come for a
             // configure the host dropped)
@@ -144,8 +151,24 @@ impl Win {
         true
     }
 
+    /// The scale AppKit has the window at now (`MacShell::compare` tells the host when it is new).
     pub fn scale_now(&self) -> u32 {
-        (self.window.backingScaleFactor() * 120.0).round() as u32
+        super::scale::of_window(&self.window).s120()
+    }
+
+    /// The window is on its screen: it takes that screen's scale, which the caller tells the host.
+    pub fn placed(&mut self) -> Scale {
+        self.scale120 = self.scale_now();
+        self.scale()
+    }
+
+    /// The scale the host was told: every conversion between the host's device pixels and AppKit's points uses it.
+    pub fn scale(&self) -> Scale {
+        debug_assert!(
+            self.scale120 != 0,
+            "a window's scale read before it was placed"
+        );
+        Scale::of120(self.scale120)
     }
 }
 

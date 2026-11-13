@@ -5,6 +5,8 @@
 
 use super::chrome::{CGImageRelease, argb_image};
 use crate::api::{CardImage, ShellError, ShellResult};
+use crate::units::Scale;
+use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -14,14 +16,19 @@ use std::collections::BTreeMap;
 /// A card's place in its root's surface: x, y, width, height, device pixels.
 type Place = (i32, i32, u32, u32);
 
-/// A root's cards: the layers shown, by card id, and the list waiting for the next commit.
+/// A window's cards (a root's window cards, and its windows' blocks; a child's blocks): the layers shown, by card id,
+/// the layer they are in, and the list waiting for the next commit.
 #[derive(Default)]
 pub struct Cards {
     shown: BTreeMap<u64, (Retained<CALayer>, Place)>,
+    host: Option<Retained<CALayer>>,
     pending: Option<Vec<CardImage>>,
     /// Images set on a layer since the window opened (test hook).
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub images: u64,
+    /// Each shown card's last image, by id (test hook: `test-card-row`).
+    #[cfg(feature = "test-hooks")]
+    pub last: BTreeMap<u64, std::sync::Arc<[u32]>>,
 }
 
 impl Cards {
@@ -44,13 +51,40 @@ impl Cards {
                 _ => {}
             }
         }
-        self.pending = Some(list.to_vec());
+        // an image kept (None) that the list before had not shown yet is still to be shown: it carries over
+        let before = self.pending.take().unwrap_or_default();
+        self.pending = Some(
+            list.iter()
+                .map(|c| match &c.argb {
+                    None => CardImage {
+                        argb: before
+                            .iter()
+                            .find(|p| p.id == c.id)
+                            .and_then(|p| p.argb.clone()),
+                        ..c.clone()
+                    },
+                    Some(_) => c.clone(),
+                })
+                .collect(),
+        );
         Ok(())
     }
 
     /// Apply the waiting list to `root` (the root's layer, `h` points tall) at `scale`: inside the root tree's
     /// transaction.
-    pub fn apply(&mut self, root: &CALayer, h: f64, scale: f64) {
+    pub fn apply(&mut self, root: &CALayer, h: f64, scale: Scale) {
+        // a window that changed hosts (a child made top-level, or the reverse): its layers move to the new one
+        if !self
+            .host
+            .as_ref()
+            .is_some_and(|l| std::ptr::eq(Retained::as_ptr(l), root))
+        {
+            for (l, _) in self.shown.values() {
+                l.removeFromSuperlayer();
+                root.insertSublayer_atIndex(l, 0);
+            }
+            self.host = Some(root.retain());
+        }
         let Some(list) = self.pending.take() else {
             return;
         };
@@ -62,6 +96,11 @@ impl Cards {
             }
             kept
         });
+        #[cfg(feature = "test-hooks")]
+        {
+            let shown = &self.shown;
+            self.last.retain(|id, _| shown.contains_key(id));
+        }
         for c in &list {
             let (l, at) = self.shown.entry(c.id).or_insert_with(|| {
                 let l = CALayer::new();
@@ -87,18 +126,18 @@ impl Cards {
                         l.setContents(Some(&*i.cast::<AnyObject>()));
                         CGImageRelease(i);
                     }
-                    l.setContentsScale(scale);
+                    l.setContentsScale(scale.factor());
                     self.images += 1;
+                    #[cfg(feature = "test-hooks")]
+                    self.last.insert(c.id, px.clone());
                 }
             }
             if *at != c.rect || c.argb.is_some() {
                 let (x, y, w, hh) = c.rect;
-                let (pw, ph) = (f64::from(w) / scale, f64::from(hh) / scale);
                 // device pixels from the top-left to points from the bottom-left
-                l.setPosition(NSPoint::new(
-                    f64::from(x) / scale,
-                    h - f64::from(y) / scale - ph,
-                ));
+                let (px, py, pw, ph) =
+                    scale.view_rect((f64::from(x), f64::from(y), f64::from(w), f64::from(hh)), h);
+                l.setPosition(NSPoint::new(px, py));
                 l.setBounds(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(pw, ph)));
                 *at = c.rect;
             }
@@ -109,5 +148,16 @@ impl Cards {
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub fn shown(&self) -> Vec<(u64, Place)> {
         self.shown.iter().map(|(id, (_, at))| (*id, *at)).collect()
+    }
+
+    /// Card `id`'s last image's row `y` from column `x0`, `n` pixels, as #xAARRGGBB words (test hook).
+    #[cfg(feature = "test-hooks")]
+    pub fn row(&self, id: u64, y: u32, x0: u32, n: u32) -> Option<Vec<u32>> {
+        let (_, (_, _, w, h)) = self.shown.get(&id)?;
+        let px = self.last.get(&id)?;
+        (y < *h && x0 < *w).then(|| {
+            let start = (y * w + x0) as usize;
+            px[start..start + n.min(w - x0) as usize].to_vec()
+        })
     }
 }

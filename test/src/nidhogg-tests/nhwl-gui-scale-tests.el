@@ -139,6 +139,63 @@ font at the size a frame opened now at that scale shows."
         (select-frame a)
         (nhwl-gui--pump)))))
 
+;;;; The default fringes
+
+(defun nhwl-gui-scale--fringes ()
+  "The selected window's fringes (left right) and what a default fringe of 8 logical pixels is at the frame's scale."
+  (let ((w (window-fringes)))
+    (list (list (nth 0 w) (nth 1 w))
+          (let ((px (round (* 8 (frame-scale-factor))))) (list px px)))))
+
+(ert-deftest nhwl-gui/default-fringe-follows-the-scale ()
+  "A frame's default fringes are 8 logical pixels, as on NS and pgtk: 8 device pixels times its scale, and again
+after the scale changes (the recorder: 1 → 2 → 1.25 → 1)."
+  (skip-unless (nhwl-gui--live-p))
+  (let ((old (list (frame-parameter nil 'left-fringe) (frame-parameter nil 'right-fringe))))
+    (unwind-protect
+        (progn
+          (modify-frame-parameters nil '((left-fringe) (right-fringe)))
+          (let ((f (nhwl-gui-scale--fringes)))
+            (glitnir-gui--say "fringe-probe: at %s fringes %S, want %S" (frame-scale-factor) (car f) (cadr f))
+            (should (equal (car f) (cadr f))))
+          (when (nhwl-gui--recorder-p)
+            (nhwl-gui-scale--keeping
+              (dolist (s '(240 150 120))
+                (nhwl-gui-scale--set s)
+                (let ((f (nhwl-gui-scale--fringes)))
+                  (glitnir-gui--say "fringe-probe: at %s fringes %S, want %S" (frame-scale-factor) (car f) (cadr f))
+                  (should (equal (car f) (cadr f))))))))
+      (modify-frame-parameters nil `((left-fringe . ,(car old)) (right-fringe . ,(cadr old)))))))
+
+(defun nhwl-gui-scale--box-lines ()
+  "The device width a `:box 1' face adds on each side of a character in the selected window, and what one logical
+pixel is at the frame's scale (rounded, at least 1)."
+  (with-temp-buffer
+    (set-window-buffer nil (current-buffer))
+    ;; whole lines: the box's right line goes on the glyph after the run
+    (insert "xxx\n")
+    (let ((eol (point)))
+      (insert "x" (propertize "x" 'face '(:box 1)) "x\n")
+      (let ((plain (car (window-text-pixel-size nil 1 (1- eol))))
+            (boxed (car (window-text-pixel-size nil eol (1- (point-max))))))
+        (list (/ (- boxed plain) 2) (max 1 (round (frame-scale-factor))))))))
+
+(ert-deftest nhwl-gui/box-lines-follow-the-scale ()
+  "A face's box line widths are logical pixels, as NS's points: a `:box 1' face is one logical pixel a side, so 2
+device pixels at scale 2 (the recorder: 1 → 2 → 1.25 → 1; the box lines rounded, at least 1)."
+  (skip-unless (nhwl-gui--live-p))
+  (save-window-excursion
+    (let ((b (nhwl-gui-scale--box-lines)))
+      (glitnir-gui--say "box-probe: at %s a side %S, want %S" (frame-scale-factor) (car b) (cadr b))
+      (should (equal (car b) (cadr b))))
+    (when (nhwl-gui--recorder-p)
+      (nhwl-gui-scale--keeping
+        (dolist (s '(240 150 120))
+          (nhwl-gui-scale--set s)
+          (let ((b (nhwl-gui-scale--box-lines)))
+            (glitnir-gui--say "box-probe: at %s a side %S, want %S" (frame-scale-factor) (car b) (cadr b))
+            (should (equal (car b) (cadr b)))))))))
+
 ;;;; Fonts from their setting, per frame
 
 (ert-deftest nhwl-gui/scale-round-trip-from-1.25-keeps-the-font ()

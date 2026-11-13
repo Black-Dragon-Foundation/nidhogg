@@ -7,6 +7,8 @@
 ;; popup's tracking loop with a timer.
 
 (require 'ert)
+(require 'benchmark)
+(declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
 (require 'cl-lib)
 (require 'subr-x)
 
@@ -34,7 +36,7 @@
     (dotimes (_ 20)
       (execute-kbd-macro "x"))
     (nhmac-menu-gui--settle)
-    (message "nhmac-menu-builds-per-key: %d builds" (- nhmac-menu-builds before))
+    (glitnir-gui--say "nhmac-menu-builds-per-key: %d builds" (- nhmac-menu-builds before))
     (should (<= (- nhmac-menu-builds before) 1))))
 
 (ert-deftest nhmac-menu-bar-holds-the-tree ()
@@ -43,8 +45,9 @@
   (nhmac-menu-invalidate)
   (nhmac-menu-gui--settle)
   (let ((d (nhmac-menu-gui--dump)))
-    (should (cl-find-if (lambda (e) (and (= (car e) 1) (equal (cadr e) "File"))) d))
-    (should (cl-find-if (lambda (e) (and (= (car e) 2) (>= (nth 2 e) 0))) d))))
+    ;; depth 0 is the bar's own items (as in the Dock menu's dump), depth 1 their menus' items
+    (should (cl-find-if (lambda (e) (and (= (car e) 0) (equal (cadr e) "File"))) d))
+    (should (cl-find-if (lambda (e) (and (= (car e) 1) (> (nth 2 e) 0))) d))))
 
 (ert-deftest nhmac-menu-no-lisp-on-open ()
   "AppKit updating the menu as it opens runs no Lisp: no `menu-bar-update-hook' and no `:filter'."
@@ -60,31 +63,74 @@
       (remove-hook 'menu-bar-update-hook hook)
       (remove-hook 'activate-menubar-hook hook))))
 
+(defun nhmac-menu-gui--idle (seconds pred)
+  "Wait idle, as the command loop does, until PRED holds or SECONDS pass; PRED's last value.
+The rows run from a timer, where `sit-for' and `accept-process-output' wait with a time limit and so never start
+idleness (keyboard.c starts it only for a read without one): idle timers would not run.  This reads with no limit and
+leaves by a throw from a timer, as `with-timeout' does."
+  (let* ((got nil)
+         (poll (run-with-timer 0.05 0.05 (lambda () (when (setq got (funcall pred))
+                                                       (throw 'nhmac-menu-gui--idle nil)))))
+         (stop (run-with-timer seconds nil (lambda () (throw 'nhmac-menu-gui--idle nil)))))
+    (unwind-protect
+        (catch 'nhmac-menu-gui--idle
+          (while t (read-event)))
+      (cancel-timer poll)
+      (cancel-timer stop))
+    got))
+
 (ert-deftest nhmac-menu-buffers-after-filter ()
-  "During a long idle, a process filter creates a buffer, and within 0.5 s the Buffers menu lists it."
+  "During a long idle, a process filter creates a buffer, and within 0.5 s the Buffers menu lists it: the shell gets
+a tree that lists it (and the shell's menu then shows it)."
   (skip-unless (nhmac-menu-gui--naglfar-p))
   (nhmac-menu-gui--settle)
   (let* ((name "nhmac-menu-late-buffer")
+         (made nil)
          (proc (make-process :name "nhmac-menu-late" :command '("sh" "-c" "sleep 3; echo go")
                              :connection-type 'pipe :noquery t
-                             :filter (lambda (_p _s) (get-buffer-create name))))
-         (deadline (+ (float-time) 6))
-         listed)
+                             :filter (lambda (_p _s) (setq made (float-time)) (get-buffer-create name))))
+         listed
+         (builds nil)
+         ;; when the shell got a tree that lists the buffer: the listing's time.  The poll below only confirms it from
+         ;; the shell's side; its own time (a dump every 0.05 s, and the collection the build put off till after its
+         ;; send) is not the menu's (round 4: built 0.42 s after the filter, polled at 0.53 s after a 0.076 s collection)
+         (sent nil)
+         (send (lambda (f what &rest args)
+                 (prog1 (apply f what args)
+                   (when (and made (not sent) (eq what 'menu-bar)
+                              (cl-some (lambda (a) (and (stringp a) (string-match-p name a))) args))
+                     (setq sent (float-time))))))
+         ;; when each build ran, how long, and its collections' count and time (from the filter): where the time
+         ;; between the filter and the listing goes
+         (watch (lambda (f &rest args)
+                  (let ((t0 (float-time)) (gcs gcs-done) (gct gc-elapsed))
+                    (prog1 (apply f args)
+                      (when made (push (list (- t0 made) (- (float-time) t0) (- gcs-done gcs) (- gc-elapsed gct))
+                                       builds)))))))
+    (advice-add 'nhmac-menu-build :around watch)
+    (advice-add 'nhmac--call :around send)
     (unwind-protect
         (progn
-          (while (and (not (get-buffer name)) (< (float-time) deadline))
-            (accept-process-output proc 0.2))
-          (should (get-buffer name))
-          (let ((t0 (float-time)))
-            (while (and (not listed) (< (- (float-time) t0) 1.5))
-              (sit-for 0.1)
-              (setq listed (cl-find-if (lambda (e) (string-match-p name (cadr e)))
-                                       (nhmac-menu-gui--dump))))
-            (message "nhmac-menu-buffers-after-filter: listed after %.2f s" (- (float-time) t0))
-            (should listed)
-            (should (< (- (float-time) t0) 0.5))))
+          (setq listed (and (nhmac-menu-gui--idle
+                             6 (lambda () (and made (cl-find-if (lambda (e) (string-match-p name (cadr e)))
+                                                                (nhmac-menu-gui--dump)))))
+                            sent))
+          (should made)
+          ;; the build's own time: the listing waits `nhmac-menu-delay' of idleness, then one build
+          (glitnir-gui--say "nhmac-menu-buffers-after-filter: listed %s; delay %s, a build %.3f s; builds (start took gcs gc-time) %S"
+                            (if listed (format "%.2f s after the filter" (- listed made)) "never")
+                            nhmac-menu-delay (car (benchmark-run 1 (nhmac-menu-flatten-bar-with-paths)))
+                            (reverse builds))
+          ;; round 4: built 0.42 s after the filter for a 0.3 s delay.  When the build was asked for and when its
+          ;; timer fired, by the clock and by idleness: idleness that started late, or a timer that fired late
+          (glitnir-gui--say "nhmac-menu-buffers-after-filter: filter at %.3f; timing (scheduled idle due fired idle) %S"
+                            made nhmac-menu--timing)
+          (should listed)
+          (should (< (- listed made) 0.5)))
+      (advice-remove 'nhmac-menu-build watch)
+      (advice-remove 'nhmac--call send)
       (delete-process proc)
-      (kill-buffer name))))
+      (when (get-buffer name) (kill-buffer name)))))
 
 (ert-deftest nhmac-menu-stale-generation-dropped ()
   "A choice from an older tree is dropped; one from the current tree becomes the menu-bar events of its path."
@@ -94,7 +140,8 @@
     (nhmac--call 'test-menu-choose 98 3)
     (should-not (read-event nil nil 0.5))
     (nhmac--call 'test-menu-choose 99 3)
-    (should (eq (read-event nil nil 2) 'menu-bar))
+    ;; the path's prefix event reads as (menu-bar), as on X and NS (keyboard.c's MENU_BAR_EVENT)
+    (should (equal (read-event nil nil 2) '(menu-bar)))
     (should (eq (read-event nil nil 2) 'nhmac-test-item))))
 
 (ert-deftest nhmac-popup-menu ()
@@ -120,7 +167,7 @@ and neither overlaps a take."
   (skip-unless (nhmac-menu-gui--naglfar-p))
   (nhmac-menu-build)
   (let ((dump (nhmac--query 'test-dock-menu -1)))
-    (message "nhmac-dock-menu: %S" dump)
+    (glitnir-gui--say "nhmac-dock-menu: %S" dump)
     (should (string-match-p "\\`0\tNew Frame\t5\t1\n" dump)))
   (let ((before (length (frame-list))))
     (nhmac--query 'test-dock-menu 0)

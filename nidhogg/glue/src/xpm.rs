@@ -1,10 +1,18 @@
 //! XPM on Naglfar (design §5.5): ImageIO has no XPM, and `image.c`'s own decoder is compiled only for the ports it
 //! names, so the native route reads XPM 3 here, as `xpm_load_image` does.  A colour line's keys are taken
-//! `c` > `g` > `g4` > `m` (a colour display's order; `s` names count only through `:color-symbols`, which the native
-//! route does not take); `None` is transparent; every other value is resolved by the caller (Emacs's colour names), and
-//! one it cannot resolve is the frame's foreground there.  Platform-free; tested on Linux.
+//! `c` > `g` > `g4` > `m` (a colour display's order); its first `s` name is asked first, as [`SYMBOL`] followed by the
+//! name, and what the caller answers from the image's `:color-symbols` wins ([`SYMBOL_NONE`]: transparent;
+//! [`SYMBOL_UNSET`]: not there, the keys decide); `None` is transparent; every other value is resolved by the caller
+//! (Emacs's colour names), and one it cannot resolve is the frame's foreground there.  Platform-free; tested on Linux.
 
 use std::collections::HashMap;
+
+/// What a name asked for a line's `s` key starts with: the rest is the symbol, looked up in `:color-symbols`.
+pub const SYMBOL: char = '\u{1}';
+/// The answer for a symbol `:color-symbols` does not give a colour it can resolve: the line's keys decide.
+pub const SYMBOL_UNSET: u32 = 1 << 24;
+/// The answer for a symbol `:color-symbols` gives as `None`: transparent.
+pub const SYMBOL_NONE: u32 = 1 << 25;
 
 /// Whether `bytes` are an XPM 3 file (they start with its comment).
 pub fn is_xpm(bytes: &[u8]) -> bool {
@@ -40,7 +48,7 @@ fn colour(spec: &str, resolve: &mut dyn FnMut(&str) -> u32) -> Option<Option<u32
     const KEYS: [&str; 5] = ["s", "m", "g4", "g", "c"];
     let rank = |k: &str| KEYS.iter().position(|&x| x == k);
     let mut words = spec.split_whitespace().peekable();
-    let (mut best, mut best_rank) = (None, 0);
+    let (mut best, mut best_rank, mut symbol) = (None, 0, None);
     while let Some(key) = words.next() {
         let r = rank(key)?;
         let mut value = Vec::new();
@@ -54,8 +62,17 @@ fn colour(spec: &str, resolve: &mut dyn FnMut(&str) -> u32) -> Option<Option<u32
         if value.is_empty() {
             return None;
         }
-        if r > best_rank {
+        if r == 0 {
+            symbol.get_or_insert_with(|| value.join(" "));
+        } else if r > best_rank {
             (best, best_rank) = (Some(value.join(" ")), r);
+        }
+    }
+    if let Some(s) = symbol {
+        match resolve(&format!("{SYMBOL}{s}")) {
+            SYMBOL_UNSET => {}
+            SYMBOL_NONE => return Some(None),
+            rgb => return Some(Some(rgb)),
         }
     }
     let v = best?;
@@ -109,14 +126,19 @@ pub fn decode(
 }
 
 /// The colour names an XPM in `bytes` asks to be resolved, each once, in the order [`decode`] first asks for them
-/// (`None` is not one).  `None` when it does not parse.
+/// (`None` is not one; a line's symbol comes before its keys' name, which is asked too).  `None` when it does not
+/// parse.
 pub fn names(bytes: &[u8]) -> Option<Vec<String>> {
     let mut names: Vec<String> = Vec::new();
     decode(bytes, &mut |n| {
         if !names.iter().any(|m| m == n) {
             names.push(n.to_string());
         }
-        0
+        if n.starts_with(SYMBOL) {
+            SYMBOL_UNSET
+        } else {
+            0
+        }
     })?;
     Some(names)
 }
@@ -141,8 +163,38 @@ static char *test[] = {
         match name {
             "#ff0000" => 0xff0000,
             "light gray" => 0xd3d3d3,
+            n if n.starts_with(SYMBOL) => SYMBOL_UNSET,
             _ => 0x123456,
         }
+    }
+
+    /// xpm_load_image: a line's first `s` name, found in `:color-symbols`, wins over its keys (`None`: transparent);
+    /// one not there leaves the keys to decide.
+    #[test]
+    fn color_symbols_win_over_the_keys() {
+        let xpm = br#"/* XPM */ { "3 1 3 1", "a c red s fg", "b c blue s mask", "c c #00ff00 s other", "abc" }"#;
+        let mut symbols = |n: &str| match n {
+            "\u{1}fg" => 0x0000ff,
+            "\u{1}mask" => SYMBOL_NONE,
+            n if n.starts_with(SYMBOL) => SYMBOL_UNSET,
+            "#00ff00" => 0x00ff00,
+            _ => 0xff0000,
+        };
+        let (_, _, px, alpha) = decode(xpm, &mut symbols).unwrap();
+        assert!(alpha);
+        assert_eq!(px, vec![0xff00_00ff, 0, 0xff00_ff00]);
+        // each line's symbol, then its keys' name
+        assert_eq!(
+            super::names(xpm).unwrap(),
+            [
+                "\u{1}fg",
+                "red",
+                "\u{1}mask",
+                "blue",
+                "\u{1}other",
+                "#00ff00"
+            ]
+        );
     }
 
     #[test]
@@ -170,7 +222,11 @@ static char *test[] = {
         assert_eq!(super::names(twice).unwrap(), vec!["red".to_string()]);
         assert_eq!(
             super::names(XPM).unwrap(),
-            vec!["#ff0000".to_string(), "light gray".to_string()]
+            vec![
+                "#ff0000".to_string(),
+                "\u{1}mask".to_string(),
+                "light gray".to_string()
+            ]
         );
         assert!(super::names(b"not an xpm").is_none());
     }

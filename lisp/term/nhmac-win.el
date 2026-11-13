@@ -401,6 +401,10 @@ needed."
 (defvar nhmac-menu--last nil "The flat vector the shell has.")
 (defvar nhmac-menu--timer nil "The one pending idle build, or nil.")
 (defvar nhmac-menu-delay 0.3 "Seconds of idleness before the deep build.")
+(defvar nhmac-menu--timing nil
+  "The newest idle build's timing, for tests: (SCHEDULED IDLE-THEN DUE FIRED IDLE-AT-FIRE).
+SCHEDULED and FIRED are `float-time' values, IDLE-THEN, DUE and
+IDLE-AT-FIRE seconds of idleness (nil when not idle).")
 
 (defun nhmac-menu-encode (vec)
   "VEC, a flat menu vector, as the text the shell reads: records of
@@ -427,10 +431,20 @@ A string field has its line breaks and those two characters turned into blanks.
     (cons vec paths)))
 
 (defun nhmac-menu-build ()
-  "Build the deep tree now and send it when it changed.  Quits at input."
+  "Build the deep tree now and send it when it changed.  Quits at input.
+A build allocates about 1 MB (a byte-compiled build of the default menu bar:
+19k conses and 84k vector cells), which crosses the default
+`gc-cons-threshold' and collected twice in round 2's lane (0.16 s of a
+0.19 s build): no collection starts inside the build and its send, so the
+tree reaches the shell first and the next allocation after it collects."
+  (when (and nhmac-menu--timer (= (length nhmac-menu--timing) 3))
+    (setq nhmac-menu--timing
+          (append nhmac-menu--timing
+                  (list (float-time) (and (current-idle-time) (float-time (current-idle-time)))))))
   (setq nhmac-menu--timer nil)
   (when (and (fboundp 'nhmac--call) (display-graphic-p))
-    (let ((r (while-no-input (nhmac-menu-flatten-bar-with-paths))))
+    (let* ((gc-cons-threshold (max gc-cons-threshold (* 8 1024 1024)))
+           (r (while-no-input (nhmac-menu-flatten-bar-with-paths))))
       (when (consp r)
         (cl-incf nhmac-menu-builds)
         (unless (equal (car r) nhmac-menu--last)
@@ -444,9 +458,11 @@ A string field has its line breaks and those two characters turned into blanks.
   "Schedule one deep rebuild `nhmac-menu-delay' after the idle time so far.
 More calls while one is pending change nothing."
   (unless nhmac-menu--timer
-    (setq nhmac-menu--timer
-          (run-with-idle-timer (time-add (or (current-idle-time) 0) nhmac-menu-delay)
-                               nil #'nhmac-menu-build))))
+    (let ((idle (and (current-idle-time) (float-time (current-idle-time)))))
+      (setq nhmac-menu--timing (list (float-time) idle (+ (or idle 0) nhmac-menu-delay))
+            nhmac-menu--timer
+            (run-with-idle-timer (time-add (or (current-idle-time) 0) nhmac-menu-delay)
+                                 nil #'nhmac-menu-build)))))
 
 (defun nhmac-menu--focus-changed ()
   "A frame gained or lost focus: build at once when one has it."
@@ -736,7 +752,7 @@ ON is non-nil, off when it is nil.  For tests."
   (nhmac--query 'test-entries (if on 1 0)))
 
 (defun nhmac--modal-alert (ms)
-  "Run a modal alert for MS milliseconds, then end it; return its rounds.
+  "Run a modal alert for MS milliseconds after its first round, then end it; return its rounds.
 A query that runs a modal session, for the pumps' tests."
   (nhmac--query 'modal-alert ms))
 
@@ -756,12 +772,13 @@ through `sendEvent:'.  For tests."
 
 (defun nhmac--test-post-mouse (kind x y &optional button flags frame)
   "Post a mouse event of KIND at X, Y to FRAME's window, as an AppKit event.
-KIND is `down', `up', `drag', `move' or `wheel'; X and Y are device
-pixels from the frame's top left.  BUTTON is 0 (left, the default), 1
+KIND is `down', `up', `drag', `move', `wheel' or `exit' (the pointer
+leaving the window there); X and Y are device pixels from the frame's
+top left.  BUTTON is 0 (left, the default), 1
 (right) or 2 (middle), or for `wheel' the lines to scroll (positive
 down).  FLAGS is the `NSEventModifierFlags' (default 0).  For tests."
   (nhmac--call 'test-post-mouse (or frame (selected-frame))
-               (pcase kind ('down 0) ('up 1) ('drag 2) ('move 3) ('wheel 4)
+               (pcase kind ('down 0) ('up 1) ('drag 2) ('move 3) ('wheel 4) ('exit 5)
                       (_ (error "Unknown mouse kind %s" kind)))
                x y (or button 0) (or flags 0)))
 
@@ -978,6 +995,7 @@ space intended for badges.  If BADGE is nil, clear the app badge."
 
 (declare-function nhwl--drag-start "nhwlfns.c"
                   (frame items-fn offered preferred allow-current return-frame))
+(defvar nhwl--xdnd-value)
 
 (defun nhmac--drag-items (pboard)
   "The (MIME . BYTES) items of PBOARD, `ns-begin-drag''s pasteboard alist."
@@ -1006,7 +1024,10 @@ PBOARD is an alist of (TYPE . VALUE): TYPE `string' with a string, or
 performed, as `x-begin-drag'; RETURN-FRAME and ALLOW-SAME-FRAME are as
 there, and FOLLOW-TOOLTIP is ignored."
   (ignore follow-tooltip)
+  ;; the drag starts only from an owned `XdndSelection' (as `x-begin-drag''s does); PBOARD stands for it, and the
+  ;; bytes go from ITEMS-FN (round 8: unowned, every call returned nil at once)
   (let* ((move (eq action 'XdndActionMove))
+         (nhwl--xdnd-value pboard)
          (r (nhwl--drag-start (or frame (selected-frame))
                               (lambda () (nhmac--drag-items pboard))
                               (if move 3 1) (if move 2 1)
@@ -1031,10 +1052,25 @@ Only the clipboard exists on macOS."
 (defun ns-display-monitor-attributes-list (&optional terminal)
   "Return a list of physical monitor attributes on the display TERMINAL.
 The screens the shell announced, as the shared C lists them (geometry
-in device pixels), with `source' \"NS\"."
-  (mapcar (lambda (m)
-            (mapcar (lambda (kv) (if (eq (car kv) 'source) (cons 'source "NS") kv)) m))
-          (pgtk-display-monitor-attributes-list terminal)))
+in device pixels), with `source' \"NS\".  Each `workarea' is the
+screen's `visibleFrame' (what the menu bar and the Dock leave), in the
+same device pixels."
+  (let ((screens (nhmac--query 'screens)))
+    (cl-loop
+     for m in (pgtk-display-monitor-attributes-list terminal)
+     for s = (pop screens)
+     collect
+     (mapcar (lambda (kv)
+               (pcase (car kv)
+                 ('source (cons 'source "NS"))
+                 ((and 'workarea (guard s))
+                  (pcase-let* ((`(,x ,y . ,_) (alist-get 'geometry m))
+                               (`(,fx ,fy ,_ ,_ ,vx ,vy ,vw ,vh ,k) s))
+                    (list 'workarea
+                          (+ x (round (* (- vx fx) k))) (+ y (round (* (- vy fy) k)))
+                          (round (* vw k)) (round (* vh k)))))
+                 (_ kv)))
+             m))))
 
 (defun ns-do-applescript (script)
   "Execute AppleScript SCRIPT and return the result.
@@ -1237,15 +1273,35 @@ if the TOKEN block was unblocked."
     ns-use-native-fullscreen ns-antialias-text ns-use-thin-smoothing)
   "The variables whose changes `nhmac--variable-changed' passes to the shell.")
 
+(defun nhmac--frame-up-p ()
+  "Whether a macOS frame is open: the shell is up (batch, or a daemon before its first frame, has none)."
+  (and (fboundp 'nhmac--call)
+       (let ((up nil))
+         (dolist (f (frame-list) up)
+           (when (eq (framep f) 'ns) (setq up t))))))
+
 (defun nhmac--variable-changed (symbol newval operation where)
   "Pass NEWVAL of SYMBOL to the shell when it is set (a variable watcher).
 OPERATION and WHERE are as `add-variable-watcher' gives them; only a global
-`set' counts.  Nothing is passed before the shell is up."
-  (when (and (eq operation 'set) (null where) (fboundp 'nhmac--call))
+`set' counts.  Nothing is passed while no macOS frame is open:
+`nhmac--push-variables' passes every value when the first one opens."
+  (when (and (eq operation 'set) (null where) (nhmac--frame-up-p))
     (funcall 'nhmac--call 'variable symbol newval)))
+
+(defvar nhmac--variables-pushed nil
+  "Whether the shell has the watched variables' values (`nhmac--push-variables').")
+
+(defun nhmac--push-variables (frame)
+  "On the first macOS FRAME, pass the shell every watched variable's global value (set before it was up)."
+  (when (and (not nhmac--variables-pushed) (eq (framep frame) 'ns) (fboundp 'nhmac--call))
+    (setq nhmac--variables-pushed t)
+    (dolist (v nhmac--watched-variables)
+      (when (boundp v)
+        (funcall 'nhmac--call 'variable v (default-value v))))))
 
 (dolist (variable nhmac--watched-variables)
   (add-variable-watcher variable #'nhmac--variable-changed))
+(add-hook 'after-make-frame-functions #'nhmac--push-variables)
 
 (provide 'nhmac-win)
 
