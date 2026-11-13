@@ -684,6 +684,22 @@ is raised in a child Emacs on the same window server, never in the runner; the c
   "What a child Emacs in `nhmac-frame-shows-at-every-start' runs: it places its frame as gui-runner does, and a
 second later prints whether the frame is visible, its draws, the shell's startup trace and view, and ends.")
 
+(ert-deftest nhmac-frame-shows-after-a-drain-in-its-making ()
+  "A frame whose window's first configure is drained while the window is made still shows: the configure is applied
+to it, not dropped.  An `unblock_input' that handles a pending signal drains there; the full lane's start 3 of 20 in
+`nhmac-frame-shows-at-every-start' got its configure applied 1.7 ms in, had no wait for it, and never showed."
+  :tags '(draws)
+  (let ((f nil))
+    (unwind-protect
+        (progn
+          (let ((nhwl--test-drain-in-window-new t))
+            (setq f (make-frame '((name . "drained")))))
+          (gui-runner-wait (lambda () (frame-visible-p f)) 3)
+          (nhmac-gui--say "nhmac-frame-shows-after-a-drain-in-its-making: visible %S, startup %S" (frame-visible-p f)
+                          (nhmac--startup-log))
+          (should (eq (frame-visible-p f) t)))
+      (when (frame-live-p f) (delete-frame f)))))
+
 (ert-deftest nhmac-frame-shows-at-every-start ()
   "A frame shows at every start: 20 child Emacsen at scale 1, on the runner's display and placed as the runner places
 its frame, each become visible and draw.  Guards the start that once drew nothing at scale 1; a failing start's facts
