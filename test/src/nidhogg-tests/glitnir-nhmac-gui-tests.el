@@ -992,9 +992,9 @@ colour beneath; stock fills the row (the premise: the probe above the text is in
     (should (equal (list 'text at) (list 'text #x00c000)))
     (should (equal (list 'stock above) (list 'stock #x00c000)))))
 
-(defun glitnir-nhmac--fit-pad (fit)
-  "As `glitnir-nhmac--fit-fill', the box ringed in orange: (INSIDE . OUTSIDE), the root surface's pixels 3 and 9
-pixels above the text's top inside the leading space, as #xRRGGBB."
+(defun glitnir-nhmac--fit-pad (fit &optional near)
+  "As `glitnir-nhmac--fit-fill', the box ringed in orange: (INSIDE . OUTSIDE), the root surface's pixels NEAR (default
+3) and 9 pixels above the text's top inside the leading space, as #xRRGGBB."
   (let ((glitnir-enable t)
         (face (make-symbol "glitnir-nhmac-fit-pad")))
     (custom-declare-face face nil "Test face.")
@@ -1014,7 +1014,7 @@ pixels above the text's top inside the leading space, as #xRRGGBB."
                      (`(,px . ,py) (posn-x-y (posn-at-point 4 w)))
                      (h (save-excursion (goto-char 4) (line-pixel-height)))
                      (x (+ wx px 3)) (top (+ wy py (- h (frame-char-height)))))
-          (cons (glitnir-nhmac--surface-px x (- top 3))
+          (cons (glitnir-nhmac--surface-px x (- top (or near 3)))
                 (glitnir-nhmac--surface-px x (- top 9))))))))
 
 (ert-deftest glitnir-nhmac/a-box-fit-to-the-text-takes-a-pad ()
@@ -1025,8 +1025,10 @@ pixels above the text's top inside the leading space, as #xRRGGBB."
   (pcase-let ((`(,inside . ,outside) (glitnir-nhmac--fit-pad '(text . 4))))
     (should (equal (list 'pad inside) (list 'pad #x00c000)))
     (should (equal (list 'outside outside) (list 'outside #x202020))))
-  ;; the premise: unpadded, 3 above the text is past the line
-  (should (equal (list 'unpadded (car (glitnir-nhmac--fit-pad 'text))) (list 'unpadded #x202020))))
+  ;; the premise: unpadded, 3 points above the text is past the line (at scale 2 the line reaches 3 pixels up: the
+  ;; live session read the ring's orange there)
+  (let ((near (* 3 (max 1 (round (glitnir-nhmac--scale))))))
+    (should (equal (list 'unpadded (car (glitnir-nhmac--fit-pad 'text near))) (list 'unpadded #x202020)))))
 
 (ert-deftest glitnir-nhmac/a-box-fit-to-the-text-takes-a-new-colour-beneath-when-its-row-changes ()
   "A tint put on the line around a `:fit text' chip after the row was drawn (drgnx's selection) shows above the chip
@@ -1052,7 +1054,10 @@ too: a row that holds a fit box is drawn whole when it changes
         (nhmac-gui--settle)
         (pcase-let* ((w (selected-window))
                      (`(,wx ,wy . ,_) (window-inside-pixel-edges w))
-                     (`(,px . ,py) (posn-x-y (posn-at-point 6 w)))
+                     ;; the row's top from the run's first glyph, as fit-fill reads it (the `b''s own y was its
+                     ;; text's: the live session read the glyph there)
+                     (`(,px . ,_) (posn-x-y (posn-at-point 6 w)))
+                     (`(,_ . ,py) (posn-x-y (posn-at-point 4 w)))
                      (x (+ wx px 2)) (y (+ wy py 3)))
           ;; over the chip's `b', 3 pixels below the row's top: the tint around it, not the old window colour
           (should (equal (list 'around (glitnir-nhmac--surface-px x y)) (list 'around #x3050a0))))))))
