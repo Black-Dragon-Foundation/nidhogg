@@ -39,6 +39,8 @@ pub enum MacEv {
     FullScreen(WindowId, bool),
     /// The run loop's turn after a transition ended: the state asked for during it goes out now.
     FullScreenWant(WindowId),
+    /// The window's frame moved (`windowDidMove:`).
+    Moved(WindowId),
 }
 
 /// How many of AppKit's full-screen notifications reached the window delegates, in the order will enter, will exit,
@@ -161,6 +163,11 @@ define_class!(
         #[unsafe(method(windowDidChangeBackingProperties:))]
         fn did_change_backing(&self, _n: &NSNotification) {
             deliver(MacEv::Resized(*self.ivars()));
+        }
+
+        #[unsafe(method(windowDidMove:))]
+        fn did_move(&self, _n: &NSNotification) {
+            deliver(MacEv::Moved(*self.ivars()));
         }
 
         #[unsafe(method(windowDidChangeScreen:))]

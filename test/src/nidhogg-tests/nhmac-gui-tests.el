@@ -1641,12 +1641,15 @@ A capture child must never load the interposer the app runs with."
         (should (string-match-p "^PATH=" (buffer-string)))))))
 
 (defun nhmac-gui--capture (file)
-  "The screen around the selected frame (GLITNIR_GUI_FRAME's corner, 900 by 700 points) as a BMP in FILE.
+  "The screen from the display's top-left (20 and 40 points before GLITNIR_GUI_FRAME's corner), 900 by 700 points, as
+a BMP in FILE.
 Device pixels, as the window server composited them; FILE.  The command line, its exit code and output, and the file
 afterwards are logged; a non-zero exit or no file fails the row with them.  It runs without the interposer's
 environment (`nhmac-gui--capture-env')."
   (let* ((g (mapcar #'string-to-number (split-string (or (getenv "GLITNIR_GUI_FRAME") "0 0"))))
-         (r (format "%d,%d,900,700" (- (nth 0 g) 20) (- (nth 1 g) 60)))
+         ;; the display's corner: 20 points above it (as before) was off every screen, and the window server
+         ;; clipped the region to it (the live session, 2026-11-13)
+         (r (format "%d,%d,900,700" (- (nth 0 g) 20) (- (nth 1 g) 40)))
          (args (list "-x" "-t" "bmp" "-R" r file))
          (rc nil) (output nil))
     (when (file-exists-p file) (delete-file file))

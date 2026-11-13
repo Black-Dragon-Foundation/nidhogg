@@ -33,6 +33,17 @@
   "The device pixels per point of the selected frame's window."
   (plist-get (nhmac--test-surface 0 0) :scale))
 
+(defun glitnir-nhmac--origin ()
+  "Where the selected frame's native area starts in a capture (`nhmac-gui--capture', taken from the display's
+top-left), as (X Y) device pixels: from AppKit's frame of the window and its screen (`nhmac--window-info'), below the
+title bar.  The live session (2026-11-13): the area at 21, 72 points, not the 20, 60 the rows assumed (a 32 point
+title bar, and AppKit's frame 1 point right of the place asked for)."
+  (let* ((info (nhmac--window-info)) (s (glitnir-nhmac--scale))
+         (fr (plist-get info :frame)) (sc (plist-get info :on-screen))
+         (top (- (+ (nth 1 sc) (nth 3 sc)) (+ (nth 1 fr) (nth 3 fr))))
+         (title (- (nth 3 fr) (/ (plist-get info :device-height) s))))
+    (list (round (* (- (nth 0 fr) (nth 0 sc)) s)) (round (* (+ top title) s)))))
+
 (defun glitnir-nhmac--with-white (fn)
   "Call FN with the selected frame's background `glitnir-nhmac--bg' and an empty buffer in its window, then as before.
 The probes then read the root's background wherever no child is.  FN runs after `glitnir-nhmac--clean-root'."
@@ -796,7 +807,7 @@ The line count is the default line height times 3 (no line spacing in the rows).
 (defun glitnir-nhmac--ring-check (row img bg height w &optional own)
   "Assert that IMG shows the block ring inside the box of background BG (window W's, as IMG shows it), from its text
 area's left edge to the box's right within 3 pixels, below its first line, HEIGHT device pixels tall within 3; ROW
-names it.  OWN non-nil (a root frame's window, at 20, 60 points in IMG) also asserts the ring's exact colour in its
+names it.  OWN non-nil (a root frame's window, at `glitnir-nhmac--origin' in IMG) also asserts the ring's exact colour in its
 card's own pixels on its middle row."
   ;; the ring within 32: a window's outermost device pixels on the screen carry the system's light window rim over
   ;; the content (round 10, scale 1: the card's pure red column 0 showed #xff1919 at the window's left edge, a 1 px
@@ -826,10 +837,10 @@ card's own pixels on its middle row."
                                         ;; the card's own pixels: the capture's row less the frame's place in it
                                         ;; (`glitnir-nhmac--root-rect') and the card's; ARGB (round 9 read a
                                         ;; capture row as the card's and got its transparent inside)
-                                        (let ((s (glitnir-nhmac--scale)))
+                                        (let ((o (glitnir-nhmac--origin)))
                                           (nhmac--query 'test-card-row (window-frame w) (nth 0 c)
-                                                        (- y (round (* 60 s)) (nth 2 c))
-                                                        (max 0 (- (nth 0 box) (round (* 20 s)) (nth 1 c) 2)) 12))
+                                                        (- y (nth 1 o) (nth 2 c))
+                                                        (max 0 (- (nth 0 box) (nth 0 o) (nth 1 c) 2)) 12))
                                       (error (list 'error e))))
                                   cards))
           (nhmac-gui--say "%s: cards %S, rows %S" row cards card-rows))))
@@ -931,8 +942,8 @@ marks at lines 1 and 501 in the left lane, one at the end in the right lane, and
 
 (defun glitnir-nhmac--ruler-boxes (img w)
   "The ruler's marks, end mark and band in IMG as boxes (X0 Y0 X1 Y1), and window W's text area's top, bottom and
-right edge in IMG's pixels (the frame at 20, 60 points in the capture, as `glitnir-nhmac--root-rect'): a plist."
-  (pcase-let* ((s (glitnir-nhmac--scale)) (fx (round (* 20 s))) (fy (round (* 60 s)))
+right edge in IMG's pixels (the frame at `glitnir-nhmac--origin' in the capture): a plist."
+  (pcase-let* ((`(,fx ,fy) (glitnir-nhmac--origin))
                (`(,_ ,ty ,tx1 ,ty1) (window-inside-pixel-edges w)))
     (list :marks (glitnir-nhmac--box img glitnir-nhmac--ruler-mark)
           :end (glitnir-nhmac--box img glitnir-nhmac--ruler-end)
@@ -1483,10 +1494,10 @@ above it moves down by one, and the window server lists no window more or less."
     (list n mx)))
 
 (defun glitnir-nhmac--root-rect (img)
-  "The root frame's pixels in capture IMG as (X Y W H): the frame's place in the capture (`nhmac-gui--capture'),
+  "The root frame's pixels in capture IMG as (X Y W H): the frame's place in the capture (`glitnir-nhmac--origin'),
 4 points in on every side, clipped to IMG."
-  (let* ((s (glitnir-nhmac--scale)) (in (round (* 4 s)))
-         (x (+ (round (* 20 s)) in)) (y (+ (round (* 60 s)) in)))
+  (let* ((s (glitnir-nhmac--scale)) (in (round (* 4 s))) (o (glitnir-nhmac--origin))
+         (x (+ (nth 0 o) in)) (y (+ (nth 1 o) in)))
     (list x y (min (- (frame-pixel-width) in in) (- (nth 0 img) x)) (min (- (frame-pixel-height) in in) (- (nth 1 img) y)))))
 
 (defun glitnir-nhmac--with-pattern (fn)
@@ -1776,8 +1787,8 @@ at its moving place, so a whole-area move would show the new layout from the sta
                                       collect (format "%06x" (logand p #xffffff))))
              ;; round 9: the surface has the pattern; the screen's same row before the leg and after it (the surface
              ;; never redrawn, or the screen not showing it)
-             (let* ((s (glitnir-nhmac--scale)) (x0 (round (* 20 s)))
-                    (y (+ (round (* 60 s)) (/ (frame-pixel-height) 2))))
+             (let* ((o (glitnir-nhmac--origin)) (x0 (nth 0 o))
+                    (y (+ (nth 1 o) (/ (frame-pixel-height) 2))))
                ;; round 10: both rows black where the surface has the pattern: the capture's size, and where the
                ;; surface's background (its first pixel) is in it (the frame not at 20, 60 points at this scale)
                (let ((bg (logand (aref (nhmac--test-surface-region 0 (/ (frame-pixel-height) 2) 1 1) 0) #xffffff)))

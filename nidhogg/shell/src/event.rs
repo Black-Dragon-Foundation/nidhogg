@@ -84,6 +84,9 @@ pub enum ShellEvent {
     Reconnected,
     /// An item of the menu bar was chosen: the generation of the tree it came from and the item's place in it.
     Menu(MenuEv),
+    /// A top-level window's frame moved, or its scale changed: its top-left now (macOS; Wayland clients have no
+    /// position).
+    Moved(MovedEv),
 }
 
 /// A record's kind without its payload, for filters (`ShellEvent::kind`).
@@ -126,6 +129,7 @@ pub enum Kind {
     Reconnecting,
     Reconnected,
     Menu,
+    Moved,
 }
 
 impl ShellEvent {
@@ -168,6 +172,7 @@ impl ShellEvent {
             ShellEvent::Reconnecting => Kind::Reconnecting,
             ShellEvent::Reconnected => Kind::Reconnected,
             ShellEvent::Menu(_) => Kind::Menu,
+            ShellEvent::Moved(_) => Kind::Moved,
         }
     }
 }
@@ -177,6 +182,14 @@ impl ShellEvent {
 pub struct MenuEv {
     pub generation: u32,
     pub index: u32,
+}
+
+/// Where a top-level window is (`ShellEvent::Moved`): its frame's top-left in logical pixels from the main screen's
+/// top-left, as `ShellBackend::move_to` takes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MovedEv {
+    pub x: i32,
+    pub y: i32,
 }
 
 /// `session.state`.
