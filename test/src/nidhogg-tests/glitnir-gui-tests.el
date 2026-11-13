@@ -253,7 +253,8 @@ the strip (each its own layer, its own clip)."
 
 (ert-deftest glitnir-gui/an-edge-joins-two-places-and-leaves-with-a-scroll ()
   "A window's `glitnir-edges': a line from one buffer place to another, drawn over the text in its colour, its points
-where the places' glyphs are; scrolled past, its start sits one line above the text area."
+where the places' glyphs are; scrolled past, its start sits one line above the text area, and an edge wholly above
+the rows shown is not resolved (none of it is drawn)."
   (let ((buf (glitnir-gui--text-buffer "*glitnir-edge*" 200)) (w (selected-window)))
     (unwind-protect
         (progn
@@ -273,13 +274,18 @@ where the places' glyphs are; scrolled past, its start sits one line above the t
               (should (equal (glitnir-gui--pixel snap (list (+ x (/ (+ fx tx) 2)) (+ y fy dy))) '(255 0 0)))
               (should-not (equal (glitnir-gui--pixel snap (list (+ x (/ (+ fx tx) 2)) (+ y fy dy (/ lh 2) 2)))
                                  '(255 0 0))))
-            ;; scrolled down past its start: the start is one frame line above the text area
-            ;; point goes along, or redisplay brings the window back to it
-            (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 20) (point)))))
+            ;; scrolled down past its start: the start of an edge that reaches the rows shown is one frame line above
+            ;; the text area; the first edge, wholly above them, is not resolved.  Point goes along, or redisplay
+            ;; brings the window back to it
+            (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 20) (point))))
+                  (far (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 22) (+ (point) 10)))))
+              (set-window-parameter w 'glitnir-edges `(((,from 0 ,dy) (,to 0 ,dy) ("#ff0000" . 1))
+                                                       ((,from 0 ,dy) (,far 0 ,dy) ("#ff0000" . 1))))
               (set-window-point w p)
               (set-window-start w p))
             (glitnir-gui--painted)
-            (pcase-let ((`((,_ . ,y0) ,_) (car (glitnir-edges-resolved w))))
+            (pcase-let ((`(,gone ((,_ . ,y0) ,_)) (glitnir-edges-resolved w)))
+              (should-not gone)
               (should (= y0 (- (frame-char-height)))))))
       (set-window-parameter w 'glitnir-edges nil)
       (kill-buffer buf))))
