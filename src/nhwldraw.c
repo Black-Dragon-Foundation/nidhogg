@@ -212,14 +212,34 @@ nhwl_set_glyph_string_clipping_exactly (struct glyph_string *src,
 
 #endif /* NHWL_WAYLAND */
 /* Fill rectangle X, Y, W, H with background color of glyph string
-   S.  */
+   S.  A face boxed :fit text under Glitnir fills only its band (the text
+   and the box's lines); the rest of the rectangle takes the colour beneath
+   (glitnir_decor_fit_band), so a chip on a row taller than its text is as
+   tall as its text.  */
 static void
 nhwl_clear_glyph_string_rect (struct glyph_string *s, int x, int y,
 			      int w, int h)
 {
-  nhwl_fill_rectangle (s->f, s->xgcv.background, x, y, w, h,
-		       (s->first_glyph->type != STRETCH_GLYPH
-			|| s->hl != DRAW_CURSOR));
+  bool alpha = (s->first_glyph->type != STRETCH_GLYPH
+		|| s->hl != DRAW_CURSOR);
+  int top, bottom;
+  unsigned long beneath;
+
+  if (s->hl != DRAW_CURSOR
+      && glitnir_decor_fit_band (s, &top, &bottom, &beneath))
+    {
+      int y0 = max (y, top), y1 = min (y + h, bottom);
+      if (y0 > y)
+	nhwl_fill_rectangle (s->f, beneath, x, y, w, y0 - y, alpha);
+      if (y1 < y + h)
+	nhwl_fill_rectangle (s->f, beneath, x, max (y1, y), w,
+			     y + h - max (y1, y), alpha);
+      if (y1 > y0)
+	nhwl_fill_rectangle (s->f, s->xgcv.background, x, y0, w, y1 - y0,
+			     alpha);
+      return;
+    }
+  nhwl_fill_rectangle (s->f, s->xgcv.background, x, y, w, h, alpha);
 }
 
 static void
