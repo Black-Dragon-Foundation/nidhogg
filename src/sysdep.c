@@ -1851,8 +1851,8 @@ nhg_take_deferred_fatal (void)
       terminate_due_to_signal (sig, 40);
     }
 }
-#endif
 
+#endif
 /* Handle bus errors, invalid instruction, etc.  */
 static void
 handle_fatal_signal (int sig)
