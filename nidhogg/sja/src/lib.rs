@@ -10,6 +10,7 @@
 
 pub mod abi;
 pub mod apply;
+pub mod bar;
 pub mod class;
 pub mod guard;
 pub mod model;
