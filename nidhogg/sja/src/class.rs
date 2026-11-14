@@ -193,6 +193,22 @@ impl View {
         out
     }
 
+    /// The dim runs of the rows instance `h` draws, for class `dim`, by the node ids property `prop` gives
+    /// (`rows::Store::dim_runs`); the classes are decided with one context.  `None` without a model or a store.
+    pub fn dim_runs(&mut self, h: u32, dim: u8, prop: &str) -> Option<crate::rows::DimRuns> {
+        let sel = self.selection(h);
+        let m = self.model.as_ref()?;
+        let inst = self.insts.get_mut(&h)?;
+        let store = self.rows.get(inst.rows_class.as_deref()?)?;
+        let c = ctx(m, inst, sel);
+        let inst = &*inst;
+        Some(store.dim_runs(prop, |id| {
+            m.nodes
+                .get_key_value(id)
+                .is_some_and(|(id, _)| class(&c, inst, id) == Some(dim))
+        }))
+    }
+
     /// Forget what instance `h` reported, so the next `classes` answers every node that has a class (a redraw).
     pub fn reclass(&mut self, h: u32) {
         if let Some(i) = self.insts.get_mut(&h) {

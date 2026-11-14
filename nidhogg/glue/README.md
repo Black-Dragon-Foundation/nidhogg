@@ -316,6 +316,7 @@ accepted and does nothing, as for a missing Wayland protocol.
 | `nhg_open` / `nhg_close` | - | connect through the shell; close and free | open an `NSApplication` connection; close it |
 | `nhg_fd` | - | descriptor readable when events are queued | a pipe the run loop writes to |
 | `nhg_dispatch_main` | - | the shell's host-thread work, then flush | pump the main run loop once |
+| `nhg_hold_main` | - | leave the host-thread events unread while held, for tests (`nhwl--hold-configures`) | `NHG_E_UNSUPPORTED` |
 | `nhg_caps` | - | the shell's capabilities | fill what AppKit has (no fractional-scale protocol, scale from the screen) |
 | `nhg_frame_register` / `nhg_frame_forget` | - | add or drop a frame in the glue's table | same |
 | `nhg_frame_resized` / `nhg_frame_scale` / `nhg_frame_units` / `nhg_frame_csd` | - | push the facts a frame's decisions read | same |

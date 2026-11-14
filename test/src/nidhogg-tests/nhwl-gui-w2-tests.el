@@ -356,14 +356,18 @@ gives the same one."
 ;; Session restore (lisp/term/nhwl-session.el).  The recorder's mutter profile offers xdg_session_manager_v1 and keeps
 ;; sessions in the `--session-store' file gui.sh gives it; its `session_log' lists what a client asked of the
 ;; session.  The first frame is made before these rows run, so they read what it asked for and make more frames.
+;; Another client on the display asks for a session of its own (the sigint row's child Emacs): a get_session names
+;; its client's pid, and the rows read only this Emacs's.
 
 (defun nhwl-gui--session-p ()
   "Non-nil on the recorder with session management."
   (and (nhwl-gui--recorder-p) (nhwl-gui--has-global-p :xdg_session_manager_v1)))
 
 (defun nhwl-gui--session-log (op)
-  "The recorder's session log entries whose :op is OP."
-  (seq-filter (lambda (e) (equal (plist-get e :op) op))
+  "The recorder's session log entries whose :op is OP, without another client's get_session."
+  (seq-filter (lambda (e) (and (equal (plist-get e :op) op)
+                               (let ((pid (plist-get e :pid)))
+                                 (or (not (integerp pid)) (= pid (emacs-pid))))))
               (plist-get (gui-runner-recorder '(:cmd "session_log")) :session_log)))
 
 (ert-deftest nhwl-gui/session-opened-once-per-display ()

@@ -153,15 +153,18 @@ WHAT is `selection', `kind' (of ARG, an id, or the selection), `field'
 TOTAL) when the model holds a window of it, else nil), `finished' (the id that went from under
 the selection, once), `class' (of ARG), `classes' (a vector [ID CLASS
 ...] of the nodes whose class changed since the last read), `reclass',
-`class-names', `expanded', `open' (of ARG: a tree node is open), `ticked', `version', `stats' or `health' (0 ok,
-1 no model, 2 broken, 3 stale)."
+`class-names', `expanded', `open' (of ARG: a tree node is open), `ticked', `version', `stats', `health' (0 ok,
+1 no model, 2 broken, 3 stale) or `at-line' (ARG a list in file order, ARG2 a line: the last entry whose
+integer `line' field is at or before it, or nil; a binary search)."
   (nidhogg-view--call (nidhogg-view--op get) h (symbol-name what) arg arg2))
 
 (defsubst nidhogg-view-rows (h what &optional a b)
   "Do WHAT to the rows of instance H's view (held where they are drawn).
 WHAT is
-- `on': give the view a row store (A 1: it starts at an env epoch
-  reset); nil;
+- `on': draw display class B's row store, made when the view has none
+  (A 1: it starts at an env epoch reset); twins of a view in two classes
+  draw two stores; nil;
+- `idprop': B is the property that holds a row's node ids; nil;
 - `draw': the edits that turn the region, A characters long, into the
   rows: (BATCH WHOLE EDITS STYLES IMAGES TERM MODEL), BATCH the id to
   confirm with `drawn', WHOLE 1 when the region is redrawn whole, EDITS a
@@ -173,7 +176,9 @@ WHAT is
   with alt B, 2 a space A x B px, 3 a row height of A lines of B px on
   the newline at POS), STYLES [ID JSON ...] and IMAGES [ID SVG ...] new
   since the last draw, TERM the terminal state's JSON or nil, MODEL the
-  model version the rows name or nil;
+  model version the rows name or nil, then KEYS, a vector of the rows
+  the edits draw, and IDS, a vector of the distinct node ids (`idprop')
+  in them;
 - `drawn': batch A is in the buffer; 1, or 0 when A is not the pending
   batch;
 - `epoch': the editor's env epoch is A;
@@ -181,6 +186,13 @@ WHAT is
 - `pos': the region position of offset A in row B, or nil;
 - `span': (START LENGTH) of row B, or nil;
 - `prop': the value of property NAME on row KEY, B being \"KEY\tNAME\";
+- `spans': node ID's pieces in the drawn rows by property PROP, B being
+  \"PROP\tID\": [FROM TO FACES ...] in region positions, cut where the
+  runs change, FACES a vector of the runs' faces (names or style ids)
+  or nil;
+- `dimruns': for class A (an index) by property B, (RUNS LONE): RUNS
+  [FROM TO ...] the consecutive drawn rows whose every node has class A,
+  LONE a vector of the class's nodes in the other rows;
 - `pause': A 1 pauses (patches are held), 0 resumes and answers the held
   patches' decisions as numbers;
 - `redraw' (draw the region whole next), `refresh' (every row anew),

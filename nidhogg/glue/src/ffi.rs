@@ -143,6 +143,18 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Leave the shell's host-thread events (configures) unread while `on` is nonzero; zero reads them at the next
+    /// drain, in the order they came (`ShellBackend::hold_main`).  For tests: a compositor's late answer.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_hold_main(d: *mut NhgDisplay, on: i32) -> i32 |state| {
+        state.backend().hold_main(on != 0)?;
+        Ok(NHG_OK)
+    }
+}
+
+nhg_export! {
     /// Commit now what the shell left for its next pump or wait (macOS: the commit is off the redisplay path); the
     /// host's deadline after a redisplay, for Lisp that runs on without waiting.
     ///

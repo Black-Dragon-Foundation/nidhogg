@@ -622,6 +622,19 @@ fn session_restore_before_first_commit() {
     assert_eq!(last["op"], "restore");
     assert_eq!(last["name"], "main");
     assert_eq!(last["before_first_commit"], true);
+    // each get_session names its client's pid, so a row reads only its own Emacs's (another client on the display,
+    // like the sigint row's child Emacs, asks for a session of its own)
+    let gets: Vec<&Value> = log["session_log"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["op"] == "get_session")
+        .collect();
+    assert_eq!(gets.len(), 2);
+    assert!(
+        gets.iter().all(|e| e["pid"] == std::process::id()),
+        "{gets:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

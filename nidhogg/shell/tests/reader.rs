@@ -348,6 +348,7 @@ mod reader {
             s.drag_start(w, &[("text/plain", b"x")], NHSHELL_DND_COPY)
         }),
         ("drag_cancel", |s, _| s.drag_cancel()),
+        ("hold_main", |s, _| s.hold_main(true)),
         ("set_reconnect", |s, _| s.set_reconnect(true)),
         ("reconnect", |s, _| s.reconnect(50)),
         ("reader_roundtrip", |s, _| {

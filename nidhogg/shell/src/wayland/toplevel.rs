@@ -237,6 +237,17 @@ impl ShellBackend for WaylandShell {
         self.flush()
     }
 
+    fn hold_main(&mut self, on: bool) -> ShellResult {
+        self.live()?;
+        self.held = on;
+        if !on {
+            // what came while held is read at the next record or drain, as a waker's wake would have it
+            self.shared.main_pending.store(true, Ordering::Release);
+            self.shared.wake.signal();
+        }
+        Ok(())
+    }
+
     fn last_error(&self) -> String {
         self.last_error_impl()
     }

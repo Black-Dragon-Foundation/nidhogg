@@ -564,7 +564,7 @@ fn compose_layers(
             let area = p.rect.intersect(&frame);
             for b in p.blocks.iter() {
                 for c in &pieces {
-                    draw_block(k, t, b, c.intersect(&area));
+                    draw_block(k, t, b, c.intersect(&area), shadows);
                 }
             }
             // its edges over its blocks
@@ -752,14 +752,37 @@ impl CardRing {
     }
 }
 
-/// Block B within CLIP (root px, inside the target and the window): a rule's bottom line; a ring's corners outside its
-/// rounded path in the colour beneath, then the ring just inside the rectangle.  An open side lies past the rectangle
-/// (by the radius), so its corners and its line fall outside it and are not drawn.
-fn draw_block(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Rect) {
+/// Block B within CLIP (root px, inside the target and the window): a rule's bottom line; a ring's gap bands (its
+/// rectangle's top and bottom `gap_px` rows) in the colour beneath, its corners outside its rounded path in that
+/// colour, then the ring just inside the rectangle less the gap.  An open side lies past the rectangle (by the radius),
+/// so its corners and its line fall outside it and are not drawn, and it has no gap. A ring's shadow, the shadow's line
+/// and its outer ring go outside its rounded edge, in the gap or past the rectangle (within [`Block::bounds`]), never
+/// past an open side.
+fn draw_block(
+    k: &Kernels,
+    t: &mut TargetView,
+    b: &crate::scene::Block,
+    clip: Rect,
+    shadows: &mut ShadowCache,
+) {
     let rect = b.rect;
+    let bounds = b.bounds();
+    // where the shadow and its line may draw: the bounds, cut at an open side
+    let (top_y, bottom_y) = (
+        if b.open_top { rect.y } else { bounds.y },
+        if b.open_bottom {
+            rect.y + rect.h
+        } else {
+            bounds.y + bounds.h
+        },
+    );
+    let outer = clip.intersect(&Rect::new(bounds.x, top_y, bounds.w, bottom_y - top_y));
     let clip = clip.intersect(&rect);
     let w = b.ring_px.min(1 << 12) as i32;
-    if clip.is_empty() || b.ring_argb == 0 || w == 0 {
+    let ring_kind = b.kind == crate::scene::BlockKind::Ring;
+    let any = b.ring_argb != 0
+        || (ring_kind && (b.shadow_argb != 0 || b.halo_argb != 0 || b.outer_argb != 0));
+    if clip.is_empty() || !any || w == 0 {
         return;
     }
     let solid = |k: &Kernels, t: &mut TargetView, q: Rect, argb: u32| {
@@ -782,6 +805,26 @@ fn draw_block(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Re
         solid(k, t, clip, b.ring_argb);
         return;
     }
+    // the gap: the bands above and below the ring in the colour beneath
+    let gap = (b.gap_px.min(1 << 12) as i32).min(rect.h);
+    let (gap_top, gap_bottom) = (
+        if b.open_top { 0 } else { gap },
+        if b.open_bottom { 0 } else { gap },
+    );
+    if gap_top > 0 {
+        let band = Rect::new(rect.x, rect.y, rect.w, gap_top);
+        solid(k, t, band.intersect(&clip), b.beneath_argb);
+    }
+    if gap_bottom > 0 {
+        let band = Rect::new(rect.x, rect.y + rect.h - gap_bottom, rect.w, gap_bottom);
+        solid(k, t, band.intersect(&clip), b.beneath_argb);
+    }
+    let rect = Rect::new(
+        rect.x,
+        rect.y + gap_top,
+        rect.w,
+        (rect.h - gap_top - gap_bottom).max(0),
+    );
     let wu = w as u32;
     let r0 = b.radius_px.max(wu);
     let (top, bottom) = (
@@ -817,11 +860,109 @@ fn draw_block(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Re
             q.h as usize,
         );
     }
+    // the shadow, outside the rounded edge only, then its line just outside the edge
+    if b.shadow_argb != 0 && !outer.is_empty() {
+        block_shadow(k, t, b, ext, r, outer, shadows);
+    }
+    if b.halo_argb != 0 && !outer.is_empty() {
+        let halo = CardRing::around(ext, r, wu, b.halo_argb);
+        let mut dst = t.at(outer);
+        halo.draw(k, &mut dst, outer);
+    }
+    // the outer ring, the same place
+    if b.outer_argb != 0 && !outer.is_empty() {
+        let ring = CardRing::around(ext, r, wu, b.outer_argb);
+        let mut dst = t.at(outer);
+        ring.draw(k, &mut dst, outer);
+    }
+    if b.ring_argb == 0 {
+        return;
+    }
     // the ring: a card's ring around the rectangle w px in, so its outer edge is the rectangle's, radius r
     let inner = Rect::new(ext.x + w, ext.y + w, ext.w - 2 * w, ext.h - 2 * w);
     let ring = CardRing::around(inner, r - wu, wu, b.ring_argb);
     let mut dst = t.at(clip);
     ring.draw(k, &mut dst, clip);
+}
+
+/// Block B's shadow within CLIP: the blurred rounded rectangle CARD (radius R) moved down by its offset, outside CARD's
+/// rounded edge only (in CARD's corner squares, through the coverage outside the rounded path).
+fn block_shadow(
+    k: &Kernels,
+    t: &mut TargetView,
+    b: &crate::scene::Block,
+    card: Rect,
+    r: u32,
+    clip: Rect,
+    shadows: &mut ShadowCache,
+) {
+    let size = (card.w as u32, card.h as u32);
+    let spec = ShadowSpec {
+        radius: r as f32,
+        blur: b.shadow_blur_px.min(1 << 12) as f32,
+        spread: 0.0,
+        colour: b.shadow_argb,
+        scale: t.scale,
+    };
+    let tiles = shadows.get(size.0, size.1, &spec);
+    let (iw, ih) = tiles.image_size(size.0, size.1);
+    let image = Rect::new(
+        card.x - tiles.pad(),
+        card.y - tiles.pad() + b.shadow_y_px.clamp(-(1 << 12), 1 << 12),
+        iw as i32,
+        ih as i32,
+    );
+    let q = image.intersect(&clip);
+    if q.is_empty() {
+        return;
+    }
+    let outside = outside_coverage(r);
+    let (n, ri) = (2 * r as usize, r as i32);
+    // a corner square's place in the 2r x 2r mask along one axis, or None in the straight part
+    let local = |v: i32, at: i32, len: i32| {
+        if v < at + ri {
+            Some((v - at) as usize)
+        } else if v >= at + len - ri {
+            Some((ri + v - (at + len - ri)) as usize)
+        } else {
+            None
+        }
+    };
+    let mut cov = vec![0u8; q.w as usize];
+    for y in q.y..q.y + q.h {
+        tiles.coverage_row(
+            size.0,
+            size.1,
+            (y - image.y) as u32,
+            (q.x - image.x) as u32,
+            &mut cov,
+        );
+        if y >= card.y && y < card.y + card.h {
+            let ly = local(y, card.y, card.h);
+            for (x, c) in (q.x..).zip(cov.iter_mut()) {
+                if x < card.x || x >= card.x + card.w {
+                    continue;
+                }
+                *c = match (local(x, card.x, card.w), ly) {
+                    (Some(lx), Some(ly)) => {
+                        ((*c as u32 * outside[ly * n + lx] as u32 + 127) / 255) as u8
+                    }
+                    _ => 0,
+                };
+            }
+        }
+        let mask = Mask {
+            data: &cov,
+            stride: q.w as usize,
+        };
+        k.solid_over(
+            &mut t.at(Rect::new(q.x, y, q.w, 1)),
+            tiles.colour(),
+            &mask,
+            q.w as usize,
+            1,
+        );
+    }
 }
 
 /// Edge E within CLIP (root px, inside the target and the window), anti-aliased in its colour.
@@ -1071,8 +1212,9 @@ pub fn block_overlay(clip: Rect, blocks: &[crate::scene::Block], scale: f64) -> 
         rect: clip,
         scale,
     };
+    let mut shadows = ShadowCache::new();
     for b in blocks {
-        draw_block(crate::kernels::kernels(), &mut t, b, clip);
+        draw_block(crate::kernels::kernels(), &mut t, b, clip, &mut shadows);
     }
     data
 }

@@ -182,6 +182,116 @@ named in the skip."
       (set-window-parameter w 'glitnir-blocks nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/a-block-holds-the-after-string-rows-at-its-end ()
+  "Rows of nothing but an overlay string at a block's END (a notebook cell's output, an after-string there) are inside
+the block; the next block, starting at that END, begins at its own text."
+  (glitnir-gui--skip-unless-tree)
+  (let* ((buf (glitnir-gui--text-buffer "*glitnir-tail*" 10)) (w (selected-window))
+         (end (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 1) (point))))
+         (ov (with-current-buffer buf (make-overlay end end))))
+    (unwind-protect
+        (progn
+          (overlay-put ov 'after-string "      out 1\n      out 2\n") ; blank where the bars are
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((bar ,(copy-marker 1) ,(copy-marker end) :x1 6 :ring ("#ff0000" . 1))
+                 (bar ,(copy-marker end) ,(save-excursion (goto-char end) (forward-line 1) (point-marker))
+                      :x0 8 :x1 14 :ring ("#00ff00" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (at (lambda (dx row) (glitnir-gui--pixel snap (list (+ x dx) (+ y (* row lh) (/ lh 2)))))))
+            ;; rows: the first line, the two output rows, the next line
+            (should (equal (funcall at 2 0) '(255 0 0)))
+            (should (equal (funcall at 2 1) '(255 0 0)))
+            (should (equal (funcall at 2 2) '(255 0 0)))
+            (should-not (equal (funcall at 2 3) '(255 0 0)))
+            (should-not (equal (funcall at 10 1) '(0 255 0)))
+            (should-not (equal (funcall at 10 2) '(0 255 0)))
+            (should (equal (funcall at 10 3) '(0 255 0)))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (delete-overlay ov)
+      (kill-buffer buf))))
+
+(defmacro glitnir-gui--with-card (spec &rest body)
+  "Run BODY with the first three lines of a text buffer tinted yellow under the blocks SPEC makes.
+SPEC is evaluated with `end' bound to the end of those lines; BODY with
+`at', a function of (DX DY) giving the painted pixel at that offset from
+the window's text area, and `lh', the line height."
+  (declare (indent 1))
+  `(let* ((buf (glitnir-gui--text-buffer "*glitnir-card*" 10)) (w (selected-window))
+          (end (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 3) (point))))
+          (ov (with-current-buffer buf (make-overlay 1 end))))
+     (unwind-protect
+         (progn
+           (overlay-put ov 'face '(:background "#ffff00" :extend t))
+           (set-window-buffer w buf)
+           (set-window-start w 1)
+           (glitnir-gui--painted)
+           (glitnir-gui--drawn
+             (with-current-buffer buf
+               (set-window-parameter w 'glitnir-blocks ,spec)))
+           (pcase-let* ((snap (glitnir-gui--painted))
+                        (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                        (lh (with-current-buffer buf (line-pixel-height)))
+                        (at (lambda (dx dy) (glitnir-gui--pixel snap (list (+ x dx) (+ y dy))))))
+             (ignore lh)
+             ,@body))
+       (set-window-parameter w 'glitnir-blocks nil)
+       (delete-overlay ov)
+       (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/a-ring-block-keeps-a-gap-above-and-below ()
+  "A ring's `:gap': the ring sits that many px inside its rows' top and bottom, and the band outside it shows the
+colour beneath, so cards on adjacent rows stand apart.  The columns at x 20 are blank in every row."
+  (glitnir-gui--skip-unless-tree)
+  (glitnir-gui--with-card
+      `((ring ,(copy-marker 1) ,(copy-marker end) :x0 10 :x1 300 :radius 4 :gap 6
+              :ring ("#ff0000" . 1) :beneath "#0000ff"))
+    (should (equal (funcall at 20 2) '(0 0 255)))              ; the gap above
+    (should (equal (funcall at 20 6) '(255 0 0)))              ; the ring, 6 px in
+    (should (equal (funcall at 20 9) '(255 255 0)))            ; the card's rows
+    (should (equal (funcall at 20 (- (* 3 lh) 7)) '(255 0 0))) ; the ring at the bottom
+    (should (equal (funcall at 20 (- (* 3 lh) 3)) '(0 0 255))))) ; the gap below
+
+(ert-deftest glitnir-gui/a-ring-block-casts-a-shadow ()
+  "A ring's `:shadow' and `:shadow-ring': a 1 px line just outside the card's edge, and a 3 px blur 1 px down, both
+in the gap only, never over the card's rows."
+  (glitnir-gui--skip-unless-tree)
+  (glitnir-gui--with-card
+      `((ring ,(copy-marker 1) ,(copy-marker end) :x0 10 :x1 300 :radius 4 :gap 8
+              :ring ("#ff0000" . 1) :beneath "#0000ff" :shadow ("#000000" . 1) :shadow-ring ("#00ff00" . 1)))
+    (let ((edge (- (* 3 lh) 8)))                               ; the card's bottom edge (exclusive)
+      (should (equal (funcall at 20 1) '(0 0 255)))            ; past the shadow's reach above
+      (should (equal (funcall at 20 7) '(0 255 0)))            ; the shadow's ring above the card
+      (should (equal (funcall at 20 8) '(255 0 0)))            ; the card's own ring
+      (should (equal (funcall at 20 9) '(255 255 0)))          ; the rows: no shadow over them
+      (should (equal (funcall at 20 edge) '(0 255 0)))         ; the shadow's ring below
+      (pcase-let ((`(,r ,g ,b) (funcall at 20 (+ edge 2))))   ; the blur below: blue darkened
+        (should (and (= r 0) (= g 0) (< 0 b 250))))
+      (should (equal (funcall at 20 (1- (* 3 lh))) '(0 0 255)))))) ; the gap's far side: past the reach
+
+(ert-deftest glitnir-gui/a-ring-block-has-an-outer-ring ()
+  "A ring's `:outer': a second line 1 px wide just outside the ring (the focus ring inside, the border step outside),
+in the gap."
+  (glitnir-gui--skip-unless-tree)
+  (glitnir-gui--with-card
+      `((ring ,(copy-marker 1) ,(copy-marker end) :x0 10 :x1 300 :radius 4 :gap 8
+              :ring ("#ff0000" . 1) :outer ("#00ff00" . 1) :beneath "#0000ff"))
+    (let ((edge (- (* 3 lh) 8)))
+      (should (equal (funcall at 20 6) '(0 0 255)))
+      (should (equal (funcall at 20 7) '(0 255 0)))            ; the outer ring
+      (should (equal (funcall at 20 8) '(255 0 0)))            ; the ring inside it
+      (should (equal (funcall at 20 9) '(255 255 0)))
+      (should (equal (funcall at 20 (1- edge)) '(255 0 0)))
+      (should (equal (funcall at 20 edge) '(0 255 0)))
+      (should (equal (funcall at 20 (1+ edge)) '(0 0 255))))))
+
 ;; The overview ruler.  Its rows wait through `glitnir-gui--painted' (redisplay, the presenter settled), which every
 ;; shell gives; `glitnir--draw-count' is the Wayland shell's alone (0 on Naglfar).
 

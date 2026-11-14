@@ -66,6 +66,10 @@ int32_t nhg_fd (NhgDisplay *d);
 /* Run the shell's work that must happen on the host's thread (configure and surface events) and flush.  */
 int32_t nhg_dispatch_main (NhgDisplay *d);
 
+/* While ON is nonzero, leave the host-thread events (configures) unread; zero reads them at the next drain, in the
+   order they came.  For tests: a compositor's late answer (nhwl--hold-configures).  */
+int32_t nhg_hold_main (NhgDisplay *d, int32_t on);
+
 /* Commit now what the shell left for its next pump or wait (macOS: the commit is off the redisplay path); the host's
    deadline after a redisplay, for Lisp that runs on without waiting.  */
 int32_t nhg_flush_presents (NhgDisplay *d);
@@ -858,7 +862,10 @@ int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
 /* One block of Emacs window SEQ: CLIP its text area (window_box (w, TEXT_AREA)) and RECT the block's rows from x0 to
    x1, both device pixels with the native area's origin; FLAGS NHG_BLOCK_*; RADIUS the outer corner radius in device
    pixels; RING_RGB the line's 0xRRGGBB (-1 none) at RING_OPACITY (0 to 1); BENEATH_RGB the colour beneath the block,
-   what a ring's corners show outside its rounded path.  */
+   what a ring's corners show outside its rounded path; GAP a ring's inset from its rows' top and bottom in device
+   pixels, the band between in the colour beneath; SHADOW_RGB a ring's shadow (-1 none: a 3 logical px blur 1 logical
+   px down, outside its edge) at SHADOW_OPACITY, HALO_RGB the shadow's line just outside the edge at HALO_OPACITY,
+   OUTER_RGB a second ring one logical px just outside the edge at OUTER_OPACITY.  */
 typedef struct
 {
   uint64_t seq;
@@ -869,6 +876,13 @@ typedef struct
   int32_t ring_rgb;
   float ring_opacity;
   int32_t beneath_rgb;
+  int32_t gap;
+  int32_t shadow_rgb;
+  float shadow_opacity;
+  int32_t halo_rgb;
+  float halo_opacity;
+  int32_t outer_rgb;
+  float outer_opacity;
 } NhgBlock;
 
 /* FRAME (WINDOW its own shell window, a child frame's too) is about to be published with the N blocks at BLOCKS: each

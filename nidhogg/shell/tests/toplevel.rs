@@ -409,4 +409,32 @@ mod toplevel {
         let c = configure_of(&wait_event(&mut shell, Kind::Configure));
         assert_eq!((c.w, c.h), (200, 100));
     }
+
+    /// `hold_main` leaves a configure that has come unread until it is released; then it is read, after what the
+    /// window did meanwhile: mutter's late answer, in a fixed order.
+    #[test]
+    fn a_held_configure_is_read_after_the_release() {
+        let rec = Recorder::start("mutter");
+        let mut shell = rec.open();
+        let id = shown_window(&mut shell);
+        shell.hold_main(true).unwrap();
+        configure_now(&rec, (200, 100), r#""activated""#);
+        // the configure is at the client (the roundtrip after it is answered), and stays unread
+        sync(&shell);
+        assert!(
+            !collect(&mut shell, 50)
+                .iter()
+                .any(|e| e.kind() == Kind::Configure),
+            "a configure read while held"
+        );
+        show_at(&mut shell, id, 300, 150);
+        sync(&shell);
+        shell.hold_main(false).unwrap();
+        let c = configure_of(&wait_event(&mut shell, Kind::Configure));
+        assert_eq!(
+            (c.w, c.h),
+            (0, 0),
+            "sent before the recorder read 300 x 150"
+        );
+    }
 }

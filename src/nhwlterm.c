@@ -668,21 +668,40 @@ nhwl_block_int (Lisp_Object v, int i, intmax_t dflt)
 	  : FLOATP (x) ? (intmax_t) XFLOAT_DATA (x) : dflt);
 }
 
+/* Whether ROW holds only an overlay string displayed at END: it starts
+   and ends at END, and a glyph of its text area comes from a string.  */
+static bool
+nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
+{
+  if (MATRIX_ROW_START_CHARPOS (row) != end
+      || MATRIX_ROW_END_CHARPOS (row) != end)
+    return false;
+  struct glyph *g = row->glyphs[TEXT_AREA];
+  for (struct glyph *e = g + row->used[TEXT_AREA]; g < e; g++)
+    if (STRINGP (g->object))
+      return true;
+  return false;
+}
+
 /* List block V of leaf window W, whose text area is CLIP: the rows of
    W's current matrix holding its text, from its first row's top to its
    last row's bottom, from x0 to x1 of the text area.  V is
-   [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB] as
-   glitnir--block-vector makes it (KIND 0 a ring, 1 a rule; START and END
-   positions, END exclusive; X0, X1 and RADIUS device pixels).  A block
+   [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB GAP
+   SHADOW-RGB SHADOW-OPACITY HALO-RGB HALO-OPACITY OUTER-RGB OUTER-OPACITY]
+   as glitnir--block-vector makes it (KIND 0 a ring, 1 a rule; START and END positions, END
+   exclusive; X0, X1, RADIUS and GAP device pixels; an RGB -1 for none).  A block
    whose text starts above the window's first row (scrolled out) is open
-   at the top; one that goes on below its last row, at the bottom.  This
-   is all C does: the glue plans the layers and Glitnir draws.  */
+   at the top; one that goes on below its last row, at the bottom.  Rows
+   of nothing but an overlay string at END (an after-string there, such
+   as a notebook cell's output) are inside: they start and end at END,
+   so a block starting at END leaves them out.  This is all C does: the
+   glue plans the layers and Glitnir draws.  */
 static void
 nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 {
   struct glyph_matrix *m = w->current_matrix;
 
-  if (!m || !VECTORP (v) || ASIZE (v) < 9)
+  if (!m || !VECTORP (v) || ASIZE (v) < 16)
     return;
   ptrdiff_t start = nhwl_block_pos (w, AREF (v, 1));
   ptrdiff_t end = nhwl_block_pos (w, AREF (v, 2));
@@ -697,7 +716,7 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
     {
       ptrdiff_t rs = MATRIX_ROW_START_CHARPOS (row);
       ptrdiff_t re = MATRIX_ROW_END_CHARPOS (row);
-      if (rs >= end)
+      if (rs > end || (rs == end && !nhwl_block_tail_row_p (row, end)))
 	{
 	  stopped = true;
 	  break;
@@ -730,14 +749,22 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
   if (nhwl_nblocks == nhwl_blocks_cap)
     nhwl_blocks = xpalloc (nhwl_blocks, &nhwl_blocks_cap, 1, -1,
 			   sizeof *nhwl_blocks);
-  Lisp_Object op = AREF (v, 7);
+  Lisp_Object op = AREF (v, 7), sop = AREF (v, 11), hop = AREF (v, 13);
+  Lisp_Object oop = AREF (v, 15);
   nhwl_blocks[nhwl_nblocks++]
     = (NhgBlock) { w->sequence_number, clip,
 		   { clip.x + x0, y0, x1 - x0, y1 - y0 },
 		   flags, (int32_t) nhwl_block_int (v, 5, 0),
 		   (int32_t) nhwl_block_int (v, 6, -1),
 		   NUMBERP (op) ? (float) XFLOATINT (op) : 1.0f,
-		   (int32_t) nhwl_block_int (v, 8, 0) };
+		   (int32_t) nhwl_block_int (v, 8, 0),
+		   (int32_t) nhwl_block_int (v, 9, 0),
+		   (int32_t) nhwl_block_int (v, 10, -1),
+		   NUMBERP (sop) ? (float) XFLOATINT (sop) : 0.0f,
+		   (int32_t) nhwl_block_int (v, 12, -1),
+		   NUMBERP (hop) ? (float) XFLOATINT (hop) : 0.0f,
+		   (int32_t) nhwl_block_int (v, 14, -1),
+		   NUMBERP (oop) ? (float) XFLOATINT (oop) : 0.0f };
 }
 
 /* Add a filled bar RECT in RGB at OPACITY to the list, clipped to CLIP,
@@ -5099,6 +5126,33 @@ tests.  */)
   return states;
 }
 
+DEFUN ("nhwl--hold-configures", Fnhwl__hold_configures,
+       Snhwl__hold_configures, 1, 2, 0,
+       doc: /* Leave the compositor's configures to FRAME's display unread if ON.
+FRAME defaults to the selected frame.  While ON is non-nil the shell
+reads no configure (nor anything else its main queue carries): what
+the compositor sends waits, as a late answer would.  ON nil reads it
+at the next read of input, in the order it came.  Return nil.
+
+This is a test primitive: it stalls the shell's main queue, so a
+frame that waits for the compositor waits on it.  A row that needs the
+compositor's answer read after something the frame does holds it back.
+Nothing outside tests may call it (drgnx never does).  */)
+  (Lisp_Object on, Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  struct nhwl_display_info *dpyinfo;
+  int32_t rc;
+
+  if (!FRAME_NHWL_P (f))
+    error ("Not a Nidhogg shell frame");
+  dpyinfo = FRAME_DISPLAY_INFO (f);
+  rc = NHG (nhg_hold_main (dpyinfo->glue, !NILP (on)));
+  if (nhwl_glue_rc (dpyinfo, rc) < 0)
+    error ("The shell cannot hold its configures");
+  return Qnil;
+}
+
 DEFUN ("nhwl--focus-frames", Fnhwl__focus_frames, Snhwl__focus_frames,
        0, 1, 0,
        doc: /* Return the frames FRAME's display holds for focus, a plist.
@@ -5155,6 +5209,7 @@ syms_of_nhwlterm (void)
   defsubr (&Snhwl__scroll_layers);
   defsubr (&Snhwl__frame_states);
   defsubr (&Snhwl__focus_frames);
+  defsubr (&Snhwl__hold_configures);
   DEFSYM (QCfocus, ":focus");
   DEFSYM (QChighlight, ":highlight");
   DEFSYM (QCevent, ":event");

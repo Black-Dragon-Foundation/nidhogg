@@ -153,6 +153,8 @@ pub struct WaylandShell {
     socket_dup: Option<std::os::fd::OwnedFd>,
     /// Reconnecting since the host took `RECONNECTING` (`reconnect.rs`).
     reconnect: Option<reconnect::Reconnecting>,
+    /// The main queue is left unread (`hold_main`, for tests).
+    held: bool,
 }
 
 impl MainState {
@@ -284,15 +286,16 @@ impl WaylandShell {
             socket_path,
             socket_dup,
             reconnect: None,
+            held: false,
         };
         // dispatches the setup's main-queue events and registers the waker
         shell.dispatch_main().map_err(|_| ShellError::Unsupported)?;
         Ok(shell)
     }
 
-    /// Dispatch the main queue and register its waker; does not flush.
+    /// Dispatch the main queue and register its waker; does not flush.  Nothing while it is held (`hold_main`).
     fn dispatch_main_queue(&mut self) -> ShellResult {
-        if !self.main_queue_live() {
+        if !self.main_queue_live() || self.held {
             return Ok(());
         }
         let mut cx = Context::from_waker(&self.main_waker);
