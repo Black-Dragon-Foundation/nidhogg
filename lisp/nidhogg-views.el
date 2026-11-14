@@ -153,8 +153,9 @@ WHAT is `selection', `kind' (of ARG, an id, or the selection), `field'
 TOTAL) when the model holds a window of it, else nil), `finished' (the id that went from under
 the selection, once), `class' (of ARG), `classes' (a vector [ID CLASS
 ...] of the nodes whose class changed since the last read), `reclass',
-`class-names', `expanded', `open' (of ARG: a tree node is open), `ticked', `version', `stats' or `health' (0 ok,
-1 no model, 2 broken, 3 stale)."
+`class-names', `expanded', `open' (of ARG: a tree node is open), `ticked', `version', `stats', `health' (0 ok,
+1 no model, 2 broken, 3 stale) or `at-line' (ARG a list in file order, ARG2 a line: the last entry whose
+integer `line' field is at or before it, or nil; a binary search)."
   (nidhogg-view--call (nidhogg-view--op get) h (symbol-name what) arg arg2))
 
 (defsubst nidhogg-view-rows (h what &optional a b)

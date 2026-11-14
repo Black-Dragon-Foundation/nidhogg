@@ -113,6 +113,23 @@ RESET marks it a reset.  Return the drain's status, or the push's decision when 
     (should (eq (sja-tests--put "t-follow" 1 "{\"ops\": []}") 'drop))           ; a diff not newer
     (should (eq (sja-tests--put "t-follow" 2 "{\"ops\": [{\"remove\": 3}]}") 'resync))))
 
+(ert-deftest sja/at-line-names-the-entry-a-line-is-in ()
+  (let ((h (nidhogg-view-open "t-at-line"))
+        (model (concat "{\"ops\": [{\"reset\": {\"descriptor\": {\"scheme\": \"links\", \"lists\": [\"order\"],"
+                       " \"start\": \"order\"}, \"nodes\": ["
+                       "{\"id\": \"d:0\", \"kind\": \"def\", \"nav\": {}, \"fields\": [[\"line\", 3]]},"
+                       "{\"id\": \"d:1\", \"kind\": \"def\", \"nav\": {}, \"fields\": [[\"line\", 10]]}],"
+                       " \"edges\": [], \"lists\": [{\"name\": \"order\", \"ids\": [\"d:0\", \"d:1\"]}]}}]}")))
+    (unwind-protect
+        (progn
+          (should (eq (sja-tests--put "t-at-line" 1 model t) 'applied))
+          (should-not (nidhogg-view-get h 'at-line "order" 2))
+          (should (equal (nidhogg-view-get h 'at-line "order" 3) "d:0"))
+          (should (equal (nidhogg-view-get h 'at-line "order" 9) "d:0"))
+          (should (equal (nidhogg-view-get h 'at-line "order" 400) "d:1"))
+          (should-error (nidhogg-view-get h 'at-line "order" "9")))
+      (nidhogg-view-close h))))
+
 (ert-deftest sja/classes-are-face-indices ()
   (sja-tests--with "t-classes" h
     (should (equal (nidhogg-view-get h 'class-names) '("selected" "chain" "dim")))
