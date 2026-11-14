@@ -2352,6 +2352,38 @@ nhwl_popup_init (struct frame *f, Lisp_Object parms)
   XSETCAR (tem, Qnil);
 }
 
+/* Move the anchor A of a W x H popup with gravity GRAVITY (1 to 8,
+   xdg_positioner's; its anchor edge is the same) so that the popup, as
+   placed before the compositor's adjustments, overlaps its parent's
+   native area PW x PH or shares part of an edge with it, as a popup
+   must: an anchor off the parent (a menu at the pointer's last spot on
+   a frame made smaller since) moves until the popup overlaps the parent
+   by up to 16 pixels.  Mutter dismisses a popup outside its parent, and
+   a popup then made on the dismissed one is a protocol error that ends
+   the connection ("Invalid popup parent window").  */
+static void
+popup_touch_parent (NhgRect *a, uint32_t gravity, int w, int h,
+		    int pw, int ph)
+{
+  int aw = max (1, a->w), ah = max (1, a->h);
+  bool left = gravity == 3 || gravity == 5 || gravity == 6;
+  bool right = gravity == 4 || gravity == 7 || gravity == 8;
+  bool up = gravity == 1 || gravity == 5 || gravity == 7;
+  bool down = gravity == 2 || gravity == 6 || gravity == 8;
+  int px = left ? a->x - w : right ? a->x + aw : a->x + aw / 2 - w / 2;
+  int py = up ? a->y - h : down ? a->y + ah : a->y + ah / 2 - h / 2;
+  bool ox = px < pw && px + w > 0, oy = py < ph && py + h > 0;
+  bool tx = px == pw || px + w == 0, ty = py == ph || py + h == 0;
+  int kx = max (1, min (16, min (w, pw))), ky = max (1, min (16, min (h, ph)));
+
+  if ((ox && oy) || (tx && oy) || (ty && ox))
+    return;
+  if (!ox)
+    a->x += px >= pw ? pw - kx - px : kx - w - px;
+  if (!oy)
+    a->y += py >= ph ? ph - ky - py : ky - h - py;
+}
+
 /* Show popup frame F: a new popup of its parent's window, at the current
    parameter and F's size.  */
 void
@@ -2378,6 +2410,8 @@ nhwl_popup_show (struct frame *f)
   out->scale120 = po->scale120 ? po->scale120 : 120;
   w = f->new_size_p ? f->new_width : FRAME_PIXEL_WIDTH (f);
   h = f->new_size_p ? f->new_height : FRAME_PIXEL_HEIGHT (f);
+  popup_touch_parent (&p.anchor, p.gravity, max (1, w), max (1, h),
+		      FRAME_PIXEL_WIDTH (pf), FRAME_PIXEL_HEIGHT (pf));
 
   block_input ();
   rc = nhwl_glue_rc (dpyinfo,
@@ -2474,6 +2508,10 @@ nhwl_popup_params_changed (struct frame *f)
   out = FRAME_NHWL_OUTPUT (f);
   if (!out->window)
     return;
+  popup_touch_parent (&p.anchor, p.gravity, max (1, FRAME_PIXEL_WIDTH (f)),
+		      max (1, FRAME_PIXEL_HEIGHT (f)),
+		      FRAME_PIXEL_WIDTH (FRAME_PARENT_FRAME (f)),
+		      FRAME_PIXEL_HEIGHT (FRAME_PARENT_FRAME (f)));
   block_input ();
   rc = nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		     NHG (nhg_popup_place (FRAME_NHG (f), out->window,
