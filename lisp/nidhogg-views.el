@@ -199,7 +199,11 @@ side of its text that stays, N and its N characters' widths).  COLUMNS
 room.  The answer is (LEFT RIGHT CUT RIGHT-WIDTH): the indices of the
 segments kept on each side, CUT nil or (INDEX KEEP ELLIPSIS WIDTH) (the
 cuttable segment's first KEEP characters, then the ellipsis when
-ELLIPSIS is 1), and the right run's width."
+ELLIPSIS is 1), and the right run's width.  A SPEC that starts with 2
+ends with a centred segment, WIDTH GAP ROOM (its width, the least gap
+either side, the right run's width the centring assumes); the answer
+then ends with (KEPT BEFORE AFTER): KEPT 1 with the gaps before and
+after it, or 0 with BEFORE the one gap between the runs."
   (nidhogg-view--call (nidhogg-view--op bar) spec))
 
 (defsubst nidhogg-view-pick (what &optional a b c)

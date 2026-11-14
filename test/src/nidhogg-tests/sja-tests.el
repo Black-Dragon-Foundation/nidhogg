@@ -336,7 +336,10 @@ touching only the rows that changed."
                   (concat "1 200 8 4 2 2 6 56 0 2 3  -1 100 1 12 11 8 8 8 8 8 8 8 8 8 8 8  -1 30 0"
                           "  3 40 0  -1 50 0  0 20 0"))
                  '((0 1) (1) (0 9 1 90) 50)))
-  (should-error (nidhogg-view-bar "2 0") :type 'args-out-of-range))
+  (should-error (nidhogg-view-bar "2 0") :type 'args-out-of-range)
+  ;; a title row's search box, centred between the runs
+  (should (equal (nidhogg-view-bar "2 800 0 0 0 0 0 0 0 2 1  -1 60 0  -1 40 0  -1 90 0  200 10 150")
+                 '((0 1) (0) nil 90 (1 175 235)))))
 
 (ert-deftest sja/a-local-list-is-picked ()
   "A list loaded once, picked from by input through the door: the recent
