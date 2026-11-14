@@ -105,7 +105,12 @@
             (erase-buffer)
             (insert (make-string (* 6 (window-max-chars-per-line)) ?x) "\n")
             (dotimes (i 50) (insert (format "line %d\n" (+ i 2))))
-            (setq-local display-line-numbers t truncate-lines nil))
+            ;; a fixed number width: unfixed, it covers the window's last possible line, counted from the rows of the
+            ;; window's glyph matrix (maybe_produce_line_number), and those rows change from one redisplay to the
+            ;; next (at scale 2 after the earlier rows: 3 digits after the first redisplay, 2 after `redraw-frame'),
+            ;; so `vertical-motion' counted rows a column narrower than redisplay then drew, and SECOND was no row's
+            ;; start
+            (setq-local display-line-numbers t display-line-numbers-width 3 truncate-lines nil))
           (delete-other-windows)
           (set-window-buffer nil b)
           (set-window-parameter nil 'mode-line-format 'none)
