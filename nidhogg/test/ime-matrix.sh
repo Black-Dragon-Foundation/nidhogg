@@ -111,11 +111,13 @@ for combo in "${combos[@]}"; do
   [ "${GLITNIR_GUI_DRY:-}" != 1 ] || continue
   for row in "${rows[@]}"; do
     name=nhwl-ime/$row
-    verdict=$(grep -E "^(passed|skipped|FAILED) $name\$" "$log" 2>/dev/null | head -n 1 | cut -d' ' -f1)
+    # the runner's verdict line: "passed NAME (0.3 s)" (the row's seconds since 2026-11-08)
+    ends="( \\([0-9.]+ s\\))?\$"
+    verdict=$(grep -E "^(passed|skipped|FAILED) $name$ends" "$log" 2>/dev/null | head -n 1 | cut -d' ' -f1)
     case $verdict in
       passed) record "$combo" "$row" pass "" ;;
       skipped) record "$combo" "$row" skipped "$(sed -n "s#^nhwl-ime-skip $name: ##p" "$log" | head -n 1)" ;;
-      FAILED) record "$combo" "$row" fail "$(grep -A1 "^FAILED $name\$" "$log" | sed -n 2p | cut -c1-200)"; failed=1 ;;
+      FAILED) record "$combo" "$row" fail "$(grep -E -A1 "^FAILED $name$ends" "$log" | sed -n 2p | cut -c1-200)"; failed=1 ;;
       *)
         # no verdict: the container, the compositor or Nidhogg did not come up.  Whole-combination reason from the log.
         reason=$(grep -m1 -E '^gui.sh: |dnf|Error' "$log" 2>/dev/null | cut -c1-200)

@@ -1,5 +1,6 @@
 ;;; nhwl-session-tests.el --- tests for the Wayland shell's session restore  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

@@ -1188,6 +1188,38 @@ while the menu opens, as for a menu opened by a `down-mouse-3' event."
   ;; the same menu opens again after it closed
   (should (equal (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '(103 28)) '(gamma))))
 
+(ert-deftest nhwl-gui/popup-frame-off-its-parent-touches-it ()
+  "A popup frame anchored off its parent (a menu at the pointer's last spot on a frame made smaller since) is placed
+overlapping the parent: a popup must touch its parent, and mutter dismisses one that does not (\"Buggy client caused
+popup to be placed outside of parent window\"); a submenu then made on it ended the connection (\"Invalid popup
+parent window\")."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((parent (selected-frame))
+         (s (frame-scale-factor parent)))
+    (dolist (anchor `((,(+ (frame-pixel-width parent) 500) ,(+ (frame-pixel-height parent) 500) 1 1)
+                      (-900 -900 1 1 :gravity top-left)
+                      (40 30 1 1)))
+      (let ((before (nhwl-gui--popup-ids)) (p nil))
+        (unwind-protect
+            (progn
+              (setq p (nhwl-gui--popup-frame parent anchor))
+              (let* ((n (nhwl-gui--popup-node before))
+                     (at (plist-get n :position))
+                     (w (/ (frame-pixel-width p) s)) (h (/ (frame-pixel-height p) s))
+                     ;; the position is in the parent's window geometry, else its surface (with a client-side
+                     ;; title row and margins, larger than the native area); the parent is the toplevel
+                     (pn (nhwl-gui--node (nhwl-gui--toplevel-id)))
+                     (g (or (nhwl-gui--get pn :geometry)
+                            (let ((b (plist-get pn :buffer)))
+                              (list 0 0 (/ (plist-get b :w) s) (/ (plist-get b :h) s)))))
+                     (pw (elt g 2)) (ph (elt g 3)))
+                (should n)
+                ;; the popup's rectangle and the parent's overlap
+                (should (equal (list anchor at w h g (< (elt at 0) pw) (> (+ (elt at 0) w) 0)
+                                     (< (elt at 1) ph) (> (+ (elt at 1) h) 0))
+                               (list anchor at w h g t t t t)))))
+          (when (frame-live-p p) (delete-frame p)))))))
+
 (ert-deftest nhwl-gui/menu-escape-returns-nil ()
   (skip-unless (nhwl-gui--recorder-p))
   (should-not (nhwl-gui--menu-typing (nhwl-gui--menu-keymap) '(108 1)))

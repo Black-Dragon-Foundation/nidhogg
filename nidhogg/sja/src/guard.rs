@@ -106,8 +106,8 @@ pub(crate) fn catching<R>(body: impl FnOnce() -> R) -> Option<R> {
     }
 }
 
-/// The clock the breaker reads, in milliseconds (a test may set it).
-fn now_ms() -> u64 {
+/// The clock the breakers read, in milliseconds (a test may set it).
+pub(crate) fn now_ms() -> u64 {
     #[cfg(feature = "test-hooks")]
     if let Some(t) = TEST_NOW.with(Cell::get) {
         return t;

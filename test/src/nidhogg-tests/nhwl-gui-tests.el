@@ -1,6 +1,7 @@
 ;;; nhwl-gui-tests.el --- GUI rows for Nidhogg's own Wayland shell  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh in a build made with --with-nidhogg-wayland.  The rows that drive or read the compositor
 ;; need `--compositor recorder' ($GLITNIR_GUI_RECORDER, the recorder's control socket); the others run on any
@@ -367,7 +368,7 @@ The call says why the span is the point."
             (let* ((second (nhwl-gui--second-recorder)) (f nil))
               (unwind-protect
                   (progn
-                    (should (process-live-p (car second)))
+                    (should (eq (process-status (car second)) 'run))
                     (setq f (make-frame-on-display "nhwl-second"))
                     (should (frame-live-p f))
                     (should (equal (terminal-name (frame-terminal f)) "nhwl-second"))
@@ -1807,6 +1808,15 @@ down then.  This covers what the compositor sent; an answer to something Emacs j
                              (nhwl-gui--get n :buffer)))
             (nhwl-gui--tree)))
 
+(defun nhwl-gui--popup-ids-tip-hidden ()
+  "The popups' ids once a tip left showing has gone: a row before may have moved the pointer over help text, and
+`tooltip-mode' then shows its tip after the delay.  `x-show-tip' replaces that tip and `x-hide-tip' hides the new one,
+so a row that takes the ids with the old tip showing would wait for it to come back."
+  (let ((n (length (nhwl-gui--popup-ids))))
+    (when (x-hide-tip)
+      (nhwl-gui--wait (lambda () (nhwl-gui--pump) (< (length (nhwl-gui--popup-ids)) n)) 5))
+    (nhwl-gui--popup-ids)))
+
 (ert-deftest nhwl-gui/tooltip-is-a-popup ()
   (skip-unless (nhwl-gui--recorder-p))
   (let ((before (nhwl-gui--popup-ids)))
@@ -1821,7 +1831,7 @@ down then.  This covers what the compositor sent; an answer to something Emacs j
 
 (ert-deftest nhwl-gui/tooltip-hidden-by-x-hide-tip ()
   (skip-unless (nhwl-gui--recorder-p))
-  (let ((before (nhwl-gui--popup-ids)))
+  (let ((before (nhwl-gui--popup-ids-tip-hidden)))
     (unwind-protect
         (progn
           (x-show-tip "hello" nil nil 5)
@@ -1833,7 +1843,7 @@ down then.  This covers what the compositor sent; an answer to something Emacs j
 
 (ert-deftest nhwl-gui/tooltip-dismissed-by-the-compositor ()
   (skip-unless (nhwl-gui--recorder-p))
-  (let ((before (nhwl-gui--popup-ids)))
+  (let ((before (nhwl-gui--popup-ids-tip-hidden)))
     (unwind-protect
         (progn
           (x-show-tip "hello" nil nil 5)
@@ -3064,8 +3074,10 @@ re-opened for a scale never resizes the window the compositor sized."
 
 ;; The frame rows that came over from the pgtk runner: what any shell must do on any compositor.
 
-(defun nhwl-gui--socket-owner (path)
-  "The process name (`/proc/PID/comm') of the process listening on the Unix socket PATH, or nil."
+(defun nhwl-gui--socket-owners (path)
+  "The process names (`/proc/PID/comm') of the processes holding the Unix socket PATH, in /proc's order.
+A compositor started through a wrapper has two: KWin's kwin_wayland_wrapper makes the socket and hands it to
+kwin_wayland, and either may still hold it."
   (let (inode)
     (with-temp-buffer
       (insert-file-contents "/proc/net/unix")
@@ -3078,9 +3090,9 @@ re-opened for a scale never resizes the window the compositor sized."
                              (cl-loop for fd in (directory-files (format "/proc/%s/fd" pid) t "[0-9]")
                                       thereis (equal (file-symlink-p fd) (format "socket:[%s]" inode))))
                when found
-               return (string-trim (with-temp-buffer
-                                     (insert-file-contents (format "/proc/%s/comm" pid))
-                                     (buffer-string)))))))
+               collect (string-trim (with-temp-buffer
+                                      (insert-file-contents (format "/proc/%s/comm" pid))
+                                      (buffer-string)))))))
 
 (ert-deftest nhwl-gui/compositor-is-the-asked-one ()
   "The process listening on WAYLAND_DISPLAY's socket is the compositor gui.sh was asked for."
@@ -3088,8 +3100,11 @@ re-opened for a scale never resizes the window the compositor sized."
   (let* ((asked (getenv "GLITNIR_GUI_COMPOSITOR"))
          (sock (expand-file-name (getenv "WAYLAND_DISPLAY") (getenv "XDG_RUNTIME_DIR"))))
     (skip-unless (and (nhwl-gui--live-p) asked))
-    (should (equal (nhwl-gui--socket-owner sock)
-                   (pcase asked ("sway" "sway") ("mutter" "mutter") ("kwin" "kwin_wayland") ("labwc" "labwc") ("recorder" "nh-recorder"))))))
+    (let ((want (pcase asked ("sway" "sway") ("mutter" "mutter") ("kwin" "kwin_wayland") ("labwc" "labwc")
+                       ("recorder" "nh-recorder")))
+          (owners (nhwl-gui--socket-owners sock)))
+      ;; the holders in the verdict: a red row says who held the socket
+      (should (equal (list owners (and (member want owners) t)) (list owners t))))))
 
 (ert-deftest nhwl-gui/show-then-hide-stays-hidden ()
   "A child shown and at once hidden stays hidden once the compositor has answered."
@@ -3148,12 +3163,16 @@ re-opened for a scale never resizes the window the compositor sized."
   "emacsclient -c with WAYLAND_DISPLAY set and no DISPLAY opens a frame of this shell on the same display."
   (skip-unless (nhwl-gui--live-p))
   (require 'server)
-  (let* ((server-name (format "nhwl-gui-%d" (emacs-pid)))
+  ;; under --daemon the daemon's own server runs, and its client holds the frame the rows run in: the client asks
+  ;; that server.  A server of the row's own would replace it, and `server-start' asks first whether to delete its
+  ;; clients (a prompt nobody answers: the lane hung until its timeout)
+  (let* ((own (not (and (processp server-process) (eq (process-status server-process) 'listen))))
+         (server-name (if own (format "nhwl-gui-%d" (emacs-pid)) server-name))
          (client (expand-file-name "emacsclient" invocation-directory))
          (before (frame-list))
          (process-environment (cons "DISPLAY" process-environment))
          new)
-    (server-start)
+    (when own (server-start))
     (unwind-protect
         (progn
           (make-process :name "nhwl-client" :command (list client "-s" server-name "-c" "-n")
@@ -3163,6 +3182,6 @@ re-opened for a scale never resizes the window the compositor sized."
           (should (eq (framep new) 'pgtk))
           (should (eq (frame-terminal new) (frame-terminal (selected-frame)))))
       (when (frame-live-p new) (delete-frame new t))
-      (server-force-delete))))
+      (when own (server-force-delete)))))
 
 (provide 'nhwl-gui-tests)

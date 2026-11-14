@@ -9,7 +9,7 @@ set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [ "${1:-}" = --inner ]; then
   cd "$HERE" || exit 1
-  # the build image has no rustup-init (the check image does): the one install this check makes
+  # the build and check images have rustup-init; another image gets it here
   command -v rustup-init >/dev/null 2>&1 || dnf -y --setopt=install_weak_deps=False install rustup >/dev/null 2>&1 || true
   . ../../ci/target-std.sh
   target_std aarch64-apple-darwin || exit 3

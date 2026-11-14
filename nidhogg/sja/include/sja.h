@@ -44,6 +44,7 @@ extern "C" {
 #define SJA_DRAIN 12
 #define SJA_NAMED 13
 #define SJA_DUE 14
+#define SJA_ROWS 15
 #define SJA_TEST_PANIC 99
 
 typedef struct

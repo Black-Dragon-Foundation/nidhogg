@@ -1,5 +1,6 @@
 ;;; workers-framing-tests.el --- tests for workers: process framing  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -383,7 +384,7 @@ Batches go to `workers-fr-tests--collect', raw output to the property
             (should (workers-fr-tests--until
                      (lambda () (/= (signal-process gpid 0) 0))
                      10)))
-          (should-not (process-live-p proc))
+          (should (memq (process-status proc) '(exit signal)))
           (should (equal (mapcar #'cadr (workers-fr-tests--got proc))
                          '("one"))))
       (mapc #'delete-process taken)
@@ -880,8 +881,8 @@ tree), and there is no untracked one."
             (should (workers-fr-tests--until (lambda () b-deleted)))
             (workers-fr-tests--witness)
             (should (= b-after 0))
-            (should-not (process-live-p b))
-            (should (process-live-p a))))))))
+            (should (memq (process-status b) '(signal exit closed)))
+            (should (memq (process-status a) '(run open)))))))))
 
 (ert-deftest workers/flow-control-framed ()
   ;; §17.2 S9, review M5, on a framed connection: `stop-process' pauses

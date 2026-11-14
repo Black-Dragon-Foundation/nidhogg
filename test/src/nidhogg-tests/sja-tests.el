@@ -285,6 +285,51 @@ RESET marks it a reset.  Return the drain's status, or the push's decision when 
           (should-not (nidhogg-view-push "{\"event\":\"view-patch\",\"data\":{}}")))
       (nidhogg-view-close h))))
 
+(defun sja-tests--rows-line (view base version ops)
+  "A hub's `view-model' line carrying a row patch of VIEW from BASE to VERSION with OPS (JSON text)."
+  (format (concat "{\"event\":\"view-model\",\"data\":{\"view\":%S,\"rows\":{\"view\":%S,\"class\":\"c\","
+                  "\"hub\":5,\"base\":%d,\"version\":%d,\"env_epoch\":0,\"ops\":%s}}}")
+          view view base version ops))
+
+(defun sja-tests--draw-rows (h)
+  "Draw H's rows into the current buffer, which is the whole region, and confirm the batch."
+  (let ((d (nidhogg-view-rows h 'draw (- (point-max) (point-min)))))
+    (seq-doseq (e (nth 2 d))
+      (goto-char (+ (point-min) (nth 0 e)))
+      (delete-char (nth 1 e))
+      (insert (nth 2 e)))
+    (nidhogg-view-rows h 'drawn (nth 0 d))))
+
+(ert-deftest sja/rows-through-the-door ()
+  "A row patch on a `view-model' line goes to the view's row store; a draw's edits turn the buffer into the rows,
+touching only the rows that changed."
+  (let ((h (nidhogg-view-open "t-rows")))
+    (unwind-protect
+        (with-temp-buffer
+          ;; no store: the line is not this view's to draw
+          (should-not (nidhogg-view-push (sja-tests--rows-line "t-rows" 0 1 "[]")))
+          (nidhogg-view-rows h 'on 1)
+          (should (equal (nidhogg-view-push
+                          (sja-tests--rows-line
+                           "t-rows" 0 1
+                           "[{\"reset\": [{\"key\": \"a\", \"text\": \"ä\"}, {\"key\": \"b\", \"text\": \"b\"}]}]"))
+                         '("t-rows" 1 apply "c")))
+          (should (eql (sja-tests--draw-rows h) 1))
+          (should (equal (buffer-string) "ä\nb\n"))
+          (should (equal (nidhogg-view-rows h 'place 2) '("b" . 0)))
+          (put-text-property 1 2 'sja-tests-mark t)
+          (should (equal (nidhogg-view-push
+                          (sja-tests--rows-line
+                           "t-rows" 1 2 "[{\"replace\": [{\"key\": \"b\", \"text\": \"bee\"}]}]"))
+                         '("t-rows" 2 apply "c")))
+          (sja-tests--draw-rows h)
+          (should (equal (buffer-string) "ä\nbee\n"))
+          (should (get-text-property 1 'sja-tests-mark))
+          ;; a gap asks for a resync, once
+          (should (equal (nth 2 (nidhogg-view-push (sja-tests--rows-line "t-rows" 5 6 "[]"))) 'resync))
+          (should (equal (nth 2 (nidhogg-view-push (sja-tests--rows-line "t-rows" 7 8 "[]"))) 'quiet)))
+      (nidhogg-view-close h))))
+
 (provide 'sja-tests)
 
 ;;; sja-tests.el ends here

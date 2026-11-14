@@ -1,5 +1,6 @@
 ;;; workers-fatal-tests.el --- tests for workers: fatal paths  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -51,6 +52,19 @@
                 "sh" (expand-file-name invocation-name invocation-directory))
           args))
 
+(defun workers-fatal-tests--note-end (p _event)
+  "A sentinel: P's end (it exited or a signal ended it), as its `ended' property."
+  (when (memq (process-status p) '(exit signal))
+    (process-put p 'ended t)))
+
+(defun workers-fatal-tests--wait-end (p polls)
+  "Wait until P's sentinel says it ended, at most POLLS waits of 20 ms for its output; whether it did."
+  (let ((i 0))
+    (while (and (not (process-get p 'ended)) (< i polls))
+      (accept-process-output p 0.02)
+      (setq i (1+ i))))
+  (process-get p 'ended))
+
 (defun workers-fatal-tests--run (args &rest props)
   "Run a child Nidhogg with ARGS; return a plist of what happened.
 PROPS: `:pty' (non-nil: its terminal is a pty, so a fatal error prints
@@ -72,6 +86,7 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
          (proc (make-process
                 :name "nh-wk-fatal" :buffer nil :noquery t
                 :connection-type (if (plist-get props :pty) 'pty 'pipe)
+                :sentinel #'workers-fatal-tests--note-end
                 :command (append
                           (list "/bin/sh" "-c"
                                 (concat workers-fatal-tests--no-core
@@ -88,10 +103,10 @@ seconds.  The plist: `:status' and `:code' (`process-status' and
                             (when (string-match-p (car a) out)
                               (setq pending (delq a pending))
                               (process-send-string p (cdr a))))))))
-    (while (and (process-live-p proc) (< (- (float-time) start) 30))
+    (while (and (not (process-get proc 'ended)) (< (- (float-time) start) 30))
       (accept-process-output proc 0.05))
     (let ((end (float-time)))
-      (when (process-live-p proc)
+      (unless (process-get proc 'ended)
         (delete-process proc))
       (accept-process-output nil 0)
       (prog1 (list :status (process-status proc)
@@ -533,13 +548,12 @@ holds the text.  Waits 20 s at most for the child."
              (while t (accept-process-output nil 1))))
          (child (make-process
                  :name "wfatal-child" :noquery t :buffer nil
+                 :sentinel #'workers-fatal-tests--note-end
                  :command (workers-fatal-tests--child
                            "-Q" "--batch" "--eval" (prin1-to-string form)))))
     (unwind-protect
-        (let ((i 0))
-          (while (and (process-live-p child) (< i 1000))
-            (accept-process-output child 0.02)
-            (setq i (1+ i)))
+        (progn
+          (workers-fatal-tests--wait-end child 1000)
           (list (process-status child)
                 (let ((auto (expand-file-name "#unsaved.txt#" dir)))
                   (and (file-exists-p auto)
@@ -547,7 +561,7 @@ holds the text.  Waits 20 s at most for the child."
                          (insert-file-contents auto)
                          (string-search "the unsaved text" (buffer-string)))
                        t))))
-      (when (process-live-p child)
+      (unless (process-get child 'ended)
         (delete-process child))
       (delete-directory dir t))))
 
@@ -615,13 +629,12 @@ holds the text.  Waits 20 s at most for the child."
              (while t (accept-process-output nil 1))))
          (child (make-process
                  :name "wfatal-hup-child" :noquery t :buffer nil
+                 :sentinel #'workers-fatal-tests--note-end
                  :command (workers-fatal-tests--child
                            "-Q" "--batch" "--eval" (prin1-to-string form)))))
     (unwind-protect
         (let ((i 0) pid)
-          (while (and (process-live-p child) (< i 1000))
-            (accept-process-output child 0.02)
-            (setq i (1+ i)))
+          (workers-fatal-tests--wait-end child 1000)
           (should (eq (process-status child) 'signal))
           (setq pid (with-temp-buffer
                       (insert-file-contents pidfile)
@@ -633,7 +646,7 @@ holds the text.  Waits 20 s at most for the child."
             (setq i (1+ i)))
           (prog1 (should-not (process-attributes pid))
             (ignore-errors (signal-process pid 'SIGKILL))))
-      (when (process-live-p child)
+      (unless (process-get child 'ended)
         (delete-process child))
       (delete-directory dir t))))
 

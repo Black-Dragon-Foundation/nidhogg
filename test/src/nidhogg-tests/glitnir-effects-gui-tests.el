@@ -1,6 +1,7 @@
 ;;; glitnir-effects-gui-tests.el --- GUI rows for motion, blur, window cards, undecorated toplevels  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh with `--files glitnir-effects-gui-tests.el': on the recorder with its sway profile, again
 ;; with `--recorder-profile mutter' (no alpha modifier) and `--recorder-profile kwin' (the modifier); the `gnome-smoke'

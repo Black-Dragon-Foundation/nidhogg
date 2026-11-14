@@ -90,9 +90,13 @@ fallback), a form, a search, a lit list, expanded and ticked sets, and the class
 
 For an instance, in order: `selected`; `ticked` for the nodes of the instance's ticked set, when the descriptor names
 that class (the Explorer's marks; Search's ticks name none); while a search is set, `match` or `dim`; else `lit` for the
-lit list's nodes; else, while there is a selection, `chain` or `dim`; else none. A class is its position in the descriptor's `classes`,
-which is the index into the face vector Lisp keeps. `classes` answers only the nodes whose class changed since the
-last call.
+lit list's nodes; else, while there is a selection in a view with `chain_kinds` or a lit list, `chain` or `dim`; else
+none. A view with neither (the Run and Debug view, the Explorer) has no chain to dim off: dimming every node but the
+selection only cost the editor a face on every row. A class is its position in the descriptor's `classes`, which is the
+index into the face vector Lisp keeps. `classes` answers only the nodes whose class changed since the last call; when
+only the selection and the ticked nodes can have a class (no search, no lit list, no chain kinds) it looks at those,
+not at every node, and a call with the model, the selection, the search, the lit list and the ticks as they were at the
+last one runs no pass at all (the editor asks twice per key: the key's step and the draw's).
 
 ## The C door
 
@@ -112,9 +116,11 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_HUB_LOST` | | nil |
 | `SJA_STATS` | | views, instances, bytes, panics, broken views |
 | `SJA_PUSH` | a whole `view-model` line | `(VIEW VERSION DECISION)`: 0 queue, 1 reset, 2 drop, 3 resync, 4 none (no instance of the view); nil when the line is not a `view-model` |
+|  | a `view-model` line whose data holds `rows` | `(VIEW VERSION DECISION CLASS)`: 0 apply, 1 drop, 2 hold, 3 resync, 4 quiet (a resync outstanding), 5 broken, 6 paused; nil when no instance holds rows |
 | `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status (0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken), the stream's newest version or nil |
 | `SJA_NAMED` | view, version | nil: a row patch named that model version |
 | `SJA_DUE` | view | as `SJA_DRAIN` (all), when the oldest queued model is one no row patch named; else nil |
+| `SJA_ROWS` | handle, verb, int or nil, string or nil | the view's row store: `on`, `draw` (the edits, see Rows), `drawn`, `epoch`, `place`, `pos`, `span`, `prop`, `pause`, `redraw`, `refresh`, `forget`, `state` (`nidhogg-view-rows` says each) |
 
 Codes: `SJA_E_ARG` (an unknown op, handle, tag or type, bad UTF-8), `SJA_E_NOMEM` (too little stack), `SJA_E_STATE`
 (the table was held), `SJA_E_PANIC`.
@@ -134,6 +140,29 @@ A queued model waits for the draw: the editor drains up to the version its drawn
 drains models no row patch names (`SJA_NAMED`, `SJA_DUE`). Past 64 models or 16 MiB of lines a view's queue and stream
 are dropped and the push answers `resync`; a model that does not apply at the drain does the same. A line for a view no
 instance shows makes no slot. The hub lost, a panic and the view's last instance closing drop the queue.
+
+## Rows (`src/rows.rs`)
+
+A hub-fed view's rows can be held here too, where they are drawn (drgnx's rows-in-Sjá design §6, the terminal first).
+A **store** takes the hub's row patches (`{view, class, hub, base, version, env_epoch, ops, images?, styles?, term?,
+model?}`, ops `reset`, `insert {after, rows}`, `replace`, `remove`) and decides each by the editor's rules: another
+hub's diff, or one before any reset, is dropped; so is an old reset; a patch of an older env epoch is held until a reset;
+a diff of an older base is dropped, of a newer one (a gap) or naming an image or style the store lacks, it asks for a
+resync. A resync is asked once while outstanding, with a back-off of 1 s then 4 s; three within 10 s break the store.
+A paused store keeps up to 256 patches and applies them on resume (past that, a resync). The patches come on the
+hub's `view-model` line, the patch whole under `data.rows`, through `SJA_PUSH`; an instance gives its view a store with
+`SJA_ROWS on`, and the store's verbs are `SJA_ROWS`'s (`nidhogg-view-rows` in Lisp).
+
+**The draw.** The store keeps the drawn state (each drawn row's key, length in characters and content hash). `draw`
+answers the edits, in buffer order, that turn the region into the rows: an offset (characters from the region's
+start, the buffer as it stands at that edit), a count to delete and the rows to insert. Rows kept in the same order
+are untouched; a reorder redraws the rows that moved. The new drawn state is pending until the editor confirms the
+batch (`drawn`). A batch never confirmed (a quit, a panic) rolls back: the next draw erases the region and draws it
+whole, as does a region whose length is not the drawn state's. `place POS` and `pos KEY OFF` turn a window's start and
+point into a row and an offset and back, so windows keep their place across a draw.
+
+Caps: 200,000 rows, 64 KiB of text and 4,096 runs a row, 256 images (the ones no row names are evicted first), 64 held
+patches.
 
 ## The guard and the breaker
 

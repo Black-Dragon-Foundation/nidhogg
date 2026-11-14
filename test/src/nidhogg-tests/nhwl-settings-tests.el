@@ -1,5 +1,6 @@
 ;;; nhwl-settings-tests.el --- tests for the Wayland shell's desktop settings  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -287,7 +288,7 @@ is fresh and `nhwl-settings--bus' names the private bus."
        ;; a read that got an error keeps its timer; leave none behind
        (mapc #'cancel-timer (nhwl-settings-test--read-timers))
        (when (file-exists-p release-file) (delete-file release-file))
-       (when (process-live-p child) (delete-process child))
+       (when (processp child) (delete-process child))
        (when pid (signal-process pid 'TERM)))))
 
 (defun nhwl-settings-test--read-timers ()

@@ -59,6 +59,11 @@ pub struct Inst {
     pub last: HashMap<Id, u8>,
     pub(crate) chain: Option<(u64, Id, HashSet<Id>)>,
     pub(crate) matches: Option<(u64, String, HashSet<Id>)>,
+    /// What the classes last reported were computed from (`classes`); bumped on each tick.
+    pub(crate) classed: Option<crate::class::Basis>,
+    pub(crate) ticks: u64,
+    /// The class passes `classes` ran (for tests and the perf lab): a call with nothing changed runs none.
+    pub passes: u64,
     /// Where the selection was before each move, newest last, and the moves `back` undid, newest last: each at most
     /// [`HISTORY`].
     pub back: VecDeque<Id>,
@@ -97,6 +102,8 @@ pub struct View {
     pub insts: BTreeMap<u32, Inst>,
     /// The models the hub sent that the draw has not applied yet (`queue`).
     pub queue: Queue,
+    /// The view's rows, when the editor draws them from Sjá (`rows on`).
+    pub rows: Option<crate::rows::Store>,
 }
 
 impl View {
@@ -116,6 +123,9 @@ impl View {
                 last: HashMap::new(),
                 chain: None,
                 matches: None,
+                classed: None,
+                ticks: 0,
+                passes: 0,
                 back: VecDeque::new(),
                 forward: VecDeque::new(),
                 stepping: false,
@@ -206,6 +216,9 @@ impl View {
     pub fn hub_lost(&mut self) {
         self.stale = true;
         self.queue.lose();
+        if let Some(r) = &mut self.rows {
+            r.forget();
+        }
     }
 
     // ---- the history ----
@@ -679,6 +692,9 @@ impl View {
         let Some(i) = self.insts.get_mut(&h) else {
             return false;
         };
+        if tick {
+            i.ticks += 1;
+        }
         let set = if tick { &mut i.ticked } else { &mut i.expanded };
         if set.remove(id) {
             false

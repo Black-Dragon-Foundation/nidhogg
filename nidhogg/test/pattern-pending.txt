@@ -2,30 +2,20 @@
 # One row per file: FILE # reason.  The list only shrinks: a row whose file has a line, or is gone, fails the check.
 # Handshake files park a job or child at a named point and go on from what is announced (see the lint's header).
 # `exempt FILE TEST FORM # reason': the handshake rule's exemptions, a banned call that is the stimulus under test.
-workers-ts-tests.el # handshake, but one test schedules a timer (run-at-time) as a marker
-workers-fatal-tests.el # handshake, but its tests poll process-live-p and schedule timers
-workers-framing-tests.el # handshake, but two tests poll process-live-p
-workers-tls-tests.el # handshake, but three tests poll process-live-p
-workers-io-tests.el # handshake, but five tests poll process-live-p
-fake-portal-tests.el # not yet audited against the handshake rules
-glitnir-decor-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-nhwl-ime-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-nhwl-gui-w3-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-w4-tests.el # GUI rows run the command loop from a 0.02 s stepping timer (run-at-time) with a deadline, a poll rather than a handshake; not yet audited against the handshake rules
-nhwl-menu-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-glitnir-tests.el # not yet audited against the handshake rules
-glitnir-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-glitnir-effects-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-watchdog-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-callproc-env-tests.el # not yet audited against the handshake rules
-nhwl-session-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-nhwl-portal-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-wl-trace-check-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-nhwl-settings-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-recorder-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-watchdog-modal-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-nhwl-dnd-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-nhwl-gui-rg-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-w2-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-nhwl-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 exempt nhmac-gui-tests.el nhmac-keys-under-yield-loop run-at-time # the timer is the stimulus under test: a timer must fire while Lisp threads hold the main thread in its yield loop
+exempt workers-fatal-tests.el workers/fatal-under-lock run-at-time # the child takes the lock from a timer in its command loop, the case under test, not a marker
+exempt workers-fatal-tests.el workers/kill-emacs-with-jobs-in-flight run-at-time # the child's kill-emacs comes from a timer in its command loop with jobs in flight, the case under test
+exempt workers-ts-tests.el workers/ts-start-points run-at-time # a timer's edit at the select entry is the case under test
+exempt glitnir-gui-tests.el glitnir-gui/delete-child-from-a-timer run-at-time # the child frame is deleted from a timer, the case under test
+exempt glitnir-gui-tests.el glitnir-gui/timer-move-without-redraw-commits run-at-time # the move comes from a timer with no redisplay of its own, the case under test
+exempt glitnir-gui-tests.el glitnir-gui/hide-from-timer-paints-without-popup run-at-time # the child frame is hidden from a timer, the case under test
+exempt glitnir-effects-gui-tests.el glitnir-churn-no-pile run-at-time # each hide comes from a timer, as a popup library's does: the churn under test
+exempt glitnir-effects-gui-tests.el glitnir-pop-in-lisp-busy run-at-time # the timer is where Lisp is busy during the pop-in, the case under test
+exempt nhwl-gui-tests.el nhwl-gui/ping-answered-while-a-lisp-thread-sleeps run-at-time # the timer is the main thread's turn while a Lisp thread sleeps, the case under test
+exempt nhwl-gui-rg-tests.el nhwl-gui/delete-frame-with-input-queued run-at-time # the frame is deleted from a timer with input queued, the case under test
+exempt nhwl-gui-w3-tests.el nhwl-gui/compositor-restart-while-scrolling run-at-time # the restart must land inside the scroll loop, which reads no input: the timer is the stimulus
+exempt watchdog-gui-tests.el watchdog-gui/sit-for-is-waiting sit-for # sit-for is what the row is about
+exempt watchdog-modal-gui-tests.el watchdog-gui/menu-open-is-waiting run-with-timer # only a timer acts inside the modal menu: it closes the menu after the second under test
+exempt watchdog-modal-gui-tests.el watchdog-gui/timer-inside-a-dialog-is-busy run-with-timer # a timer inside the modal dialog is the case under test; another closes it

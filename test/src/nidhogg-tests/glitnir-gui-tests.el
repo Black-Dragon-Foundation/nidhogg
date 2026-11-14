@@ -1,6 +1,7 @@
 ;;; glitnir-gui-tests.el --- GUI tests for Glitnir (the compositor)  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh (test/src/nidhogg-tests/gui-runner.el loads every *-gui-tests.el), and on macOS by
 ;; nidhogg/test/nhmac-gui.sh, where the rows that need the Wayland shell's scene tree skip (`glitnir-gui--skip-unless-tree').  GLITNIR_GUI_SCALE is
@@ -831,10 +832,13 @@ deleted counts graphical frames deleted while shown, N frames graphical frames (
           (let* ((log (generate-new-buffer " *nh-first-frame*"))
                  (p (start-process "nh-first-frame" log emacs "--init-directory" dir)))
             (set-process-query-on-exit-flag p nil)
+            ;; its end, as Emacs is told of it
+            (set-process-sentinel p (lambda (q _) (when (memq (process-status q) '(exit signal))
+                                                    (process-put q 'ended t))))
             (unwind-protect
                 (if (gui-runner-wait (lambda () (file-exists-p out)) 60)
                     (append (with-temp-buffer (insert-file-contents out) (read (current-buffer)))
-                            (list :exited (and (gui-runner-wait (lambda () (not (process-live-p p))) 20) t)))
+                            (list :exited (and (gui-runner-wait (lambda () (process-get p 'ended)) 20) t)))
                   (list :timeout (with-current-buffer log (buffer-string))))
               (delete-process p)
               (kill-buffer log))))

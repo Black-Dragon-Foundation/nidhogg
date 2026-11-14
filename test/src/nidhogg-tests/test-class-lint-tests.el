@@ -705,8 +705,8 @@ that, after it, sets the old mask back with `pthread_sigmask'."
 ;; announces (`accept-process-output' with a time) is how the park is awaited, so it is allowed.  The `cond' files without the line are listed in
 ;; nidhogg/test/pattern-pending.txt (`FILE # reason'); the list only shrinks, so every new `cond' file carries it.
 ;; The same file lists the handshake rule's exemptions, `exempt FILE TEST FORM # reason': TEST of FILE may call FORM (one
-;; of the banned calls) because that call is the stimulus the test is about, never a marker or a wait.  An exemption
-;; whose test no longer calls the form fails, as a stale pending row does.
+;; of the banned calls, or a fixed pause's `sit-for' or `sleep-for') because that call is the stimulus the test is about,
+;; never a marker or a wait.  An exemption whose test no longer calls the form fails, as a stale pending row does.
 
 (defconst test-pattern-lint--pending-file
   (expand-file-name "nidhogg/test/pattern-pending.txt" source-directory)
@@ -740,7 +740,8 @@ EXEMPT: (TEST FORM) pairs that are not violations."
           (dolist (d (append (test-class-lint--fixed-pause nodes)
                              (seq-filter (lambda (s) (test-class-lint--uses-p nodes (list s)))
                                          test-pattern-lint--handshake-banned)))
-            (unless (member (list name d) exempt)
+            ;; a fixed pause's detail names its call first ("sit-for above 0")
+            (unless (member (list name (intern (car (split-string (format "%s" d))))) exempt)
               (push (list name (format "%s" d)) out))))))
     (nreverse out)))
 
@@ -810,7 +811,7 @@ EXEMPT: (TEST FORM) pairs that are not violations."
       (let ((text (cdr (assoc file files))))
         (unless (and text (memq 'handshake (ensure-list (test-pattern-lint--file-patterns text)))
                      (member (list (symbol-name test) (symbol-name form))
-                             (mapcar (lambda (v) (list (symbol-name (car v)) (cadr v)))
+                             (mapcar (lambda (v) (list (symbol-name (car v)) (car (split-string (cadr v)))))
                                      (test-pattern-lint--handshake-violations text))))
           (push e stale))))
     (should-not stale)))
@@ -834,6 +835,8 @@ EXEMPT: (TEST FORM) pairs that are not violations."
   (let ((two "(ert-deftest my/a () (run-at-time 1 nil #'ignore) (process-live-p p))\n(ert-deftest my/b () (run-at-time 1 nil #'ignore))\n"))
     (should (equal (test-pattern-lint--handshake-violations two '((my/a run-at-time)))
                    '((my/a "process-live-p") (my/b "run-at-time")))))
+  ;; a fixed pause by its call
+  (should-not (test-pattern-lint--handshake-violations "(ert-deftest my/a () (sit-for 1))\n" '((my/a sit-for))))
   (should (equal (test-pattern-lint--exemptions "x.el # pending\nexempt f.el my/a run-at-time # why\n")
                  '(("f.el" my/a run-at-time)))))
 
