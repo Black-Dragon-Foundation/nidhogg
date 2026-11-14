@@ -1,30 +1,63 @@
 ;;; nhwl-gui-w4-tests.el --- GUI rows for the native shell's pointer, through the command loop  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, loaded first: its helpers are used here) on
 ;; `--compositor recorder'.  The recorder's pointer goes through the shell and `nhwl_click_apply', as a real one does,
 ;; and Emacs's own command loop runs the commands: area prefixes, transient maps and `pre-command-hook' as for the user.
 
 (require 'ert)
+(require 'cl-lib)
 (require 'nhwl-gui-tests)
 
 (defun nhwl-gui--command-loop (steps &optional seconds)
   "Run STEPS under Emacs's command loop (a `recursive-edit'); t when all ran, nil when SECONDS (default 10) passed first.
-Each step is (FN . PRED): FN sends input to the recorder, then commands run as typed until PRED holds, then the next
-step starts.  A command's error is the command loop's, as for the user: it is in *Messages*."
-  (let* ((deadline (+ (float-time) (or seconds 10)))
-         (pending steps) (current nil) (done nil) (timer nil))
-    (setq timer (run-at-time
-                 0 0.02
-                 (lambda ()
-                   (cond
-                    ((> (float-time) deadline) (cancel-timer timer) (exit-recursive-edit))
-                    ((and current (not (funcall (cdr current)))))
-                    (pending (setq current (pop pending)) (funcall (car current)))
-                    (t (setq done t) (cancel-timer timer) (exit-recursive-edit))))))
-    (unwind-protect (let ((debug-on-error nil)) (recursive-edit)) (cancel-timer timer))
-    done))
+Each step is (FN . UNTIL): FN sends input to the recorder, then commands run as typed until the step ends, then the
+next step starts.  UNTIL is a predicate, checked after each command (what moves a row on here is a command), or
+\(:recorder PLIST), a recorder `wait' for PLIST (`gui-runner-recorder-wait'): the step ends when the recorder
+announces it.  A step that never ends is named in *Messages*, as is a command's error (the command loop's, as for the
+user)."
+  (let ((pending steps) (current nil) (index 0) (announced nil) (done nil) (failed nil) (busy nil) (in-loop nil))
+    (cl-labels
+        ((wait-p () (eq (car-safe (cdr current)) :recorder))
+         (held () (if (wait-p) announced (funcall (cdr current))))
+         (next ()
+           ;; the steps that hold at once run one after another; a recorder reply that comes meanwhile (FN's own
+           ;; recorder calls read process output) is seen by the loop's test
+           (setq busy t)
+           (unwind-protect
+               (while (and (not done) (not failed) (or (null current) (held)))
+                 (if (null pending)
+                     (setq done t)
+                   (setq current (pop pending) index (1+ index) announced nil)
+                   (funcall (car current))
+                   (when (wait-p)
+                     (let ((step current))
+                       (gui-runner-recorder-wait
+                        (cadr (cdr current))
+                        (lambda (reply)
+                          (when (eq step current)
+                            (if (eq (plist-get reply :ok) t)
+                                (setq announced t)
+                              (setq failed (plist-get reply :error))))
+                          (unless busy (next) (finish))))))))
+             (setq busy nil)))
+         (finish () (when (and in-loop (or done failed)) (exit-recursive-edit)))
+         (after-command () (unless busy (next) (finish))))
+      (next)
+      (unless (or done failed)
+        (add-hook 'post-command-hook #'after-command)
+        (unwind-protect
+            (let ((debug-on-error nil))
+              (setq in-loop t)
+              (with-timeout ((or seconds 10)) (recursive-edit)))
+          (setq in-loop nil)
+          (remove-hook 'post-command-hook #'after-command)))
+      (unless done
+        (message "nhwl-gui--command-loop: step %d of %d never ended: %s" index (length steps)
+                 (or failed (if (wait-p) (format "no reply to %S" (cadr (cdr current))) "its predicate never held"))))
+      done)))
 
 (defun nhwl-gui--frame-origin (f)
   "Where F's native area starts in its toplevel surface, (X Y) in device pixels: past its margins and strip.
@@ -131,7 +164,7 @@ From F's newest buffer (its size is F's plus less than 100 logical pixels), as `
         (let ((p (nhwl-gui--tab-item-point f)))
           (unless (nhwl-gui--command-loop
                    `((,(lambda () (nhwl-gui--ptr-point f (nth 0 p) (nth 1 p)) (nhwl-gui--ptr-button "press"))
-                      . ,(lambda () (nhwl-gui--input-since mark "xdg_toplevel.move"))))
+                      :recorder (:for "input" :req "xdg_toplevel.move" :since ,mark)))
                    5)
             (ert-fail (list :keys nhwl-gui--rd-keys :messages (nhwl-gui--messages-since m)
                             :log (mapcar (lambda (e) (plist-get e :req))
@@ -236,7 +269,7 @@ key, and later motion resizes nothing."
          (e (window-pixel-edges left))
          (fx (- (nth 2 e) 8 (/ fringe 2))) (y (/ (+ (nth 1 e) (nth 3 e)) 2))
          (d (round (* 40 s)))
-         (m (nhwl-gui--messages-end)) (w1 nil))
+         (m (nhwl-gui--messages-end)) (w1 nil) (after nil))
     (should (> fringe 2))
     (unwind-protect
         (let ((ok (nhwl-gui--command-loop
@@ -249,8 +282,16 @@ key, and later motion resizes nothing."
                    5))
               (msgs nil))
           (setq w1 (window-pixel-width left))
-          ;; motion after the release resizes nothing
-          (nhwl-gui--command-loop (list (cons (lambda () (nhwl-gui--ptr-point f (- fx d d) y)) #'ignore)) 0.5)
+          ;; motion after the release resizes nothing: F12 follows it, and once F12's command ran the motion was read
+          (define-key map [f12] (lambda () (interactive) (setq after t)))
+          (unless (nhwl-gui--command-loop
+                   (list (cons (lambda ()
+                                 (nhwl-gui--ptr-point f (- fx d d) y)
+                                 (gui-runner-recorder '(:cmd "key" :keycode 88 :state "press"))
+                                 (gui-runner-recorder '(:cmd "key" :keycode 88 :state "release")))
+                               (lambda () after)))
+                   5)
+            (ert-fail (list :after-the-motion "F12's command never ran" :messages (nhwl-gui--messages-since m))))
           (setq msgs (nhwl-gui--messages-since m))
           (unless (and ok (not (string-match-p "is undefined" msgs)) (not (nhwl-gui--drag-map))
                        (= (window-pixel-width left) w1))
