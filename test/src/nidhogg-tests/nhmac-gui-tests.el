@@ -65,6 +65,18 @@ pixels; the display's width is the main screen's."
       (accept-process-output nil 0.05))
     (input-pending-p)))
 
+(defun nhmac-gui--move-frame-queued (secs)
+  "Wait as redisplay waits, reading no input, until a `move-frame' is queued, at most SECS; whether one is.
+Every other event `input-pending-p' can filter is ignored meanwhile: a scale the shell learns from the new window
+queues a `monitors-changed' first (read, it runs its hook and is gone), and the window's focus events may come
+before or after."
+  (let ((end (+ (float-time) secs)) (input-pending-p-filter-events t)
+        (while-no-input-ignore-events
+         (remq 'move-frame (append '(monitors-changed focus-in focus-out) while-no-input-ignore-events))))
+    (while (and (not (input-pending-p)) (< (float-time) end))
+      (accept-process-output nil 0.05))
+    (input-pending-p)))
+
 (defun nhmac-gui--read-queued ()
   "Read the queued events without running them: their kinds and frames, as (KIND FRAME)."
   (let ((special-event-map (make-sparse-keymap)) evs ev)
@@ -84,20 +96,24 @@ Linux; company-box's first child frame lost its documentation)."
                     (nhmac-gui--read-queued))
     (delete-frame child))
   (nhmac-gui--read-queued)
-  (let ((f (make-frame '((width . 40) (height . 10)))))
+  (let* ((monitors nil)
+         (count (lambda (&rest _) (setq monitors (1+ (or monitors 0)))))
+         (f nil))
+    (add-hook 'display-monitors-changed-functions count)
     (unwind-protect
         (progn
-          (should (nhmac-gui--queued 4))
-          ;; the frame's other events (its focus) may come first: let the rest arrive
-          (accept-process-output nil 0.3)
+          (setq f (make-frame '((width . 40) (height . 10))))
+          (should (nhmac-gui--move-frame-queued 4))
           ;; nothing read yet: what is queued is the new frame's
           (let ((pending (input-pending-p)) (ran (while-no-input 'ran)) (queued (nhmac-gui--read-queued)))
-            (nhmac-gui--say "nhmac-a-pending-move-frame-is-not-input: a new frame %S, queued %S" f queued)
+            (nhmac-gui--say "nhmac-a-pending-move-frame-is-not-input: a new frame %S, queued %S, monitors-changed %S"
+                            f queued monitors)
             ;; the premise: its move-frame was among them
             (should (member (list 'move-frame f) queued))
             (should (equal (list 'pending pending) '(pending nil)))
             (should (eq ran 'ran))))
-      (delete-frame f))))
+      (remove-hook 'display-monitors-changed-functions count)
+      (when (frame-live-p f) (delete-frame f)))))
 
 (ert-deftest nhmac-frame-position-and-geometry-follow-appkit ()
   "`frame-position' and `frame-geometry' are where AppKit has the window (NS's windowDidMove:, frame_geometry): the
