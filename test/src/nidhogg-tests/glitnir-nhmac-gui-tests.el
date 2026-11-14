@@ -1138,14 +1138,17 @@ at the strip's middle gives the buffer's middle; a scroll moves the band to the 
                ;; the band: the top part is shown
                (should (<= (abs (- (nth 1 band) (plist-get b :top))) k))
                (should (< (nth 3 band) mid)))
-             ;; the click: the strip's middle is the buffer's middle (one line either way)
+             ;; the click: the strip's middle is the buffer's middle by characters, as C draws it (one line either way;
+             ;; the lines grow from 7 to 10 characters, so that is line 506 or 507, not 501)
              (pcase-let* ((`(,_ ,ty ,_ ,ty1) (window-inside-pixel-edges w))
+                          (half (with-current-buffer buf
+                                  (line-number-at-pos (+ (point-min) (/ (- (point-max) (point-min)) 2)))))
                           (pos (glitnir-ruler-position
                                 (list w 'right-fringe (cons 0 (+ (- ty (nth 1 (window-pixel-edges w))) (/ (- ty1 ty) 2)))
                                       0 nil nil nil nil nil nil))))
                (nhmac-gui--say "nhmac-ruler-marks-the-buffer-by-position: the strip's middle gives %S" pos)
                (should pos)
-               (should (< (abs (- (with-current-buffer buf (line-number-at-pos pos)) 501)) 2)))
+               (should (< (abs (- (with-current-buffer buf (line-number-at-pos pos)) half)) 2)))
              ;; a scroll to line 496: the band moves to the middle, the marks stay
              (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point)))))
                (set-window-point w p)
