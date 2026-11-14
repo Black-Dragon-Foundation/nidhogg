@@ -1,6 +1,7 @@
 ;;; recorder-gui-tests.el --- GUI tests against nh-recorder  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh `--compositor recorder', where $GLITNIR_GUI_RECORDER is the
 ;; recorder's control socket.  `gui-runner-recorder' lives in gui-runner.el.  The rows skip without it.
