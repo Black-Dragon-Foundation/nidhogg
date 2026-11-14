@@ -668,6 +668,21 @@ nhwl_block_int (Lisp_Object v, int i, intmax_t dflt)
 	  : FLOATP (x) ? (intmax_t) XFLOAT_DATA (x) : dflt);
 }
 
+/* Whether ROW holds only an overlay string displayed at END: it starts
+   and ends at END, and a glyph of its text area comes from a string.  */
+static bool
+nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
+{
+  if (MATRIX_ROW_START_CHARPOS (row) != end
+      || MATRIX_ROW_END_CHARPOS (row) != end)
+    return false;
+  struct glyph *g = row->glyphs[TEXT_AREA];
+  for (struct glyph *e = g + row->used[TEXT_AREA]; g < e; g++)
+    if (STRINGP (g->object))
+      return true;
+  return false;
+}
+
 /* List block V of leaf window W, whose text area is CLIP: the rows of
    W's current matrix holding its text, from its first row's top to its
    last row's bottom, from x0 to x1 of the text area.  V is
@@ -675,8 +690,11 @@ nhwl_block_int (Lisp_Object v, int i, intmax_t dflt)
    glitnir--block-vector makes it (KIND 0 a ring, 1 a rule; START and END
    positions, END exclusive; X0, X1 and RADIUS device pixels).  A block
    whose text starts above the window's first row (scrolled out) is open
-   at the top; one that goes on below its last row, at the bottom.  This
-   is all C does: the glue plans the layers and Glitnir draws.  */
+   at the top; one that goes on below its last row, at the bottom.  Rows
+   of nothing but an overlay string at END (an after-string there, such
+   as a notebook cell's output) are inside: they start and end at END,
+   so a block starting at END leaves them out.  This is all C does: the
+   glue plans the layers and Glitnir draws.  */
 static void
 nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 {
@@ -697,7 +715,7 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
     {
       ptrdiff_t rs = MATRIX_ROW_START_CHARPOS (row);
       ptrdiff_t re = MATRIX_ROW_END_CHARPOS (row);
-      if (rs >= end)
+      if (rs > end || (rs == end && !nhwl_block_tail_row_p (row, end)))
 	{
 	  stopped = true;
 	  break;

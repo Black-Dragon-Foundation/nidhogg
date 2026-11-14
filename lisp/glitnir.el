@@ -465,7 +465,10 @@ with the window when the frame publishes."
 ;; accent) around runs of the window's rows, over its text.
 ;; The rows give their own fill.  It is resolved into `glitnir--blocks'
 ;; only when it, or the theme, changed; C resolves each block's rows
-;; against the window's matrix when the frame publishes.
+;; against the window's matrix when the frame publishes.  A block's rows
+;; are those of its text from START to END, and the rows of nothing but
+;; an overlay string at END (an after-string there, such as a notebook
+;; cell's output); a block starting at that END begins at its own text.
 
 (defun glitnir--block-vector (spec frame)
   "Return block SPEC as the vector C reads, for FRAME.

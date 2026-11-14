@@ -182,6 +182,42 @@ named in the skip."
       (set-window-parameter w 'glitnir-blocks nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/a-block-holds-the-after-string-rows-at-its-end ()
+  "Rows of nothing but an overlay string at a block's END (a notebook cell's output, an after-string there) are inside
+the block; the next block, starting at that END, begins at its own text."
+  (glitnir-gui--skip-unless-tree)
+  (let* ((buf (glitnir-gui--text-buffer "*glitnir-tail*" 10)) (w (selected-window))
+         (end (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 1) (point))))
+         (ov (with-current-buffer buf (make-overlay end end))))
+    (unwind-protect
+        (progn
+          (overlay-put ov 'after-string "      out 1\n      out 2\n") ; blank where the bars are
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((bar ,(copy-marker 1) ,(copy-marker end) :x1 6 :ring ("#ff0000" . 1))
+                 (bar ,(copy-marker end) ,(save-excursion (goto-char end) (forward-line 1) (point-marker))
+                      :x0 8 :x1 14 :ring ("#00ff00" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (at (lambda (dx row) (glitnir-gui--pixel snap (list (+ x dx) (+ y (* row lh) (/ lh 2)))))))
+            ;; rows: the first line, the two output rows, the next line
+            (should (equal (funcall at 2 0) '(255 0 0)))
+            (should (equal (funcall at 2 1) '(255 0 0)))
+            (should (equal (funcall at 2 2) '(255 0 0)))
+            (should-not (equal (funcall at 2 3) '(255 0 0)))
+            (should-not (equal (funcall at 10 1) '(0 255 0)))
+            (should-not (equal (funcall at 10 2) '(0 255 0)))
+            (should (equal (funcall at 10 3) '(0 255 0)))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (delete-overlay ov)
+      (kill-buffer buf))))
+
 ;; The overview ruler.  Its rows wait through `glitnir-gui--painted' (redisplay, the presenter settled), which every
 ;; shell gives; `glitnir--draw-count' is the Wayland shell's alone (0 on Naglfar).
 
