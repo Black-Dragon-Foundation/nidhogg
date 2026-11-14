@@ -1,5 +1,6 @@
 ;;; nhwl-ime-tests.el --- input-method rows for the native shell  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/ime-matrix.sh (through gui.sh --ime IM --files nhwl-ime-tests.el), one container per
 ;; combination.  The rows type real keys at the compositor with wtype and the input method (fcitx5, pinyin) answers
@@ -75,6 +76,10 @@ Skip the row if it cannot be driven."
 (defvar nhwl-ime--keyboard nil
   "The wtype process that keeps a keyboard on the seat.")
 
+(defun nhwl-ime--keyboard-runs-p ()
+  "Whether wtype's virtual keyboard (started once, kept for the run) still runs."
+  (and (processp nhwl-ime--keyboard) (eq (process-status nhwl-ime--keyboard) 'run)))
+
 (defun nhwl-ime--attach-keyboard ()
   "Give the seat a keyboard, as a real session has.
 A headless compositor has none, so Emacs gets no keyboard focus and never turns text input on.  Mutter's session keeps
@@ -84,7 +89,7 @@ one after a first key; on the others wtype's virtual keyboard lasts as long as w
           (nhwl-ime--mutter-key #xffe1)   ; Shift_L, which types nothing
         (error (nhwl-ime--skip "mutter's RemoteDesktop refused the keys: %S" err)))
     (unless (executable-find "wtype") (nhwl-ime--skip "no wtype"))
-    (unless (process-live-p nhwl-ime--keyboard)
+    (unless (nhwl-ime--keyboard-runs-p)
       (let ((process-environment (cons "WAYLAND_DEBUG" process-environment)))
         (setq nhwl-ime--keyboard
               (start-process "nhwl-ime-keyboard" " *nhwl-ime-keyboard*" "wtype" "-s" "600000"))
@@ -100,7 +105,7 @@ one after a first key; on the others wtype's virtual keyboard lasts as long as w
   (nhwl-ime--attach-keyboard)
   (unless (nhwl-ime--wait (lambda () (eq (frame-focus-state) t)) 5)
     (nhwl-ime--skip "%s gave no keyboard focus: %s" (getenv "GLITNIR_GUI_COMPOSITOR")
-                    (if (process-live-p nhwl-ime--keyboard)
+                    (if (nhwl-ime--keyboard-runs-p)
                         "the keyboard is attached"
                       (with-current-buffer " *nhwl-ime-keyboard*" (string-trim (buffer-string))))))
   (nhwl-ime--pump 0.5))
