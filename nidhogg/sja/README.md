@@ -156,7 +156,9 @@ A paused store keeps up to 256 patches and applies them on resume (past that, a 
 hub's `view-model` line, the patch whole under `data.rows`, through `SJA_PUSH`; an instance draws a display class's
 store with `SJA_ROWS on` (a view's twins in two classes, a wide and a narrow window, draw two stores; a patch goes to
 its `class`'s, and a store goes with the last instance that draws it), and the store's verbs are `SJA_ROWS`'s
-(`nidhogg-view-rows` in Lisp).
+(`nidhogg-view-rows` in Lisp). An instance that changes class (a font or a scale change) starts the new class's store
+from the rows it drew, with the hub's books forgotten: they stay on screen until the new class's first reset, whose
+draw changes only the rows that differ.
 
 **The draw.** The store keeps the drawn state (each drawn row's key, length in characters and content hash). `draw`
 answers the edits, in buffer order, that turn the region into the rows: an offset (characters from the region's

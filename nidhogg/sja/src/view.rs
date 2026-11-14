@@ -151,15 +151,20 @@ impl View {
     }
 
     /// Instance `h` draws class `class`'s rows: the store is made when it has none (`epoch_reset`: it starts at an env
-    /// epoch reset); a class it drew before, that no other instance draws, goes.
+    /// epoch reset), from the rows `h` drew in its class before (`Store::carried`: a font or scale change keeps them on
+    /// screen until the new class's first reset); a class it drew before, that no other instance draws, goes.
     pub fn rows_on(&mut self, h: u32, class: &str, epoch_reset: bool) {
         let Some(i) = self.insts.get_mut(&h) else {
             return;
         };
         let was = i.rows_class.replace(class.into());
-        self.rows
-            .entry(class.into())
-            .or_insert_with(|| crate::rows::Store::new(epoch_reset));
+        if !self.rows.contains_key(class) {
+            let store = was.as_deref().and_then(|c| self.rows.get(c)).map_or_else(
+                || crate::rows::Store::new(epoch_reset),
+                |s| s.carried(epoch_reset),
+            );
+            self.rows.insert(class.into(), store);
+        }
         if let Some(c) = was
             && &*c != class
         {

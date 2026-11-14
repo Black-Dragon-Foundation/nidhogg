@@ -494,6 +494,65 @@ fn twins_in_two_classes_keep_two_stores() {
     ok(SJA_CLOSE, &[int(h2)]);
 }
 
+/// A buffer that changes class (a font or a scale change) keeps the rows it drew on screen until the new class's
+/// first reset: the new class's store starts from the old one's rows with the hub's books forgotten, so a draw before
+/// the reset changes nothing, and the reset's draw changes only the rows that differ.
+#[test]
+fn a_new_class_keeps_the_rows_drawn_until_its_first_reset() {
+    let _l = lock();
+    let h = open("rows-reclass", None);
+    rows(h, "on", int(0), text("old"));
+    let reset = |class: &str, second: &str| {
+        rows_line_in(
+            "rows-reclass",
+            class,
+            0,
+            1,
+            serde_json::json!([{"reset": [{"key": "a", "text": "x"}, {"key": "b", "text": second}]}]),
+        )
+    };
+    let edits_of = |d: &Ans| match d {
+        Ans::List(d) => match &d[2] {
+            Ans::Vector(e) => e.clone(),
+            a => panic!("edits: {a:?}"),
+        },
+        a => panic!("draw: {a:?}"),
+    };
+    assert!(matches!(
+        ok(SJA_PUSH, &[text(&reset("old", "y"))]),
+        Ans::List(_)
+    ));
+    let d = rows(h, "draw", int(0), nil());
+    let Ans::List(dl) = &d else { panic!("draw") };
+    rows(h, "drawn", int_arg(&dl[0]), nil());
+    // the class changes: the rows stay drawn, the books are the new class's (no hub, no version)
+    rows(h, "on", int(0), text("new"));
+    let d = rows(h, "draw", int(4), nil());
+    assert_eq!(edits_of(&d), Vec::<Ans>::new());
+    let Ans::List(dl) = &d else { panic!("draw") };
+    rows(h, "drawn", int_arg(&dl[0]), nil());
+    let Ans::List(state) = rows(h, "state", nil(), nil()) else {
+        panic!("state")
+    };
+    assert_eq!(
+        (&state[0], &state[1], &state[5]),
+        (&Ans::Nil, &Ans::Nil, &Ans::Int(2))
+    );
+    // the old class's store went with its last instance; the new class's first reset applies
+    assert_eq!(ok(SJA_PUSH, &[text(&reset("old", "q"))]), Ans::Nil);
+    let Ans::List(xs) = ok(SJA_PUSH, &[text(&reset("new", "z"))]) else {
+        panic!("no answer")
+    };
+    assert_eq!((&xs[2], &xs[3]), (&Ans::Int(0), &st("new")));
+    let e = edits_of(&rows(h, "draw", int(4), nil()));
+    assert_eq!(e.len(), 1);
+    let Ans::List(e) = &e[0] else {
+        panic!("an edit")
+    };
+    assert_eq!(e[0..3], [Ans::Int(2), Ans::Int(2), st("z\n")]);
+    ok(SJA_CLOSE, &[int(h)]);
+}
+
 /// An integer answer as an argument.
 fn int_arg(a: &Ans) -> SjaArg {
     match a {

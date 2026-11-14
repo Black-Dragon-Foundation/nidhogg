@@ -539,6 +539,23 @@ impl Store {
         }
     }
 
+    /// The store a buffer that changes display class starts the new class with: these rows as drawn (with their
+    /// styles and images), the hub's books forgotten, so they stay on screen until the new class's first reset, which
+    /// applies (no hub, no version) and redraws only the rows that differ.
+    pub fn carried(&self, epoch_reset: bool) -> Self {
+        Store {
+            epoch_reset,
+            order: self.order.clone(),
+            rows: self.rows.clone(),
+            styles: self.styles.clone(),
+            images: self.images.clone(),
+            term: self.term.clone(),
+            drawn: self.drawn.clone(),
+            idprop: self.idprop.clone(),
+            ..Store::default()
+        }
+    }
+
     /// The rows in order.
     pub fn keys(&self) -> &[Box<str>] {
         &self.order
