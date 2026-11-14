@@ -686,9 +686,10 @@ nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
 /* List block V of leaf window W, whose text area is CLIP: the rows of
    W's current matrix holding its text, from its first row's top to its
    last row's bottom, from x0 to x1 of the text area.  V is
-   [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB GAP] as
-   glitnir--block-vector makes it (KIND 0 a ring, 1 a rule; START and END
-   positions, END exclusive; X0, X1, RADIUS and GAP device pixels).  A block
+   [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB GAP
+   SHADOW-RGB SHADOW-OPACITY HALO-RGB HALO-OPACITY] as glitnir--block-vector
+   makes it (KIND 0 a ring, 1 a rule; START and END positions, END
+   exclusive; X0, X1, RADIUS and GAP device pixels; an RGB -1 for none).  A block
    whose text starts above the window's first row (scrolled out) is open
    at the top; one that goes on below its last row, at the bottom.  Rows
    of nothing but an overlay string at END (an after-string there, such
@@ -700,7 +701,7 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 {
   struct glyph_matrix *m = w->current_matrix;
 
-  if (!m || !VECTORP (v) || ASIZE (v) < 10)
+  if (!m || !VECTORP (v) || ASIZE (v) < 14)
     return;
   ptrdiff_t start = nhwl_block_pos (w, AREF (v, 1));
   ptrdiff_t end = nhwl_block_pos (w, AREF (v, 2));
@@ -748,7 +749,7 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
   if (nhwl_nblocks == nhwl_blocks_cap)
     nhwl_blocks = xpalloc (nhwl_blocks, &nhwl_blocks_cap, 1, -1,
 			   sizeof *nhwl_blocks);
-  Lisp_Object op = AREF (v, 7);
+  Lisp_Object op = AREF (v, 7), sop = AREF (v, 11), hop = AREF (v, 13);
   nhwl_blocks[nhwl_nblocks++]
     = (NhgBlock) { w->sequence_number, clip,
 		   { clip.x + x0, y0, x1 - x0, y1 - y0 },
@@ -756,7 +757,11 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 		   (int32_t) nhwl_block_int (v, 6, -1),
 		   NUMBERP (op) ? (float) XFLOATINT (op) : 1.0f,
 		   (int32_t) nhwl_block_int (v, 8, 0),
-		   (int32_t) nhwl_block_int (v, 9, 0) };
+		   (int32_t) nhwl_block_int (v, 9, 0),
+		   (int32_t) nhwl_block_int (v, 10, -1),
+		   NUMBERP (sop) ? (float) XFLOATINT (sop) : 0.0f,
+		   (int32_t) nhwl_block_int (v, 12, -1),
+		   NUMBERP (hop) ? (float) XFLOATINT (hop) : 0.0f };
 }
 
 /* Add a filled bar RECT in RGB at OPACITY to the list, clipped to CLIP,

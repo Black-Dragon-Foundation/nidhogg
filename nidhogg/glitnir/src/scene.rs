@@ -197,13 +197,48 @@ pub struct Block {
     /// A ring's inset from the rectangle's top and bottom, device px: the band between shows the colour beneath, so
     /// cards on adjacent rows stand apart. None on an open side.
     pub gap_px: u32,
+    /// A ring's shadow (premultiplied, 0: none): a CSS blur of `shadow_blur_px`, `shadow_y_px` down, outside the ring's
+    /// rounded edge only, never over its rows; none past an open side.
+    pub shadow_argb: u32,
+    pub shadow_blur_px: u32,
+    pub shadow_y_px: i32,
+    /// The shadow's line, `ring_px` wide just outside the ring's edge (premultiplied, 0: none).
+    pub halo_argb: u32,
+}
+
+impl Block {
+    /// What the block draws within (root px): its rectangle, and around a ring the shadow and the line outside it.
+    pub fn bounds(&self) -> Rect {
+        let m = if self.kind != BlockKind::Ring {
+            0
+        } else {
+            let line = if self.halo_argb != 0 {
+                self.ring_px.min(1 << 12) as i32
+            } else {
+                0
+            };
+            let shadow = if self.shadow_argb != 0 {
+                crate::shadow::reach(self.shadow_blur_px.min(1 << 12) as f32) as i32
+                    + self.shadow_y_px.unsigned_abs().min(1 << 12) as i32
+            } else {
+                0
+            };
+            line.max(shadow)
+        };
+        Rect::new(
+            self.rect.x - m,
+            self.rect.y - m,
+            self.rect.w + 2 * m,
+            self.rect.h + 2 * m,
+        )
+    }
 }
 
 /// The parts of the scene the blocks and edges of a window layer at P draw (root px, clipped to its rectangle).
 pub fn block_patches(p: &Placed) -> Vec<Rect> {
     p.blocks
         .iter()
-        .map(|b| b.rect)
+        .map(Block::bounds)
         .chain(p.edges.iter().map(crate::edge::bounds))
         .map(|r| r.intersect(&p.rect))
         .filter(|r| !r.is_empty())

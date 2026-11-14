@@ -1823,6 +1823,16 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
                 offset_of!(B, beneath_rgb) as i64,
             ),
             ("offsetof (B, gap)", offset_of!(B, gap) as i64),
+            ("offsetof (B, shadow_rgb)", offset_of!(B, shadow_rgb) as i64),
+            (
+                "offsetof (B, shadow_opacity)",
+                offset_of!(B, shadow_opacity) as i64,
+            ),
+            ("offsetof (B, halo_rgb)", offset_of!(B, halo_rgb) as i64),
+            (
+                "offsetof (B, halo_opacity)",
+                offset_of!(B, halo_opacity) as i64,
+            ),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)

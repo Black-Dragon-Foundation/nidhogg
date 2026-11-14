@@ -863,7 +863,8 @@ int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
    x1, both device pixels with the native area's origin; FLAGS NHG_BLOCK_*; RADIUS the outer corner radius in device
    pixels; RING_RGB the line's 0xRRGGBB (-1 none) at RING_OPACITY (0 to 1); BENEATH_RGB the colour beneath the block,
    what a ring's corners show outside its rounded path; GAP a ring's inset from its rows' top and bottom in device
-   pixels, the band between in the colour beneath.  */
+   pixels, the band between in the colour beneath; SHADOW_RGB a ring's shadow (-1 none: a 3 logical px blur 1 logical
+   px down, outside its edge) at SHADOW_OPACITY, HALO_RGB the shadow's line just outside the edge at HALO_OPACITY.  */
 typedef struct
 {
   uint64_t seq;
@@ -875,6 +876,10 @@ typedef struct
   float ring_opacity;
   int32_t beneath_rgb;
   int32_t gap;
+  int32_t shadow_rgb;
+  float shadow_opacity;
+  int32_t halo_rgb;
+  float halo_opacity;
 } NhgBlock;
 
 /* FRAME (WINDOW its own shell window, a child frame's too) is about to be published with the N blocks at BLOCKS: each

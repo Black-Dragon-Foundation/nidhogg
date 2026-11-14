@@ -259,6 +259,23 @@ colour beneath, so cards on adjacent rows stand apart.  The columns at x 20 are 
     (should (equal (funcall at 20 (- (* 3 lh) 7)) '(255 0 0))) ; the ring at the bottom
     (should (equal (funcall at 20 (- (* 3 lh) 3)) '(0 0 255))))) ; the gap below
 
+(ert-deftest glitnir-gui/a-ring-block-casts-a-shadow ()
+  "A ring's `:shadow' and `:shadow-ring': a 1 px line just outside the card's edge, and a 3 px blur 1 px down, both
+in the gap only, never over the card's rows."
+  (glitnir-gui--skip-unless-tree)
+  (glitnir-gui--with-card
+      `((ring ,(copy-marker 1) ,(copy-marker end) :x0 10 :x1 300 :radius 4 :gap 8
+              :ring ("#ff0000" . 1) :beneath "#0000ff" :shadow ("#000000" . 1) :shadow-ring ("#00ff00" . 1)))
+    (let ((edge (- (* 3 lh) 8)))                               ; the card's bottom edge (exclusive)
+      (should (equal (funcall at 20 1) '(0 0 255)))            ; past the shadow's reach above
+      (should (equal (funcall at 20 7) '(0 255 0)))            ; the shadow's ring above the card
+      (should (equal (funcall at 20 8) '(255 0 0)))            ; the card's own ring
+      (should (equal (funcall at 20 9) '(255 255 0)))          ; the rows: no shadow over them
+      (should (equal (funcall at 20 edge) '(0 255 0)))         ; the shadow's ring below
+      (pcase-let ((`(,r ,g ,b) (funcall at 20 (+ edge 2))))   ; the blur below: blue darkened
+        (should (and (= r 0) (= g 0) (< 0 b 250))))
+      (should (equal (funcall at 20 (1- (* 3 lh))) '(0 0 255)))))) ; the gap's far side: past the reach
+
 ;; The overview ruler.  Its rows wait through `glitnir-gui--painted' (redisplay, the presenter settled), which every
 ;; shell gives; `glitnir--draw-count' is the Wayland shell's alone (0 on Naglfar).
 
