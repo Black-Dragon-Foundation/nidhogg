@@ -704,6 +704,9 @@ that, after it, sets the old mask back with `pthread_sigmask'."
 ;; sleep, a liveness poll or a timer used as a marker.  A wait that polls with a deadline for what the other side
 ;; announces (`accept-process-output' with a time) is how the park is awaited, so it is allowed.  The `cond' files without the line are listed in
 ;; nidhogg/test/pattern-pending.txt (`FILE # reason'); the list only shrinks, so every new `cond' file carries it.
+;; The same file lists the handshake rule's exemptions, `exempt FILE TEST FORM # reason': TEST of FILE may call FORM (one
+;; of the banned calls) because that call is the stimulus the test is about, never a marker or a wait.  An exemption
+;; whose test no longer calls the form fails, as a stale pending row does.
 
 (defconst test-pattern-lint--pending-file
   (expand-file-name "nidhogg/test/pattern-pending.txt" source-directory)
@@ -724,8 +727,9 @@ that, after it, sets the old mask back with `pthread_sigmask'."
                 'bad))))
     patterns))
 
-(defun test-pattern-lint--handshake-violations (string)
-  "Every handshake-rule violation in the test file text STRING, as (TEST DETAIL)."
+(defun test-pattern-lint--handshake-violations (string &optional exempt)
+  "Every handshake-rule violation in the test file text STRING, as (TEST DETAIL).
+EXEMPT: (TEST FORM) pairs that are not violations."
   (let* ((forms (test-class-lint--read-forms string))
          (helpers (test-class-lint--helpers forms))
          out)
@@ -736,7 +740,8 @@ that, after it, sets the old mask back with `pthread_sigmask'."
           (dolist (d (append (test-class-lint--fixed-pause nodes)
                              (seq-filter (lambda (s) (test-class-lint--uses-p nodes (list s)))
                                          test-pattern-lint--handshake-banned)))
-            (push (list name (format "%s" d)) out)))))
+            (unless (member (list name d) exempt)
+              (push (list name (format "%s" d)) out))))))
     (nreverse out)))
 
 (defun test-pattern-lint--pending ()
@@ -744,9 +749,25 @@ that, after it, sets the old mask back with `pthread_sigmask'."
   (let (rows)
     (when (file-readable-p test-pattern-lint--pending-file)
       (dolist (line (split-string (test-class-lint--read-file test-pattern-lint--pending-file) "\n"))
-        (unless (or (string-empty-p (string-trim line)) (string-prefix-p "#" line))
+        (unless (or (string-empty-p (string-trim line)) (string-prefix-p "#" line) (string-prefix-p "exempt " line))
           (push (string-trim (car (split-string line " # "))) rows))))
     (nreverse rows)))
+
+(defun test-pattern-lint--exemptions (&optional text)
+  "The handshake exemptions of the pending list (or of TEXT, its contents): (FILE TEST FORM), TEST and FORM symbols."
+  (let (rows)
+    (dolist (line (split-string (or text (and (file-readable-p test-pattern-lint--pending-file)
+                                              (test-class-lint--read-file test-pattern-lint--pending-file))
+                                    "")
+                                "\n"))
+      (when (string-prefix-p "exempt " line)
+        (pcase-let ((`(,_ ,file ,test ,form) (split-string (car (split-string line " # ")))))
+          (push (list file (intern test) (intern form)) rows))))
+    (nreverse rows)))
+
+(defun test-pattern-lint--file-exemptions (name)
+  "The (TEST FORM) exemptions of the file NAME."
+  (mapcar #'cdr (seq-filter (lambda (e) (equal (car e) name)) (test-pattern-lint--exemptions))))
 
 (defun test-pattern-lint--cond-files ()
   "The `cond' test files: (NAME . TEXT)."
@@ -778,9 +799,21 @@ that, after it, sets the old mask back with `pthread_sigmask'."
   (let (bad)
     (pcase-dolist (`(,name . ,text) (test-pattern-lint--cond-files))
       (when (memq 'handshake (ensure-list (test-pattern-lint--file-patterns text)))
-        (dolist (v (test-pattern-lint--handshake-violations text))
+        (dolist (v (test-pattern-lint--handshake-violations text (test-pattern-lint--file-exemptions name)))
           (push (format "%s: %s: %s" name (car v) (cadr v)) bad))))
     (should-not (nreverse bad))))
+
+(ert-deftest test-pattern/exemptions-are-not-stale ()
+  "Every exemption names a handshake file's test that calls its form."
+  (let ((files (test-pattern-lint--cond-files)) stale)
+    (pcase-dolist ((and e `(,file ,test ,form)) (test-pattern-lint--exemptions))
+      (let ((text (cdr (assoc file files))))
+        (unless (and text (memq 'handshake (ensure-list (test-pattern-lint--file-patterns text)))
+                     (member (list (symbol-name test) (symbol-name form))
+                             (mapcar (lambda (v) (list (symbol-name (car v)) (cadr v)))
+                                     (test-pattern-lint--handshake-violations text))))
+          (push e stale))))
+    (should-not stale)))
 
 (ert-deftest test-pattern/the-pattern-lints-bite ()
   (should (equal '(handshake) (test-pattern-lint--file-patterns ";; test-pattern: handshake\n")))
@@ -796,7 +829,13 @@ that, after it, sets the old mask back with `pthread_sigmask'."
              (format "(ert-deftest my/a () %s)\n" body))))
   ;; a helper's call counts
   (should (test-pattern-lint--handshake-violations
-           "(defun my--wait (p) (process-live-p p))\n(ert-deftest my/a () (my--wait 1))\n")))
+           "(defun my--wait (p) (process-live-p p))\n(ert-deftest my/a () (my--wait 1))\n"))
+  ;; an exemption covers its test and form only
+  (let ((two "(ert-deftest my/a () (run-at-time 1 nil #'ignore) (process-live-p p))\n(ert-deftest my/b () (run-at-time 1 nil #'ignore))\n"))
+    (should (equal (test-pattern-lint--handshake-violations two '((my/a run-at-time)))
+                   '((my/a "process-live-p") (my/b "run-at-time")))))
+  (should (equal (test-pattern-lint--exemptions "x.el # pending\nexempt f.el my/a run-at-time # why\n")
+                 '(("f.el" my/a run-at-time)))))
 
 (provide 'test-class-lint-tests)
 ;;; test-class-lint-tests.el ends here
