@@ -19,7 +19,7 @@ RUN dnf -y --setopt=install_weak_deps=False install \
 FROM runtime AS gui
 RUN dnf -y --setopt=install_weak_deps=False install \
       mutter sway grim pixman libxkbcommon libcap dbus-daemon mesa-dri-drivers mesa-libEGL mesa-libgbm \
-      python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
+      python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux util-linux-script \
       pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils && \
     dnf clean all
 

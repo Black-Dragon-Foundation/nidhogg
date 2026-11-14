@@ -517,6 +517,7 @@ if [ -n "$container" ]; then
       fi
       want="mutter sway grim pixman libxkbcommon libcap dbus-daemon \
         mesa-dri-drivers mesa-libEGL mesa-libgbm python3-gobject-base dejavu-sans-mono-fonts procps-ng util-linux \
+        util-linux-script \
         $(case " $* " in *" mutter "*) echo pipewire wireplumber gstreamer1-plugins-base pipewire-gstreamer pipewire-utils ;; esac) \
         $(case " $* " in *" kwin "*) echo kwin kscreen dbus-tools ;; *" labwc "*) echo labwc wlr-randr ;; esac) \
         $(case " $* " in *" fcitx5 "*) echo fcitx5 fcitx5-chinese-addons wtype ;; *" ibus "*) echo ibus ibus-libpinyin ;; esac) \
