@@ -71,6 +71,7 @@ pub fn show(layer: &CALayer, surface: &Cf, same: bool, scale: f64) {
     unsafe {
         if same {
             layer.setContents(None);
+            PROPS.same.fetch_add(1, Ordering::Relaxed);
         }
         layer.setContents(Some(obj));
         layer.setContentsGravity(kCAGravityTopLeft);
@@ -83,6 +84,8 @@ pub fn show(layer: &CALayer, surface: &Cf, same: bool, scale: f64) {
 /// position alone.
 pub struct Props {
     pub contents: AtomicU64,
+    /// Of those, the sets of the surface the layer already showed (its contents cleared first, `show`'s `same`).
+    pub same: AtomicU64,
     pub position: AtomicU64,
     pub bounds: AtomicU64,
     pub hidden: AtomicU64,
@@ -101,6 +104,7 @@ pub struct Props {
 
 pub static PROPS: Props = Props {
     contents: AtomicU64::new(0),
+    same: AtomicU64::new(0),
     position: AtomicU64::new(0),
     bounds: AtomicU64::new(0),
     hidden: AtomicU64::new(0),
@@ -118,10 +122,11 @@ impl Props {
     pub fn text(&self) -> String {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed);
         format!(
-            ":props-contents {} :props-position {} :props-bounds {} :props-hidden {} :props-opacity {} :props-order {} \
+            ":props-contents {} :props-same {} :props-position {} :props-bounds {} :props-hidden {} :props-opacity {} :props-order {} \
              :props-host {} :overhang-switches {} :panel-orders {} :props-chrome {} :shadow-renders {} \
              :motion-legs {}",
             g(&self.contents),
+            g(&self.same),
             g(&self.position),
             g(&self.bounds),
             g(&self.hidden),
