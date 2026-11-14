@@ -338,6 +338,17 @@ touching only the rows that changed."
                  '((0 1) (1) (0 9 1 90) 50)))
   (should-error (nidhogg-view-bar "2 0") :type 'args-out-of-range))
 
+(ert-deftest sja/a-local-list-is-picked ()
+  "A list loaded once, picked from by input through the door: the recent
+command first, then the other, then the file; a closed list is refused."
+  (let ((h (nidhogg-view-pick 'load (concat "0\t-1\tView: Split Editor Down\n"
+                                            "0\t0\tWindow: Split Right\n"
+                                            "1\t-1\tFile: split.rs\n"))))
+    (should (equal (nidhogg-view-pick 'top h "split" 10) '(1 0 2)))
+    (should (equal (nidhogg-view-pick 'top h "split down" 10) '(0)))
+    (nidhogg-view-pick 'close h)
+    (should-error (nidhogg-view-pick 'top h "" 1) :type 'args-out-of-range)))
+
 (provide 'sja-tests)
 
 ;;; sja-tests.el ends here
