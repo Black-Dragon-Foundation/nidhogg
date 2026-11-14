@@ -1104,8 +1104,9 @@ right edge in IMG's pixels (the frame at `glitnir-nhmac--origin' in the capture)
 
 (ert-deftest nhmac-ruler-marks-the-buffer-by-position ()
   "A window's `glitnir-ruler' shows in its right fringe, right of the text area: the marks of lines 1 and 501 at the
-strip's top and half way down, the end's at its bottom in the right lane, the band over the part shown; a scroll
-moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-the-buffer-by-position on Linux)."
+strip's top and half way down, the end's at its bottom in the right lane, the band over the part shown; a click's y
+at the strip's middle gives the buffer's middle; a scroll moves the band to the middle and leaves the marks
+(glitnir-gui/the-ruler-marks-the-buffer-by-position on Linux)."
   :tags '(draws)
   ;; required on macOS (never skipped): it stands in for glitnir-gui's snapshot row, which skips there
   (should (fboundp 'glitnir-ruler-position))
@@ -1137,6 +1138,14 @@ moves the band to the middle and leaves the marks (glitnir-gui/the-ruler-marks-t
                ;; the band: the top part is shown
                (should (<= (abs (- (nth 1 band) (plist-get b :top))) k))
                (should (< (nth 3 band) mid)))
+             ;; the click: the strip's middle is the buffer's middle (one line either way)
+             (pcase-let* ((`(,_ ,ty ,_ ,ty1) (window-inside-pixel-edges w))
+                          (pos (glitnir-ruler-position
+                                (list w 'right-fringe (cons 0 (+ (- ty (nth 1 (window-pixel-edges w))) (/ (- ty1 ty) 2)))
+                                      0 nil nil nil nil nil nil))))
+               (nhmac-gui--say "nhmac-ruler-marks-the-buffer-by-position: the strip's middle gives %S" pos)
+               (should pos)
+               (should (< (abs (- (with-current-buffer buf (line-number-at-pos pos)) 501)) 2)))
              ;; a scroll to line 496: the band moves to the middle, the marks stay
              (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 495) (point)))))
                (set-window-point w p)
