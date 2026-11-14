@@ -30,8 +30,11 @@ logdir=$1; shift
 rc=0
 red() { echo "check-rerun: RED: $*"; rc=1; }
 
-# the flaky list: NAME -> cause
-declare -A cause
+# the flaky list: NAME<TAB>cause rows in a file (macOS's /bin/bash is 3.2: no associative arrays)
+causes=$(mktemp) || exit 2
+trap 'rm -f "$causes"' EXIT
+# the cause listed for NAME, exit 1 when it is not listed
+cause_of() { awk -F '\t' -v n="$1" '$1 == n { print $2; f = 1; exit } END { exit !f }' "$causes"; }
 if [ -f "$flaky" ]; then
   while IFS= read -r line; do
     line=${line%%$'\r'}
@@ -41,7 +44,7 @@ if [ -f "$flaky" ]; then
     c=${c#"${c%%[![:space:]]*}"}
     [ -n "$name" ] || continue
     [ -n "$c" ] || red "flaky row $name has no cause"
-    cause[$name]=$c
+    printf '%s\t%s\n' "$name" "$c" >> "$causes"
   done < "$flaky"
 fi
 
@@ -57,16 +60,16 @@ class_of() {
   for cls in det cond timing; do
     case $tags in *":$cls"*) echo "$cls"; return 0 ;; esac
   done
-  head -n 15 "$file" | sed -n 's/^;; test-class: \(det\|cond\|timing\)$/\1/p' | head -n 1
+  head -n 15 "$file" | sed -nE 's/^;; test-class: (det|cond|timing)$/\1/p' | head -n 1
 }
 
 # every listed name must be defined in exactly one test file, and none may be a D test (a D test has no flake)
-for name in "${!cause[@]}"; do
+while IFS="$(printf '\t')" read -r name _; do
   n=$(grep -rlF --include='*.el' -e "(ert-deftest $name " -e "(ert-deftest $name)" "$src" 2>/dev/null | sort -u | wc -l)
   [ "$n" -ge 1 ] || red "flaky row $name names no test (stale row)"
   [ "$n" -le 1 ] || red "flaky row $name names a test defined in $n files"
   [ "$n" -ne 1 ] || [ "$(class_of "$name")" != det ] || red "flaky row $name names a deterministic test (a D test has no flake: fix it)"
-done
+done < "$causes"
 
 # the targets with unexpected results
 targets=()
@@ -79,7 +82,8 @@ else
   done < <(find "$logdir" -name '*.log' 2>/dev/null | sort)
 fi
 
-for t in "${targets[@]}"; do
+# bash 3.2 under set -u calls an empty array unbound
+for t in ${targets[@]+"${targets[@]}"}; do
   log=$logdir/$t.log
   # a target that passed has a log without unexpected results; one with none at all (it did not start) is red
   if [ -f "$log" ] && ! grep -qE '^Ran [0-9]+ tests' "$log"; then
@@ -106,8 +110,8 @@ for t in "${targets[@]}"; do
   if $mk "$t" > "$logdir/.rerun.out" 2>&1; then
     if [ -z "$failed" ]; then red "$t: failed, then passed, and the log names no test to list"; continue; fi
     while IFS= read -r name; do
-      if [ -n "${cause[$name]+x}" ]; then
-        echo "flaky (listed: ${cause[$name]}): $name"
+      if c=$(cause_of "$name"); then
+        echo "flaky (listed: $c): $name"
       else
         red "$name failed, then passed on rerun, and is not in flaky.txt (find the cause and fix it, or list it with the cause)"
       fi
