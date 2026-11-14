@@ -1,6 +1,7 @@
 ;;; nhmac-driver-gui-tests.el --- Naglfar's font driver, images and drawing rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh on the macOS runner (nhmac-lane.txt).  Each row judges Naglfar against Core
 ;; Text's or AppKit's own answers (asked through `test-font-probe') or against a stated expected value, never against
@@ -8,6 +9,8 @@
 
 (require 'ert)
 (require 'cl-lib)
+(declare-function nhmac-gui--until "nhmac-gui-tests" (pred secs))
+(declare-function nhmac-gui--shown "nhmac-gui-tests" (&optional secs))
 
 (defun nhmac-driver--say (fmt &rest args)
   "Print FMT with ARGS as a line of the lane's log (stderr), not to *Messages*."
@@ -87,10 +90,9 @@ old list still served), so an unnamed `list-fonts' finds it."
       (unwind-protect
           (progn
             (should (eq (nhmac-driver--probe 'register file) t))
-            (let ((deadline (+ (float-time) 5)) found)
-              ;; the notification reaches the shell through the run loop
-              (while (and (not (setq found (funcall listed))) (< (float-time) deadline))
-                (sit-for 0.1))
+            (let* ((deadline (+ (float-time) 5))
+                   ;; the notification reaches the shell through the run loop
+                   (found (nhmac-gui--until listed 5)))
               (nhmac-driver--say "nhmac-font-list-refresh: %s listed %s, %.1f s left; (notifications generation stale) %S"
                                  new (if found "yes" "no") (- deadline (float-time))
                                  (nhmac-driver--probe 'font-changes))
@@ -164,10 +166,8 @@ may be a function: called with where OBJECT starts, (X . Y) in the frame's devic
           (setq-local cursor-type nil)
           (if (stringp object) (insert object) (insert-image object))
           (goto-char (point-max))
-          (redisplay t)
-          ;; the commit lands after redisplay: a moment for the pacer
-          (sleep-for 0.2)
-          (redisplay t)
+          ;; the commit lands after redisplay, at the pacer's turn
+          (nhmac-gui--shown)
           (let* ((xy (posn-x-y (posn-at-point (point-min))))
                  (edges (window-inside-pixel-edges))
                  (origin (cons (+ (nth 0 edges) (car xy)) (+ (nth 1 edges) (cdr xy)))))
@@ -276,7 +276,7 @@ point thick, and the default bar cursor (2) two points wide, so twice the device
             (setq-local cursor-type 'bar)
             (insert (propertize "    " 'face '(:background "#0000ff")))
             (goto-char (point-min))
-            (redisplay t) (sleep-for 0.2) (redisplay t)
+            (nhmac-gui--shown)
             (let* ((xy (posn-x-y (posn-at-point (point))))
                    (e (window-inside-pixel-edges))
                    (x (+ (nth 0 e) (car xy)))

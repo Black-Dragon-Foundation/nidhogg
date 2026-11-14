@@ -1,6 +1,7 @@
 ;;; nhmac-dnd-gui-tests.el --- Naglfar's drag and drop rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).  A drop is driven in-process:
 ;; a test hook calls the view's `draggingEntered:', `draggingUpdated:' and `performDragOperation:' with dragging info
@@ -8,6 +9,8 @@
 
 (require 'ert)
 (declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
+(declare-function nhmac-gui--until "nhmac-gui-tests" (pred secs))
+(declare-function nhmac-gui--shown "nhmac-gui-tests" (&optional secs))
 
 (defun nhmac-dnd--naglfar-p ()
   (and (featurep 'nidhogg-macos) (fboundp 'nhmac--query)))
@@ -67,11 +70,14 @@ pumps' scope never takes inside a take (`:overlapping-takes' stays 0)."
           (set-window-buffer (frame-selected-window b) (current-buffer))
           (let ((pa (frame-position a)) (pb (frame-position b)))
             ;; side by side, B right of A
-            (set-frame-position b (+ (car pa) (frame-outer-width a) 20) (cdr pa))
-            (sit-for 0.5)
+            (let ((from (seq-take (plist-get (nhmac--window-info b) :frame) 2)))
+              (set-frame-position b (+ (car pa) (frame-outer-width a) 20) (cdr pa))
+              ;; the window server has B elsewhere
+              (nhmac-gui--until
+               (lambda () (not (equal (seq-take (plist-get (nhmac--window-info b) :frame) 2) from))) 2))
             (glitnir-gui--say "nhmac-dnd-drag-out: A at %S, B moved from %S to %S" pa pb (frame-position b)))
           (select-frame-set-input-focus a)
-          (sit-for 0.3)
+          (nhmac-gui--until (lambda () (eq (frame-focus-state a) t)) 2)
           (while (read-event nil nil 0.1))
           ;; from A's text to B's (round 6: 40, 40 was A's tool bar)
           (let ((ea (window-inside-pixel-edges (frame-selected-window a)))
