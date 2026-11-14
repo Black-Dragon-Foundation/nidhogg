@@ -1301,16 +1301,22 @@ transaction (Naglfar commits inside the redisplay).  The bar is drgnx's typing b
 frame), max under 50 ms."
   :tags '(timing)
   (nhmac-gui--timing-build)
-  (let (times)
+  (let (times before)
     (switch-to-buffer (generate-new-buffer " *nhmac-key*"))
     (insert "key to commit")
     (redisplay t)
     (dotimes (_ 10) (execute-kbd-macro "w") (redisplay))
+    (setq before (nhmac-stats))
     (dotimes (_ 50)
       (let ((t0 (float-time)))
         (execute-kbd-macro "x")
         (redisplay)
         (push (round (* 1e6 (- (float-time) t0))) times)))
+    ;; how often a commit re-sets the surface its layer already shows (its contents cleared first): what decides
+    ;; whether the ring should pick another free slot instead
+    (nhmac-gui--say "nhmac-key-to-commit: 50 keys: %d commits, %d contents sets, %d of them the same surface"
+                    (nhmac-gui--delta before :commits) (nhmac-gui--delta before :props-contents)
+                    (nhmac-gui--delta before :props-same))
     (kill-buffer)
     (nhmac-gui--within-budget "nhmac-key-to-commit" times 16 50)))
 
