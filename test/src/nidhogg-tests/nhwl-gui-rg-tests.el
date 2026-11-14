@@ -61,6 +61,30 @@
       (insert-file-contents file)
       (read (current-buffer)))))
 
+(defun nhwl-gui--quits-seen (file)
+  "The child Emacs's status in FILE once it counts a quit, else nil: also nil while FILE is not there or is caught
+mid-write (the CI recorder rows read it empty while the child rewrote it, and the wait stopped on
+\(wrong-type-argument number-or-marker-p nil)), so the wait reads it again."
+  (let ((st (nhwl-gui--read-status file)))
+    (and (natnump (plist-get st :quits)) (> (plist-get st :quits) 0) st)))
+
+(ert-deftest nhwl-gui/a-status-caught-mid-write-reads-as-none ()
+  "The sigint row's child rewrites its status after every command and quit, while the row polls it: a read that finds
+it not there, empty or cut short is no status yet, never an error in the wait."
+  (let ((f (make-temp-file "nhwl-rg-status")))
+    (unwind-protect
+        (progn
+          (should-not (nhwl-gui--quits-seen f))                 ; empty
+          (with-temp-file f (insert "(:pid 1 :quits 2"))        ; cut short
+          (should-not (nhwl-gui--quits-seen f))
+          (with-temp-file f (insert "(:pid 1 :quits 0)"))
+          (should-not (nhwl-gui--quits-seen f))
+          (with-temp-file f (insert "(:pid 1 :quits 2)"))
+          (should (equal (nhwl-gui--quits-seen f) '(:pid 1 :quits 2)))
+          (delete-file f)
+          (should-not (nhwl-gui--quits-seen f)))                ; not there
+      (ignore-errors (delete-file f)))))
+
 ;; `emacs -nw' on a pty with a frame on the recorder: SIGINT runs `handle_interrupt' from the signal handler, and while
 ;; Emacs waits for input (`waiting_for_input') it longjmps out of whatever runs, the drain included.  NHG clears the flag
 ;; around every glue call, so the jump happens in C once the call is over.  A guard frame crossed by the jump would
@@ -78,13 +102,15 @@
       (insert (format "%S\n"
                       `(progn
                          (defvar nh-quits 0)
-                         ;; what it says, written after each command and each quit: the parent waits on it
+                         ;; what it says, written after each command and each quit: the parent waits on it.  Written
+                         ;; whole and renamed over, so a read never finds it half written
                          (defun nh-status ()
-                           (with-temp-file ,status
+                           (with-temp-file ,(concat status ".new")
                              (prin1 (list :pid (emacs-pid) :quits nh-quits
                                           :panics (length (nhwl-glue-panics))
                                           :typed (with-current-buffer "typed" (buffer-string)))
-                                    (current-buffer))))
+                                    (current-buffer)))
+                           (rename-file ,(concat status ".new") ,status t))
                          (setq command-error-function
                                (lambda (data context caller)
                                  (when (eq (car-safe data) 'quit)
@@ -118,10 +144,7 @@
               (gui-runner-stimulus 0.005)
               (signal-process pid 'SIGINT)
               (gui-runner-stimulus 0.005)))
-          (should (nhwl-gui--wait (lambda ()
-                                    (setq st (nhwl-gui--read-status status))
-                                    (> (plist-get st :quits) 0))
-                                  10))
+          (should (nhwl-gui--wait (lambda () (setq st (nhwl-gui--quits-seen status))) 10))
           (should (eq (process-status proc) 'run))
           (should (= (plist-get st :panics) 0))
           ;; the frame still takes input: 10 keys typed afterwards arrive
@@ -129,10 +152,10 @@
             (gui-runner-recorder (list :cmd "key" :text k)))
           (should (nhwl-gui--wait
                    (lambda ()
-                     (setq st (nhwl-gui--read-status status))
+                     (let ((now (nhwl-gui--read-status status))) (when now (setq st now)))
                      (string-suffix-p "0123456789" (or (plist-get st :typed) "")))
                    5))
-          (should (= (plist-get (nhwl-gui--read-status status) :panics) 0)))
+          (should (eql (plist-get st :panics) 0)))
       (delete-process proc)
       (delete-directory dir t))))
 
