@@ -204,6 +204,9 @@ pub struct Block {
     pub shadow_y_px: i32,
     /// The shadow's line, `ring_px` wide just outside the ring's edge (premultiplied, 0: none).
     pub halo_argb: u32,
+    /// A second ring, `ring_px` wide just outside the ring's edge, over the shadow's line (premultiplied, 0: none): the
+    /// focus ring inside, the border step outside.
+    pub outer_argb: u32,
 }
 
 impl Block {
@@ -212,7 +215,7 @@ impl Block {
         let m = if self.kind != BlockKind::Ring {
             0
         } else {
-            let line = if self.halo_argb != 0 {
+            let line = if self.halo_argb != 0 || self.outer_argb != 0 {
                 self.ring_px.min(1 << 12) as i32
             } else {
                 0

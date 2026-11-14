@@ -276,6 +276,22 @@ in the gap only, never over the card's rows."
         (should (and (= r 0) (= g 0) (< 0 b 250))))
       (should (equal (funcall at 20 (1- (* 3 lh))) '(0 0 255)))))) ; the gap's far side: past the reach
 
+(ert-deftest glitnir-gui/a-ring-block-has-an-outer-ring ()
+  "A ring's `:outer': a second line 1 px wide just outside the ring (the focus ring inside, the border step outside),
+in the gap."
+  (glitnir-gui--skip-unless-tree)
+  (glitnir-gui--with-card
+      `((ring ,(copy-marker 1) ,(copy-marker end) :x0 10 :x1 300 :radius 4 :gap 8
+              :ring ("#ff0000" . 1) :outer ("#00ff00" . 1) :beneath "#0000ff"))
+    (let ((edge (- (* 3 lh) 8)))
+      (should (equal (funcall at 20 6) '(0 0 255)))
+      (should (equal (funcall at 20 7) '(0 255 0)))            ; the outer ring
+      (should (equal (funcall at 20 8) '(255 0 0)))            ; the ring inside it
+      (should (equal (funcall at 20 9) '(255 255 0)))
+      (should (equal (funcall at 20 (1- edge)) '(255 0 0)))
+      (should (equal (funcall at 20 edge) '(0 255 0)))
+      (should (equal (funcall at 20 (1+ edge)) '(0 0 255))))))
+
 ;; The overview ruler.  Its rows wait through `glitnir-gui--painted' (redisplay, the presenter settled), which every
 ;; shell gives; `glitnir--draw-count' is the Wayland shell's alone (0 on Naglfar).
 

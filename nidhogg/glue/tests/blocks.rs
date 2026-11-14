@@ -83,6 +83,8 @@ mod blocks {
             shadow_opacity: 0.0,
             halo_rgb: -1,
             halo_opacity: 0.0,
+            outer_rgb: -1,
+            outer_opacity: 0.0,
         }
     }
 

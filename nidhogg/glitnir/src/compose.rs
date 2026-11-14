@@ -755,9 +755,9 @@ impl CardRing {
 /// Block B within CLIP (root px, inside the target and the window): a rule's bottom line; a ring's gap bands (its
 /// rectangle's top and bottom `gap_px` rows) in the colour beneath, its corners outside its rounded path in that
 /// colour, then the ring just inside the rectangle less the gap.  An open side lies past the rectangle (by the radius),
-/// so its corners and its line fall outside it and are not drawn, and it has no gap. A ring's shadow and the shadow's
-/// line go outside its rounded edge, in the gap or past the rectangle (within [`Block::bounds`]), never past an open
-/// side.
+/// so its corners and its line fall outside it and are not drawn, and it has no gap. A ring's shadow, the shadow's line
+/// and its outer ring go outside its rounded edge, in the gap or past the rectangle (within [`Block::bounds`]), never
+/// past an open side.
 fn draw_block(
     k: &Kernels,
     t: &mut TargetView,
@@ -780,7 +780,8 @@ fn draw_block(
     let clip = clip.intersect(&rect);
     let w = b.ring_px.min(1 << 12) as i32;
     let ring_kind = b.kind == crate::scene::BlockKind::Ring;
-    let any = b.ring_argb != 0 || (ring_kind && (b.shadow_argb != 0 || b.halo_argb != 0));
+    let any = b.ring_argb != 0
+        || (ring_kind && (b.shadow_argb != 0 || b.halo_argb != 0 || b.outer_argb != 0));
     if clip.is_empty() || !any || w == 0 {
         return;
     }
@@ -867,6 +868,12 @@ fn draw_block(
         let halo = CardRing::around(ext, r, wu, b.halo_argb);
         let mut dst = t.at(outer);
         halo.draw(k, &mut dst, outer);
+    }
+    // the outer ring, the same place
+    if b.outer_argb != 0 && !outer.is_empty() {
+        let ring = CardRing::around(ext, r, wu, b.outer_argb);
+        let mut dst = t.at(outer);
+        ring.draw(k, &mut dst, outer);
     }
     if b.ring_argb == 0 {
         return;

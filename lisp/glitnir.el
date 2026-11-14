@@ -464,7 +464,8 @@ with the window when the frame publishes."
 ;; (a bottom hairline) or bars (a filled rectangle: a selected row's
 ;; accent) around runs of the window's rows, over its text.  A ring can
 ;; stand inside its rows by a gap, which shows the colour beneath, and
-;; cast a shadow (a blur and a 1 px line) outside its edge, into the gap.
+;; cast a shadow (a blur and a 1 px line) outside its edge, into the gap,
+;; and have a second ring just outside it (a focused card's border step).
 ;; The rows give their own fill.  It is resolved into `glitnir--blocks'
 ;; only when it, or the theme, changed; C resolves each block's rows
 ;; against the window's matrix when the frame publishes.  A block's rows
@@ -487,10 +488,12 @@ bottom: the band between shows the colour beneath, so cards on
 adjacent rows stand apart), and for a ring `:shadow' and `:shadow-ring'
 \(each as `:ring': a 3 px blur 1 px down outside the ring's edge, and
 the shadow's 1 px line just outside it; logical px, in the gap or past
-the rows, never over them).  The vector is [KIND START END X0 X1 RADIUS
-RING-RGB RING-OPACITY BENEATH-RGB GAP SHADOW-RGB SHADOW-OPACITY
-HALO-RGB HALO-OPACITY], KIND 0 a ring, 1 a rule and 2 a bar, an RGB -1
-for none.  Signal `wrong-type-argument' for another shape."
+the rows, never over them) and `:outer' (as `:ring': a second ring
+1 px just outside the ring's edge, over the shadow's line: the focus
+ring inside, the border step outside).  The vector is [KIND START END
+X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB GAP SHADOW-RGB
+SHADOW-OPACITY HALO-RGB HALO-OPACITY OUTER-RGB OUTER-OPACITY], KIND 0 a
+ring, 1 a rule and 2 a bar, an RGB -1 for none.  Signal `wrong-type-argument' for another shape."
   (unless (and (consp spec) (memq (car spec) '(ring rule bar)) (consp (cdr spec)) (consp (cddr spec)))
     (signal 'wrong-type-argument (list 'glitnir-block spec)))
   (let* ((plist (nthcdr 3 spec))
@@ -502,6 +505,7 @@ for none.  Signal `wrong-type-argument' for another shape."
          (ring (funcall line ring-spec))
          (shadow (funcall line (plist-get plist :shadow)))
          (halo (funcall line (plist-get plist :shadow-ring)))
+         (outer (funcall line (plist-get plist :outer)))
          (beneath (plist-get plist :beneath)))
     (vector (pcase (car spec) ('rule 1) ('bar 2) (_ 0)) (nth 1 spec) (nth 2 spec)
             (or (plist-get plist :x0) 0) (or (plist-get plist :x1) most-positive-fixnum)
@@ -512,7 +516,8 @@ for none.  Signal `wrong-type-argument' for another shape."
                 0)
             (or (plist-get plist :gap) 0)
             (if shadow (car shadow) -1) (if shadow (cdr shadow) 0)
-            (if halo (car halo) -1) (if halo (cdr halo) 0))))
+            (if halo (car halo) -1) (if halo (cdr halo) 0)
+            (if outer (car outer) -1) (if outer (cdr outer) 0))))
 
 (defvar glitnir--blocks-any nil
   "Whether a window of the frame has blocks.

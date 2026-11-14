@@ -11,7 +11,7 @@
 //!   them again at the new scale.
 //! - **What C gives ([`NhgBlock`]):** the rectangle and the text area in device px, the radius in device px, the
 //!   ring's and the beneath colour as 0xRRGGBB, a ring's gap (its inset from the rows' top and bottom, in the colour
-//!   beneath) in device px, a ring's shadow and its line as colours (the shadow a 3 px blur 1 px down, logical px, as
+//!   beneath) in device px, a ring's shadow, its line and the outer ring as colours (the shadow a 3 px blur 1 px down, logical px, as
 //!   the look's card shadow), and whether a side was cut off by scrolling (a block reaching past the text area is open
 //!   there too).  The line is one logical px, whole device px.
 //! - **When:** at each publish while the frame has blocks or block layers; [`sync_at`] upserts what changed and
@@ -69,6 +69,9 @@ pub struct NhgBlock {
     pub shadow_opacity: f32,
     pub halo_rgb: i32,
     pub halo_opacity: f32,
+    /// A ring's outer ring 0xRRGGBB (-1: none) at its opacity: one logical px just outside its edge.
+    pub outer_rgb: i32,
+    pub outer_opacity: f32,
 }
 
 /// What a block layer was last given: its rectangle, scale and blocks.
@@ -143,6 +146,7 @@ pub fn plan(
             shadow_blur_px: (3.0 * s).round() as u32,
             shadow_y_px: s.round() as i32,
             halo_argb: rgb(b.halo_rgb).map_or(0, |c| premultiplied(c, b.halo_opacity)),
+            outer_argb: rgb(b.outer_rgb).map_or(0, |c| premultiplied(c, b.outer_opacity)),
         };
         // a window's strip is a layer of its own: one clip a layer
         let k = if b.flags & NHG_BLOCK_STRIP != 0 {
