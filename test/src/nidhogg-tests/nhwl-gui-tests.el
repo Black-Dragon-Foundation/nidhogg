@@ -3064,8 +3064,10 @@ re-opened for a scale never resizes the window the compositor sized."
 
 ;; The frame rows that came over from the pgtk runner: what any shell must do on any compositor.
 
-(defun nhwl-gui--socket-owner (path)
-  "The process name (`/proc/PID/comm') of the process listening on the Unix socket PATH, or nil."
+(defun nhwl-gui--socket-owners (path)
+  "The process names (`/proc/PID/comm') of the processes holding the Unix socket PATH, in /proc's order.
+A compositor started through a wrapper has two: KWin's kwin_wayland_wrapper makes the socket and hands it to
+kwin_wayland, and either may still hold it."
   (let (inode)
     (with-temp-buffer
       (insert-file-contents "/proc/net/unix")
@@ -3078,9 +3080,9 @@ re-opened for a scale never resizes the window the compositor sized."
                              (cl-loop for fd in (directory-files (format "/proc/%s/fd" pid) t "[0-9]")
                                       thereis (equal (file-symlink-p fd) (format "socket:[%s]" inode))))
                when found
-               return (string-trim (with-temp-buffer
-                                     (insert-file-contents (format "/proc/%s/comm" pid))
-                                     (buffer-string)))))))
+               collect (string-trim (with-temp-buffer
+                                      (insert-file-contents (format "/proc/%s/comm" pid))
+                                      (buffer-string)))))))
 
 (ert-deftest nhwl-gui/compositor-is-the-asked-one ()
   "The process listening on WAYLAND_DISPLAY's socket is the compositor gui.sh was asked for."
@@ -3088,8 +3090,11 @@ re-opened for a scale never resizes the window the compositor sized."
   (let* ((asked (getenv "GLITNIR_GUI_COMPOSITOR"))
          (sock (expand-file-name (getenv "WAYLAND_DISPLAY") (getenv "XDG_RUNTIME_DIR"))))
     (skip-unless (and (nhwl-gui--live-p) asked))
-    (should (equal (nhwl-gui--socket-owner sock)
-                   (pcase asked ("sway" "sway") ("mutter" "mutter") ("kwin" "kwin_wayland") ("labwc" "labwc") ("recorder" "nh-recorder"))))))
+    (let ((want (pcase asked ("sway" "sway") ("mutter" "mutter") ("kwin" "kwin_wayland") ("labwc" "labwc")
+                       ("recorder" "nh-recorder")))
+          (owners (nhwl-gui--socket-owners sock)))
+      ;; the holders in the verdict: a red row says who held the socket
+      (should (equal (list owners (and (member want owners) t)) (list owners t))))))
 
 (ert-deftest nhwl-gui/show-then-hide-stays-hidden ()
   "A child shown and at once hidden stays hidden once the compositor has answered."
@@ -3148,12 +3153,16 @@ re-opened for a scale never resizes the window the compositor sized."
   "emacsclient -c with WAYLAND_DISPLAY set and no DISPLAY opens a frame of this shell on the same display."
   (skip-unless (nhwl-gui--live-p))
   (require 'server)
-  (let* ((server-name (format "nhwl-gui-%d" (emacs-pid)))
+  ;; under --daemon the daemon's own server runs, and its client holds the frame the rows run in: the client asks
+  ;; that server.  A server of the row's own would replace it, and `server-start' asks first whether to delete its
+  ;; clients (a prompt nobody answers: the lane hung until its timeout)
+  (let* ((own (not (process-live-p server-process)))
+         (server-name (if own (format "nhwl-gui-%d" (emacs-pid)) server-name))
          (client (expand-file-name "emacsclient" invocation-directory))
          (before (frame-list))
          (process-environment (cons "DISPLAY" process-environment))
          new)
-    (server-start)
+    (when own (server-start))
     (unwind-protect
         (progn
           (make-process :name "nhwl-client" :command (list client "-s" server-name "-c" "-n")
@@ -3163,6 +3172,6 @@ re-opened for a scale never resizes the window the compositor sized."
           (should (eq (framep new) 'pgtk))
           (should (eq (frame-terminal new) (frame-terminal (selected-frame)))))
       (when (frame-live-p new) (delete-frame new t))
-      (server-force-delete))))
+      (when own (server-force-delete)))))
 
 (provide 'nhwl-gui-tests)
