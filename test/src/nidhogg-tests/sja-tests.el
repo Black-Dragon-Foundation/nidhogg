@@ -308,7 +308,7 @@ touching only the rows that changed."
         (with-temp-buffer
           ;; no store: the line is not this view's to draw
           (should-not (nidhogg-view-push (sja-tests--rows-line "t-rows" 0 1 "[]")))
-          (nidhogg-view-rows h 'on 1)
+          (nidhogg-view-rows h 'on 1 "c")
           (should (equal (nidhogg-view-push
                           (sja-tests--rows-line
                            "t-rows" 0 1

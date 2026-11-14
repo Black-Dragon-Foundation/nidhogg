@@ -388,11 +388,12 @@ fn set(h: u32, what: &str, value: &Arg) -> Result<Ans, Refused> {
     })
 }
 
-/// A rows line for `view`: the push's answer `(VIEW VERSION DECISION CLASS)` (a model's answer has three elements),
-/// DECISION a `rows::Decision` number; nil when no buffer shows the view or it draws no rows from Sjá; a patch that
-/// does not decode answers `resync` through the store's books.
+/// A rows line for `view`'s display class `class`: the push's answer `(VIEW VERSION DECISION CLASS)` (a model's answer
+/// has three elements), DECISION a `rows::Decision` number; nil when no buffer shows the view in that class from Sjá's
+/// rows (or the line names no class); a patch that does not decode answers `resync` through the class's store's books.
 fn push_rows(
     view: &str,
+    class: Option<&str>,
     patch: Result<crate::rows::Patch, crate::rows::Bad>,
 ) -> Result<Ans, Refused> {
     use crate::rows::Decision as D;
@@ -400,28 +401,40 @@ fn push_rows(
         return Ok(Ans::Nil);
     };
     let now = crate::guard::now_ms();
+    let Some(class) = class else {
+        return Ok(Ans::Nil);
+    };
     let r = on_view(&slot, |v| {
-        let store = v.rows.as_mut()?;
+        let store = v.rows.get_mut(class)?;
         Some(match patch {
             Ok(p) => {
-                let (version, class) = (p.version, p.class.clone());
-                (store.push(p, now), version, class)
+                let version = p.version;
+                (store.push(p, now), version)
             }
-            Err(_) => (store.resync_now(now), 0, String::new()),
+            Err(_) => (store.resync_now(now), 0),
         })
     });
-    let (d, version, class) = match r {
+    let (d, version) = match r {
         Ran::Done(Some(x)) => x,
         Ran::Done(None) => return Ok(Ans::Nil),
-        Ran::Resync => (D::Resync, 0, String::new()),
-        Ran::Broken => (D::Broken, 0, String::new()),
+        Ran::Resync => (D::Resync, 0),
+        Ran::Broken => (D::Broken, 0),
     };
+    let class = class.to_string();
     Ok(Ans::List(vec![
         Ans::Str(view.into()),
         Ans::Int(i64::try_from(version).unwrap_or(i64::MAX)),
         Ans::Int(d as i64),
         Ans::Str(class),
     ]))
+}
+
+/// A run's face as a draw gives it: a face name, or a style id.
+fn face_ans(f: &crate::rows::Face) -> Ans {
+    match f {
+        crate::rows::Face::Named(n) => Ans::Str(n.to_string()),
+        crate::rows::Face::Style(id) => Ans::Int(i64::try_from(*id).unwrap_or(i64::MAX)),
+    }
 }
 
 fn int_of(n: usize) -> Ans {
@@ -434,7 +447,7 @@ fn int_of(n: usize) -> Ans {
 /// id, B the alt), 2 a space (A × B px), 3 a row's height on its newline (A lines of B px).  Positions are characters
 /// from TEXT's start.
 fn edit_ans(store: &crate::rows::Store, e: &crate::rows::Edit) -> Ans {
-    use crate::rows::{Face, PropVal};
+    use crate::rows::PropVal;
     let (mut text, mut runs, mut props, mut display) =
         (String::new(), Vec::new(), Vec::new(), Vec::new());
     let mut at = 0usize;
@@ -445,10 +458,7 @@ fn edit_ans(store: &crate::rows::Store, e: &crate::rows::Edit) -> Ans {
         let p = |x: u32| int_of(at + x as usize);
         for (a, b, f) in &r.runs {
             runs.extend([p(*a), p(*b)]);
-            runs.push(match f {
-                Face::Named(n) => Ans::Str(n.to_string()),
-                Face::Style(id) => Ans::Int(i64::try_from(*id).unwrap_or(i64::MAX)),
-            });
+            runs.push(face_ans(f));
         }
         for (a, b, n, v) in &r.props {
             props.extend([p(*a), p(*b), Ans::Str(n.to_string())]);
@@ -499,24 +509,43 @@ fn edit_ans(store: &crate::rows::Store, e: &crate::rows::Edit) -> Ans {
 
 /// `SJA_ROWS` on handle `h`'s view.
 fn rows(h: u32, what: &str, a: &Arg, b: &Arg) -> Result<Ans, Refused> {
-    use crate::rows::Store;
     let usize_of = |x: &Arg| usize::try_from(x.int()?).map_err(|_| Refused::Arg);
+    let strs =
+        |xs: Vec<Box<str>>| Ans::Vector(xs.into_iter().map(|x| Ans::Str(x.into())).collect());
     match what {
         "on" => {
             let reset = matches!(a, Arg::Int(n) if *n != 0);
+            let class = b.opt_str()?.unwrap_or_default().to_string();
             verb(h, move |v| {
-                v.rows.get_or_insert_with(|| Store::new(reset));
+                v.rows_on(h, &class, reset);
                 Ans::Nil
+            })
+        }
+        "dimruns" => {
+            let dim = u8::try_from(a.int()?).map_err(|_| Refused::Arg)?;
+            let prop = b.str()?.to_string();
+            verb(h, move |v| {
+                v.dim_runs(h, dim, &prop).map_or(Ans::Nil, |(runs, lone)| {
+                    Ans::List(vec![
+                        Ans::Vector(
+                            runs.into_iter()
+                                .flat_map(|(x, y)| [int_of(x), int_of(y)])
+                                .collect(),
+                        ),
+                        strs(lone),
+                    ])
+                })
             })
         }
         "draw" => {
             let region = usize_of(a)?;
             verb(h, move |v| {
-                let Some(s) = v.rows.as_mut() else {
+                let Some(s) = v.store(h) else {
                     return Ans::Nil;
                 };
                 let (id, whole, edits) = s.draw(region);
                 let (styles, images) = s.take_fresh();
+                let (keys, ids) = s.edited(&edits);
                 let edits = edits.iter().map(|e| edit_ans(s, e)).collect();
                 Ans::List(vec![
                     Ans::Int(i64::try_from(id).unwrap_or(i64::MAX)),
@@ -544,6 +573,8 @@ fn rows(h: u32, what: &str, a: &Arg, b: &Arg) -> Result<Ans, Refused> {
                         .map_or(Ans::Nil, |t| Ans::Str(t.to_string())),
                     s.model
                         .map_or(Ans::Nil, |m| Ans::Int(i64::try_from(m).unwrap_or(i64::MAX))),
+                    strs(keys),
+                    strs(ids),
                 ])
             })
         }
@@ -562,10 +593,33 @@ fn rows_small(h: u32, what: &str, a: Option<i64>, b: Option<String>) -> Result<A
     let now = crate::guard::now_ms();
     let what = what.to_string();
     verb(h, move |v| {
-        let Some(s) = v.rows.as_mut() else {
+        let Some(s) = v.store(h) else {
             return Ans::Nil;
         };
         match what.as_str() {
+            "idprop" => {
+                s.idprop = b.as_deref().map(Into::into);
+                Ans::Nil
+            }
+            "spans" => {
+                // B is "PROP\tID": the node's pieces [FROM TO FACES ...], FACES a vector of the runs' faces or nil
+                let Some((prop, id)) = b.as_deref().and_then(|x| x.split_once('\t')) else {
+                    return Ans::Nil;
+                };
+                Ans::Vector(
+                    s.spans(prop, id)
+                        .into_iter()
+                        .flat_map(|(x, y, faces)| {
+                            let faces = if faces.is_empty() {
+                                Ans::Nil
+                            } else {
+                                Ans::Vector(faces.iter().map(face_ans).collect())
+                            };
+                            [int_of(x), int_of(y), faces]
+                        })
+                        .collect(),
+                )
+            }
             "drawn" => Ans::Int(i64::from(
                 a.and_then(|id| u64::try_from(id).ok())
                     .is_some_and(|id| s.drawn(id)),
@@ -747,8 +801,8 @@ fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
             let read = match crate::queue::read_line_typed(line) {
                 Some((e, ops)) => Some((e, Ok(ops))),
                 None => {
-                    if let Some((view, patch)) = crate::rows::read_line(line) {
-                        return push_rows(&view, patch);
+                    if let Some((view, class, patch)) = crate::rows::read_line(line) {
+                        return push_rows(&view, class.as_deref(), patch);
                     }
                     crate::queue::read_line_value(line)
                 }

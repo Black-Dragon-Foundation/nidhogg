@@ -120,7 +120,7 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status (0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken), the stream's newest version or nil |
 | `SJA_NAMED` | view, version | nil: a row patch named that model version |
 | `SJA_DUE` | view | as `SJA_DRAIN` (all), when the oldest queued model is one no row patch named; else nil |
-| `SJA_ROWS` | handle, verb, int or nil, string or nil | the view's row store: `on`, `draw` (the edits, see Rows), `drawn`, `epoch`, `place`, `pos`, `span`, `prop`, `pause`, `redraw`, `refresh`, `forget`, `state` (`nidhogg-view-rows` says each) |
+| `SJA_ROWS` | handle, verb, int or nil, string or nil | the view's row store: `on`, `idprop`, `draw` (the edits, see Rows), `drawn`, `epoch`, `place`, `pos`, `span`, `prop`, `spans`, `dimruns`, `pause`, `redraw`, `refresh`, `forget`, `state` (`nidhogg-view-rows` says each) |
 | `SJA_BAR` | a bar's spec (a line of integers: the room, the pads, the separators, the ellipsis and each segment's drop rank and width, the cuttable one's character widths) | `(LEFT RIGHT CUT RIGHT-WIDTH)`: the segments that fit and where the cuttable one is cut (`bar.rs`, `nidhogg-view-bar`); a version 2 spec ends with a centred segment (its width, gap and the room assumed on the right) and the answer with `(KEPT BEFORE AFTER)`, its gaps (a title row's search box); no view, no state |
 | `SJA_PICK` | `"load"` and a list's text (a `KIND RECENT LABEL` line per candidate); `"top"`, handle, input, N; `"close"`, handle | a local list (`pick.rs`, `nidhogg-view-pick`, the palette): `load` answers a handle (at most 16 kept, the oldest goes), `top` the indices of the first N candidates for the input (filtered, scored, sorted, grouped here), `close` nil |
 
@@ -152,8 +152,10 @@ hub's diff, or one before any reset, is dropped; so is an old reset; a patch of 
 a diff of an older base is dropped, of a newer one (a gap) or naming an image or style the store lacks, it asks for a
 resync. A resync is asked once while outstanding, with a back-off of 1 s then 4 s; three within 10 s break the store.
 A paused store keeps up to 256 patches and applies them on resume (past that, a resync). The patches come on the
-hub's `view-model` line, the patch whole under `data.rows`, through `SJA_PUSH`; an instance gives its view a store with
-`SJA_ROWS on`, and the store's verbs are `SJA_ROWS`'s (`nidhogg-view-rows` in Lisp).
+hub's `view-model` line, the patch whole under `data.rows`, through `SJA_PUSH`; an instance draws a display class's
+store with `SJA_ROWS on` (a view's twins in two classes, a wide and a narrow window, draw two stores; a patch goes to
+its `class`'s, and a store goes with the last instance that draws it), and the store's verbs are `SJA_ROWS`'s
+(`nidhogg-view-rows` in Lisp).
 
 **The draw.** The store keeps the drawn state (each drawn row's key, length in characters and content hash). `draw`
 answers the edits, in buffer order, that turn the region into the rows: an offset (characters from the region's
@@ -162,6 +164,13 @@ are untouched; a reorder redraws the rows that moved. The new drawn state is pen
 batch (`drawn`). A batch never confirmed (a quit, a panic) rolls back: the next draw erases the region and draws it
 whole, as does a region whose length is not the drawn state's. `place POS` and `pos KEY OFF` turn a window's start and
 point into a row and an offset and back, so windows keep their place across a draw.
+
+**Where a node is drawn.** With `idprop` naming the property that holds a row's node ids, a draw also answers the rows
+its edits draw and the nodes in them. `spans PROP\tID` answers a node's pieces in the drawn rows (its ranges of PROP,
+cut where the runs over them change, each with those runs' faces: the editor leaves a boxed chip's face alone), and
+`dimruns DIM PROP` the dim runs (consecutive drawn rows whose every node has class DIM, decided with one class context)
+and the dim nodes of the other rows, so a class step puts overlays and never sweeps the buffer. A row replaced but not
+drawn yet answers nothing until it is drawn.
 
 Caps: 200,000 rows, 64 KiB of text and 4,096 runs a row, 256 images (the ones no row names are evicted first), 64 held
 patches.

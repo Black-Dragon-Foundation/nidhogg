@@ -70,6 +70,8 @@ pub struct Inst {
     pub forward: VecDeque<Id>,
     /// The last move was a step (an arrow, a walk, type-to-navigate): the next step continues its run.
     stepping: bool,
+    /// The display class whose row store this instance draws (`rows on`).
+    pub rows_class: Option<Box<str>>,
 }
 
 /// What a move is to the history: a jump (a link that is no direction, a select) is one move; a run of steps (the
@@ -102,8 +104,9 @@ pub struct View {
     pub insts: BTreeMap<u32, Inst>,
     /// The models the hub sent that the draw has not applied yet (`queue`).
     pub queue: Queue,
-    /// The view's rows, when the editor draws them from Sjá (`rows on`).
-    pub rows: Option<crate::rows::Store>,
+    /// The view's rows by display class, when the editor draws them from Sjá (`rows on`): twins of a view in two
+    /// classes draw different rows.  A store goes with the last instance that draws it.
+    pub rows: HashMap<Box<str>, crate::rows::Store>,
 }
 
 impl View {
@@ -129,18 +132,55 @@ impl View {
                 back: VecDeque::new(),
                 forward: VecDeque::new(),
                 stepping: false,
+                rows_class: None,
             },
         );
     }
 
     /// Drop instance `h`; true when no instance is left (the view can go).
     pub fn close(&mut self, h: u32) -> bool {
-        if let Some(i) = self.insts.remove(&h)
-            && !self.insts.values().any(|o| o.sel == i.sel)
-        {
-            self.sels.remove(&i.sel);
+        if let Some(i) = self.insts.remove(&h) {
+            if !self.insts.values().any(|o| o.sel == i.sel) {
+                self.sels.remove(&i.sel);
+            }
+            if let Some(c) = i.rows_class {
+                self.drop_unused_store(&c);
+            }
         }
         self.insts.is_empty()
+    }
+
+    /// Instance `h` draws class `class`'s rows: the store is made when it has none (`epoch_reset`: it starts at an env
+    /// epoch reset); a class it drew before, that no other instance draws, goes.
+    pub fn rows_on(&mut self, h: u32, class: &str, epoch_reset: bool) {
+        let Some(i) = self.insts.get_mut(&h) else {
+            return;
+        };
+        let was = i.rows_class.replace(class.into());
+        self.rows
+            .entry(class.into())
+            .or_insert_with(|| crate::rows::Store::new(epoch_reset));
+        if let Some(c) = was
+            && &*c != class
+        {
+            self.drop_unused_store(&c);
+        }
+    }
+
+    fn drop_unused_store(&mut self, class: &str) {
+        if !self
+            .insts
+            .values()
+            .any(|o| o.rows_class.as_deref() == Some(class))
+        {
+            self.rows.remove(class);
+        }
+    }
+
+    /// The row store instance `h` draws, if it draws one.
+    pub fn store(&mut self, h: u32) -> Option<&mut crate::rows::Store> {
+        let c = self.insts.get(&h)?.rows_class.as_deref()?;
+        self.rows.get_mut(c)
     }
 
     pub fn inst(&self, h: u32) -> Option<&Inst> {
@@ -216,7 +256,7 @@ impl View {
     pub fn hub_lost(&mut self) {
         self.stale = true;
         self.queue.lose();
-        if let Some(r) = &mut self.rows {
+        for r in self.rows.values_mut() {
             r.forget();
         }
     }

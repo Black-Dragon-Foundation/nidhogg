@@ -415,8 +415,9 @@ pub fn patch(v: &Value) -> Result<Patch, Bad> {
 pub type Fresh = (Vec<(u64, Box<str>)>, Vec<(Box<str>, Box<str>)>);
 
 /// Read a rows line: `{"event": "view-model", "data": {"view": V, "rows": PATCH}}` (the hub's `view-patch` data, sent
-/// on the model's raw path so Lisp never parses it).  `None` when the line is not one.
-pub fn read_line(line: &str) -> Option<(String, Result<Patch, Bad>)> {
+/// on the model's raw path so Lisp never parses it): the view, the patch's display class (read apart, so a patch that
+/// does not decode still reaches its class's store) and the patch.  `None` when the line is not one.
+pub fn read_line(line: &str) -> Option<(String, Option<String>, Result<Patch, Bad>)> {
     let v: Value = serde_json::from_str(line).ok()?;
     if v.get("event")?.as_str()? != "view-model" {
         return None;
@@ -424,8 +425,58 @@ pub fn read_line(line: &str) -> Option<(String, Result<Patch, Bad>)> {
     let d = v.get("data")?;
     let rows = d.get("rows")?;
     let view = d.get("view")?.as_str()?.to_string();
-    Some((view, patch(rows)))
+    let class = rows
+        .get("class")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some((view, class, patch(rows)))
 }
+
+/// A row's distinct values of property `prop`, in order: the node ids it draws.  An integer value is its decimal text.
+fn prop_ids<'a>(r: &'a Row, prop: &str) -> Vec<std::borrow::Cow<'a, str>> {
+    let mut out: Vec<std::borrow::Cow<'a, str>> = Vec::new();
+    for (_, _, n, v) in &r.props {
+        if &**n != prop {
+            continue;
+        }
+        let id = match v {
+            PropVal::Str(s) => std::borrow::Cow::Borrowed(&**s),
+            PropVal::Int(i) => std::borrow::Cow::Owned(i.to_string()),
+            PropVal::Json(_) => continue,
+        };
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// Whether property value `v` is node id `id`.
+fn is_id(v: &PropVal, id: &str) -> bool {
+    match v {
+        PropVal::Str(s) => &**s == id,
+        PropVal::Int(i) => i.to_string() == id,
+        PropVal::Json(_) => false,
+    }
+}
+
+/// The drawn rows by the node ids one property gives, and each drawn row's start: built when asked, dropped when the
+/// drawn state changes.
+#[derive(Debug)]
+struct Index {
+    prop: Box<str>,
+    ids: HashMap<Box<str>, Vec<usize>>,
+    starts: Vec<usize>,
+}
+
+/// A node's piece in the drawn rows: from, to (characters from the region's start) and the faces of the runs over it.
+pub type Piece = (usize, usize, Vec<Face>);
+
+/// Each drawn row's index by key, and each one's start (`Store::at`).
+type Starts = (HashMap<Box<str>, usize>, Vec<usize>);
+
+/// The dim runs (from, to) of the drawn rows and the lone dim nodes (`Store::dim_runs`).
+pub type DimRuns = (Vec<(usize, usize)>, Vec<Box<str>>);
 
 /// One edit of a draw: at `offset` (characters from the region's start, the buffer as it stands then), `delete`
 /// characters go and `rows` are inserted, their texts joined (each with its newline).
@@ -474,6 +525,10 @@ pub struct Store {
     batch: u64,
     /// Set by `redraw`: the next draw redraws every row (properties resolved again).
     redraw_all: bool,
+    /// The property that holds a row's node ids (`idprop`): a draw answers the ids its edits draw.
+    pub idprop: Option<Box<str>>,
+    index: Option<Index>,
+    at: Option<Starts>,
 }
 
 impl Store {
@@ -741,6 +796,8 @@ impl Store {
         let whole = rolled_back || self.redraw_all || region != self.drawn_chars();
         if whole {
             self.drawn.clear();
+            self.index = None;
+            self.at = None;
             self.redraw_all = false;
         }
         let want: Vec<Drawn> = self
@@ -828,6 +885,8 @@ impl Store {
         match self.pending.take() {
             Some((b, want)) if b == id => {
                 self.drawn = want;
+                self.index = None;
+                self.at = None;
                 true
             }
             other => {
@@ -843,39 +902,164 @@ impl Store {
     }
 
     /// Where `pos` (characters from the region's start) is in the drawn rows: the row's key and the offset in it.
-    pub fn place(&self, pos: usize) -> Option<(&str, usize)> {
-        let mut at = 0;
-        for d in &self.drawn {
-            if pos < at + d.chars {
-                return Some((&d.key, pos - at));
-            }
-            at += d.chars;
-        }
-        self.drawn.last().map(|d| (&*d.key, d.chars))
+    pub fn place(&mut self, pos: usize) -> Option<(&str, usize)> {
+        let (j, s) = {
+            let starts = &self.at().1;
+            let j = starts.partition_point(|s| *s <= pos).checked_sub(1)?;
+            (j, starts[j])
+        };
+        let d = &self.drawn[j];
+        Some((&d.key, (pos - s).min(d.chars)))
+    }
+
+    /// Each drawn row's index by key, and its start: built when asked, dropped when the drawn state changes (a key's
+    /// lookup never walks the rows).
+    fn at(&mut self) -> &Starts {
+        self.at.get_or_insert_with(|| {
+            let mut s = 0;
+            let starts = self
+                .drawn
+                .iter()
+                .map(|d| {
+                    s += d.chars;
+                    s - d.chars
+                })
+                .collect();
+            let keys = self
+                .drawn
+                .iter()
+                .enumerate()
+                .map(|(j, d)| (d.key.clone(), j))
+                .collect();
+            (keys, starts)
+        })
     }
 
     /// The position of `key` plus `off` (clamped to the row) in the drawn rows; `None` when the row is not drawn.
-    pub fn pos(&self, key: &str, off: usize) -> Option<usize> {
-        let mut at = 0;
-        for d in &self.drawn {
-            if &*d.key == key {
-                return Some(at + off.min(d.chars.saturating_sub(1)));
-            }
-            at += d.chars;
-        }
-        None
+    pub fn pos(&mut self, key: &str, off: usize) -> Option<usize> {
+        let (at, n) = self.row_span(key)?;
+        Some(at + off.min(n.saturating_sub(1)))
     }
 
     /// The drawn row's start, and its length in characters.
-    pub fn row_span(&self, key: &str) -> Option<(usize, usize)> {
-        let mut at = 0;
-        for d in &self.drawn {
-            if &*d.key == key {
-                return Some((at, d.chars));
+    pub fn row_span(&mut self, key: &str) -> Option<(usize, usize)> {
+        let (keys, starts) = self.at();
+        let j = *keys.get(key)?;
+        let at = starts[j];
+        Some((at, self.drawn[j].chars))
+    }
+
+    /// The rows a draw's `edits` draw, and the distinct node ids (`idprop`) in them, in order.
+    pub fn edited(&self, edits: &[Edit]) -> (Vec<Box<str>>, Vec<Box<str>>) {
+        let keys: Vec<Box<str>> = edits.iter().flat_map(|e| e.rows.iter().cloned()).collect();
+        let mut ids: Vec<Box<str>> = Vec::new();
+        if let Some(prop) = &self.idprop {
+            let mut seen: HashSet<Box<str>> = HashSet::new();
+            for r in keys.iter().filter_map(|k| self.rows.get(k)) {
+                for id in prop_ids(r, prop) {
+                    if !seen.contains(&*id) {
+                        seen.insert(id.as_ref().into());
+                        ids.push(id.as_ref().into());
+                    }
+                }
             }
-            at += d.chars;
         }
-        None
+        (keys, ids)
+    }
+
+    /// The drawn row `j`'s row as it was drawn: `None` when the store holds a newer one (the next draw draws it).
+    fn drawn_row(&self, j: usize) -> Option<&Row> {
+        let d = &self.drawn[j];
+        self.rows.get(&d.key).filter(|r| r.hash == d.hash)
+    }
+
+    fn index(&mut self, prop: &str) -> &Index {
+        if self.index.as_ref().is_none_or(|i| &*i.prop != prop) {
+            let mut ids: HashMap<Box<str>, Vec<usize>> = HashMap::new();
+            let mut starts = Vec::new();
+            let mut at = 0;
+            for j in 0..self.drawn.len() {
+                starts.push(at);
+                at += self.drawn[j].chars;
+                if let Some(r) = self.drawn_row(j) {
+                    for id in prop_ids(r, prop) {
+                        ids.entry(id.as_ref().into()).or_default().push(j);
+                    }
+                }
+            }
+            self.index = Some(Index {
+                prop: prop.into(),
+                ids,
+                starts,
+            });
+        }
+        self.index.as_ref().expect("built above")
+    }
+
+    /// Node `id`'s pieces in the drawn rows, by property `prop`: its ranges cut where the runs over them change, each
+    /// with those runs' faces, in buffer order.
+    pub fn spans(&mut self, prop: &str, id: &str) -> Vec<Piece> {
+        let (js, starts) = {
+            let ix = self.index(prop);
+            (
+                ix.ids.get(id).cloned().unwrap_or_default(),
+                ix.starts.clone(),
+            )
+        };
+        let mut out = Vec::new();
+        for j in js {
+            let Some(r) = self.drawn_row(j) else { continue };
+            let at = starts[j];
+            for (a, b, _, _) in r.props.iter().filter(|p| &*p.2 == prop && is_id(&p.3, id)) {
+                let mut cuts = vec![*a, *b];
+                for (x, y, _) in &r.runs {
+                    cuts.extend([*x, *y].into_iter().filter(|c| a < c && c < b));
+                }
+                cuts.sort_unstable();
+                cuts.dedup();
+                for w in cuts.windows(2) {
+                    let faces = r
+                        .runs
+                        .iter()
+                        .filter(|(x, y, _)| *x <= w[0] && w[1] <= *y)
+                        .map(|(_, _, f)| f.clone())
+                        .collect();
+                    out.push((at + w[0] as usize, at + w[1] as usize, faces));
+                }
+            }
+        }
+        out
+    }
+
+    /// The dim runs of the drawn rows: consecutive rows whose every node (by `prop`) `dim` says is dim, as (from, to)
+    /// characters from the region's start; and the dim nodes of the other rows, in order.
+    pub fn dim_runs(&self, prop: &str, mut dim: impl FnMut(&str) -> bool) -> DimRuns {
+        let (mut runs, mut lone): DimRuns = Default::default();
+        let mut seen: HashSet<Box<str>> = HashSet::new();
+        let mut at = 0;
+        for j in 0..self.drawn.len() {
+            let chars = self.drawn[j].chars;
+            let ids = self
+                .drawn_row(j)
+                .map(|r| prop_ids(r, prop))
+                .unwrap_or_default();
+            let flags: Vec<bool> = ids.iter().map(|id| dim(id)).collect();
+            if !ids.is_empty() && flags.iter().all(|f| *f) {
+                match runs.last_mut() {
+                    Some((_, to)) if *to == at => *to = at + chars,
+                    _ => runs.push((at, at + chars)),
+                }
+            } else {
+                for (id, f) in ids.iter().zip(&flags) {
+                    if *f && !seen.contains(&**id) {
+                        seen.insert(id.as_ref().into());
+                        lone.push(id.as_ref().into());
+                    }
+                }
+            }
+            at += chars;
+        }
+        (runs, lone)
     }
 }
 
@@ -1223,5 +1407,40 @@ mod tests {
                 assert!(resynced || buf == "3\n", "order {o:?} drew {buf:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_drawn_rows_answer_their_nodes_pieces_and_dim_runs() {
+        let mut s = Store::new(true);
+        s.idprop = Some("id".into());
+        let row = |key: &str, text: &str, runs: Value, props: Value| json!({"key": key, "text": text, "runs": runs, "props": props});
+        let ops = json!([{"reset": [
+            row("a", "ab cd", json!([[0, 1, "chip"]]), json!([[0, 2, "id", "n1"], [3, 5, "id", "n2"]])),
+            row("b", "ef", json!([]), json!([[0, 2, "id", "n2"]])),
+            row("c", "gh", json!([]), json!([[0, 2, "id", 3]])),
+            r("d", "zz")]}]);
+        assert_eq!(s.push(p(7, 0, 1, ops), 0), Decision::Apply);
+        // nothing drawn yet: no pieces
+        assert!(s.spans("id", "n1").is_empty());
+        let (id, _, edits) = s.draw(0);
+        let (keys, ids) = s.edited(&edits);
+        assert_eq!(keys, ["a", "b", "c", "d"].map(Box::<str>::from));
+        assert_eq!(ids, ["n1", "n2", "3"].map(Box::<str>::from));
+        assert!(s.drawn(id));
+        assert_eq!(
+            s.spans("id", "n1"),
+            vec![(0, 1, vec![Face::Named("chip".into())]), (1, 2, vec![])]
+        );
+        assert_eq!(s.spans("id", "n2"), vec![(3, 5, vec![]), (6, 8, vec![])]);
+        // n2 and 3 dim: b and c make one run; a's n2 is lone; d draws no node
+        let (runs, lone) = s.dim_runs("id", |id| id == "n2" || id == "3");
+        assert_eq!(runs, vec![(6, 12)]);
+        assert_eq!(lone, vec![Box::<str>::from("n2")]);
+        // a row replaced but not drawn yet answers nothing until it is
+        assert_eq!(
+            s.push(p(7, 1, 2, json!([{"replace": [r("b", "EF")]}])), 0),
+            Decision::Apply
+        );
+        assert_eq!(s.spans("id", "n2"), vec![(3, 5, vec![])]);
     }
 }
