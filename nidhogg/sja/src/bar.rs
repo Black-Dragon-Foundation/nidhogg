@@ -7,6 +7,8 @@
 //! The fit, in order: the segments of the drop order go, first ranked first, while the bar is too wide; then the
 //! cuttable segment is cut, but not below the spec's minimum; then the others go, the right run's last first, then the
 //! left run's last (the cuttable one never); last the cuttable segment is cut as far as it takes (to one space).
+//! A centred segment (a title row's search box) is placed after the fit, between the runs, or left out when its gaps
+//! would touch them.
 
 /// One segment as the editor measured it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +46,26 @@ pub struct Spec {
     pub columns: bool,
     pub left: Vec<Seg>,
     pub right: Vec<Seg>,
+    /// A segment centred between the runs (a title row's search box), placed after the fit.
+    pub center: Option<Center>,
+}
+
+/// A centred segment: its width, the least gap either side of it, and the right run's width the centring assumes
+/// (`room`: a row keeps the same centre whether its right-hand chips show or not).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Center {
+    pub width: i64,
+    pub gap: i64,
+    pub room: i64,
+}
+
+/// Where the centred segment went: kept, with the gaps before and after it; or gone, `before` the one gap that fills
+/// the row between the runs and `after` 0.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    pub kept: bool,
+    pub before: i64,
+    pub after: i64,
 }
 
 /// Where the cuttable segment is cut: its first `keep` characters, then the ellipsis when `ellipsis`; `width` is its
@@ -63,19 +85,23 @@ pub struct Fit {
     pub right: Vec<usize>,
     pub cut: Option<Cutting>,
     pub right_width: i64,
+    /// The centred segment's place, when the spec has one.
+    pub center: Option<Placed>,
 }
 
-/// The spec's version, the first integer of its line.
+/// The spec's version, the first integer of its line; [`VERSION_CENTER`] for a spec with a centred segment.
 pub const VERSION: i64 = 1;
+pub const VERSION_CENTER: i64 = 2;
 
 impl Spec {
     /// Read a spec line: `1 WIDTH PAD SPACE LSEP RSEP ELLIPSIS CUT-MIN COLUMNS NLEFT NRIGHT`, then each segment, left
-    /// ones first: `DROP WIDTH CUT` (DROP -1: none), and when CUT is 1 `EXTRA N` and N character widths.  `None` when it
-    /// is not one.
+    /// ones first: `DROP WIDTH CUT` (DROP -1: none), and when CUT is 1 `EXTRA N` and N character widths.  Version 2
+    /// ends with the centred segment: `WIDTH GAP ROOM`.  `None` when it is not one.
     pub fn read(line: &str) -> Option<Spec> {
         let mut it = line.split_ascii_whitespace().map(|t| t.parse::<i64>().ok());
         let mut next = || it.next().flatten();
-        if next()? != VERSION {
+        let version = next()?;
+        if version != VERSION && version != VERSION_CENTER {
             return None;
         }
         let (width, pad, space, left_sep, right_sep, ellipsis, cut_min) = (
@@ -112,6 +138,15 @@ impl Spec {
         };
         let left = (0..nl).map(|_| seg()).collect::<Option<Vec<_>>>()?;
         let right = (0..nr).map(|_| seg()).collect::<Option<Vec<_>>>()?;
+        let center = if version == VERSION_CENTER {
+            Some(Center {
+                width: next()?,
+                gap: next()?,
+                room: next()?,
+            })
+        } else {
+            None
+        };
         if next().is_some() {
             return None;
         }
@@ -126,6 +161,7 @@ impl Spec {
             columns,
             left,
             right,
+            center,
         })
     }
 }
@@ -242,11 +278,35 @@ pub fn fit(spec: &Spec) -> Fit {
             total,
         );
     }
+    let (left_width, right_width) = (left.width(spec.left_sep), right.width(spec.right_sep));
     Fit {
         left: left.kept(),
         right: right.kept(),
-        right_width: right.width(spec.right_sep),
+        right_width,
         cut: cutting.filter(|c| !left.gone[c.index]),
+        center: spec
+            .center
+            .as_ref()
+            .map(|c| place(spec.width, left_width, right_width, c)),
+    }
+}
+
+/// Centre C between a left run LEFT wide and the room its spec assumes on the right, in WIDTH; it stays only with its
+/// gap clear of both runs (RIGHT, the right run as it is).
+fn place(width: i64, left: i64, right: i64, c: &Center) -> Placed {
+    let start = left + c.gap + (width - left - c.gap - c.width - c.gap - c.room) / 2;
+    if start >= left + c.gap && start + c.width + c.gap + right <= width {
+        Placed {
+            kept: true,
+            before: start - left,
+            after: width - start - c.width - right,
+        }
+    } else {
+        Placed {
+            kept: false,
+            before: width - left - right,
+            after: 0,
+        }
     }
 }
 

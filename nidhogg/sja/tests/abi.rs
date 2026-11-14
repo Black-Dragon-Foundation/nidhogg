@@ -490,4 +490,16 @@ fn a_bar_is_laid_out_through_the_c_door() {
         Some(SJA_E_ARG),
         "not a spec"
     );
+    // a title row: the search box centred, gaps 175 and 235
+    let row = "2 800 0 0 0 0 0 0 0 2 1  -1 60 0  -1 40 0  -1 90 0  200 10 150";
+    assert_eq!(
+        ok(SJA_BAR, &[text(row)]),
+        Ans::List(vec![
+            Ans::List(vec![i(0), i(1)]),
+            Ans::List(vec![i(0)]),
+            Ans::Nil,
+            i(90),
+            Ans::List(vec![i(1), i(175), i(235)]),
+        ])
+    );
 }

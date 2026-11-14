@@ -43,7 +43,8 @@ pub const SJA_DUE: i32 = 14;
 /// A view's rows (`rows.rs`): `(h WHAT ARGS…)`, WHAT `on`, `epoch`, `draw`, `drawn`, `place`, `pos`, `span`, `prop`,
 /// `pause`, `redraw`, `refresh`, `state`.
 pub const SJA_ROWS: i32 = 15;
-/// A bar's layout (`bar.rs`): `(SPEC)` → `(LEFT RIGHT CUT RIGHT-WIDTH)`, CUT nil or `(INDEX KEEP ELLIPSIS WIDTH)`.
+/// A bar's layout (`bar.rs`): `(SPEC)` → `(LEFT RIGHT CUT RIGHT-WIDTH)`, CUT nil or `(INDEX KEEP ELLIPSIS WIDTH)`;
+/// a version 2 spec (a centred segment) adds `(KEPT BEFORE AFTER)`.
 pub const SJA_BAR: i32 = 16;
 /// A local list (`pick.rs`): `("load" TEXT)` → handle, `("top" H INPUT N)` → indices, `("close" H)`.
 pub const SJA_PICK: i32 = 17;
@@ -231,9 +232,9 @@ fn ran(r: Ran<Ans>, on_resync: Ans, on_broken: Ans) -> Ans {
     }
 }
 
-/// `SJA_BAR`'s answer: `(LEFT RIGHT CUT RIGHT-WIDTH)`.
+/// `SJA_BAR`'s answer: `(LEFT RIGHT CUT RIGHT-WIDTH)`, then `(KEPT BEFORE AFTER)` for a spec with a centre.
 fn bar_ans(f: &crate::bar::Fit) -> Ans {
-    Ans::List(vec![
+    let mut ans = vec![
         Ans::ints(&f.left),
         Ans::ints(&f.right),
         f.cut.as_ref().map_or(Ans::Nil, |c| {
@@ -245,7 +246,15 @@ fn bar_ans(f: &crate::bar::Fit) -> Ans {
             ])
         }),
         Ans::Int(f.right_width),
-    ])
+    ];
+    if let Some(c) = &f.center {
+        ans.push(Ans::List(vec![
+            Ans::Int(i64::from(c.kept)),
+            Ans::Int(c.before),
+            Ans::Int(c.after),
+        ]));
+    }
+    Ans::List(ans)
 }
 
 /// Run a verb on handle `h`'s view.
