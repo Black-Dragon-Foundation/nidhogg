@@ -611,6 +611,7 @@ impl MacShell {
             }),
             // whether this process may post events through the window server (`CGPreflightPostEventAccess`)
             "test-post-access" => Ok(lisp_bool(inject::post_access())),
+            "test-posted" => Ok(inject::posted_pending().to_string()),
             // "(W)": whether the application is active and W key, who is frontmost, the AX grant
             "test-app-state" => first_number(arg).and_then(|w| Ok(inject::app_state(&self.app, self.win(w)?))),
             // "(W)": activate through Accessibility, then W key and front; the AX error

@@ -29,9 +29,12 @@
   (plist-get (nhmac-stats) :stretched-frames))
 
 (defun nhmac-resize--answered (&optional secs)
-  "Wait (SECS at most, default 1) until the host has answered the resize waiting for it (`:pending' nil); the state."
+  "Wait (SECS at most, default 1) until the pump has sent every posted mouse event (`test-posted' 0) and the host has
+answered the resize waiting for it (`:pending' nil); the state."
   (let (st)
-    (nhmac-gui--until (lambda () (not (plist-get (setq st (nhmac-resize--state)) :pending))) (or secs 1))
+    (nhmac-gui--until (lambda () (and (eql (nhmac--query 'test-posted) 0)
+                                      (not (plist-get (setq st (nhmac-resize--state)) :pending))))
+                      (or secs 1))
     st))
 
 (defun nhmac-resize--settle ()
