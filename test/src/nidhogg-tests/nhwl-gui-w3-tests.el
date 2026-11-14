@@ -1,6 +1,7 @@
 ;;; nhwl-gui-w3-tests.el --- GUI rows for the native shell's presenter  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, loaded first: its helpers are used here).  Rows
 ;; that drive the compositor need `--compositor recorder'; rows named `nhwl-gui/live-*' run on real compositors and

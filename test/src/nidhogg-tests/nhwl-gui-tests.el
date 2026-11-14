@@ -1,6 +1,7 @@
 ;;; nhwl-gui-tests.el --- GUI rows for Nidhogg's own Wayland shell  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh in a build made with --with-nidhogg-wayland.  The rows that drive or read the compositor
 ;; need `--compositor recorder' ($GLITNIR_GUI_RECORDER, the recorder's control socket); the others run on any
@@ -367,7 +368,7 @@ The call says why the span is the point."
             (let* ((second (nhwl-gui--second-recorder)) (f nil))
               (unwind-protect
                   (progn
-                    (should (process-live-p (car second)))
+                    (should (eq (process-status (car second)) 'run))
                     (setq f (make-frame-on-display "nhwl-second"))
                     (should (frame-live-p f))
                     (should (equal (terminal-name (frame-terminal f)) "nhwl-second"))
@@ -3165,7 +3166,7 @@ kwin_wayland, and either may still hold it."
   ;; under --daemon the daemon's own server runs, and its client holds the frame the rows run in: the client asks
   ;; that server.  A server of the row's own would replace it, and `server-start' asks first whether to delete its
   ;; clients (a prompt nobody answers: the lane hung until its timeout)
-  (let* ((own (not (process-live-p server-process)))
+  (let* ((own (not (and (processp server-process) (eq (process-status server-process) 'listen))))
          (server-name (if own (format "nhwl-gui-%d" (emacs-pid)) server-name))
          (client (expand-file-name "emacsclient" invocation-directory))
          (before (frame-list))

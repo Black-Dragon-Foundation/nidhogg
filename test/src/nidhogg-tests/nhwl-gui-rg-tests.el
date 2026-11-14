@@ -1,6 +1,7 @@
 ;;; nhwl-gui-rg-tests.el --- GUI rows for the native shell's glue in Rust  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, whose helpers are used here).  The runner's default
 ;; file pattern (`-gui-tests.el') does not match this file's name: load it with `--files 'nhwl-gui*-tests.el''.  Each
@@ -77,24 +78,26 @@
       (insert (format "%S\n"
                       `(progn
                          (defvar nh-quits 0)
+                         ;; what it says, written after each command and each quit: the parent waits on it
+                         (defun nh-status ()
+                           (with-temp-file ,status
+                             (prin1 (list :pid (emacs-pid) :quits nh-quits
+                                          :panics (length (nhwl-glue-panics))
+                                          :typed (with-current-buffer "typed" (buffer-string)))
+                                    (current-buffer))))
                          (setq command-error-function
                                (lambda (data context caller)
                                  (when (eq (car-safe data) 'quit)
                                    (setq nh-quits (1+ nh-quits)))
-                                 (command-error-default-function data context caller)))
+                                 (command-error-default-function data context caller)
+                                 (nh-status)))
                          ;; the shell frame is selected, so a SIGINT is a quit, not the tty's emergency escape
                          (let ((f (make-frame-on-display (getenv "WAYLAND_DISPLAY"))))
                            (select-frame-set-input-focus f)
                            (with-selected-frame f
                              (switch-to-buffer (get-buffer-create "typed"))))
-                         (run-with-timer
-                          0.1 0.1
-                          (lambda ()
-                            (with-temp-file ,status
-                              (prin1 (list :pid (emacs-pid) :quits nh-quits
-                                           :panics (length (nhwl-glue-panics))
-                                           :typed (with-current-buffer "typed" (buffer-string)))
-                                     (current-buffer)))))))))
+                         (add-hook 'post-command-hook #'nh-status)
+                         (nh-status)))))
     (unwind-protect
         (let (st pid)
           (setq proc (make-process :name "nhwl-rg-sigint" :connection-type 'pty :noquery t
@@ -119,7 +122,7 @@
                                     (setq st (nhwl-gui--read-status status))
                                     (> (plist-get st :quits) 0))
                                   10))
-          (should (process-live-p proc))
+          (should (eq (process-status proc) 'run))
           (should (= (plist-get st :panics) 0))
           ;; the frame still takes input: 10 keys typed afterwards arrive
           (dolist (k (split-string "0123456789" "" t))
@@ -130,8 +133,7 @@
                      (string-suffix-p "0123456789" (or (plist-get st :typed) "")))
                    5))
           (should (= (plist-get (nhwl-gui--read-status status) :panics) 0)))
-      (when (process-live-p proc)
-        (delete-process proc))
+      (delete-process proc)
       (delete-directory dir t))))
 
 ;; A C-g inside a burst of keys quits once; the keys before it arrive in order.  The keys after it that the same drain
