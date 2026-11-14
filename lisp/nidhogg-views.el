@@ -36,7 +36,7 @@
   (defconst nidhogg-view--ops
     '((open . 2) (close . 3) (follow . 4) (walk . 5) (walk-to . 6)
       (set . 7) (get . 8) (hub-lost . 9) (stats . 10) (push . 11) (drain . 12)
-      (named . 13) (due . 14) (rows . 15) (test-panic . 99))
+      (named . 13) (due . 14) (rows . 15) (bar . 16) (pick . 17) (test-panic . 99))
     "Sjá's op numbers (nidhogg/sja/include/sja.h)."))
 
 (defvar nidhogg-view-more nil
@@ -187,6 +187,35 @@ WHAT is
   `forget' (drop the rows; the next reset starts again);
 - `state': (HUB VERSION RESYNC HELD BROKEN ROWS RESYNCS)."
   (nidhogg-view--call (nidhogg-view--op rows) h (symbol-name what) a b))
+
+(defsubst nidhogg-view-bar (spec)
+  "A bar's layout: which of its segments fit, and where its one cuttable
+segment is cut.  SPEC is a string of integers: 1 WIDTH PAD SPACE LSEP
+RSEP ELLIPSIS CUT-MIN COLUMNS NLEFT NRIGHT, then each segment, the left
+ones first, as DROP WIDTH CUT (DROP its rank in the drop order, lowest
+first, or -1; CUT 1 for the cuttable one, then EXTRA, the room either
+side of its text that stays, N and its N characters' widths).  COLUMNS
+1: a terminal's bar, whose ellipsis is left out when wider than the
+room.  The answer is (LEFT RIGHT CUT RIGHT-WIDTH): the indices of the
+segments kept on each side, CUT nil or (INDEX KEEP ELLIPSIS WIDTH) (the
+cuttable segment's first KEEP characters, then the ellipsis when
+ELLIPSIS is 1), and the right run's width.  A SPEC that starts with 2
+ends with a centred segment, WIDTH GAP ROOM (its width, the least gap
+either side, the right run's width the centring assumes); the answer
+then ends with (KEPT BEFORE AFTER): KEPT 1 with the gaps before and
+after it, or 0 with BEFORE the one gap between the runs."
+  (nidhogg-view--call (nidhogg-view--op bar) spec))
+
+(defsubst nidhogg-view-pick (what &optional a b c)
+  "A local list, loaded once and picked from per key (the command palette).
+WHAT is `load', `top' or `close'.  `load': A is the list's text, a line
+per candidate, KIND RECENT LABEL tab separated (KIND 0 a command, 1 a
+file; RECENT its place in the recent runs, 0 the newest, or -1); the
+answer is a handle.  `top': A the handle, B the input, C how many; the
+answer is the indices of the first C candidates whose label holds every
+word of B, best first, in the groups Commands, Files, Agents.  `close':
+A the handle.  At most 16 lists are kept; the oldest goes first."
+  (nidhogg-view--call (nidhogg-view--op pick) (symbol-name what) a b c))
 
 (defsubst nidhogg-view-hub-lost ()
   "The hub connection went: every view is stale; keys keep working."

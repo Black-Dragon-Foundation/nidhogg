@@ -383,9 +383,11 @@ failed so, at (240 1440 900) on a 2880x1800 output)."
                          :states ["fullscreen" "activated"])
                       (0 :cmd "scale" :value120 150))))
             (until (+ (float-time) 3)))
+        ;; its end is announced by its sentinel, which runs once its output is read
+        (set-process-sentinel later (lambda (p _event) (process-put p 'nhwl-gui-ended t)))
         (while (< (float-time) until))      ; no I/O: what the recorder sends waits on the socket
         (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (< (abs (- (frame-scale-factor) 1.25)) 0.001)) 5))
-        (nhwl-gui--wait (lambda () (accept-process-output later 0.05) (not (process-live-p later))) 5))
+        (nhwl-gui--wait (lambda () (accept-process-output later 0.05) (process-get later 'nhwl-gui-ended)) 5))
       (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-pixel-width) w)) 5)
       (should (equal (list (frame-pixel-width) (frame-pixel-height)) (list w h))))
     (nhwl-gui-scale--fill (round (* 120 (glitnir-gui--scale))) w h)))

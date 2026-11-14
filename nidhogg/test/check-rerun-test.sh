@@ -122,5 +122,9 @@ printf 'Ran 1 tests, 1 results as expected, 0 unexpected\n' > "$d/t/src/d-tests.
 out=$(run src/d-tests); r=$?
 [ "$r" = 1 ] && grep -q 'd/plain names a deterministic test' <<<"$out" || fail "a D test on flaky.txt was not red: $r $out"
 
+# macOS runs it with /bin/bash 3.2 (the app job runs this test there): nothing of bash 4's
+! grep -nE '(declare|local|typeset) +-[a-zA-Z]*A|mapfile|readarray|\$\{[A-Za-z_]+(,,|\^\^)' "$rr" \
+  || fail "check-rerun.sh uses bash 4 (associative arrays, mapfile, case modification): macOS's bash is 3.2"
+
 [ "$rc" = 0 ] && echo "check-rerun-test: ok"
 exit $rc

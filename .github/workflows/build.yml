@@ -761,6 +761,12 @@ jobs:
       - name: The tarball runs unpacked
         if: ${{ inputs.checks != 'build-only' }}
         run: bash nidhogg/test/tarball-test.sh dist/*.tar.xz macos
+      # the check step's rerun under the bash and the tools build.sh gets here: macOS's /bin/bash 3.2, BSD grep, sed, awk
+      - name: check-rerun.sh under macOS's bash 3.2
+        run: |
+          PATH=/bin:/usr/bin:$PATH
+          case $(bash -c 'echo $BASH_VERSION') in 3.*) ;; *) echo "::error::bash on PATH is not 3.2"; exit 1 ;; esac
+          bash nidhogg/test/check-rerun-test.sh
       # the workers and watchdog batch files of nidhogg/check-subset.txt (or of a narrowed run's targets); a cached
       # tarball has no build tree to check
       - name: Workers and watchdog checks (nidhogg/check-subset.txt, workers-* and watchdog-* files)

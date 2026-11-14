@@ -330,6 +330,28 @@ touching only the rows that changed."
           (should (equal (nth 2 (nidhogg-view-push (sja-tests--rows-line "t-rows" 7 8 "[]"))) 'quiet)))
       (nidhogg-view-close h))))
 
+(ert-deftest sja/a-bar-is-laid-out ()
+  "A bar's segments that fit and its branch's cut, through the door: eol and lsp go, the branch keeps 9 characters."
+  (should (equal (nidhogg-view-bar
+                  (concat "1 200 8 4 2 2 6 56 0 2 3  -1 100 1 12 11 8 8 8 8 8 8 8 8 8 8 8  -1 30 0"
+                          "  3 40 0  -1 50 0  0 20 0"))
+                 '((0 1) (1) (0 9 1 90) 50)))
+  (should-error (nidhogg-view-bar "2 0") :type 'args-out-of-range)
+  ;; a title row's search box, centred between the runs
+  (should (equal (nidhogg-view-bar "2 800 0 0 0 0 0 0 0 2 1  -1 60 0  -1 40 0  -1 90 0  200 10 150")
+                 '((0 1) (0) nil 90 (1 175 235)))))
+
+(ert-deftest sja/a-local-list-is-picked ()
+  "A list loaded once, picked from by input through the door: the recent
+command first, then the other, then the file; a closed list is refused."
+  (let ((h (nidhogg-view-pick 'load (concat "0\t-1\tView: Split Editor Down\n"
+                                            "0\t0\tWindow: Split Right\n"
+                                            "1\t-1\tFile: split.rs\n"))))
+    (should (equal (nidhogg-view-pick 'top h "split" 10) '(1 0 2)))
+    (should (equal (nidhogg-view-pick 'top h "split down" 10) '(0)))
+    (nidhogg-view-pick 'close h)
+    (should-error (nidhogg-view-pick 'top h "" 1) :type 'args-out-of-range)))
+
 (provide 'sja-tests)
 
 ;;; sja-tests.el ends here

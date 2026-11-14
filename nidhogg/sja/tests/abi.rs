@@ -439,3 +439,67 @@ fn int_arg(a: &Ans) -> SjaArg {
         a => panic!("not an int: {a:?}"),
     }
 }
+
+#[test]
+fn a_local_list_is_picked_through_the_c_door() {
+    let _l = lock();
+    let list = "0\t-1\tView: Split Editor Down\n0\t0\tWindow: Split Right\n1\t-1\tFile: split.rs\n";
+    let Ans::Int(h) = ok(SJA_PICK, &[text("load"), text(list)]) else {
+        panic!("a handle")
+    };
+    let i = |n: i64| Ans::Int(n);
+    // the recent Window first, then View (both commands), then the file
+    assert_eq!(
+        ok(SJA_PICK, &[text("top"), int(h), text("split"), int(10)]),
+        Ans::List(vec![i(1), i(0), i(2)])
+    );
+    assert_eq!(
+        ok(SJA_PICK, &[text("top"), int(h), text("split"), int(1)]),
+        Ans::List(vec![i(1)])
+    );
+    assert_eq!(ok(SJA_PICK, &[text("close"), int(h)]), Ans::Nil);
+    assert_eq!(
+        call_for_test(SJA_PICK, &[text("top"), int(h), text(""), int(1)]).err(),
+        Some(SJA_E_ARG),
+        "a closed list"
+    );
+    assert_eq!(
+        call_for_test(SJA_PICK, &[text("load"), text("9\tx\n")]).err(),
+        Some(SJA_E_ARG),
+        "not a list"
+    );
+}
+
+#[test]
+fn a_bar_is_laid_out_through_the_c_door() {
+    let _l = lock();
+    let i = |n: i64| Ans::Int(n);
+    // a branch of 100 px cut to 9 characters, eol dropped, lsp dropped: (LEFT RIGHT CUT RIGHT-WIDTH)
+    let line = "1 200 8 4 2 2 6 56 0 2 3  -1 100 1 12 11 8 8 8 8 8 8 8 8 8 8 8  -1 30 0  3 40 0  -1 50 0  0 20 0";
+    assert_eq!(
+        ok(SJA_BAR, &[text(line)]),
+        Ans::List(vec![
+            Ans::List(vec![i(0), i(1)]),
+            Ans::List(vec![i(1)]),
+            Ans::List(vec![i(0), i(9), i(1), i(90)]),
+            i(50),
+        ])
+    );
+    assert_eq!(
+        call_for_test(SJA_BAR, &[text("2 0")]).err(),
+        Some(SJA_E_ARG),
+        "not a spec"
+    );
+    // a title row: the search box centred, gaps 175 and 235
+    let row = "2 800 0 0 0 0 0 0 0 2 1  -1 60 0  -1 40 0  -1 90 0  200 10 150";
+    assert_eq!(
+        ok(SJA_BAR, &[text(row)]),
+        Ans::List(vec![
+            Ans::List(vec![i(0), i(1)]),
+            Ans::List(vec![i(0)]),
+            Ans::Nil,
+            i(90),
+            Ans::List(vec![i(1), i(175), i(235)]),
+        ])
+    );
+}

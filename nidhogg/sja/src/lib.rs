@@ -10,10 +10,12 @@
 
 pub mod abi;
 pub mod apply;
+pub mod bar;
 pub mod class;
 pub mod guard;
 pub mod model;
 pub mod names;
+pub mod pick;
 pub mod queue;
 pub mod rows;
 mod typed;

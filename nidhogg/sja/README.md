@@ -121,6 +121,8 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_NAMED` | view, version | nil: a row patch named that model version |
 | `SJA_DUE` | view | as `SJA_DRAIN` (all), when the oldest queued model is one no row patch named; else nil |
 | `SJA_ROWS` | handle, verb, int or nil, string or nil | the view's row store: `on`, `draw` (the edits, see Rows), `drawn`, `epoch`, `place`, `pos`, `span`, `prop`, `pause`, `redraw`, `refresh`, `forget`, `state` (`nidhogg-view-rows` says each) |
+| `SJA_BAR` | a bar's spec (a line of integers: the room, the pads, the separators, the ellipsis and each segment's drop rank and width, the cuttable one's character widths) | `(LEFT RIGHT CUT RIGHT-WIDTH)`: the segments that fit and where the cuttable one is cut (`bar.rs`, `nidhogg-view-bar`); a version 2 spec ends with a centred segment (its width, gap and the room assumed on the right) and the answer with `(KEPT BEFORE AFTER)`, its gaps (a title row's search box); no view, no state |
+| `SJA_PICK` | `"load"` and a list's text (a `KIND RECENT LABEL` line per candidate); `"top"`, handle, input, N; `"close"`, handle | a local list (`pick.rs`, `nidhogg-view-pick`, the palette): `load` answers a handle (at most 16 kept, the oldest goes), `top` the indices of the first N candidates for the input (filtered, scored, sorted, grouped here), `close` nil |
 
 Codes: `SJA_E_ARG` (an unknown op, handle, tag or type, bad UTF-8), `SJA_E_NOMEM` (too little stack), `SJA_E_STATE`
 (the table was held), `SJA_E_PANIC`.

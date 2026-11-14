@@ -43,6 +43,11 @@ pub const SJA_DUE: i32 = 14;
 /// A view's rows (`rows.rs`): `(h WHAT ARGS…)`, WHAT `on`, `epoch`, `draw`, `drawn`, `place`, `pos`, `span`, `prop`,
 /// `pause`, `redraw`, `refresh`, `state`.
 pub const SJA_ROWS: i32 = 15;
+/// A bar's layout (`bar.rs`): `(SPEC)` → `(LEFT RIGHT CUT RIGHT-WIDTH)`, CUT nil or `(INDEX KEEP ELLIPSIS WIDTH)`;
+/// a version 2 spec (a centred segment) adds `(KEPT BEFORE AFTER)`.
+pub const SJA_BAR: i32 = 16;
+/// A local list (`pick.rs`): `("load" TEXT)` → handle, `("top" H INPUT N)` → indices, `("close" H)`.
+pub const SJA_PICK: i32 = 17;
 /// Feature `test-hooks` only: panic inside the named view's guard.
 pub const SJA_TEST_PANIC: i32 = 99;
 
@@ -225,6 +230,31 @@ fn ran(r: Ran<Ans>, on_resync: Ans, on_broken: Ans) -> Ans {
         Ran::Resync => on_resync,
         Ran::Broken => on_broken,
     }
+}
+
+/// `SJA_BAR`'s answer: `(LEFT RIGHT CUT RIGHT-WIDTH)`, then `(KEPT BEFORE AFTER)` for a spec with a centre.
+fn bar_ans(f: &crate::bar::Fit) -> Ans {
+    let mut ans = vec![
+        Ans::ints(&f.left),
+        Ans::ints(&f.right),
+        f.cut.as_ref().map_or(Ans::Nil, |c| {
+            Ans::List(vec![
+                Ans::Int(c.index as i64),
+                Ans::Int(c.keep as i64),
+                Ans::Int(i64::from(c.ellipsis)),
+                Ans::Int(c.width),
+            ])
+        }),
+        Ans::Int(f.right_width),
+    ];
+    if let Some(c) = &f.center {
+        ans.push(Ans::List(vec![
+            Ans::Int(i64::from(c.kept)),
+            Ans::Int(c.before),
+            Ans::Int(c.after),
+        ]));
+    }
+    Ans::List(ans)
 }
 
 /// Run a verb on handle `h`'s view.
@@ -687,6 +717,30 @@ fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
             arg(args, 2),
             arg(args, 3),
         ),
+        SJA_BAR => {
+            let spec = crate::bar::Spec::read(arg(args, 0).str()?).ok_or(Refused::Arg)?;
+            Ok(bar_ans(&crate::bar::fit(&spec)))
+        }
+        SJA_PICK => {
+            use crate::pick;
+            match arg(args, 0).str()? {
+                "load" => {
+                    let list = pick::List::read(arg(args, 1).str()?).ok_or(Refused::Arg)?;
+                    Ok(Ans::Int(i64::from(pick::load(list))))
+                }
+                "top" => {
+                    let (h, input) = (arg(args, 1).handle()?, arg(args, 2).str()?);
+                    let n = usize::try_from(arg(args, 3).int()?).map_err(|_| Refused::Arg)?;
+                    let top = pick::top(h, input, n).ok_or(Refused::Arg)?;
+                    Ok(Ans::ints(&top))
+                }
+                "close" => {
+                    pick::close(arg(args, 1).handle()?);
+                    Ok(Ans::Nil)
+                }
+                _ => Err(Refused::Arg),
+            }
+        }
         SJA_PUSH => {
             let line = arg(args, 0).str()?;
             // a model line (typed first), else a rows line, else a model line through `Value` (its errors stand)
