@@ -1,6 +1,7 @@
 ;;; watchdog-gui-tests.el --- GUI tests for the stall watchdog  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
