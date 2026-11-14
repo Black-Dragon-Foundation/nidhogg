@@ -1,6 +1,7 @@
 ;;; glitnir-decor-gui-tests.el --- GUI tests for Glitnir decorations (PD)  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh (gui-runner.el loads every *-gui-tests.el).  From the pgtk rows of the same
 ;; decorations, taken over for the native Wayland shell: the rows run only there.  The shell's frame pixels are device

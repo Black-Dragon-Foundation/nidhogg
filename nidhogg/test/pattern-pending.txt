@@ -3,14 +3,10 @@
 # Handshake files park a job or child at a named point and go on from what is announced (see the lint's header).
 # `exempt FILE TEST FORM # reason': the handshake rule's exemptions, a banned call that is the stimulus under test.
 fake-portal-tests.el # not yet audited against the handshake rules
-glitnir-decor-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-ime-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-w3-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-w4-tests.el # GUI rows run the command loop from a 0.02 s stepping timer (run-at-time) with a deadline, a poll rather than a handshake; not yet audited against the handshake rules
 nhwl-menu-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-glitnir-tests.el # not yet audited against the handshake rules
-glitnir-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-glitnir-effects-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 watchdog-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 callproc-env-tests.el # not yet audited against the handshake rules
 nhwl-session-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
@@ -27,3 +23,8 @@ exempt nhmac-gui-tests.el nhmac-keys-under-yield-loop run-at-time # the timer is
 exempt workers-fatal-tests.el workers/fatal-under-lock run-at-time # the child takes the lock from a timer in its command loop, the case under test, not a marker
 exempt workers-fatal-tests.el workers/kill-emacs-with-jobs-in-flight run-at-time # the child's kill-emacs comes from a timer in its command loop with jobs in flight, the case under test
 exempt workers-ts-tests.el workers/ts-start-points run-at-time # a timer's edit at the select entry is the case under test
+exempt glitnir-gui-tests.el glitnir-gui/delete-child-from-a-timer run-at-time # the child frame is deleted from a timer, the case under test
+exempt glitnir-gui-tests.el glitnir-gui/timer-move-without-redraw-commits run-at-time # the move comes from a timer with no redisplay of its own, the case under test
+exempt glitnir-gui-tests.el glitnir-gui/hide-from-timer-paints-without-popup run-at-time # the child frame is hidden from a timer, the case under test
+exempt glitnir-effects-gui-tests.el glitnir-churn-no-pile run-at-time # each hide comes from a timer, as a popup library's does: the churn under test
+exempt glitnir-effects-gui-tests.el glitnir-pop-in-lisp-busy run-at-time # the timer is where Lisp is busy during the pop-in, the case under test
