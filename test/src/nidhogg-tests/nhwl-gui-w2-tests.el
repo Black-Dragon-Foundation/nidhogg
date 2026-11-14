@@ -1,6 +1,7 @@
 ;;; nhwl-gui-w2-tests.el --- GUI rows for the native shell's parity features  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/gui.sh with the base rows (nhwl-gui-tests.el, loaded first: its helpers are used here).  Rows
 ;; that drive the compositor need `--compositor recorder'; rows named `nhwl-gui/live-*' run on real compositors and
@@ -1151,26 +1152,27 @@ judge the second connection."
 (defun nhwl-gui--menu-run (menu on-open &optional position hold)
   "Open MENU at POSITION (default the pointer) after a click; return what `x-popup-menu' returns, or `timeout' after 10 s.
 MENU can also be a function, called instead of `x-popup-menu', whose value is returned.
-Once its popup shows, the keyboard goes to it and ON-OPEN is called with the popup's id (from a timer: it must not
-read events).  The popup is gone afterwards.  With HOLD the right button is pressed over the toplevel and held
+Once the recorder announces its popup (a `wait', `gui-runner-recorder-wait'), the keyboard goes to it and ON-OPEN is
+called with the popup's id (from the reply's filter: it must not read events).  The popup is gone afterwards.  With HOLD the right button is pressed over the toplevel and held
 while the menu opens, as for a menu opened by a `down-mouse-3' event."
-  (let ((before (nhwl-gui--popup-ids)) (timer nil) (result nil))
+  (let ((before (nhwl-gui--popup-ids)) (wait nil) (result nil) (missed nil))
     (nhwl-gui--press-serial)
     (when hold
       (nhwl-gui--point 100 100)
       (gui-runner-recorder '(:cmd "button" :button 273 :state "press"))
       (nhwl-gui--pump))
-    (setq timer (run-at-time 0.1 0.1
-                             (lambda ()
-                               (let ((new (seq-difference (nhwl-gui--popup-ids) before)))
-                                 (when new
-                                   (cancel-timer timer)
-                                   (gui-runner-recorder (list :cmd "focus" :surface (car new)))
-                                   (funcall on-open (car new)))))))
+    (setq wait (gui-runner-recorder-wait
+                (list :for "popup" :before (vconcat before) :timeout_ms 10000)
+                (lambda (reply)
+                  (if (not (eq (plist-get reply :ok) t))
+                      (setq missed (plist-get reply :error))
+                    (gui-runner-recorder (list :cmd "focus" :surface (plist-get reply :id)))
+                    (funcall on-open (plist-get reply :id))))))
     (unwind-protect
         (setq result (with-timeout (10 'timeout)
                        (if (functionp menu) (funcall menu) (x-popup-menu (or position t) menu))))
-      (cancel-timer timer))
+      (delete-process wait))
+    (when missed (ert-fail (list :menu-popup missed :result result)))
     ;; none of the menu's popups is left; one that was there before may have gone meanwhile (a tooltip an earlier
     ;; hover showed hides on its own timer)
     (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (null (seq-difference (nhwl-gui--popup-ids) before))) 5))
@@ -1279,7 +1281,7 @@ the menu has closed, a key arrives in the frame again."
 
 (defun nhwl-gui--later-output (later)
   "The replies LATER (from `gui-runner-recorder-later') printed, once it has exited (10 s at most)."
-  (when (nhwl-gui--wait (lambda () (not (process-live-p later))) 10)
+  (when (nhwl-gui--wait (lambda () (process-get later 'ended)) 10)
     ;; it can be gone before its pipe was read: a drag's loop reads no process
     (while (accept-process-output later)))
   (with-current-buffer (process-buffer later) (buffer-string)))
@@ -1287,7 +1289,7 @@ the menu has closed, a key arrives in the frame again."
 (defun nhwl-gui--drag-cleanup (later)
   "Stop LATER, release the button and read what is left, so the next row starts clean."
   (when later
-    (when (process-live-p later) (delete-process later))
+    (delete-process later)
     (kill-buffer (process-buffer later)))
   ;; the row may have lost the connection
   (ignore-errors
@@ -1641,10 +1643,13 @@ virtual one (`NHWL_GUI_VPOINTER', gui.sh --recorder), driven from another proces
                                  "--eval" (prin1-to-string
                                            `(progn
                                               (run-with-idle-timer 0.3 nil (lambda () (write-region "" nil ,ready)))
-                                              (run-at-time 15 nil
-                                                           (lambda ()
-                                                             (write-region (point-min) (point-max) ,file)
-                                                             (kill-emacs))))))))
+                                              ;; the drop's text goes into *scratch* before the drop finishes, so it is
+                                              ;; in the file once the first Nidhogg's drag returns
+                                              (with-current-buffer "*scratch*"
+                                                (add-hook 'after-change-functions
+                                                          (lambda (&rest _)
+                                                            (write-region (point-min) (point-max) ,file))
+                                                          nil t)))))))
          (driver nil))
     (unwind-protect
         (let ((from nil) (to nil) (size (nhwl-gui--sway-layout-size)))
@@ -1694,11 +1699,10 @@ move position %d ppt 10 ppt" (car w) (cdr w))))
           ;; the drag starts from the press, so its button event must have arrived
           (should (nhwl-gui--wait (lambda () (eq (car-safe (read-event nil nil 0.1)) 'down-mouse-1)) 6))
           (should (eq (dnd-begin-text-drag "from the first Nidhogg") 'copy))
-          (should (nhwl-gui--wait (lambda () (not (process-live-p second))) 15))
           (should (string-search "from the first Nidhogg"
                                  (with-temp-buffer (insert-file-contents file) (buffer-string)))))
-      (when (and driver (process-live-p driver)) (delete-process driver))
-      (when (process-live-p second) (delete-process second))
+      (when driver (delete-process driver))
+      (delete-process second)
       (nhwl-gui--set-fullscreen fullscreen)
       (delete-file file)
       (when (file-exists-p ready) (delete-file ready)))))
@@ -1736,20 +1740,21 @@ move position %d ppt 10 ppt" (car w) (cdr w))))
 (defun nhwl-gui--submenu-run (on-sub)
   "Open the submenu keymap and hover More; 0.6 s later, when the submenu's popup shows, ON-SUB is called with its id
 and the parent's (from a timer).  With no submenu popup the menu is dismissed.  The result of `x-popup-menu'."
-  (let ((before (nhwl-gui--popup-ids)) (timers nil))
-    (prog1
+  (let ((before (nhwl-gui--popup-ids)) (waits nil))
+    (unwind-protect
         (nhwl-gui--menu-run
          (nhwl-gui--submenu-keymap)
          (lambda (id)
            (nhwl-gui--menu-over id 0 3)
-           (push (run-at-time 0.6 nil
-                              (lambda ()
-                                (let ((sub (car (seq-difference (nhwl-gui--popup-ids) (cons id before)))))
-                                  (if sub
-                                      (funcall on-sub sub id)
-                                    (gui-runner-recorder '(:cmd "click_outside"))))))
-                 timers)))
-      (mapc #'cancel-timer timers))))
+           (push (gui-runner-recorder-wait
+                  (list :for "popup" :before (vconcat (cons id before)) :timeout_ms 5000)
+                  (lambda (reply)
+                    (if (eq (plist-get reply :ok) t)
+                        (funcall on-sub (plist-get reply :id) id)
+                      (message "nhwl-gui--submenu-run: %s" (plist-get reply :error))
+                      (gui-runner-recorder '(:cmd "click_outside")))))
+                 waits)))
+      (mapc #'delete-process waits))))
 
 (ert-deftest nhwl-gui/context-menu-press-drag-release ()
   "A menu opened by a `down-mouse-3' event, with the button still held, chooses the item under the release."
@@ -2001,12 +2006,10 @@ submenu open, all driven by queued events.  The trace rules (errors, popup, grab
 ;; session's connection, so they run last and only under `--daemon' (Emacs outlives its last display there); each opens
 ;; a frame on the display again at its end, so the rows after it find one.
 
-(defun nhwl-gui--lose-display (&optional delay)
-  "End the session's connection for good; from a timer DELAY seconds later when DELAY is non-nil (the timer)."
-  (if delay
-      (run-at-time delay nil (lambda () (nhwl-gui--restart "gone")))
-    (nhwl-gui--restart "gone")
-    nil))
+(defun nhwl-gui--lose-display ()
+  "End the session's connection for good."
+  (nhwl-gui--restart "gone")
+  nil)
 
 (defun nhwl-gui--display-gone-p ()
   "Read events for up to 3 s until no frame of the session's display is left; non-nil then."
@@ -2041,7 +2044,7 @@ signals nothing, no frame and no terminal of the display is left, the daemon sta
                  (nhwl-gui--child)
                  (x-show-tip "a tip" nil nil 60)
                  (nhwl-gui--press-serial)
-                 (setq timer (nhwl-gui--lose-display 0.5))
+                 (setq timer (run-at-time 0.5 nil #'nhwl-gui--lose-display))
                  (setq result (condition-case e
                                   (with-timeout (10 'timeout)
                                     (x-popup-menu (list '(40 40) (selected-frame))
