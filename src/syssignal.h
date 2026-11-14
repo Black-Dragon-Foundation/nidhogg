@@ -34,6 +34,14 @@ extern void unblock_tty_out_signal (sigset_t const *);
 #ifdef HAVE_NIDHOGG_WORKERS
 extern void take_forwarded_fatal (void);
 #endif
+#ifdef HAVE_NHWL
+/* How deep this thread is in calls into the shell glue (NHG, nhwlterm.h),
+   and a SIGTERM, SIGHUP or SIGINT that came during one: its fatal path
+   (kill-emacs, auto-save, input reads) waits until the call is over.  */
+extern _Thread_local volatile int nhg_call_depth;
+extern volatile sig_atomic_t nhg_deferred_fatal;
+extern void nhg_take_deferred_fatal (void);
+#endif
 
 #ifdef HAVE_PTHREAD
 #include <pthread.h>

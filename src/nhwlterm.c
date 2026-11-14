@@ -5253,6 +5253,12 @@ If it is not a float there is no wait.  */);
 As an `unblock_input' that handles a pending signal does there.  For tests.  */);
   nhwl_test_drain_in_window_new = false;
 
+  DEFVAR_BOOL ("nhwl--test-fatal-in-handler", nhwl_test_fatal_in_handler,
+    doc: /* Non-nil: a SIGTERM inside a shell glue call runs kill-emacs at once.
+In the signal handler, inside the call, as before the call's end ran it.
+For tests.  */);
+  nhwl_test_fatal_in_handler = false;
+
   DEFVAR_LISP ("pgtk-keysym-table", Vnhwl_keysym_table,
     doc: /* Hash table of character codes indexed by X keysym codes.  */);
   Vnhwl_keysym_table = make_hash_table (&hashtest_eql, 900, Weak_None);
