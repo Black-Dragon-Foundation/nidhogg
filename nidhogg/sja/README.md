@@ -139,6 +139,27 @@ drains models no row patch names (`SJA_NAMED`, `SJA_DUE`). Past 64 models or 16 
 are dropped and the push answers `resync`; a model that does not apply at the drain does the same. A line for a view no
 instance shows makes no slot. The hub lost, a panic and the view's last instance closing drop the queue.
 
+## Rows (`src/rows.rs`)
+
+A hub-fed view's rows can be held here too, where they are drawn (drgnx's rows-in-Sjá design §6, the terminal first).
+A **store** takes the hub's row patches (`{view, class, hub, base, version, env_epoch, ops, images?, styles?, term?,
+model?}`, ops `reset`, `insert {after, rows}`, `replace`, `remove`) and decides each by the editor's rules: another
+hub's diff, or one before any reset, is dropped; so is an old reset; a patch of an older env epoch is held until a reset;
+a diff of an older base is dropped, of a newer one (a gap) or naming an image or style the store lacks, it asks for a
+resync. A resync is asked once while outstanding, with a back-off of 1 s then 4 s; three within 10 s break the store.
+A paused store keeps up to 256 patches and applies them on resume (past that, a resync).
+
+**The draw.** The store keeps the drawn state (each drawn row's key, length in characters and content hash). `draw`
+answers the edits, in buffer order, that turn the region into the rows: an offset (characters from the region's
+start, the buffer as it stands at that edit), a count to delete and the rows to insert. Rows kept in the same order
+are untouched; a reorder redraws the rows that moved. The new drawn state is pending until the editor confirms the
+batch (`drawn`). A batch never confirmed (a quit, a panic) rolls back: the next draw erases the region and draws it
+whole, as does a region whose length is not the drawn state's. `place POS` and `pos KEY OFF` turn a window's start and
+point into a row and an offset and back, so windows keep their place across a draw.
+
+Caps: 200,000 rows, 64 KiB of text and 4,096 runs a row, 256 images (the ones no row names are evicted first), 64 held
+patches.
+
 ## The guard and the breaker
 
 Every call checks the stack headroom (256 KiB, the glue's figure), takes the process-wide table (view name → view,
