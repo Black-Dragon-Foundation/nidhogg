@@ -34,6 +34,11 @@ X and Y are device pixels of GRAB (see `glitnir-decor-gui--at')."
   "V logical pixels at scale S in device pixels, halves rounded up (as Glitnir's grid does; `round' goes to even)."
   (floor (+ (* s v) 0.5)))
 
+(defun glitnir-decor-gui--line (w)
+  "Device pixels of a box line W logical pixels wide: the shell realizes a face's box line widths at the frame's
+scale, halves rounded up, at least 1 (xfaces.c, `realize_gui_face')."
+  (max 1 (floor (+ (* w (frame-scale-factor)) 0.5))))
+
 (defun glitnir-decor-gui--calibrate ()
   "The device pixel of a grab at the frame's top-left, found with the selected window's text area empty and the
 cursor off (so the first block of the buffer's background #202020 is the text area's corner)."
@@ -298,10 +303,11 @@ end) with corner RADIUS, followed by plain text, so the glyph string beside the 
                (row (cdr (glitnir-decor-gui--at g 3 fo)))
                (e (window-body-pixel-edges))
                (y (+ (cdr row) (glitnir-decor-gui--dev s (/ (line-pixel-height) 2))))
-               ;; the text area's last pixel: the ring; two in (past the 2 px ring): the fill
+               ;; the text area's last pixel: the ring; past the 2 px ring (at the frame's scale): the fill
                (x (+ (car fo) (glitnir-decor-gui--dev s (nth 2 e)) -1)))
           (should (equal (list 'ring (glitnir-decor-gui--px g x y)) '(ring (255 128 0))))
-          (should (equal (list 'fill (glitnir-decor-gui--px g (- x (* 2 s)) y)) '(fill (48 48 96)))))))))
+          (should (equal (list 'fill (glitnir-decor-gui--px g (- x (glitnir-decor-gui--line 2)) y))
+                         '(fill (48 48 96)))))))))
 
 (defun glitnir-decor-gui--fit-column (fit)
   "On a row 16 px taller than its text (`line-spacing'), the ring's left side boxing \" ab \" with FIT as its :fit:
@@ -535,8 +541,9 @@ tint on the line but not on TEXT, as drgnx's selection leaves a chip its face; (
   (pcase-let ((`(,inside . ,outside) (glitnir-decor-gui--fit-pad '(text . 4))))
     (should (equal (list 'pad inside) '(pad (0 192 0))))
     (should (equal (list 'outside outside) '(outside (32 32 32)))))
-  ;; the premise: unpadded, 3 px above the text is past the line
-  (should (equal (list 'unpadded (car (glitnir-decor-gui--fit-pad 'text))) '(unpadded (32 32 32)))))
+  ;; the premise: unpadded, 3 px above the text is out of the fill (past the line, or on it where the frame's scale
+  ;; makes the 1 px line wider)
+  (should-not (equal (list 'unpadded (car (glitnir-decor-gui--fit-pad 'text))) '(unpadded (0 192 0)))))
 
 (ert-deftest glitnir-decor-gui/box-across-a-newline-is-stock ()
   (skip-unless (featurep 'nidhogg-wayland))
