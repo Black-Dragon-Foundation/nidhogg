@@ -1563,6 +1563,17 @@ nhwl_to_logical (int dev, uint32_t s120)
   return (int) (((int64_t) dev * 120 + s / 2) / s);
 }
 
+/* F's native width and height as they are about to be: a size that
+   change_frame_size delayed until the next redisplay counts, so a fit
+   that follows (a scale, another configure, read in the same go) is
+   compared with the size the frame will take, not the one it had.  */
+static void
+nhwl_frame_size_due (struct frame *f, int *w, int *h)
+{
+  *w = f->new_size_p && f->new_width >= 0 ? f->new_width : FRAME_PIXEL_WIDTH (f);
+  *h = f->new_size_p && f->new_height >= 0 ? f->new_height : FRAME_PIXEL_HEIGHT (f);
+}
+
 /* F's facts the glue keeps for its window: visible, iconified, our own
    title bar.  */
 static uint32_t
@@ -2982,8 +2993,10 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
      window's points but reports no new size, and a frame that kept its
      device pixels would be shown at the old scale's size in points.  */
   uint32_t old = FRAME_NHWL_OUTPUT (f)->scale120;
-  int lw = nhwl_to_logical (FRAME_PIXEL_WIDTH (f), old);
-  int lh = nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), old);
+  int nw, nh;
+  nhwl_frame_size_due (f, &nw, &nh);
+  int lw = nhwl_to_logical (nw, old);
+  int lh = nhwl_to_logical (nh, old);
 
   FRAME_NHWL_OUTPUT (f)->scale120 = FRAME_DISPLAY_INFO (f)->scale120 = scale120;
   FRAME_DISPLAY_INFO (f)->resx = FRAME_DISPLAY_INFO (f)->resy = NHWL_DPI * scale120 / 120.0;
@@ -3005,7 +3018,10 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
 	 which nhwl_set_window_size leaves alone: it takes the last
 	 configure's logical size at the new scale instead.  The compositor
 	 sends that configure before the scale when an output changes scale
-	 (mutter does), and it was fitted at the old one.  */
+	 (mutter does), and it was fitted at the old one.  Read in one go
+	 with the scale, its size is still pending: the fit compares with
+	 it (nhwl_frame_size_due), or it would find the frame's old size,
+	 equal to the new one, and keep the configure's.  */
       struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
       int dw, dh;
 
@@ -3017,8 +3033,7 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
 			    NHG (nhg_frame_fit (FRAME_NHG (f), out->window,
 						scale120, out->logical_w,
 						out->logical_h, out->states,
-						FRAME_PIXEL_WIDTH (f),
-						FRAME_PIXEL_HEIGHT (f),
+						nw, nh,
 						NHG_FIT_UNDECORATED, &dw, &dh)))
 	      == 1)
 	    change_frame_size (f, dw, dh, false, true, false);
@@ -3067,13 +3082,15 @@ nhwl_configure (struct frame *f, const NhgAction *a)
      frame keeps its own size when it already is that size once rounded.
      The glue fits it and records the ack now, as a content ack.  */
   {
-    int dw, dh;
+    int dw, dh, nw, nh;
 
+    /* Against the size a configure read before this one (in the same go)
+       left pending, not the one the frame still has.  */
+    nhwl_frame_size_due (f, &nw, &nh);
     if (nhwl_glue_rc (FRAME_DISPLAY_INFO (f),
 		      NHG (nhg_frame_fit (FRAME_NHG (f), out->window,
 					  out->scale120, a->w, a->h, states,
-					  FRAME_PIXEL_WIDTH (f),
-					  FRAME_PIXEL_HEIGHT (f),
+					  nw, nh,
 					  NHG_FIT_CONFIGURE, &dw, &dh)))
 	== 1)
       {
