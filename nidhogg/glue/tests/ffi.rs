@@ -8,7 +8,7 @@ use nhglue::abi::*;
 use nhglue::ffi::*;
 use std::ffi::c_char;
 use std::ptr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// A display on `rec`.
 fn open(rec: &Recorder) -> *mut NhgDisplay {
@@ -305,19 +305,29 @@ mod ffi {
 mod guard {
     use super::*;
 
-    /// A held lock (an abandoned call, or a re-entry) poisons the display at once instead of blocking.
+    /// A held lock (an abandoned call, or a re-entry) poisons the display at once instead of blocking: the call
+    /// returns while the lock is still held.  Not timed: the 30 s only stops a call that waits for the release.
     #[test]
     fn held_lock_poisons_instead_of_blocking() {
         let rec = Recorder::start("mutter");
         let d = open(&rec);
         let held = display(d).lock_for_test();
-        let t0 = Instant::now();
-        // SAFETY: a live display.
-        let rc = unsafe { nhg_frame_register(d, 1, 0) };
-        let took = t0.elapsed();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let addr = d as usize;
+        let caller = std::thread::spawn(move || {
+            // SAFETY: a live display (the test keeps it open until this thread is joined).
+            let rc = unsafe { nhg_frame_register(addr as *mut NhgDisplay, 1, 0) };
+            let _ = tx.send(rc);
+        });
+        let rc = rx.recv_timeout(Duration::from_secs(30));
+        // the lock is released only now: a call that returned above did not wait for it
         drop(held);
-        assert_eq!(rc, NHG_E_PANIC);
-        assert!(took < Duration::from_millis(10), "took {took:?}");
+        caller.join().expect("the caller thread");
+        assert_eq!(
+            rc,
+            Ok(NHG_E_PANIC),
+            "the call waited for the lock's release"
+        );
         assert!(display(d).is_poisoned());
         // SAFETY: a live display.
         assert_eq!(unsafe { nhg_frame_register(d, 1, 0) }, NHG_E_PANIC);

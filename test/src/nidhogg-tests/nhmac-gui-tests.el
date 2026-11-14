@@ -46,7 +46,8 @@ pixels; the display's width is the main screen's."
   :tags '(draws)
   (let ((f (make-frame '((width . 60) (height . 20)))))
     (unwind-protect
-        (let ((info (progn (redisplay t) (sit-for 0.2) (nhmac--window-info f))))
+        (let ((info (progn (nhmac-gui--until (lambda () (eq (plist-get (nhmac--window-info f) :visible) t)) 2)
+                           (nhmac--window-info f))))
           (should (frame-visible-p f))
           (should (eq (plist-get info :visible) t))
           (should (eq (plist-get info :layer) t))
@@ -103,7 +104,14 @@ outer position is the frame's, the title bar is AppKit's frame less the content,
 place asked for reads back as asked and moves AppKit's frame by as much, and asking for the place the frame has
 leaves it there (the live session, 2026-11-13: -1420 rounded to -1419, one point further right at each call)."
   (let* ((f (selected-frame)) (s (frame-scale-factor f))
-         (info (lambda () (redisplay t) (sit-for 0.3) (nhmac--window-info f)))
+         ;; FROM: AppKit's frame origin before a move, the wait ending when the window server has the window
+         ;; elsewhere; without it, when what the redisplay drew is shown
+         (info (lambda (&optional from)
+                 (if from
+                     (nhmac-gui--until
+                      (lambda () (not (equal (seq-take (plist-get (nhmac--window-info f) :frame) 2) from))) 2)
+                   (nhmac-gui--shown))
+                 (nhmac--window-info f)))
          (i0 (funcall info)) (fr (plist-get i0 :frame))
          (title (round (- (* (nth 3 fr) s) (plist-get i0 :device-height))))
          (g (frame-geometry f)) (p0 (frame-position f)))
@@ -122,7 +130,7 @@ leaves it there (the live session, 2026-11-13: -1420 rounded to -1419, one point
     (unwind-protect
         (let ((to (cons (+ (car p0) 40) (+ (cdr p0) 30))))
           (set-frame-position f (car to) (cdr to))
-          (let ((i2 (funcall info)))
+          (let ((i2 (funcall info (seq-take fr 2))))
             (should (equal (frame-position f) to))
             (should (= (- (nth 0 (plist-get i2 :frame)) (nth 0 fr)) (round (/ 40 s))))
             (should (= (- (nth 1 fr) (nth 1 (plist-get i2 :frame))) (round (/ 30 s))))))
@@ -180,7 +188,7 @@ is left queued, and the display is not poisoned."
 
 (ert-deftest nhmac-keys-basic ()
   "Plain characters, the named keys and control chords posted as AppKit key events arrive as NS reads them; C-g
-ends a `sit-for' early."
+ends a wait for input early."
   (nhmac-gui--flush)
   (let ((plain "abcdefghijklmnopqrstuvwxyz0123"))
     (mapc #'nhmac--test-post-key plain)
@@ -199,15 +207,14 @@ ends a `sit-for' early."
   (nhmac--test-post-key ?\C-x ?x nhmac-gui--ns-control)
   (nhmac--test-post-key ?\C-f ?f nhmac-gui--ns-control)
   (should (equal (nhmac-gui--events 2) '(?\C-x ?\C-f)))
-  (let ((start (float-time)) quit)
+  (let (got quit)
     (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
     (condition-case nil
         (let ((inhibit-quit nil))
-          (sit-for 5)
-          (setq quit (eq (read-event nil nil 1) ?\C-g)))
+          ;; the wait ends at the C-g, read or quitting; nil only when its 4 s ran out with no input
+          (setq got (read-event nil nil 4)))
       (quit (setq quit t)))
-    (should quit)
-    (should (< (- (float-time) start) 4))))
+    (should (or quit (eq got ?\C-g)))))
 
 (defun nhmac-gui--pos-xy (pos)
   "Device pixels from the frame's top left of the middle of the character at POS."
@@ -305,7 +312,10 @@ and `mouse-pixel-position' follows motion."
       (should (= (posn-point (event-end drag)) p2)))
     ;; motion
     (nhmac--test-post-mouse 'move (car b) (cdr b))
-    (sit-for 0.3)
+    (nhmac-gui--until (lambda () (let ((mp (mouse-pixel-position)))
+                                   (and (eq (car mp) (selected-frame)) (cadr mp)
+                                        (< (abs (- (cadr mp) (car b))) 3) (< (abs (- (cddr mp) (cdr b))) 3))))
+                      2)
     (let ((mp (mouse-pixel-position)))
       (should (eq (car mp) (selected-frame)))
       (should (< (abs (- (cadr mp) (car b))) 3))
@@ -357,7 +367,7 @@ the process's fd (status_notify), so a drained process has given all."
     (make-process
      :name name :connection-type type :noquery t
      :command '("sh" "-c" "i=0; while [ $i -lt 100 ]; do echo $i; i=$((i+1)); sleep 0.01; done")
-     :sentinel (lambda (p _event) (unless (process-live-p p) (process-put p 'drained t)))
+     :sentinel (lambda (p _event) (when (memq (process-status p) '(exit signal)) (process-put p 'drained t)))
      :filter (lambda (_p s)
                (let ((now (float-time)) (r (gethash name gaps)))
                  (puthash name (cons (+ (car r) (cl-count ?\n s))
@@ -452,10 +462,11 @@ helper's hop (`:helper-hops-keys' 0)."
             (push (cons 'first-output (- (float-time) t0)) phases)
             (should (> bytes 0))
             (setq t0 (float-time))
+            ;; each key within 0.5 s, or the read gives nil and the keys' check fails
             (dolist (c keys)
               (nhmac--test-post-key c)
               (let ((t1 (float-time)))
-                (push (read-event nil nil 2) got)
+                (push (read-event nil nil 0.5) got)
                 (setq worst (max worst (- (float-time) t1)))))
             (push (cons 'keys (- (float-time) t0)) phases))
         (setq t0 (float-time))
@@ -464,7 +475,6 @@ helper's hop (`:helper-hops-keys' 0)."
       (nhmac-gui--say "nhmac-keys-before-output: worst %.3f s, %d bytes of output, phases %S" worst bytes
                       (nreverse phases))
       (should (equal (nreverse got) keys))
-      (should (< worst 0.5))
       (should (= (nhmac-gui--delta before :helper-hops-keys) 0))
       (should (> (nhmac-gui--delta before :waits) 0)))))
 
@@ -565,31 +575,28 @@ lock-waiter count is back to 0 after each (a signal marks one waiter, not all)."
     (should (nhmac-gui--idle-until (lambda () (> n 0)) 1))
     (nhmac-gui--idle-until (lambda () nil) 0.3)
     (should (= n 1)))
-  ;; C-g ends a (sit-for 5) early
-  (let ((start (float-time)) quit)
+  ;; C-g ends a wait for input early: read or quitting; nil only when its 5 s ran out with no input
+  (let (got quit)
     (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
     (condition-case nil
         (let ((inhibit-quit nil))
-          (sit-for 5)
-          (setq quit (eq (read-event nil nil 1) ?\C-g)))
+          (setq got (read-event nil nil 5)))
       (quit (setq quit t)))
-    (should quit)
-    (should (< (- (float-time) start) 5))))
+    (should (or quit (eq got ?\C-g)))))
 
 (ert-deftest nhmac-quit-reaches-busy-loop ()
   "A C-g queued in AppKit while Lisp runs a busy loop (no input read, no redisplay, no wait) quits it: the loop's
-input polls pump AppKit.  The loop ends itself after 5 s, failing the row."
+input polls pump AppKit.  The loop ends itself after 4 s, failing the row."
   (nhmac-gui--flush)
   (let ((start (float-time)) quit)
     (nhmac--test-post-key ?\C-g ?g nhmac-gui--ns-control)
     (condition-case nil
         (let ((inhibit-quit nil)
-              (deadline (+ start 5)))
+              (deadline (+ start 4)))
           (while (< (float-time) deadline)))
       (quit (setq quit t)))
     (nhmac-gui--say "nhmac-quit-reaches-busy-loop: quit %S after %.2f s" quit (- (float-time) start))
-    (should quit)
-    (should (< (- (float-time) start) 4))))
+    (should quit)))
 
 (ert-deftest nhmac-keys-under-yield-loop ()
   "While a Lisp thread spins on `thread-yield', and again under 4-thread contention, keys, a process's output, a
@@ -622,23 +629,27 @@ to the main thread, the display lives and keys still arrive."
 wait, with no AppKit event: the notifier's want of the lock ends the main thread's park."
   (nhmac-gui--flush)
   (let* ((m (make-mutex)) (c (make-condition-variable m))
-         (go nil) (woken nil) (notified nil)
+         (go nil) (woken nil) (notified nil) (idling nil)
          (waiter (make-thread (lambda ()
                                 (with-mutex m
                                   (while (not go) (condition-wait c))
                                   (setq woken (float-time))))
                               "nhmac-cw"))
          (notifier (make-thread (lambda ()
-                                  (sleep-for 0.2)
+                                  ;; this thread runs only when the main thread lets the lock go, which it does in
+                                  ;; its wait: `idling' set, the main thread is parked there
+                                  (while (not idling) (thread-yield))
                                   (with-mutex m
                                     (setq go t notified (float-time))
                                     (condition-notify c)))
                                 "nhmac-cn")))
-    (should (nhmac-gui--idle-until (lambda () woken) 5))
+    (setq idling t)
+    (should (nhmac-gui--idle-until (lambda () notified) 5))
+    ;; the waiter wakes within 0.5 s of the notify
+    (should (nhmac-gui--idle-until (lambda () woken) 0.5))
     (thread-join notifier)
     (thread-join waiter)
-    (nhmac-gui--say "nhmac-thread-wakes-idle-main: woken %.3f s after the notify" (- woken notified))
-    (should (< (- woken notified) 0.5))))
+    (nhmac-gui--say "nhmac-thread-wakes-idle-main: woken %.3f s after the notify" (- woken notified))))
 
 ;; The guard: an Objective-C exception in a pump poisons the display, as a panic does, and Emacs goes on
 (ert-deftest nhmac-objc-exception-poisons ()
@@ -649,11 +660,13 @@ is raised in a child Emacs on the same window server, never in the runner; the c
   (let* ((buf (generate-new-buffer " *nhmac-poison*"))
          (proc (make-process
                 :name "nhmac-poison" :buffer buf :connection-type 'pipe
+                ;; the sentinel runs after Emacs read the child's last output
+                :sentinel (lambda (p _) (process-put p 'done t))
                 :command (list (expand-file-name invocation-name invocation-directory) "-Q" "--eval"
                                "(run-at-time 1 nil (lambda () (nhmac--test-raise-in-pump) (sit-for 5) (kill-emacs 0)))"))))
     (unwind-protect
         (progn
-          (should (gui-runner-wait (lambda () (not (process-live-p proc))) 30))
+          (should (gui-runner-wait (lambda () (process-get proc 'done)) 30))
           (nhmac-gui--say "nhmac-objc-exception-poisons: child %S %S: %s" (process-status proc) (process-exit-status proc)
                    (with-current-buffer buf (buffer-string)))
           ;; ended by itself, with the lost display's status, not by a signal (an abort)
@@ -662,7 +675,7 @@ is raised in a child Emacs on the same window server, never in the runner; the c
           (with-current-buffer buf
             (should (string-match-p "internal error in the shell glue" (buffer-string)))
             (should (string-match-p "Objective-C exception" (buffer-string)))))
-      (when (process-live-p proc) (delete-process proc))
+      (delete-process proc)
       (kill-buffer buf))))
 
 (defconst nhmac-gui--start-report
@@ -683,6 +696,9 @@ is raised in a child Emacs on the same window server, never in the runner; the c
          (kill-emacs 0))))"
   "What a child Emacs in `nhmac-frame-shows-at-every-start' runs: it places its frame as gui-runner does, and a
 second later prints whether the frame is visible, its draws, the shell's startup trace and view, and ends.")
+
+;; nhwlterm.c's: the row's `let' must bind it dynamically wherever this file is compiled
+(defvar nhwl--test-drain-in-window-new)
 
 (ert-deftest nhmac-frame-shows-after-a-drain-in-its-making ()
   "A frame whose window's first configure is drained while the window is made still shows: the configure is applied
@@ -725,7 +741,7 @@ its frame, each become visible and draw.  Guards the start that once drew nothin
                               (process-status proc) facts)
               (unless (and ended facts (plist-get facts :visible) (> (or (plist-get facts :draws) 0) 0))
                 (push (list :start i :ended ended :status (process-status proc) :facts facts :output out) bad)))
-          (when (process-live-p proc) (delete-process proc))
+          (delete-process proc)
           (kill-buffer buf))))
     (should-not (nreverse bad))))
 
@@ -961,6 +977,28 @@ not hold, at most SECS; how many seconds that took, or nil if it never did."
       (nhmac-gui--put-back))
     (and (plist-get (nhmac-gui--surface) :free) (- (float-time) start))))
 
+(defun nhmac-gui--until (pred secs)
+  "Wait as Emacs waits for input, redisplaying, until PRED holds, at most SECS; PRED's last value.
+The shell's events are read as Emacs reads them (`nhmac-gui--read-shell'), so the moves, focus changes and configures
+they carry are applied, then put back in their order for the row.  The wait the rows' fixed pauses became: it ends on
+what the shell announced."
+  (let ((end (+ (float-time) secs)) v)
+    (unwind-protect
+        (while (and (not (setq v (funcall pred))) (< (float-time) end))
+          (redisplay)
+          (nhmac-gui--read-shell)
+          (accept-process-output nil 0.01))
+      (nhmac-gui--put-back))
+    v))
+
+(defun nhmac-gui--shown (&optional secs)
+  "Redisplay, then wait (SECS at most, default 2) until what it drew is on the window's layer: the pacer holds no
+commit and the layer's contents are the newest surface; whether they are."
+  (redisplay t)
+  (nhmac-gui--until (lambda () (let ((s (nhmac-gui--surface)))
+                                 (and (not (plist-get s :held)) (eq (plist-get s :contents-is-newest) t))))
+                    (or secs 2)))
+
 (ert-deftest nhmac-surface-busy-burst ()
   "Redisplays back to back, faster than the window server composites (a keyboard macro, edits streaming in): the
 commit pacer holds a commit while every other surface is held, so no held surface is drawn into (0 busy), and no hold
@@ -1048,7 +1086,7 @@ anyway, counted as a held timeout and a busy surface, so a stuck window server n
                     (nhmac-gui--delta before :pacer-fires) (nhmac-gui--delta before :commits)
                     (nhmac-gui--delta before :deadline-flushes))
     (should shown)
-    (should (>= (- (float-time) t0) 0.05))
+    ;; drawn by the bound, not before: the held timeout counts it
     (should (= (nhmac-gui--delta before :held-timeouts) 1))
     (should (= (nhmac-gui--delta before :surface-busy) 1)))
   (kill-buffer))
@@ -1148,14 +1186,14 @@ judged here; whether one was pending is logged.  Five times, each in a new buffe
 commits nothing and flushes nothing inside it; the next wait commits it."
   :tags '(draws)
   (nhmac-gui--typing-buffer "no-flush")
-  (redisplay t)
-  (sit-for 0.05)
+  (nhmac-gui--shown)
   (dotimes (i 5)
     (let ((before (nhmac-stats)))
       (insert "z")
       (redisplay)
       (let ((inside (nhmac-gui--delta before :commits)) (ns (nhmac-gui--delta before :commit-ns)))
-        (sit-for 0.02)
+        ;; the next wait commits it
+        (nhmac-gui--until (lambda () (>= (nhmac-gui--delta before :commits) 1)) 1)
         (nhmac-gui--say "nhmac-redisplay-has-no-flush: key %d: %d commits (%d ns) inside, %d after a wait"
                         i inside ns (nhmac-gui--delta before :commits))
         (should (= inside 0))
@@ -1168,8 +1206,7 @@ commits nothing and flushes nothing inside it; the next wait commits it."
 flushes it within a few milliseconds, without a pump."
   :tags '(draws)
   (nhmac-gui--typing-buffer "busy-shows")
-  (redisplay t)
-  (sit-for 0.05)
+  (nhmac-gui--shown)
   (dotimes (i 5)
     (let ((before (nhmac-stats)))
       (insert "q")
@@ -1332,7 +1369,11 @@ It measures; it asserts only that it ran."
                   (start-process "nhmac-sample" (generate-new-buffer " *nhmac-sample*") "sample"
                                  (number-to-string (emacs-pid)) "4" "1" "-mayDie" "-file" out)))
              (end (+ (float-time) 4)))
-        (sleep-for 0.5)
+        (set-process-sentinel p (lambda (p _) (process-put p 'done t)))
+        ;; sample is attached once it says so
+        (gui-runner-wait (lambda () (with-current-buffer (process-buffer p)
+                                      (string-match-p "Sampling process" (buffer-string))))
+                         5)
         ;; the heap and the GCs of the sampled typing, to compare the builds (G1: Naglfar's GCs mark more)
         (let ((heap (garbage-collect)) (gcs gcs-done) (gct gc-elapsed) (keys 0))
           (while (< (float-time) end) (execute-kbd-macro "x") (redisplay) (cl-incf keys))
@@ -1344,7 +1385,7 @@ It measures; it asserts only that it ran."
                           (nhmac-gui--property-char-tables)))
         ;; sample symbolicates after its 4 s, which took over 10 s on the runner; the profile is a diagnostic, so a
         ;; sample still writing after a minute is dropped
-        (while (and (process-live-p p) (< (float-time) (+ end 60))) (accept-process-output p 0.2))
+        (gui-runner-wait (lambda () (process-get p 'done)) (max 0 (- (+ end 60) (float-time))))
         ;; sample's own output says why a file is missing
         (nhmac-gui--say "nhmac-key-stages:%s: sample %s %s, exit %S: %s" build out (file-exists-p out)
                         (process-exit-status p)
@@ -1548,7 +1589,7 @@ colours, tolerance 0 for fills and box lines."
     (nhmac-gui--say "nhmac-draw-other-thread: %S" (nhmac-stats))
     (should (>= (nhmac-gui--delta before :deferred-commits) 1))
     ;; the main thread's pump commits it
-    (sit-for 0.1)
+    (nhmac-gui--until (lambda () (eq (plist-get (nhmac-gui--surface) :contents-is-newest) t)) 1)
     (should (eq (plist-get (nhmac-gui--surface) :contents-is-newest) t))
     (should (= (nhmac-gui--pixel-at (+ x (nhmac-gui--draw-px 6)) (+ y (/ h 2))) #xff00ff00)))
   (kill-buffer))
@@ -1705,8 +1746,7 @@ crop marker (`nhmac-gui--marker-line'), a blank line and then a line of ASCII, i
              (set-window-fringes nil 0 0)
              (insert (nhmac-gui--marker-line) "\n    Hello, world! 0123456789 {}[]()<>;:'\",./?\n")
              (redraw-frame)
-             (redisplay t)
-             (sit-for 0.5)
+             (nhmac-gui--shown)
              ,@body)
          (kill-buffer)
          (set-window-fringes nil nil nil)
@@ -2020,8 +2060,7 @@ are put back after."
              (insert (nhmac-gui--marker-line) "\n    ")
              (insert-image (create-image ,file nil nil :scale 1))
              (redraw-frame)
-             (redisplay t)
-             (sit-for 0.5)
+             (nhmac-gui--shown)
              ,@body)
          (kill-buffer)
          (set-window-fringes nil nil nil)
@@ -2086,9 +2125,10 @@ decode of the file in sRGB (`test-imageio-pixels')."
                               (when (eql (nhmac-gui--pixel-at (* 2 x) (* 2 y)) #xff0000ff)
                                 (throw 'found (list (* 2 x) (* 2 y))))))))
         ;; and whether it lands later (the image worker's stand-in drawn first)
-        (sleep-for 0.5)
-        (redisplay t)
-        (nhmac-gui--say "nhmac-images-native: after 0.5 s, %x"
+        (nhmac-gui--until (lambda () (eql (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1))
+                                          #xff0000ff))
+                          0.5)
+        (nhmac-gui--say "nhmac-images-native: later, %x"
                         (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1))))
       (should (= (nhmac-gui--pixel-at (+ (nth 0 edges) (car xy) 1) (+ (nth 1 edges) (cdr xy) 1)) #xff0000ff)))
     (kill-buffer)))
@@ -2804,8 +2844,7 @@ point at its start, after a full redisplay; the frame's colours are put back aft
            (insert (propertize ,text 'face ,face))
            (goto-char (+ (point-min) 5))
            (redraw-frame)
-           (redisplay t)
-           (sit-for 0.3)
+           (nhmac-gui--shown)
            ,@body)
        (kill-buffer buf)
        (set-window-fringes nil nil nil)
@@ -3123,8 +3162,7 @@ and reliefs, stretches, glyphless and composed characters, images, fringe bitmap
                (insert "\n\n\n")
                (goto-char at)))
            (redraw-frame)
-           (redisplay t)
-           (sit-for 0.5)
+           (nhmac-gui--shown)
            ,@body)
        (setq glyphless-char-display glyphless)
        (kill-buffer)
@@ -3239,8 +3277,7 @@ a bare frame (`nhmac-gui--bare-frame')."
                      (propertize " " 'display '(right-fringe filled-rectangle)) "\n")
              (goto-char (point-min))
              (redraw-frame)
-             (redisplay t)
-             (sit-for 0.5)
+             (nhmac-gui--shown)
              ,@body)
          (kill-buffer)
          (set-face-attribute 'fringe nil :foreground (or ffg 'unspecified) :background (or fbg 'unspecified))

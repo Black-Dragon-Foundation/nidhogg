@@ -1,6 +1,7 @@
 ;;; nhmac-app-gui-tests.el --- Naglfar's app bundle rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el) when --app names the
 ;; installed bundle (`make install' in a --naglfar build tree); without it the rows skip.  Rows are appended under

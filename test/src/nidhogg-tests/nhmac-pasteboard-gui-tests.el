@@ -1,6 +1,7 @@
 ;;; nhmac-pasteboard-gui-tests.el --- Naglfar's clipboard, dialog and Services rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).
 

@@ -1,6 +1,7 @@
 ;;; nhmac-win-tests.el --- tests for Naglfar's Lisp half  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 

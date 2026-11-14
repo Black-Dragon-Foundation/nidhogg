@@ -1,6 +1,7 @@
 ;;; nhmac-watchdog-gui-tests.el --- the stall watchdog on Naglfar's run loop  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh on the macOS runner (nhmac-lane.txt).  AppKit runs nested run loops on the main
 ;; thread while Lisp waits for them (a popup menu's tracking): their sleeps are waits, not a stall, and the shell's
@@ -8,6 +9,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(declare-function gui-runner-observe "gui-runner" (seconds &optional tick))
 
 (defun nhmac-watchdog--say (fmt &rest args)
   "Print FMT with ARGS as a line of the lane's log (stderr)."
@@ -52,7 +54,8 @@
         (should (cl-every (lambda (w) (< w 700)) walls))))
     ;; idle: inside Emacs's own wait the observer marks nothing, and its wake never makes the wait busy
     (nhmac-watchdog--running
-      (sit-for 1)
+      ;; a span of Emacs idle in its own wait, not a wait for something
+      (gui-runner-observe 1)
       (let ((walls (nhmac-watchdog--walls)))
         (nhmac-watchdog--say "nhmac-watchdog: idle, stalls %S ms" walls)
         (should (null walls))))))

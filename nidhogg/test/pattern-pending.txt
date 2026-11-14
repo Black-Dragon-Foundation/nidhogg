@@ -27,3 +27,4 @@ nhwl-dnd-tests.el # GUI rows wait on the compositor through the gui-runner waits
 nhwl-gui-rg-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-w2-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
+nhmac-gui-tests.el # naglfar: handshake, but nhmac-keys-under-yield-loop schedules a timer (run-at-time) as its stimulus

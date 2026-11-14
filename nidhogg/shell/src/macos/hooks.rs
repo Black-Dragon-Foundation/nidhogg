@@ -306,6 +306,15 @@ impl MacShell {
                 );
                 Ok(())
             })),
+            // "(WINDOW SECS)": post `f34` to WINDOW after SECS; a negative SECS disarms it
+            "test-wake-after" => Some(numbers(arg).and_then(|n| match n[..] {
+                [win, secs] => {
+                    let window = self.win(win as WindowId)?.window.windowNumber();
+                    super::super::menus::test_wake_after(self.mtm, window, secs);
+                    Ok(())
+                }
+                _ => Err(ShellError::Arg),
+            })),
             // "(GENERATION INDEX)": a choice from the menu bar, as AppKit's action reports it
             "test-menu-choose" => Some(numbers(arg).and_then(|n| match n[..] {
                 [generation, index] => {
