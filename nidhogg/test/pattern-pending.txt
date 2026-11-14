@@ -2,7 +2,6 @@
 # One row per file: FILE # reason.  The list only shrinks: a row whose file has a line, or is gone, fails the check.
 # Handshake files park a job or child at a named point and go on from what is announced (see the lint's header).
 # `exempt FILE TEST FORM # reason': the handshake rule's exemptions, a banned call that is the stimulus under test.
-nhwl-gui-w2-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 exempt nhmac-gui-tests.el nhmac-keys-under-yield-loop run-at-time # the timer is the stimulus under test: a timer must fire while Lisp threads hold the main thread in its yield loop
 exempt workers-fatal-tests.el workers/fatal-under-lock run-at-time # the child takes the lock from a timer in its command loop, the case under test, not a marker
 exempt workers-fatal-tests.el workers/kill-emacs-with-jobs-in-flight run-at-time # the child's kill-emacs comes from a timer in its command loop with jobs in flight, the case under test
@@ -18,3 +17,12 @@ exempt nhwl-gui-w3-tests.el nhwl-gui/compositor-restart-while-scrolling run-at-t
 exempt watchdog-gui-tests.el watchdog-gui/sit-for-is-waiting sit-for # sit-for is what the row is about
 exempt watchdog-modal-gui-tests.el watchdog-gui/menu-open-is-waiting run-with-timer # only a timer acts inside the modal menu: it closes the menu after the second under test
 exempt watchdog-modal-gui-tests.el watchdog-gui/timer-inside-a-dialog-is-busy run-with-timer # a timer inside the modal dialog is the case under test; another closes it
+exempt nhwl-gui-w2-tests.el nhwl-gui/compositor-restart-closes-popups-and-menus run-at-time # the restart must land while x-popup-menu blocks: the timer is the stimulus
+exempt nhwl-gui-w2-tests.el nhwl-gui/display-lost-with-everything-open run-at-time # the display goes while x-popup-menu blocks: the timer is the stimulus
+exempt nhwl-gui-w2-tests.el nhwl-gui/menu-open-commits-nothing-while-idle run-at-time # the 0.5 s to 2.5 s idle window is the case under test
+exempt nhwl-gui-w2-tests.el nhwl-gui/live-drag-between-two-nidhoggs run-with-idle-timer # the second Nidhogg's first idle, after its first redisplay, is how it announces it has drawn
+exempt nhwl-gui-w2-tests.el nhwl-gui/context-menu-click-keeps-it-open run-at-time # only a timer acts inside the modal menu: it releases the button after the first click
+exempt nhwl-gui-w2-tests.el nhwl-gui/menu-hover-highlights-and-help-is-echoed run-at-time # only a timer acts inside the modal menu: it reads the hover's highlight and echo, then dismisses
+exempt nhwl-gui-w2-tests.el nhwl-gui/menu-wheel-scrolls-a-tall-menu run-at-time # only a timer acts inside the modal menu: it reads the scroll, then dismisses
+exempt nhwl-gui-w2-tests.el nhwl-gui/submenu-keys-open-and-close-a-level run-at-time # only a timer acts inside the modal menu: it counts the levels after each key
+exempt nhwl-gui-w2-tests.el nhwl-gui/menu-bar-click-opens-menu run-at-time # the menu-bar click must come while the menu call blocks: the timer is the stimulus
