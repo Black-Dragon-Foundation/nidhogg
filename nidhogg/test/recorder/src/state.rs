@@ -192,6 +192,8 @@ pub struct State {
     pub acked: HashMap<ObjectId, u32>,
     pub shell_clients: Vec<Rc<ShellClient>>,
     pub pings: Vec<PendingPing>,
+    /// `wait` commands not yet met (wait.rs).
+    pub waits: Vec<crate::wait::PendingWait>,
     /// The clock the frame callbacks and presentation feedback report: monotonic base plus the manual advance.
     pub mono_base: Duration,
     pub manual_ns: u64,
@@ -521,6 +523,7 @@ impl State {
             uid_gens: HashMap::new(),
             shell_clients: Vec::new(),
             pings: Vec::new(),
+            waits: Vec::new(),
             mono_base,
             manual_ns: 0,
             present_seq: 0,

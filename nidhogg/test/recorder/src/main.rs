@@ -13,6 +13,7 @@ mod shell;
 mod state;
 mod touch;
 mod vpointer;
+mod wait;
 
 use calloop::generic::Generic;
 use calloop::signals::{Signal, Signals};
@@ -205,6 +206,7 @@ fn main() {
 
     event_loop
         .run(None, &mut state, |state| {
+            wait::check(state);
             let _ = state.display.flush_clients();
         })
         .unwrap_or_else(|e| die(e.to_string()));

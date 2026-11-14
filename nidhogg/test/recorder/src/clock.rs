@@ -288,12 +288,13 @@ impl State {
         }
     }
 
-    /// The periodic tick: auto clock frames, and ping timeouts.
+    /// The periodic tick: auto clock frames, ping timeouts and wait deadlines.
     pub fn tick(&mut self) {
         if self.clock == Clock::Auto {
             self.present(0);
         }
         self.expire_pings();
+        crate::wait::check(self);
     }
 }
 

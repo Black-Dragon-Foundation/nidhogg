@@ -69,6 +69,9 @@ pub fn handle(state: &mut State, line: &str, stream: &UnixStream) -> Option<Valu
     if cmd == "read" {
         return crate::selection::read(state, &req, stream);
     }
+    if cmd == "wait" {
+        return crate::wait::wait(state, &req, stream);
+    }
     if cmd == "drag_drop" {
         return crate::dnd::drag_drop(state, &req, stream);
     }

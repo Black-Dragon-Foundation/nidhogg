@@ -220,8 +220,33 @@ Signals `error' when the reply's :ok is false."
             parsed))
       (delete-process proc))))
 
+(defun gui-runner-recorder-wait (plist on-reply)
+  "Send the recorder a `wait' for PLIST (:for \"popup\" :before IDS, or :for \"input\" :req REQ :since SEQ, and
+:timeout_ms) and return at once; ON-REPLY is called with the parsed reply once it comes.
+The reply is the recorder's announcement: what was waited on is there (:ok t), or the wait's deadline passed (:ok
+`:false', :error naming what never came).  It arrives as process output, so the caller goes on running the command
+loop or a modal loop, which read it."
+  (let* ((reply "") (done nil)
+         (answer (lambda (r) (unless done (setq done t) (funcall on-reply r)))))
+    (let ((proc (make-network-process
+                 :name "nh-recorder-wait" :family 'local :service (getenv "GLITNIR_GUI_RECORDER") :coding 'utf-8
+                 :noquery t
+                 :filter (lambda (p s)
+                           (setq reply (concat reply s))
+                           (when (string-suffix-p "\n" reply)
+                             ;; answered first: `delete-process' runs the sentinel at once, and ON-REPLY may throw
+                             (unwind-protect
+                                 (funcall answer (json-parse-string reply :object-type 'plist :array-type 'list))
+                               (delete-process p))))
+                 :sentinel (lambda (_p event)
+                             (funcall answer (list :ok :false :error (format "recorder: the wait ended: %s"
+                                                                             (string-trim event))))))))
+      (process-send-string proc (concat (json-serialize (append '(:cmd "wait") plist)) "\n"))
+      proc)))
+
 (defun gui-runner-recorder-later (steps)
-  "Send STEPS to the recorder from a batch Nidhogg, one after another; return its process.
+  "Send STEPS to the recorder from a batch Nidhogg, one after another; return its process (`ended' is put on it once
+it has exited).
 For a row whose next call blocks with no Lisp running (a drag's loop, a dialog).  Each step is (WAIT . PLIST): WAIT is
 seconds of stimulus, or `drag', which waits (10 s at most) until the recorder has logged a drag that was not there at
 this call.  PLIST is then sent, and its reply goes to the process's buffer as one line."
@@ -251,6 +276,8 @@ this call.  PLIST is then sent, and its reply goes to the process's buffer as on
                    (princ (later-ask (cdr step)))))))
     (make-process :name "nhwl-gui-later" :noquery t :connection-type 'pipe
                   :buffer (generate-new-buffer " *nhwl-gui-later*")
+                  ;; its end, for the rows that wait on it: `ended' on the process
+                  :sentinel (lambda (p _e) (when (memq (process-status p) '(exit signal)) (process-put p 'ended t)))
                   :command (list (expand-file-name invocation-name invocation-directory)
                                  "-Q" "--batch" "--eval" (prin1-to-string form)))))
 
