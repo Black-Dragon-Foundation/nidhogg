@@ -693,8 +693,14 @@ impl Store {
                     if rows.len() > MAX_ROWS {
                         return Err(());
                     }
-                    self.order = rows.iter().map(|r| r.key.clone()).collect();
-                    self.rows = rows.into_iter().map(|r| (r.key.clone(), r)).collect();
+                    let order: Vec<Box<str>> = rows.iter().map(|r| r.key.clone()).collect();
+                    let rows: HashMap<Box<str>, Row> =
+                        rows.into_iter().map(|r| (r.key.clone(), r)).collect();
+                    if rows.len() != order.len() {
+                        return Err(()); // a key twice: the draw pairs rows by key
+                    }
+                    self.order = order;
+                    self.rows = rows;
                 }
                 Op::Insert { after, rows } => {
                     if self.order.len() + rows.len() > MAX_ROWS {
@@ -1144,6 +1150,34 @@ mod tests {
                 rows: vec!["b".into()]
             }]
         );
+    }
+
+    /// A reset that names a key twice is refused as an insert of a key held is: a resync, the rows as they were, and
+    /// a draw that never walks past its rows (the Work map's live rows once sent one, and the draw panicked).
+    #[test]
+    fn a_reset_with_a_key_twice_asks_for_a_resync() {
+        let mut s = Store::new(true);
+        let mut buf = String::new();
+        s.push(
+            p(1, 0, 1, json!([{"reset": [r("a", "a"), r("b", "b")]}])),
+            0,
+        );
+        draw(&mut s, &mut buf);
+        assert_eq!(
+            s.push(
+                p(
+                    1,
+                    1,
+                    2,
+                    json!([{"reset": [r("a", "a"), r("x", "x"), r("a", "a2")]}])
+                ),
+                0
+            ),
+            Decision::Resync
+        );
+        assert_eq!(s.keys().len(), 2);
+        draw(&mut s, &mut buf);
+        assert_eq!(buf, "a\nb\n");
     }
 
     #[test]

@@ -150,7 +150,8 @@ A **store** takes the hub's row patches (`{view, class, hub, base, version, env_
 model?}`, ops `reset`, `insert {after, rows}`, `replace`, `remove`) and decides each by the editor's rules: another
 hub's diff, or one before any reset, is dropped; so is an old reset; a patch of an older env epoch is held until a reset;
 a diff of an older base is dropped, of a newer one (a gap) or naming an image or style the store lacks, it asks for a
-resync. A resync is asked once while outstanding, with a back-off of 1 s then 4 s; three within 10 s break the store.
+resync; so does a patch that names a key twice (a reset's rows, or an insert of a key the store holds), as the draw
+pairs rows by key. A resync is asked once while outstanding, with a back-off of 1 s then 4 s; three within 10 s break the store.
 A paused store keeps up to 256 patches and applies them on resume (past that, a resync). The patches come on the
 hub's `view-model` line, the patch whole under `data.rows`, through `SJA_PUSH`; an instance draws a display class's
 store with `SJA_ROWS on` (a view's twins in two classes, a wide and a narrow window, draw two stores; a patch goes to
