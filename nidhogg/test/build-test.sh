@@ -199,7 +199,9 @@ has '[ ! -d "$LC/obj" ] || parts="src obj"'; has 'tar -C "$LC" -cf - $parts'
 # ... and then compiles the preloaded Lisp natively once make is done: the changed files' .eln made native-lisp/, whose
 # absence alone starts that rule (a tarball of byte code with two .eln files otherwise)
 has ': > "$B/elc-only.restored"'; has 'phase native-compile the preloaded Lisp'; has 'rm -rf "$B/obj/native-lisp"'
-has 'make -j4 -C "$B/obj/src" ../native-lisp'
+has 'make -j4 -C "$B/obj/src" BIN_DESTDIR="$(dest BIN_DESTDIR)" ELN_DESTDIR="$(dest ELN_DESTDIR)" ../native-lisp'
+# ... with the destinations the top Makefile gives src, which the dump records (the app bundle's Frameworks/ on macOS)
+has 'make -s -C "$B/obj" -f Makefile -f - nidhogg-print'
 # ... and only for the same configure line: the prefix and the flags are part of the .eln files' ABI hash
 run NIDHOGG_BUILD_LISP_CACHE=/var/tmp/lc -- --dry-run --container fedora-45 --prefix /tmp/p1
 rcis 0; has "CONF_ID=--prefix=/tmp/p1\\ --with-native-compilation=aot"; has '"$MODE_ID" "$CONF_ID"'
