@@ -253,6 +253,14 @@ impl MacShell {
                 self.raise_in_pump = true;
                 Some(Ok(()))
             }
+            // (SIGNAL): raised by the next pump, as a signal that lands inside a glue call
+            "test-signal-in-pump" => Some(numbers(arg).and_then(|n| match n[..] {
+                [s] if (1.0..32.0).contains(&s) => {
+                    self.signal_in_pump = s as i32;
+                    Ok(())
+                }
+                _ => Err(ShellError::Arg),
+            })),
             // -1: the system's setting again; 0 or 1 stand for it
             "test-reduced-motion" => Some(numbers(arg).and_then(|n| match n[..] {
                 [v] => {
@@ -673,8 +681,13 @@ impl MacShell {
         })
     }
 
-    /// The `test-raise-in-pump` hook, in the pump.
+    /// The `test-raise-in-pump` and `test-signal-in-pump` hooks, in the pump.
     pub(super) fn maybe_raise(&mut self) {
+        let sig = std::mem::take(&mut self.signal_in_pump);
+        if sig != 0 {
+            // SAFETY: raise sends a signal to this thread; Emacs's handler runs here, inside the glue call
+            unsafe { libc::raise(sig) };
+        }
         if std::mem::take(&mut self.raise_in_pump) {
             let name = NSString::from_str("NhmacTestException");
             let reason = NSString::from_str("a test exception raised inside the pump");

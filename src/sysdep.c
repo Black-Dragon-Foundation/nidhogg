@@ -1834,10 +1834,43 @@ deliver_thread_signal (int sig, signal_handler_t handler)
   errno = old_errno;
 }
 
+#ifdef HAVE_NHWL
+_Thread_local volatile int nhg_call_depth;
+volatile sig_atomic_t nhg_deferred_fatal;
+
+/* After the outermost glue call: the signal that came during it.  */
+void
+nhg_take_deferred_fatal (void)
+{
+  int sig = nhg_deferred_fatal;
+  if (sig)
+    {
+      nhg_deferred_fatal = 0;
+      /* As in the handler.  */
+      pthread_sigmask (SIG_BLOCK, &process_fatal_action.sa_mask, 0);
+      terminate_due_to_signal (sig, 40);
+    }
+}
+
+#endif
 /* Handle bus errors, invalid instruction, etc.  */
 static void
 handle_fatal_signal (int sig)
 {
+#ifdef HAVE_NHWL
+  /* On the main thread inside a glue call, which holds the display's
+     lock with Rust frames on the stack: kill-emacs from here would read
+     input and call the glue again (a re-entry that poisons the display),
+     so the call's end runs it.  A second signal meanwhile does not
+     wait.  */
+  if ((sig == SIGTERM || sig == SIGHUP || sig == SIGINT)
+      && nhg_call_depth > 0 && !nhg_deferred_fatal
+      && !nhwl_test_fatal_in_handler)
+    {
+      nhg_deferred_fatal = sig;
+      return;
+    }
+#endif
   terminate_due_to_signal (sig, 40);
 }
 
