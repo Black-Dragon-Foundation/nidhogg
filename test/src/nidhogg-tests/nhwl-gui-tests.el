@@ -1807,6 +1807,15 @@ down then.  This covers what the compositor sent; an answer to something Emacs j
                              (nhwl-gui--get n :buffer)))
             (nhwl-gui--tree)))
 
+(defun nhwl-gui--popup-ids-tip-hidden ()
+  "The popups' ids once a tip left showing has gone: a row before may have moved the pointer over help text, and
+`tooltip-mode' then shows its tip after the delay.  `x-show-tip' replaces that tip and `x-hide-tip' hides the new one,
+so a row that takes the ids with the old tip showing would wait for it to come back."
+  (let ((n (length (nhwl-gui--popup-ids))))
+    (when (x-hide-tip)
+      (nhwl-gui--wait (lambda () (nhwl-gui--pump) (< (length (nhwl-gui--popup-ids)) n)) 5))
+    (nhwl-gui--popup-ids)))
+
 (ert-deftest nhwl-gui/tooltip-is-a-popup ()
   (skip-unless (nhwl-gui--recorder-p))
   (let ((before (nhwl-gui--popup-ids)))
@@ -1821,7 +1830,7 @@ down then.  This covers what the compositor sent; an answer to something Emacs j
 
 (ert-deftest nhwl-gui/tooltip-hidden-by-x-hide-tip ()
   (skip-unless (nhwl-gui--recorder-p))
-  (let ((before (nhwl-gui--popup-ids)))
+  (let ((before (nhwl-gui--popup-ids-tip-hidden)))
     (unwind-protect
         (progn
           (x-show-tip "hello" nil nil 5)
@@ -1833,7 +1842,7 @@ down then.  This covers what the compositor sent; an answer to something Emacs j
 
 (ert-deftest nhwl-gui/tooltip-dismissed-by-the-compositor ()
   (skip-unless (nhwl-gui--recorder-p))
-  (let ((before (nhwl-gui--popup-ids)))
+  (let ((before (nhwl-gui--popup-ids-tip-hidden)))
     (unwind-protect
         (progn
           (x-show-tip "hello" nil nil 5)
