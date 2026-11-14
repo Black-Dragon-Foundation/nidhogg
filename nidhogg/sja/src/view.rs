@@ -102,6 +102,8 @@ pub struct View {
     pub insts: BTreeMap<u32, Inst>,
     /// The models the hub sent that the draw has not applied yet (`queue`).
     pub queue: Queue,
+    /// The view's rows, when the editor draws them from Sjá (`rows on`).
+    pub rows: Option<crate::rows::Store>,
 }
 
 impl View {
@@ -214,6 +216,9 @@ impl View {
     pub fn hub_lost(&mut self) {
         self.stale = true;
         self.queue.lose();
+        if let Some(r) = &mut self.rows {
+            r.forget();
+        }
     }
 
     // ---- the history ----

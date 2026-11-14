@@ -36,7 +36,7 @@
   (defconst nidhogg-view--ops
     '((open . 2) (close . 3) (follow . 4) (walk . 5) (walk-to . 6)
       (set . 7) (get . 8) (hub-lost . 9) (stats . 10) (push . 11) (drain . 12)
-      (named . 13) (due . 14) (test-panic . 99))
+      (named . 13) (due . 14) (rows . 15) (test-panic . 99))
     "Sjá's op numbers (nidhogg/sja/include/sja.h)."))
 
 (defvar nidhogg-view-more nil
@@ -60,14 +60,27 @@ Sjá reads its envelope, decides and queues its model for the draw.
 Return (VIEW VERSION DECISION), DECISION `queue' (a diff queued),
 `reset' (a reset queued: a reset asked for has come), `drop', `resync'
 \(a gap or a cap: ask the hub for a reset) or `none' (no instance of
-VIEW is open); nil when LINE is not a `view-model' line."
+VIEW is open); nil when LINE is not a `view-model' line.
+A line whose data holds `rows' (a row patch) instead of `model' goes to
+VIEW's row store (`nidhogg-view-rows'): the answer is (VIEW VERSION
+DECISION CLASS), DECISION `apply', `drop', `hold' (an older env epoch:
+held for a reset), `resync' (ask the hub for a reset), `quiet' (a resync
+is outstanding), `broken' or `paused'; nil when no instance of VIEW
+holds rows."
   (nidhogg-view--pushed (nidhogg-view--call (nidhogg-view--op push) line)))
+
+(defconst nidhogg-view--row-decisions [apply drop hold resync quiet broken paused]
+  "What a push of a row patch decides, by Sjá's number (see
+`nidhogg-view-push').")
 
 (defsubst nidhogg-view--pushed (r)
   "R, Sjá's answer to a push, with its decision as a symbol (see
 `nidhogg-view-push').  The framed reader pushes a line itself with
 `:raw-to-sja' (`nidhogg-set-process-framing'); its entry carries R."
-  (when r (setcar (nthcdr 2 r) (aref nidhogg-view--decisions (nth 2 r))))
+  (when r
+    (setcar (nthcdr 2 r)
+            (aref (if (nthcdr 3 r) nidhogg-view--row-decisions nidhogg-view--decisions)
+                  (nth 2 r))))
   r)
 
 (defsubst nidhogg-view--drained (r)
@@ -143,6 +156,37 @@ the selection, once), `class' (of ARG), `classes' (a vector [ID CLASS
 `class-names', `expanded', `open' (of ARG: a tree node is open), `ticked', `version', `stats' or `health' (0 ok,
 1 no model, 2 broken, 3 stale)."
   (nidhogg-view--call (nidhogg-view--op get) h (symbol-name what) arg arg2))
+
+(defsubst nidhogg-view-rows (h what &optional a b)
+  "Do WHAT to the rows of instance H's view (held where they are drawn).
+WHAT is
+- `on': give the view a row store (A 1: it starts at an env epoch
+  reset); nil;
+- `draw': the edits that turn the region, A characters long, into the
+  rows: (BATCH WHOLE EDITS STYLES IMAGES TERM MODEL), BATCH the id to
+  confirm with `drawn', WHOLE 1 when the region is redrawn whole, EDITS a
+  vector of (OFFSET DELETE TEXT RUNS PROPS DISPLAY) in buffer order
+  (OFFSET from the region's start in the buffer as it stands at that
+  edit; RUNS [FROM TO FACE ...], FACE a face name or a style id; PROPS
+  [FROM TO NAME VALUE ...], a JSON VALUE as a one-element list of its
+  text; DISPLAY [KIND POS A B ...], KIND 0 a stop of A px, 1 image A
+  with alt B, 2 a space A x B px, 3 a row height of A lines of B px on
+  the newline at POS), STYLES [ID JSON ...] and IMAGES [ID SVG ...] new
+  since the last draw, TERM the terminal state's JSON or nil, MODEL the
+  model version the rows name or nil;
+- `drawn': batch A is in the buffer; 1, or 0 when A is not the pending
+  batch;
+- `epoch': the editor's env epoch is A;
+- `place': (KEY . OFFSET) of the row holding region position A, or nil;
+- `pos': the region position of offset A in row B, or nil;
+- `span': (START LENGTH) of row B, or nil;
+- `prop': the value of property NAME on row KEY, B being \"KEY\tNAME\";
+- `pause': A 1 pauses (patches are held), 0 resumes and answers the held
+  patches' decisions as numbers;
+- `redraw' (draw the region whole next), `refresh' (every row anew),
+  `forget' (drop the rows; the next reset starts again);
+- `state': (HUB VERSION RESYNC HELD BROKEN ROWS RESYNCS)."
+  (nidhogg-view--call (nidhogg-view--op rows) h (symbol-name what) a b))
 
 (defsubst nidhogg-view-hub-lost ()
   "The hub connection went: every view is stale; keys keep working."

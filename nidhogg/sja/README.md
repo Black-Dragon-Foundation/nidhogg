@@ -116,9 +116,11 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_HUB_LOST` | | nil |
 | `SJA_STATS` | | views, instances, bytes, panics, broken views |
 | `SJA_PUSH` | a whole `view-model` line | `(VIEW VERSION DECISION)`: 0 queue, 1 reset, 2 drop, 3 resync, 4 none (no instance of the view); nil when the line is not a `view-model` |
+|  | a `view-model` line whose data holds `rows` | `(VIEW VERSION DECISION CLASS)`: 0 apply, 1 drop, 2 hold, 3 resync, 4 quiet (a resync outstanding), 5 broken, 6 paused; nil when no instance holds rows |
 | `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status (0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken), the stream's newest version or nil |
 | `SJA_NAMED` | view, version | nil: a row patch named that model version |
 | `SJA_DUE` | view | as `SJA_DRAIN` (all), when the oldest queued model is one no row patch named; else nil |
+| `SJA_ROWS` | handle, verb, int or nil, string or nil | the view's row store: `on`, `draw` (the edits, see Rows), `drawn`, `epoch`, `place`, `pos`, `span`, `prop`, `pause`, `redraw`, `refresh`, `forget`, `state` (`nidhogg-view-rows` says each) |
 
 Codes: `SJA_E_ARG` (an unknown op, handle, tag or type, bad UTF-8), `SJA_E_NOMEM` (too little stack), `SJA_E_STATE`
 (the table was held), `SJA_E_PANIC`.
@@ -147,7 +149,9 @@ model?}`, ops `reset`, `insert {after, rows}`, `replace`, `remove`) and decides 
 hub's diff, or one before any reset, is dropped; so is an old reset; a patch of an older env epoch is held until a reset;
 a diff of an older base is dropped, of a newer one (a gap) or naming an image or style the store lacks, it asks for a
 resync. A resync is asked once while outstanding, with a back-off of 1 s then 4 s; three within 10 s break the store.
-A paused store keeps up to 256 patches and applies them on resume (past that, a resync).
+A paused store keeps up to 256 patches and applies them on resume (past that, a resync). The patches come on the
+hub's `view-model` line, the patch whole under `data.rows`, through `SJA_PUSH`; an instance gives its view a store with
+`SJA_ROWS on`, and the store's verbs are `SJA_ROWS`'s (`nidhogg-view-rows` in Lisp).
 
 **The draw.** The store keeps the drawn state (each drawn row's key, length in characters and content hash). `draw`
 answers the edits, in buffer order, that turn the region into the rows: an offset (characters from the region's

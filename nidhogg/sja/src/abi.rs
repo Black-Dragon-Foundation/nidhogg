@@ -40,6 +40,9 @@ pub const SJA_PUSH: i32 = 11;
 pub const SJA_DRAIN: i32 = 12;
 pub const SJA_NAMED: i32 = 13;
 pub const SJA_DUE: i32 = 14;
+/// A view's rows (`rows.rs`): `(h WHAT ARGS…)`, WHAT `on`, `epoch`, `draw`, `drawn`, `place`, `pos`, `span`, `prop`,
+/// `pause`, `redraw`, `refresh`, `state`.
+pub const SJA_ROWS: i32 = 15;
 /// Feature `test-hooks` only: panic inside the named view's guard.
 pub const SJA_TEST_PANIC: i32 = 99;
 
@@ -355,6 +358,263 @@ fn set(h: u32, what: &str, value: &Arg) -> Result<Ans, Refused> {
     })
 }
 
+/// A rows line for `view`: the push's answer `(VIEW VERSION DECISION CLASS)` (a model's answer has three elements),
+/// DECISION a `rows::Decision` number; nil when no buffer shows the view or it draws no rows from Sjá; a patch that
+/// does not decode answers `resync` through the store's books.
+fn push_rows(
+    view: &str,
+    patch: Result<crate::rows::Patch, crate::rows::Bad>,
+) -> Result<Ans, Refused> {
+    use crate::rows::Decision as D;
+    let Some(slot) = with_table(|t| t.views.get(view).cloned())? else {
+        return Ok(Ans::Nil);
+    };
+    let now = crate::guard::now_ms();
+    let r = on_view(&slot, |v| {
+        let store = v.rows.as_mut()?;
+        Some(match patch {
+            Ok(p) => {
+                let (version, class) = (p.version, p.class.clone());
+                (store.push(p, now), version, class)
+            }
+            Err(_) => (store.resync_now(now), 0, String::new()),
+        })
+    });
+    let (d, version, class) = match r {
+        Ran::Done(Some(x)) => x,
+        Ran::Done(None) => return Ok(Ans::Nil),
+        Ran::Resync => (D::Resync, 0, String::new()),
+        Ran::Broken => (D::Broken, 0, String::new()),
+    };
+    Ok(Ans::List(vec![
+        Ans::Str(view.into()),
+        Ans::Int(i64::try_from(version).unwrap_or(i64::MAX)),
+        Ans::Int(d as i64),
+        Ans::Str(class),
+    ]))
+}
+
+fn int_of(n: usize) -> Ans {
+    Ans::Int(i64::try_from(n).unwrap_or(i64::MAX))
+}
+
+/// One edit of a draw as Lisp takes it: `(OFFSET DELETE TEXT RUNS PROPS DISPLAY)`.  TEXT is the rows' texts, each
+/// with its newline; RUNS `[FROM TO FACE …]` (FACE a face name, or a style id); PROPS `[FROM TO NAME VALUE …]` (a JSON
+/// value as a one-element list of its text); DISPLAY `[KIND POS A B …]`, KIND 0 a stop (A the px), 1 an image (A the
+/// id, B the alt), 2 a space (A × B px), 3 a row's height on its newline (A lines of B px).  Positions are characters
+/// from TEXT's start.
+fn edit_ans(store: &crate::rows::Store, e: &crate::rows::Edit) -> Ans {
+    use crate::rows::{Face, PropVal};
+    let (mut text, mut runs, mut props, mut display) =
+        (String::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut at = 0usize;
+    for key in &e.rows {
+        let Some(r) = store.row(key) else { continue };
+        text.push_str(&r.text);
+        text.push('\n');
+        let p = |x: u32| int_of(at + x as usize);
+        for (a, b, f) in &r.runs {
+            runs.extend([p(*a), p(*b)]);
+            runs.push(match f {
+                Face::Named(n) => Ans::Str(n.to_string()),
+                Face::Style(id) => Ans::Int(i64::try_from(*id).unwrap_or(i64::MAX)),
+            });
+        }
+        for (a, b, n, v) in &r.props {
+            props.extend([p(*a), p(*b), Ans::Str(n.to_string())]);
+            props.push(match v {
+                PropVal::Str(s) => Ans::Str(s.to_string()),
+                PropVal::Int(i) => Ans::Int(*i),
+                PropVal::Json(j) => Ans::List(vec![Ans::Str(j.to_string())]),
+            });
+        }
+        for (pos, px) in &r.stops {
+            display.extend([Ans::Int(0), p(*pos), Ans::Int(i64::from(*px)), Ans::Nil]);
+        }
+        for (pos, id, alt) in &r.images {
+            display.extend([
+                Ans::Int(1),
+                p(*pos),
+                Ans::Str(id.to_string()),
+                Ans::Str(alt.to_string()),
+            ]);
+        }
+        for (pos, w, h) in &r.spaces {
+            display.extend([
+                Ans::Int(2),
+                p(*pos),
+                Ans::Int(i64::from(*w)),
+                Ans::Int(i64::from(*h)),
+            ]);
+        }
+        if let Some((lines, unit)) = r.height {
+            display.extend([
+                Ans::Int(3),
+                int_of(at + r.chars - 1),
+                Ans::Int(i64::from(lines)),
+                Ans::Int(i64::from(unit)),
+            ]);
+        }
+        at += r.chars;
+    }
+    Ans::List(vec![
+        int_of(e.offset),
+        int_of(e.delete),
+        Ans::Str(text),
+        Ans::Vector(runs),
+        Ans::Vector(props),
+        Ans::Vector(display),
+    ])
+}
+
+/// `SJA_ROWS` on handle `h`'s view.
+fn rows(h: u32, what: &str, a: &Arg, b: &Arg) -> Result<Ans, Refused> {
+    use crate::rows::Store;
+    let usize_of = |x: &Arg| usize::try_from(x.int()?).map_err(|_| Refused::Arg);
+    match what {
+        "on" => {
+            let reset = matches!(a, Arg::Int(n) if *n != 0);
+            verb(h, move |v| {
+                v.rows.get_or_insert_with(|| Store::new(reset));
+                Ans::Nil
+            })
+        }
+        "draw" => {
+            let region = usize_of(a)?;
+            verb(h, move |v| {
+                let Some(s) = v.rows.as_mut() else {
+                    return Ans::Nil;
+                };
+                let (id, whole, edits) = s.draw(region);
+                let (styles, images) = s.take_fresh();
+                let edits = edits.iter().map(|e| edit_ans(s, e)).collect();
+                Ans::List(vec![
+                    Ans::Int(i64::try_from(id).unwrap_or(i64::MAX)),
+                    Ans::Int(i64::from(whole)),
+                    Ans::Vector(edits),
+                    Ans::Vector(
+                        styles
+                            .into_iter()
+                            .flat_map(|(id, s)| {
+                                [
+                                    Ans::Int(i64::try_from(id).unwrap_or(i64::MAX)),
+                                    Ans::Str(s.into()),
+                                ]
+                            })
+                            .collect(),
+                    ),
+                    Ans::Vector(
+                        images
+                            .into_iter()
+                            .flat_map(|(id, s)| [Ans::Str(id.into()), Ans::Str(s.into())])
+                            .collect(),
+                    ),
+                    s.term
+                        .as_ref()
+                        .map_or(Ans::Nil, |t| Ans::Str(t.to_string())),
+                    s.model
+                        .map_or(Ans::Nil, |m| Ans::Int(i64::try_from(m).unwrap_or(i64::MAX))),
+                ])
+            })
+        }
+        _ => {
+            let n = match a {
+                Arg::Int(n) => Some(*n),
+                _ => None,
+            };
+            rows_small(h, what, n, b.opt_str()?.map(str::to_string))
+        }
+    }
+}
+
+/// The small `SJA_ROWS` verbs.  A is an integer argument when one was given, B a string.
+fn rows_small(h: u32, what: &str, a: Option<i64>, b: Option<String>) -> Result<Ans, Refused> {
+    let now = crate::guard::now_ms();
+    let what = what.to_string();
+    verb(h, move |v| {
+        let Some(s) = v.rows.as_mut() else {
+            return Ans::Nil;
+        };
+        match what.as_str() {
+            "drawn" => Ans::Int(i64::from(
+                a.and_then(|id| u64::try_from(id).ok())
+                    .is_some_and(|id| s.drawn(id)),
+            )),
+            "epoch" => {
+                s.epoch = a.and_then(|n| u64::try_from(n).ok()).unwrap_or(0);
+                Ans::Nil
+            }
+            "place" => match a
+                .and_then(|p| usize::try_from(p).ok())
+                .and_then(|p| s.place(p))
+            {
+                Some((k, off)) => Ans::Dotted(vec![Ans::Str(k.into()), int_of(off)]),
+                None => Ans::Nil,
+            },
+            "pos" => b
+                .as_deref()
+                .and_then(|k| s.pos(k, a.and_then(|n| usize::try_from(n).ok()).unwrap_or(0)))
+                .map_or(Ans::Nil, int_of),
+            "span" => b
+                .as_deref()
+                .and_then(|k| s.row_span(k))
+                .map_or(Ans::Nil, |(at, n)| Ans::List(vec![int_of(at), int_of(n)])),
+            "prop" => {
+                // B is "KEY\tNAME": the first value of NAME on the row, as in a draw's PROPS
+                let Some((k, name)) = b.as_deref().and_then(|x| x.split_once('\t')) else {
+                    return Ans::Nil;
+                };
+                s.row(k)
+                    .and_then(|r| r.props.iter().find(|p| &*p.2 == name))
+                    .map_or(Ans::Nil, |(_, _, _, v)| match v {
+                        crate::rows::PropVal::Str(x) => Ans::Str(x.to_string()),
+                        crate::rows::PropVal::Int(i) => Ans::Int(*i),
+                        crate::rows::PropVal::Json(j) => Ans::List(vec![Ans::Str(j.to_string())]),
+                    })
+            }
+            "pause" => {
+                if a.is_some_and(|n| n != 0) {
+                    if s.paused.is_none() {
+                        s.paused = Some((0, Vec::new()));
+                    }
+                    Ans::Nil
+                } else {
+                    Ans::List(
+                        s.resume(now)
+                            .into_iter()
+                            .map(|d| Ans::Int(d as i64))
+                            .collect(),
+                    )
+                }
+            }
+            "redraw" => {
+                s.redraw();
+                Ans::Nil
+            }
+            "refresh" => {
+                s.refresh_all();
+                Ans::Nil
+            }
+            "forget" => {
+                s.forget();
+                Ans::Nil
+            }
+            "state" => Ans::List(vec![
+                s.hub
+                    .map_or(Ans::Nil, |x| Ans::Int(i64::try_from(x).unwrap_or(i64::MAX))),
+                s.version
+                    .map_or(Ans::Nil, |x| Ans::Int(i64::try_from(x).unwrap_or(i64::MAX))),
+                Ans::Int(i64::from(s.resync)),
+                int_of(s.held.len()),
+                Ans::Int(i64::from(s.broken)),
+                int_of(s.keys().len()),
+                Ans::Int(i64::try_from(s.resyncs).unwrap_or(i64::MAX)),
+            ]),
+            _ => Ans::Nil,
+        }
+    })
+}
+
 /// One call, decoded (see `sja_call`).
 fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
     match op {
@@ -421,9 +681,25 @@ fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
             Ok(Ans::Nil)
         }
         SJA_STATS => Ok(Ans::ints(&with_table(|t| t.stats())?)),
+        SJA_ROWS => rows(
+            arg(args, 0).handle()?,
+            arg(args, 1).str()?,
+            arg(args, 2),
+            arg(args, 3),
+        ),
         SJA_PUSH => {
             let line = arg(args, 0).str()?;
-            let Some((e, ops)) = crate::queue::read_line(line) else {
+            // a model line (typed first), else a rows line, else a model line through `Value` (its errors stand)
+            let read = match crate::queue::read_line_typed(line) {
+                Some((e, ops)) => Some((e, Ok(ops))),
+                None => {
+                    if let Some((view, patch)) = crate::rows::read_line(line) {
+                        return push_rows(&view, patch);
+                    }
+                    crate::queue::read_line_value(line)
+                }
+            };
+            let Some((e, ops)) = read else {
                 return Ok(Ans::Nil);
             };
             let answer = |d: Decision| {

@@ -414,6 +414,19 @@ pub fn patch(v: &Value) -> Result<Patch, Bad> {
 /// The styles (id, JSON) and images (id, SVG) Lisp has not been given.
 pub type Fresh = (Vec<(u64, Box<str>)>, Vec<(Box<str>, Box<str>)>);
 
+/// Read a rows line: `{"event": "view-model", "data": {"view": V, "rows": PATCH}}` (the hub's `view-patch` data, sent
+/// on the model's raw path so Lisp never parses it).  `None` when the line is not one.
+pub fn read_line(line: &str) -> Option<(String, Result<Patch, Bad>)> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v.get("event")?.as_str()? != "view-model" {
+        return None;
+    }
+    let d = v.get("data")?;
+    let rows = d.get("rows")?;
+    let view = d.get("view")?.as_str()?.to_string();
+    Some((view, patch(rows)))
+}
+
 /// One edit of a draw: at `offset` (characters from the region's start, the buffer as it stands then), `delete`
 /// characters go and `rows` are inserted, their texts joined (each with its newline).
 #[derive(Clone, Debug, PartialEq)]
@@ -541,6 +554,15 @@ impl Store {
         self.resync = true;
         self.last_resync = Some(now);
         Decision::Resync
+    }
+
+    /// A patch that did not decode: a resync, by the books.
+    pub fn resync_now(&mut self, now: u64) -> Decision {
+        if self.broken {
+            Decision::Broken
+        } else {
+            self.resync_at(now)
+        }
     }
 
     /// Decide `p` and keep the books; an applied patch's rows are stored (the draw does the rest).

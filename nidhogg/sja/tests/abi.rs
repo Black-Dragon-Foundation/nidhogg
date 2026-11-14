@@ -331,3 +331,111 @@ fn header_declares_every_export() {
         assert!(h.contains(&format!(" {e} (")), "{e} is not in sja.h");
     }
 }
+
+/// A rows line, as the hub sends a `view-patch` on the model's raw path.
+fn rows_line(view: &str, base: u64, version: u64, ops: serde_json::Value) -> String {
+    serde_json::json!({"event": "view-model", "data": {"view": view, "rows": {
+        "view": view, "class": "c", "hub": 5, "base": base, "version": version, "env_epoch": 0, "ops": ops,
+        "styles": [[3, {"fg": {"rgb": [1, 2, 3]}}]]}}})
+    .to_string()
+}
+
+fn rows(h: i64, what: &str, a: SjaArg, b: SjaArg) -> Ans {
+    ok(SJA_ROWS, &[int(h), text(what), a, b])
+}
+
+#[test]
+fn rows_go_through_the_c_door() {
+    let _l = lock();
+    let h = open("rows-door", None);
+    // no store yet: a rows line is answered nil (a view that draws no rows from Sjá)
+    let line = rows_line(
+        "rows-door",
+        0,
+        1,
+        serde_json::json!([{"reset": [{"key": "a", "text": "héllo",
+        "runs": [[0, 2, "s:3"], [2, 5, "drgnx-x"]], "props": [[0, 5, "drgnx-work-id", "n1"]],
+        "stops": [[1, 40]], "height": {"lines": 2, "unit": 0}}]}]),
+    );
+    assert_eq!(ok(SJA_PUSH, &[text(&line)]), Ans::Nil);
+    rows(h, "on", int(1), nil());
+    let Ans::List(xs) = ok(SJA_PUSH, &[text(&line)]) else {
+        panic!("no answer")
+    };
+    assert_eq!(xs, vec![st("rows-door"), Ans::Int(1), Ans::Int(0), st("c")]);
+    let Ans::List(d) = rows(h, "draw", int(0), nil()) else {
+        panic!("no draw")
+    };
+    let Ans::Vector(edits) = &d[2] else {
+        panic!("no edits")
+    };
+    assert_eq!(edits.len(), 1);
+    let Ans::List(e) = &edits[0] else {
+        panic!("an edit")
+    };
+    assert_eq!(e[0..3], [Ans::Int(0), Ans::Int(0), st("héllo\n")]);
+    assert_eq!(
+        e[3],
+        Ans::Vector(vec![
+            Ans::Int(0),
+            Ans::Int(2),
+            Ans::Int(3),
+            Ans::Int(2),
+            Ans::Int(5),
+            st("drgnx-x")
+        ])
+    );
+    assert_eq!(
+        e[4],
+        Ans::Vector(vec![
+            Ans::Int(0),
+            Ans::Int(5),
+            st("drgnx-work-id"),
+            st("n1")
+        ])
+    );
+    assert_eq!(
+        e[5],
+        Ans::Vector(vec![
+            Ans::Int(0),
+            Ans::Int(1),
+            Ans::Int(40),
+            Ans::Nil,
+            Ans::Int(3),
+            Ans::Int(5),
+            Ans::Int(2),
+            Ans::Int(0)
+        ])
+    );
+    // the style comes once, with the draw that first needs it
+    let Ans::Vector(styles) = &d[3] else {
+        panic!("styles")
+    };
+    assert_eq!(styles[0], Ans::Int(3));
+    rows(h, "drawn", int_arg(&d[0]), nil());
+    assert_eq!(
+        rows(h, "place", int(3), nil()),
+        Ans::Dotted(vec![st("a"), Ans::Int(3)])
+    );
+    assert_eq!(rows(h, "pos", int(2), text("a")), Ans::Int(2));
+    assert_eq!(rows(h, "prop", nil(), text("a\tdrgnx-work-id")), st("n1"));
+    // a gap asks for a resync; the store's state says so
+    let gap = rows_line("rows-door", 4, 5, serde_json::json!([{"remove": ["a"]}]));
+    let Ans::List(xs) = ok(SJA_PUSH, &[text(&gap)]) else {
+        panic!("no answer")
+    };
+    assert_eq!(xs[2], Ans::Int(3));
+    let Ans::List(state) = rows(h, "state", nil(), nil()) else {
+        panic!("state")
+    };
+    assert_eq!(state[2], Ans::Int(1));
+    ok(SJA_CLOSE, &[int(h)]);
+}
+
+/// An integer answer as an argument.
+fn int_arg(a: &Ans) -> SjaArg {
+    match a {
+        Ans::Int(i) => int(*i),
+        a => panic!("not an int: {a:?}"),
+    }
+}
