@@ -1,6 +1,7 @@
 ;;; nhmac-menu-gui-tests.el --- Naglfar's menu rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).  The native menu bar is built
 ;; from trees Lisp sends at idle; these rows read what the shell holds (`nhmac--query' 'test-menu-dump) and drive the
@@ -23,8 +24,8 @@
           (split-string (nhmac--query 'test-menu-dump) "\n" t)))
 
 (defun nhmac-menu-gui--settle ()
-  "Let the pending idle build run and the shell take it."
-  (sit-for 1.0))
+  "Let the pending idle build run and the shell take it (3 s at most)."
+  (nhmac-menu-gui--idle 3 (lambda () (null nhmac-menu--timer))))
 
 ;; Task 27: menus built at idle
 (ert-deftest nhmac-menu-builds-per-key ()
@@ -64,19 +65,25 @@
       (remove-hook 'activate-menubar-hook hook))))
 
 (defun nhmac-menu-gui--idle (seconds pred)
-  "Wait idle, as the command loop does, until PRED holds or SECONDS pass; PRED's last value.
-The rows run from a timer, where `sit-for' and `accept-process-output' wait with a time limit and so never start
-idleness (keyboard.c starts it only for a read without one): idle timers would not run.  This reads with no limit and
-leaves by a throw from a timer, as `with-timeout' does."
-  (let* ((got nil)
-         (poll (run-with-timer 0.05 0.05 (lambda () (when (setq got (funcall pred))
-                                                       (throw 'nhmac-menu-gui--idle nil)))))
-         (stop (run-with-timer seconds nil (lambda () (throw 'nhmac-menu-gui--idle nil)))))
+  "Wait idle, as the command loop does, until PRED holds, at most SECONDS; PRED's last value.
+`sit-for' and `accept-process-output' wait with a time limit and so never start idleness (keyboard.c starts it only
+for a read without one): the idle build would not run.  This reads with no limit, and PRED is asked after each idle
+build, which ends the read with an `f35' it posts through the shell; the shell's wake (`test-wake-after') ends it with
+`f34' after SECONDS.  Other events read meanwhile go back to the queue, in order."
+  (let ((post (lambda (&rest _) (nhmac--call 'test-post-key (selected-frame) #xF726 #xF726 0)))
+        (got nil) (kept nil) e)
+    (advice-add 'nhmac-menu-build :after post)
+    (nhmac--call 'test-wake-after (selected-frame) seconds)
     (unwind-protect
-        (catch 'nhmac-menu-gui--idle
-          (while t (read-event)))
-      (cancel-timer poll)
-      (cancel-timer stop))
+        (while (and (not (setq got (funcall pred)))
+                    (not (eq (setq e (read-event)) 'f34)))
+          (unless (eq e 'f35) (push e kept)))
+      (nhmac--call 'test-wake-after (selected-frame) -1)
+      (advice-remove 'nhmac-menu-build post)
+      ;; an announcement posted before the wait ended is read here, not by the next row
+      (while (input-pending-p)
+        (unless (memq (setq e (read-event)) '(f34 f35)) (push e kept)))
+      (setq unread-command-events (append unread-command-events (nreverse kept))))
     got))
 
 (ert-deftest nhmac-menu-buffers-after-filter ()
