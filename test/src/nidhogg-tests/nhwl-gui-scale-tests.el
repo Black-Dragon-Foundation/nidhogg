@@ -362,5 +362,33 @@ full-screen frame keeps the compositor's size, so the scale change did not corre
     (nhwl-gui-scale--fill (round (* 120 (glitnir-gui--scale))) w h)
     (should-not (seq-remove (lambda (r) (equal (cdr r) (list w h))) (nreverse got)))))
 
+(ert-deftest nhwl-gui/fullscreen-scale-change-over-a-pending-size ()
+  "The configure with the output's new logical size is fitted at the old scale, and that size is still pending (no
+redisplay since) when the new scale arrives: the frame ends at the logical size at the new scale.  The scale's fit
+compared with the frame's size before the pending one, found it equal and kept the pending one, as when the
+compositor's configure and scale are read in one go under load (fullscreen-fills-the-output-across-a-scale-change
+failed so, at (240 1440 900) on a 2880x1800 output)."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let* ((size (mapcar #'string-to-number (split-string (getenv "GLITNIR_GUI_SIZE") "x")))
+         (w (car size)) (h (cadr size)))
+    (nhwl-gui-scale--keeping
+      (set-frame-parameter nil 'fullscreen 'fullboth)
+      (should (equal (nhwl-gui-scale--fill 120 w h) (list 120 w h)))
+      ;; the configure and the scale both sent (by another process) while this one runs Lisp alone, reading nothing:
+      ;; the next read applies both, the configure's size pending at the scale (any wait for process output in
+      ;; between, `gui-runner-recorder''s own, would read the configure and apply its size first)
+      (let ((later (gui-runner-recorder-later
+                    `((0 :cmd "configure" :surface "focused"
+                         :size ,(vector (round (* w 120) 150) (round (* h 120) 150))
+                         :states ["fullscreen" "activated"])
+                      (0 :cmd "scale" :value120 150))))
+            (until (+ (float-time) 3)))
+        (while (< (float-time) until))      ; no I/O: what the recorder sends waits on the socket
+        (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (< (abs (- (frame-scale-factor) 1.25)) 0.001)) 5))
+        (nhwl-gui--wait (lambda () (accept-process-output later 0.05) (not (process-live-p later))) 5))
+      (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t) (= (frame-pixel-width) w)) 5)
+      (should (equal (list (frame-pixel-width) (frame-pixel-height)) (list w h))))
+    (nhwl-gui-scale--fill (round (* 120 (glitnir-gui--scale))) w h)))
+
 (provide 'nhwl-gui-scale-tests)
 ;;; nhwl-gui-scale-tests.el ends here
