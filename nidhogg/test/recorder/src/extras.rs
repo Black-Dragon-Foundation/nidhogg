@@ -326,7 +326,7 @@ impl Dispatch<XdgSessionManagerV1, ()> for State {
         resource: &XdgSessionManagerV1,
         request: xdg_session_manager_v1::Request,
         _: &(),
-        _: &DisplayHandle,
+        dh: &DisplayHandle,
         init: &mut DataInit<'_, Self>,
     ) {
         let xdg_session_manager_v1::Request::GetSession {
@@ -349,10 +349,12 @@ impl Dispatch<XdgSessionManagerV1, ()> for State {
                 return;
             }
         };
+        // the client's pid: a row reads its own Emacs's sessions, not another client's on the same display
+        let pid = client.get_credentials(dh).ok().map(|c| c.pid);
         state.log_session(
             "get_session",
             session_id.as_deref(),
-            json!({"reason": name}),
+            json!({"reason": name, "pid": pid}),
         );
         let known = session_id.filter(|s| state.extras.store.sessions.contains_key(s));
         if let Some(known) = &known {
