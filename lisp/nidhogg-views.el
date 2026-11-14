@@ -36,7 +36,7 @@
   (defconst nidhogg-view--ops
     '((open . 2) (close . 3) (follow . 4) (walk . 5) (walk-to . 6)
       (set . 7) (get . 8) (hub-lost . 9) (stats . 10) (push . 11) (drain . 12)
-      (named . 13) (due . 14) (rows . 15) (test-panic . 99))
+      (named . 13) (due . 14) (rows . 15) (bar . 16) (test-panic . 99))
     "Sjá's op numbers (nidhogg/sja/include/sja.h)."))
 
 (defvar nidhogg-view-more nil
@@ -187,6 +187,20 @@ WHAT is
   `forget' (drop the rows; the next reset starts again);
 - `state': (HUB VERSION RESYNC HELD BROKEN ROWS RESYNCS)."
   (nidhogg-view--call (nidhogg-view--op rows) h (symbol-name what) a b))
+
+(defsubst nidhogg-view-bar (spec)
+  "A bar's layout: which of its segments fit, and where its one cuttable
+segment is cut.  SPEC is a string of integers: 1 WIDTH PAD SPACE LSEP
+RSEP ELLIPSIS CUT-MIN COLUMNS NLEFT NRIGHT, then each segment, the left
+ones first, as DROP WIDTH CUT (DROP its rank in the drop order, lowest
+first, or -1; CUT 1 for the cuttable one, then EXTRA, the room either
+side of its text that stays, N and its N characters' widths).  COLUMNS
+1: a terminal's bar, whose ellipsis is left out when wider than the
+room.  The answer is (LEFT RIGHT CUT RIGHT-WIDTH): the indices of the
+segments kept on each side, CUT nil or (INDEX KEEP ELLIPSIS WIDTH) (the
+cuttable segment's first KEEP characters, then the ellipsis when
+ELLIPSIS is 1), and the right run's width."
+  (nidhogg-view--call (nidhogg-view--op bar) spec))
 
 (defsubst nidhogg-view-hub-lost ()
   "The hub connection went: every view is stale; keys keep working."

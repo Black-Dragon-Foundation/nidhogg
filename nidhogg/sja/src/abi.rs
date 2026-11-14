@@ -43,6 +43,8 @@ pub const SJA_DUE: i32 = 14;
 /// A view's rows (`rows.rs`): `(h WHAT ARGS…)`, WHAT `on`, `epoch`, `draw`, `drawn`, `place`, `pos`, `span`, `prop`,
 /// `pause`, `redraw`, `refresh`, `state`.
 pub const SJA_ROWS: i32 = 15;
+/// A bar's layout (`bar.rs`): `(SPEC)` → `(LEFT RIGHT CUT RIGHT-WIDTH)`, CUT nil or `(INDEX KEEP ELLIPSIS WIDTH)`.
+pub const SJA_BAR: i32 = 16;
 /// Feature `test-hooks` only: panic inside the named view's guard.
 pub const SJA_TEST_PANIC: i32 = 99;
 
@@ -225,6 +227,23 @@ fn ran(r: Ran<Ans>, on_resync: Ans, on_broken: Ans) -> Ans {
         Ran::Resync => on_resync,
         Ran::Broken => on_broken,
     }
+}
+
+/// `SJA_BAR`'s answer: `(LEFT RIGHT CUT RIGHT-WIDTH)`.
+fn bar_ans(f: &crate::bar::Fit) -> Ans {
+    Ans::List(vec![
+        Ans::ints(&f.left),
+        Ans::ints(&f.right),
+        f.cut.as_ref().map_or(Ans::Nil, |c| {
+            Ans::List(vec![
+                Ans::Int(c.index as i64),
+                Ans::Int(c.keep as i64),
+                Ans::Int(i64::from(c.ellipsis)),
+                Ans::Int(c.width),
+            ])
+        }),
+        Ans::Int(f.right_width),
+    ])
 }
 
 /// Run a verb on handle `h`'s view.
@@ -687,6 +706,10 @@ fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
             arg(args, 2),
             arg(args, 3),
         ),
+        SJA_BAR => {
+            let spec = crate::bar::Spec::read(arg(args, 0).str()?).ok_or(Refused::Arg)?;
+            Ok(bar_ans(&crate::bar::fit(&spec)))
+        }
         SJA_PUSH => {
             let line = arg(args, 0).str()?;
             // a model line (typed first), else a rows line, else a model line through `Value` (its errors stand)

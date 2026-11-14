@@ -439,3 +439,25 @@ fn int_arg(a: &Ans) -> SjaArg {
         a => panic!("not an int: {a:?}"),
     }
 }
+
+#[test]
+fn a_bar_is_laid_out_through_the_c_door() {
+    let _l = lock();
+    let i = |n: i64| Ans::Int(n);
+    // a branch of 100 px cut to 9 characters, eol dropped, lsp dropped: (LEFT RIGHT CUT RIGHT-WIDTH)
+    let line = "1 200 8 4 2 2 6 56 0 2 3  -1 100 1 12 11 8 8 8 8 8 8 8 8 8 8 8  -1 30 0  3 40 0  -1 50 0  0 20 0";
+    assert_eq!(
+        ok(SJA_BAR, &[text(line)]),
+        Ans::List(vec![
+            Ans::List(vec![i(0), i(1)]),
+            Ans::List(vec![i(1)]),
+            Ans::List(vec![i(0), i(9), i(1), i(90)]),
+            i(50),
+        ])
+    );
+    assert_eq!(
+        call_for_test(SJA_BAR, &[text("2 0")]).err(),
+        Some(SJA_E_ARG),
+        "not a spec"
+    );
+}

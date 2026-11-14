@@ -330,6 +330,14 @@ touching only the rows that changed."
           (should (equal (nth 2 (nidhogg-view-push (sja-tests--rows-line "t-rows" 7 8 "[]"))) 'quiet)))
       (nidhogg-view-close h))))
 
+(ert-deftest sja/a-bar-is-laid-out ()
+  "A bar's segments that fit and its branch's cut, through the door: eol and lsp go, the branch keeps 9 characters."
+  (should (equal (nidhogg-view-bar
+                  (concat "1 200 8 4 2 2 6 56 0 2 3  -1 100 1 12 11 8 8 8 8 8 8 8 8 8 8 8  -1 30 0"
+                          "  3 40 0  -1 50 0  0 20 0"))
+                 '((0 1) (1) (0 9 1 90) 50)))
+  (should-error (nidhogg-view-bar "2 0") :type 'args-out-of-range))
+
 (provide 'sja-tests)
 
 ;;; sja-tests.el ends here
