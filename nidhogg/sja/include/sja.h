@@ -46,6 +46,7 @@ extern "C" {
 #define SJA_DUE 14
 #define SJA_ROWS 15
 #define SJA_BAR 16
+#define SJA_PICK 17
 #define SJA_TEST_PANIC 99
 
 typedef struct

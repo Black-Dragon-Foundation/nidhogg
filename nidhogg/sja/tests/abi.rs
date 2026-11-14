@@ -441,6 +441,36 @@ fn int_arg(a: &Ans) -> SjaArg {
 }
 
 #[test]
+fn a_local_list_is_picked_through_the_c_door() {
+    let _l = lock();
+    let list = "0\t-1\tView: Split Editor Down\n0\t0\tWindow: Split Right\n1\t-1\tFile: split.rs\n";
+    let Ans::Int(h) = ok(SJA_PICK, &[text("load"), text(list)]) else {
+        panic!("a handle")
+    };
+    let i = |n: i64| Ans::Int(n);
+    // the recent Window first, then View (both commands), then the file
+    assert_eq!(
+        ok(SJA_PICK, &[text("top"), int(h), text("split"), int(10)]),
+        Ans::List(vec![i(1), i(0), i(2)])
+    );
+    assert_eq!(
+        ok(SJA_PICK, &[text("top"), int(h), text("split"), int(1)]),
+        Ans::List(vec![i(1)])
+    );
+    assert_eq!(ok(SJA_PICK, &[text("close"), int(h)]), Ans::Nil);
+    assert_eq!(
+        call_for_test(SJA_PICK, &[text("top"), int(h), text(""), int(1)]).err(),
+        Some(SJA_E_ARG),
+        "a closed list"
+    );
+    assert_eq!(
+        call_for_test(SJA_PICK, &[text("load"), text("9\tx\n")]).err(),
+        Some(SJA_E_ARG),
+        "not a list"
+    );
+}
+
+#[test]
 fn a_bar_is_laid_out_through_the_c_door() {
     let _l = lock();
     let i = |n: i64| Ans::Int(n);

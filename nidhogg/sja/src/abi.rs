@@ -45,6 +45,8 @@ pub const SJA_DUE: i32 = 14;
 pub const SJA_ROWS: i32 = 15;
 /// A bar's layout (`bar.rs`): `(SPEC)` → `(LEFT RIGHT CUT RIGHT-WIDTH)`, CUT nil or `(INDEX KEEP ELLIPSIS WIDTH)`.
 pub const SJA_BAR: i32 = 16;
+/// A local list (`pick.rs`): `("load" TEXT)` → handle, `("top" H INPUT N)` → indices, `("close" H)`.
+pub const SJA_PICK: i32 = 17;
 /// Feature `test-hooks` only: panic inside the named view's guard.
 pub const SJA_TEST_PANIC: i32 = 99;
 
@@ -709,6 +711,26 @@ fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
         SJA_BAR => {
             let spec = crate::bar::Spec::read(arg(args, 0).str()?).ok_or(Refused::Arg)?;
             Ok(bar_ans(&crate::bar::fit(&spec)))
+        }
+        SJA_PICK => {
+            use crate::pick;
+            match arg(args, 0).str()? {
+                "load" => {
+                    let list = pick::List::read(arg(args, 1).str()?).ok_or(Refused::Arg)?;
+                    Ok(Ans::Int(i64::from(pick::load(list))))
+                }
+                "top" => {
+                    let (h, input) = (arg(args, 1).handle()?, arg(args, 2).str()?);
+                    let n = usize::try_from(arg(args, 3).int()?).map_err(|_| Refused::Arg)?;
+                    let top = pick::top(h, input, n).ok_or(Refused::Arg)?;
+                    Ok(Ans::ints(&top))
+                }
+                "close" => {
+                    pick::close(arg(args, 1).handle()?);
+                    Ok(Ans::Nil)
+                }
+                _ => Err(Refused::Arg),
+            }
         }
         SJA_PUSH => {
             let line = arg(args, 0).str()?;
