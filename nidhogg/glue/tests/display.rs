@@ -23,14 +23,30 @@ fn open(rec: &Recorder) -> *mut NhgDisplay {
     d
 }
 
-/// The process's threads, less libtest's: it names each test's thread after the test (`display::…`) and, running
-/// fewer threads than there are tests, starts the next one when one ends, whatever `SERIAL` holds.
-fn threads() -> usize {
-    std::fs::read_dir("/proc/self/task")
+/// The process's threads that can still run, less libtest's: it names each test's thread after the test (`display::…`)
+/// and, running fewer threads than there are tests, starts the next one when one ends, whatever `SERIAL` holds.  A
+/// thread is counted while it has an address space: `pthread_join` returns once the exiting thread has left it (the
+/// kernel clears the joiner's tid futex in `exit_mm`), and the kernel lists the task in `/proc/self/task` until it
+/// reaps it a little later, so a joined thread can still be listed, running and with no `Vm` lines in its status
+/// (a loaded desktop showed the shell's reader so, at the count before and after).
+fn threads() -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir("/proc/self/task")
         .unwrap()
-        .filter_map(|e| std::fs::read_to_string(e.ok()?.path().join("comm")).ok())
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            let status = std::fs::read_to_string(p.join("status")).ok()?;
+            status.contains("\nVmSize:").then_some(())?;
+            Some(
+                std::fs::read_to_string(p.join("comm"))
+                    .ok()?
+                    .trim()
+                    .to_string(),
+            )
+        })
         .filter(|comm| !comm.starts_with("display::"))
-        .count()
+        .collect();
+    v.sort();
+    v
 }
 
 /// What each open descriptor is (`socket:[…]`, `anon_inode:[eventfd]`, `/memfd:…`), sorted.
