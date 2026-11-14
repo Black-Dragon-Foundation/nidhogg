@@ -65,7 +65,7 @@ class_of() {
 
 # every listed name must be defined in exactly one test file, and none may be a D test (a D test has no flake)
 while IFS="$(printf '\t')" read -r name _; do
-  n=$(grep -rlF --include='*.el' -e "(ert-deftest $name " -e "(ert-deftest $name)" "$src" 2>/dev/null | sort -u | wc -l)
+  n=$(grep -rlF --include='*.el' -e "(ert-deftest $name " -e "(ert-deftest $name)" "$src" 2>/dev/null | sort -u | wc -l | tr -d ' ')   # BSD wc pads the count
   [ "$n" -ge 1 ] || red "flaky row $name names no test (stale row)"
   [ "$n" -le 1 ] || red "flaky row $name names a test defined in $n files"
   [ "$n" -ne 1 ] || [ "$(class_of "$name")" != det ] || red "flaky row $name names a deterministic test (a D test has no flake: fix it)"
