@@ -447,7 +447,7 @@ elc_norm() {
   printf '%s\n' "$o"
 }
 lc_lock -s
-rm -f "$B/eln-restored.list"
+rm -f "$B/eln-restored.list" "$B/elc-only.restored"
 if [ "$LC_RESTORE" = 1 ] && [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc_id)" ]; then
   phase restore compiled Lisp
   # obj (the .eln files) may be missing: a caller that keys them apart restores only the byte-compiled part
@@ -456,6 +456,7 @@ if [ "$LC_RESTORE" = 1 ] && [ -f "$LC/stamp" ] && [ "$(cat "$LC/stamp")" = "$(cc
   touch "$B/.restored"
   (cd "$LC/src" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/src/$f"; done
   [ ! -d "$LC/obj" ] || (cd "$LC/obj" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/obj/$f"; done
+  [ -d "$LC/obj" ] || : > "$B/elc-only.restored"
   # the restored .eln files, which the guard checks against the new binary after make
   [ ! -d "$LC/obj/native-lisp" ] || (cd "$LC/obj" && find native-lisp -name '*.eln') > "$B/eln-restored.list"
 elif [ "$LC_RESTORE" = 1 ] && [ "$LC_ELC" = 1 ] && [ -f "$LC/stamp" ] && [ "$(elc_norm "$(cat "$LC/stamp")")" = "$(elc_norm "$(cc_id)")" ]; then
@@ -465,6 +466,7 @@ elif [ "$LC_RESTORE" = 1 ] && [ "$LC_ELC" = 1 ] && [ -f "$LC/stamp" ] && [ "$(el
   tar -C "$LC" -cf - src | tar -C "$B" -xf -
   touch "$B/.restored"
   (cd "$LC/src" && find . -type f) | while IFS= read -r f; do touch -r "$B/.restored" "$B/src/$f"; done
+  : > "$B/elc-only.restored"
 fi
 lc_unlock
 BODY
@@ -525,6 +527,17 @@ BODY
   # the commit the target was built from, only after a make that passed (a failed one may have left a crate unbuilt)
   [ -z "$CT" ] || echo 'printf "%s\n" "$COMMIT" > "$CT/.nidhogg-source-commit"'
   if [ -n "$LISP_CACHE" ]; then cat <<'BODY'
+# byte code restored without its .eln files: make compiles only the changed files natively, and the first of them makes
+# native-lisp/, whose absence alone starts the rule that compiles the preloaded Lisp (src/Makefile's ../native-lisp, the
+# source tarball's path; the AOT pass too) and dumps again.  So an image of byte code with a few .eln files: remove the
+# directory and run that rule.
+if [ -f "$B/elc-only.restored" ]; then
+  phase native-compile the preloaded Lisp
+  rm -rf "$B/obj/native-lisp"
+BODY
+    echo "  logged \"\$B/make-eln.log\" make -j$JOBS -C \"\$B/obj/src\" ../native-lisp"
+    cat <<'BODY'
+fi
 # the guard (nidhogg/eln-guard.el): restored .eln files must be this binary's (its ABI facts, its native-lisp
 # directory, a sample loads); otherwise exit 75, and build.sh discards the restored Lisp and builds again, cold
 if [ -s "$B/eln-restored.list" ]; then
