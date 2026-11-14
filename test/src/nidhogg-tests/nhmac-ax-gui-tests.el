@@ -1,6 +1,7 @@
 ;;; nhmac-ax-gui-tests.el --- Naglfar's accessibility and Zoom rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).  `test-ax' calls the root
 ;; view's accessibility methods in-process, as an assistive application would through the accessibility server.
@@ -8,6 +9,8 @@
 (require 'ert)
 (require 'cl-lib)
 (declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
+(declare-function nhmac-gui--until "nhmac-gui-tests" (pred secs))
+(declare-function nhmac-gui--shown "nhmac-gui-tests" (&optional secs))
 
 (defun nhmac-ax--naglfar-p ()
   (and (featurep 'nidhogg-macos) (fboundp 'nhmac--query)))
@@ -19,10 +22,7 @@
   "Give the selected frame the focus and wait (2 s at most) until Emacs has it: C pushes the cursor and the line
 only for the focused frame."
   (select-frame-set-input-focus (selected-frame))
-  (let ((deadline (+ (float-time) 2)))
-    (while (and (not (eq (frame-focus-state) t)) (< (float-time) deadline))
-      (sit-for 0.05)))
-  (should (eq (frame-focus-state) t)))
+  (should (nhmac-gui--until (lambda () (eq (frame-focus-state) t)) 2)))
 
 (defmacro nhmac-ax--with-text (text &rest body)
   "Run BODY in a buffer showing TEXT in the selected window, the frame focused, after a redisplay."
@@ -38,9 +38,8 @@ only for the focused frame."
        (kill-buffer buf))))
 
 (defun nhmac-ax--settle ()
-  (redisplay t)
-  (sit-for 0.05)
-  (redisplay t))
+  "Redisplay and wait until what it drew is shown: the cursor and line it pushed are the shell's."
+  (nhmac-gui--shown))
 
 (ert-deftest nhmac-ax-role ()
   "The root view is an accessibility element in the text area role."
