@@ -1,5 +1,6 @@
 ;;; workers-tls-tests.el --- tests for workers: STARTTLS and the reader  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -74,6 +75,11 @@
       (setq i (1+ i)))
     (funcall pred)))
 
+(defun workers-tls-tests--note-end (p _event)
+  "A sentinel: P's end (it exited or a signal ended it), as its `ended' property."
+  (when (memq (process-status p) '(exit signal))
+    (process-put p 'ended t)))
+
 (defun workers-tls-tests--info (proc key)
   (plist-get (nidhogg-workers--test-io-info proc) key))
 
@@ -96,6 +102,7 @@
              (out "")
              (proc (make-process
                     :name "wtls-serv" :noquery t :connection-type 'pty
+                    :sentinel #'workers-tls-tests--note-end
                     :command (list "gnutls-serv" "--echo" "--crlf"
                                    "--x509keyfile"
                                    (expand-file-name "key.pem"
@@ -109,7 +116,7 @@
          ;; The whole status line is the event: "port N..." alone is only
          ;; its start, and "done" can arrive in a later read.
          (lambda ()
-           (or (not (process-live-p proc))
+           (or (process-get proc 'ended)
                (string-match-p (format "port %d\\.\\.\\.[^\r\n]*[\r\n]" port)
                                out)))
          1500)
@@ -140,8 +147,11 @@
                                        "--x509certfile" (getenv "WTLS_CERT")
                                        "--port" (number-to-string port))))
              (set-process-filter proc (lambda (_p s) (setq out (concat out s))))
+             (set-process-sentinel proc (lambda (p _)
+                                          (when (memq (process-status p) '(exit signal))
+                                            (process-put p 'ended t))))
              ;; The whole status line, as in the parent's server helper.
-             (while (and (process-live-p proc)
+             (while (and (not (process-get proc 'ended))
                          (not (string-match-p
                                (format "port %d\\.\\.\\.[^\r\n]*[\r\n]" port)
                                out)))
@@ -155,10 +165,10 @@
                   :name "up" :host "127.0.0.1" :service wtls-tls-port
                   :coding 'binary :noquery t
                   :filter (lambda (_p s)
-                            (when (process-live-p conn)
+                            (when (eq (process-status conn) 'open)
                               (process-send-string conn s)))
                   :sentinel (lambda (_p _e)
-                              (when (process-live-p conn)
+                              (when (eq (process-status conn) 'open)
                                 (delete-process conn))))))
          (process-put conn 'up up)
          (unless (equal rest "")
@@ -245,6 +255,7 @@ PROTO is `smtp', `imap' or `alert' (see `workers-tls-tests--mock-program')."
     (setq proc (make-process
                 :name "wtls-mock" :connection-type 'pipe :noquery t
                 :coding 'binary
+                :sentinel #'workers-tls-tests--note-end
                 :command (list (expand-file-name invocation-name
                                                  invocation-directory)
                                "-Q" "--batch" "-l" file)
@@ -256,7 +267,7 @@ PROTO is `smtp', `imap' or `alert' (see `workers-tls-tests--mock-program')."
     (workers-tls-tests--until
      (lambda ()
        (or (string-match-p "^port [0-9]+$" out)
-           (not (process-live-p proc))))
+           (process-get proc 'ended)))
      1500)
     (unless (string-match-p "^port [0-9]+$" out)
       (let ((status (process-status proc))
@@ -271,9 +282,9 @@ PROTO is `smtp', `imap' or `alert' (see `workers-tls-tests--mock-program')."
 (defun workers-tls-tests--mock-stop (mock)
   "Stop MOCK: SIGTERM, so its `kill-emacs-hook' stops its gnutls-serv."
   (let ((proc (car mock)))
-    (when (process-live-p proc)
+    (unless (process-get proc 'ended)
       (signal-process proc 'TERM)
-      (workers-tls-tests--until (lambda () (not (process-live-p proc)))))
+      (workers-tls-tests--until (lambda () (process-get proc 'ended))))
     (delete-process proc)
     (delete-file (process-get proc 'file))))
 

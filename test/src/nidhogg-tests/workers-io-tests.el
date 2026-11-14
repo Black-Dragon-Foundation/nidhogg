@@ -1,5 +1,6 @@
 ;;; workers-io-tests.el --- tests for workers: the process reader  -*- lexical-binding: t -*-
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Copyright (C) 2026 Black Dragon Foundation contributors
 
@@ -247,7 +248,7 @@ The output, oldest first, is in the process property `out'."
                           collect (workers-io-tests--cat (format "budget-%d" i))))
           (limit (- workers-io-tests--fd-setsize 64)))
       (dolist (p procs)
-        (should (process-live-p p))
+        (should (eq (process-status p) 'run))
         (should (workers-io-tests--echo p "ok\n"))
         (if (workers-io-tests--info p :owned)
             (progn
@@ -541,8 +542,10 @@ meanwhile, while a SIGCHLD still reaches its handler and
                     :name (format "wio-zp-%d" i) :noquery t
                     :connection-type 'pipe
                     :command '("sh" "-c" "head -c 65536 /dev/zero")
-                    :filter #'ignore :sentinel #'ignore)))
-            (while (process-live-p p)
+                    :filter #'ignore
+                    :sentinel (lambda (q _) (when (memq (process-status q) '(exit signal))
+                                              (process-put q 'ended t))))))
+            (while (not (process-get p 'ended))
               (let ((t0 (float-time)))
                 (accept-process-output nil 0)
                 (setq worst (max worst (- (float-time) t0)))))
@@ -662,9 +665,11 @@ Return the times the waits meanwhile reached their bound."
         (while (not stop)
           (let ((p (make-process :name "wio-exit" :noquery t
                                  :connection-type 'pipe
-                                 :command '("true") :sentinel #'ignore)))
+                                 :command '("true")
+                                 :sentinel (lambda (q _) (when (memq (process-status q) '(exit signal))
+                                                           (process-put q 'ended t))))))
             (accept-process-output nil 0.001)
-            (when (process-live-p p)
+            (unless (process-get p 'ended)
               (accept-process-output p 0.05))))
         (thread-join churn)
         (should stop)))))
@@ -938,8 +943,8 @@ Return the times the waits meanwhile reached their bound."
           (should (workers-io-tests--until (lambda () b-deleted)))
           (workers-io-tests--until #'ignore 5)
           (should (= b-after 0))
-          (should-not (process-live-p b))
-          (should (process-live-p a)))))))
+          (should (memq (process-status b) '(signal exit closed)))
+          (should (memq (process-status a) '(run open))))))))
 
 (ert-deftest workers/pty-eio ()
   ;; A pty child's exit: the reader gives -1 with EIO once its queue is
@@ -1057,8 +1062,7 @@ whether the reader owned the shell."
                                                      (cdr comint-last-prompt)))
                 (with-current-buffer redirect (buffer-string))
                 (workers-io-tests--info proc :owned)))
-      (when (process-live-p proc)
-        (delete-process proc))
+      (delete-process proc)
       (kill-buffer buf)
       (kill-buffer redirect))))
 
