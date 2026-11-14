@@ -534,8 +534,11 @@ BODY
 if [ -f "$B/elc-only.restored" ]; then
   phase native-compile the preloaded Lisp
   rm -rf "$B/obj/native-lisp"
+  # with the destinations the top Makefile gives src: the dump records where the .eln files are installed (the app
+  # bundle's Frameworks/ on macOS), so without them the image looks for its preloaded .eln beside the binary
+  dest() { printf 'nidhogg-print:\n\t@printf "%%s\\n" "$(%s)"\n' "$1" | make -s -C "$B/obj" -f Makefile -f - nidhogg-print; }
 BODY
-    echo "  logged \"\$B/make-eln.log\" make -j$JOBS -C \"\$B/obj/src\" ../native-lisp"
+    echo "  logged \"\$B/make-eln.log\" make -j$JOBS -C \"\$B/obj/src\" BIN_DESTDIR=\"\$(dest BIN_DESTDIR)\" ELN_DESTDIR=\"\$(dest ELN_DESTDIR)\" ../native-lisp"
     cat <<'BODY'
 fi
 # the guard (nidhogg/eln-guard.el): restored .eln files must be this binary's (its ABI facts, its native-lisp
