@@ -112,7 +112,7 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_FOLLOW` | handle, link | the selection or nil |
 | `SJA_WALK`, `SJA_WALK_TO` | handle, list, step or position | the selection or nil; `(ID . DIRECTION)` when a window must move |
 | `SJA_SET` | handle, `select`/`search`/`form`/`lit`/`fold`/`tick`/`prefix`, value | the selection (select, prefix), 0 or 1 (fold, tick), else nil |
-| `SJA_GET` | handle, what, arg, arg | `selection`, `kind`, `field`, `flag`, `parent`, `rows`, `list` (a tree's `visible` is the instance's), `finished`, `class`, `classes` (a vector `[ID CLASS …]` of changes), `reclass`, `class-names`, `expanded`, `open`, `ticked`, `version`, `stats`, `health` (0 ok, 1 no model, 2 broken, 3 stale) |
+| `SJA_GET` | handle, what, arg, arg | `selection`, `kind`, `field`, `flag`, `parent`, `rows`, `list` (a tree's `visible` is the instance's), `finished`, `class`, `classes` (a vector `[ID CLASS …]` of changes), `reclass`, `class-names`, `expanded`, `open`, `ticked`, `version`, `stats`, `health` (0 ok, 1 no model, 2 broken, 3 stale), `at-line` (a list and a line: the last entry whose integer `line` field is at or before it, by binary search; an outline's current definition) |
 | `SJA_HUB_LOST` | | nil |
 | `SJA_STATS` | | views, instances, bytes, panics, broken views |
 | `SJA_PUSH` | a whole `view-model` line | `(VIEW VERSION DECISION)`: 0 queue, 1 reset, 2 drop, 3 resync, 4 none (no instance of the view); nil when the line is not a `view-model` |

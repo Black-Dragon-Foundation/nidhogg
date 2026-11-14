@@ -796,6 +796,22 @@ impl View {
         m.nodes.get(&id).map(|n| n.rows.clone()).unwrap_or_default()
     }
 
+    /// The last entry of list `name` whose `line` field is at or before `line`: the definition an editor's line is in,
+    /// for an outline whose entries are in file order (their lines never fall).  A binary search: a few comparisons on
+    /// a list of thousands.  An entry without an integer `line` counts as at or before every line.
+    pub fn at_line(&self, name: &str, line: i64) -> Option<Id> {
+        let m = self.model.as_ref()?;
+        let ids = &m.lists.get(name)?.ids;
+        let f = m.names.get("line");
+        let at = ids.partition_point(|id| {
+            match f.and_then(|f| m.nodes.get(id).and_then(|n| n.field(f))) {
+                Some(crate::wire::Val::Int(l)) => *l <= line,
+                _ => true,
+            }
+        });
+        at.checked_sub(1).map(|i| ids[i].clone())
+    }
+
     /// The ids of list `name` (its window).
     pub fn list(&self, name: &str) -> Vec<Id> {
         self.model

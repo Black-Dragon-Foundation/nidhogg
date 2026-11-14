@@ -280,6 +280,10 @@ fn get(h: u32, what: &str, a: &Arg, b: &Arg) -> Result<Ans, Refused> {
         let slot = with_table(|t| t.of(h))?.ok_or(Refused::Arg)?;
         return Ok(health(&slot));
     }
+    if what == "at-line" {
+        let (list, line) = (a.str()?.to_string(), b.int()?);
+        return verb(h, move |v| Ans::id(v.at_line(&list, line)));
+    }
     let (a, b) = (a.opt_str()?, b.opt_str()?);
     let what = what.to_string();
     verb(h, move |v| match what.as_str() {

@@ -100,6 +100,11 @@ fn answer_tokens_round_trip() {
         ok(SJA_GET, &[int(h), text("list"), text("needs-you")]),
         Ans::List(vec![st("agent:b")])
     );
+    assert_eq!(
+        ok(SJA_GET, &[int(h), text("at-line"), text("outline"), int(3)]),
+        st("agent:c"),
+        "no entry has a line: each counts as at or before it, so the last answers"
+    );
     let Ans::Vector(cl) = get(h, "classes") else {
         panic!("classes is a vector")
     };

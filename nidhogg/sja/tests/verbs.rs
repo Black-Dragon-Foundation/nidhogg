@@ -628,3 +628,38 @@ fn classes_with_nothing_changed_run_no_pass() {
     v.classes(1);
     assert_eq!(passes(&v), 4, "a move is a change");
 }
+
+/// A list of `n` definitions in file order, the i-th at line 2i+1, each with its `line` field.
+fn lines_view(n: usize) -> View {
+    let nodes: Vec<_> = (0..n)
+        .map(|i| {
+            let mut d = node(&format!("d:{i}"), "def", json!({}));
+            d["fields"] = json!([["line", 2 * i + 1]]);
+            d
+        })
+        .collect();
+    let ids: Vec<String> = (0..n).map(|i| format!("d:{i}")).collect();
+    view_with(&reset(
+        json!({"scheme": "links", "lists": ["order"], "start": "order"}),
+        nodes,
+        vec![],
+        vec![json!({"name": "order", "ids": ids})],
+    ))
+}
+
+#[test]
+fn at_line_is_the_last_entry_starting_at_or_before_it() {
+    let n = 5000;
+    let v = lines_view(n);
+    assert_eq!(v.at_line("order", 0), None, "above every entry");
+    for line in 1..=(2 * n as i64 + 3) {
+        let want = ((line - 1) / 2).min(n as i64 - 1);
+        assert_eq!(
+            s(&v.at_line("order", line)),
+            Some(format!("d:{want}").as_str()),
+            "line {line}"
+        );
+    }
+    assert_eq!(v.at_line("nothing", 10), None, "an unknown list");
+    assert_eq!(View::default().at_line("order", 10), None, "no model");
+}
