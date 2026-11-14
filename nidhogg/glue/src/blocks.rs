@@ -10,8 +10,9 @@
 //!   own), in the frame's native-area coordinates: a child frame that moves keeps them, one whose scale changes gets
 //!   them again at the new scale.
 //! - **What C gives ([`NhgBlock`]):** the rectangle and the text area in device px, the radius in device px, the
-//!   ring's and the beneath colour as 0xRRGGBB, and whether a side was cut off by scrolling (a block reaching past the
-//!   text area is open there too).  The line is one logical px, whole device px.
+//!   ring's and the beneath colour as 0xRRGGBB, a ring's gap (its inset from the rows' top and bottom, in the colour
+//!   beneath) in device px, and whether a side was cut off by scrolling (a block reaching past the text area is open
+//!   there too).  The line is one logical px, whole device px.
 //! - **When:** at each publish while the frame has blocks or block layers; [`sync_at`] upserts what changed and
 //!   removes the layers of windows that lost their blocks.  A reconnect gives them all again ([`forget_all`]).
 
@@ -59,6 +60,8 @@ pub struct NhgBlock {
     pub ring_opacity: f32,
     /// The colour beneath the block, 0xRRGGBB: what a ring's corners show outside its rounded path.
     pub beneath_rgb: i32,
+    /// A ring's inset from its rows' top and bottom, device px: the band between shows the colour beneath.
+    pub gap: i32,
 }
 
 /// What a block layer was last given: its rectangle, scale and blocks.
@@ -128,6 +131,7 @@ pub fn plan(
             beneath_argb: 0xff00_0000 | rgb(b.beneath_rgb).unwrap_or(0),
             open_top: b.flags & NHG_BLOCK_OPEN_TOP != 0 || rect.y < clip.y,
             open_bottom: b.flags & NHG_BLOCK_OPEN_BOTTOM != 0 || rect.y + rect.h > clip.y + clip.h,
+            gap_px: u32::try_from(b.gap).unwrap_or(0),
         };
         // a window's strip is a layer of its own: one clip a layer
         let k = if b.flags & NHG_BLOCK_STRIP != 0 {

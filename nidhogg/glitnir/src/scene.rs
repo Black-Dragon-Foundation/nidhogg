@@ -194,6 +194,9 @@ pub struct Block {
     pub beneath_argb: u32,
     pub open_top: bool,
     pub open_bottom: bool,
+    /// A ring's inset from the rectangle's top and bottom, device px: the band between shows the colour beneath, so
+    /// cards on adjacent rows stand apart. None on an open side.
+    pub gap_px: u32,
 }
 
 /// The parts of the scene the blocks and edges of a window layer at P draw (root px, clipped to its rectangle).

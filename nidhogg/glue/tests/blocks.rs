@@ -78,6 +78,7 @@ mod blocks {
             ring_rgb: 0x40_5060,
             ring_opacity: 1.0,
             beneath_rgb: 0x12_3456,
+            gap: 0,
         }
     }
 

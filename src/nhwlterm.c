@@ -686,9 +686,9 @@ nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
 /* List block V of leaf window W, whose text area is CLIP: the rows of
    W's current matrix holding its text, from its first row's top to its
    last row's bottom, from x0 to x1 of the text area.  V is
-   [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB] as
+   [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB GAP] as
    glitnir--block-vector makes it (KIND 0 a ring, 1 a rule; START and END
-   positions, END exclusive; X0, X1 and RADIUS device pixels).  A block
+   positions, END exclusive; X0, X1, RADIUS and GAP device pixels).  A block
    whose text starts above the window's first row (scrolled out) is open
    at the top; one that goes on below its last row, at the bottom.  Rows
    of nothing but an overlay string at END (an after-string there, such
@@ -700,7 +700,7 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 {
   struct glyph_matrix *m = w->current_matrix;
 
-  if (!m || !VECTORP (v) || ASIZE (v) < 9)
+  if (!m || !VECTORP (v) || ASIZE (v) < 10)
     return;
   ptrdiff_t start = nhwl_block_pos (w, AREF (v, 1));
   ptrdiff_t end = nhwl_block_pos (w, AREF (v, 2));
@@ -755,7 +755,8 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 		   flags, (int32_t) nhwl_block_int (v, 5, 0),
 		   (int32_t) nhwl_block_int (v, 6, -1),
 		   NUMBERP (op) ? (float) XFLOATINT (op) : 1.0f,
-		   (int32_t) nhwl_block_int (v, 8, 0) };
+		   (int32_t) nhwl_block_int (v, 8, 0),
+		   (int32_t) nhwl_block_int (v, 9, 0) };
 }
 
 /* Add a filled bar RECT in RGB at OPACITY to the list, clipped to CLIP,

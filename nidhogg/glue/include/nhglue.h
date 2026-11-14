@@ -862,7 +862,8 @@ int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
 /* One block of Emacs window SEQ: CLIP its text area (window_box (w, TEXT_AREA)) and RECT the block's rows from x0 to
    x1, both device pixels with the native area's origin; FLAGS NHG_BLOCK_*; RADIUS the outer corner radius in device
    pixels; RING_RGB the line's 0xRRGGBB (-1 none) at RING_OPACITY (0 to 1); BENEATH_RGB the colour beneath the block,
-   what a ring's corners show outside its rounded path.  */
+   what a ring's corners show outside its rounded path; GAP a ring's inset from its rows' top and bottom in device
+   pixels, the band between in the colour beneath.  */
 typedef struct
 {
   uint64_t seq;
@@ -873,6 +874,7 @@ typedef struct
   int32_t ring_rgb;
   float ring_opacity;
   int32_t beneath_rgb;
+  int32_t gap;
 } NhgBlock;
 
 /* FRAME (WINDOW its own shell window, a child frame's too) is about to be published with the N blocks at BLOCKS: each

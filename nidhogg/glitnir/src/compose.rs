@@ -752,9 +752,10 @@ impl CardRing {
     }
 }
 
-/// Block B within CLIP (root px, inside the target and the window): a rule's bottom line; a ring's corners outside its
-/// rounded path in the colour beneath, then the ring just inside the rectangle.  An open side lies past the rectangle
-/// (by the radius), so its corners and its line fall outside it and are not drawn.
+/// Block B within CLIP (root px, inside the target and the window): a rule's bottom line; a ring's gap bands (its
+/// rectangle's top and bottom `gap_px` rows) in the colour beneath, its corners outside its rounded path in that
+/// colour, then the ring just inside the rectangle less the gap.  An open side lies past the rectangle (by the radius),
+/// so its corners and its line fall outside it and are not drawn, and it has no gap.
 fn draw_block(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Rect) {
     let rect = b.rect;
     let clip = clip.intersect(&rect);
@@ -782,6 +783,26 @@ fn draw_block(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Re
         solid(k, t, clip, b.ring_argb);
         return;
     }
+    // the gap: the bands above and below the ring in the colour beneath
+    let gap = (b.gap_px.min(1 << 12) as i32).min(rect.h);
+    let (gap_top, gap_bottom) = (
+        if b.open_top { 0 } else { gap },
+        if b.open_bottom { 0 } else { gap },
+    );
+    if gap_top > 0 {
+        let band = Rect::new(rect.x, rect.y, rect.w, gap_top);
+        solid(k, t, band.intersect(&clip), b.beneath_argb);
+    }
+    if gap_bottom > 0 {
+        let band = Rect::new(rect.x, rect.y + rect.h - gap_bottom, rect.w, gap_bottom);
+        solid(k, t, band.intersect(&clip), b.beneath_argb);
+    }
+    let rect = Rect::new(
+        rect.x,
+        rect.y + gap_top,
+        rect.w,
+        (rect.h - gap_top - gap_bottom).max(0),
+    );
     let wu = w as u32;
     let r0 = b.radius_px.max(wu);
     let (top, bottom) = (
