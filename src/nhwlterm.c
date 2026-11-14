@@ -5105,9 +5105,12 @@ DEFUN ("nhwl--hold-configures", Fnhwl__hold_configures,
 FRAME defaults to the selected frame.  While ON is non-nil the shell
 reads no configure (nor anything else its main queue carries): what
 the compositor sends waits, as a late answer would.  ON nil reads it
-at the next read of input, in the order it came.  Return nil.  For
-tests: a row that needs the compositor's answer read after something
-the frame does holds it back.  */)
+at the next read of input, in the order it came.  Return nil.
+
+This is a test primitive: it stalls the shell's main queue, so a
+frame that waits for the compositor waits on it.  A row that needs the
+compositor's answer read after something the frame does holds it back.
+Nothing outside tests may call it (drgnx never does).  */)
   (Lisp_Object on, Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);

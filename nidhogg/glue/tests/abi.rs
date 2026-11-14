@@ -8,7 +8,7 @@ mod abi {
     };
     use nhglue::bench::NhgBenchOut;
     use nhglue::ffi::{
-        NhgDisplay, nhg_abi_version, nhg_close, nhg_dispatch_main, nhg_fd, nhg_open,
+        NhgDisplay, nhg_abi_version, nhg_close, nhg_dispatch_main, nhg_fd, nhg_hold_main, nhg_open,
     };
     use nhglue::ffi::{
         nhg_backing, nhg_backing_forget, nhg_damage, nhg_damage_all, nhg_layer_ensure, nhg_snapshot,
