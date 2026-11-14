@@ -33,6 +33,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "character.h"
 #include "font.h"
 #include "sysselect.h"
+#include "syssignal.h"
 
 #ifdef HAVE_NHWL
 
@@ -732,7 +733,8 @@ extern Emacs_Cursor nhwl_cursor_for_shape (uint32_t);
    came meanwhile, from here, with no Rust frame on the stack.  When the
    flag is clear (redisplay, parameter handlers) this costs a load and a
    branch.  The value is CALL's.  A file that uses it includes
-   keyboard.h.  */
+   keyboard.h.  A SIGTERM, SIGHUP or SIGINT's fatal path likewise runs
+   after the outermost call (nhg_call_depth, sysdep.c), never inside it.  */
 #define NHG(call)							\
   __extension__								\
   ({									\
@@ -743,9 +745,13 @@ extern Emacs_Cursor nhwl_cursor_for_shape (uint32_t);
 	nhg_clear_time_ = input_available_clear_time;			\
 	clear_waiting_for_input ();					\
       }									\
+    nhg_call_depth++;							\
     __typeof__ (call) nhg_value_ = (call);				\
+    nhg_call_depth--;							\
     if (nhg_waiting_)							\
       set_waiting_for_input (nhg_clear_time_);				\
+    if (nhg_call_depth == 0 && nhg_deferred_fatal)			\
+      nhg_take_deferred_fatal ();					\
     nhg_value_;								\
   })
 

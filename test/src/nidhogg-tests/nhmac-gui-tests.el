@@ -679,6 +679,42 @@ is raised in a child Emacs on the same window server, never in the runner; the c
       (delete-process proc)
       (kill-buffer buf))))
 
+(defun nhmac-gui--sigterm-child (in-handler)
+  "Run a child Emacs on the same window server whose pump raises SIGTERM inside the glue call, its kill-emacs-hook
+reading input; with IN-HANDLER, `nhwl--test-fatal-in-handler' set (the old way).  At most 30 s; (STATUS CODE OUTPUT)."
+  (let* ((buf (generate-new-buffer " *nhmac-sigterm*"))
+         (proc (make-process
+                :name "nhmac-sigterm" :buffer buf :connection-type 'pipe
+                :sentinel (lambda (p _) (process-put p 'done t))
+                :command (list (expand-file-name invocation-name invocation-directory) "-Q" "--eval"
+                               (concat "(progn (setq nhwl--test-fatal-in-handler " (if in-handler "t" "nil") ")"
+                                       " (add-hook 'kill-emacs-hook (lambda () (input-pending-p)"
+                                       " (princ \"NHMAC-KILLED\\n\" #'external-debugging-output)))"
+                                       " (nhmac--call 'test-signal-in-pump 15) (read-event nil nil 10) (kill-emacs 3))")))))
+    (unwind-protect
+        (progn
+          (should (gui-runner-wait (lambda () (process-get proc 'done)) 30))
+          (list (process-status proc) (process-exit-status proc) (with-current-buffer buf (buffer-string))))
+      (delete-process proc)
+      (kill-buffer buf))))
+
+(ert-deftest nhmac-a-signal-inside-a-glue-call-waits-for-its-end ()
+  "A SIGTERM that lands inside a glue call (the pump, which holds the display's lock) runs kill-emacs once the call is
+over, not in the handler: kill-emacs reads input (its auto-save matches file names, which polls for input), and a
+read from the handler re-entered the glue, which poisoned the display (round 1: SIGTERM in a drag's pump).  The
+premise: with the fatal path in the handler, the same child reports the re-entry."
+  (pcase-let ((`(,_ ,_ ,old) (nhmac-gui--sigterm-child t))
+              (`(,status ,code ,out) (nhmac-gui--sigterm-child nil)))
+    (nhmac-gui--say "nhmac-a-signal-inside-a-glue-call-waits-for-its-end: in the handler: %s; at the call's end: %S %S: %s"
+                    old status code out)
+    (should (string-match-p "locked on entry" old))
+    ;; kill-emacs ran for the signal (its status 15; 3 is the child's own end, 70 a lost display)
+    (should (eq status 'exit))
+    (should (= code 15))
+    (should (string-match-p "NHMAC-KILLED" out))
+    (should-not (string-match-p "locked on entry" out))
+    (should-not (string-match-p "internal error in the shell glue" out))))
+
 (defconst nhmac-gui--start-report
   "(progn
      (let ((spec (getenv \"GLITNIR_GUI_FRAME\")))

@@ -112,6 +112,9 @@ pub struct MacShell {
     /// Test hook: the next pump raises an `NSException` inside the catch.
     #[cfg(feature = "test-hooks")]
     raise_in_pump: bool,
+    /// Test hook: the next pump raises this signal on the main thread, inside the glue call (0: none).
+    #[cfg(feature = "test-hooks")]
+    signal_in_pump: i32,
     /// Test hook: how many of the next new registrations go to the helper.
     #[cfg(feature = "test-hooks")]
     force_helper: u32,
@@ -228,6 +231,8 @@ impl MacShell {
             grab: None,
             #[cfg(feature = "test-hooks")]
             raise_in_pump: false,
+            #[cfg(feature = "test-hooks")]
+            signal_in_pump: 0,
             #[cfg(feature = "test-hooks")]
             force_helper: 0,
             #[cfg(feature = "test-hooks")]
