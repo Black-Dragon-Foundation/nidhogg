@@ -134,15 +134,24 @@ Idle means no tooltip either: a tip an earlier row left shown hides at its own t
   "Non-nil when this Emacs has window layers and they are on."
   (and (nhwl-gui--recorder-p) (fboundp 'nhwl--scroll-layers) (boundp 'nhwl-scroll-layers) nhwl-scroll-layers))
 
+(defun nhwl-gui--drop-layers ()
+  "Take the selected frame's window layers away: a split resizes the window, which takes its layer away."
+  (split-window)
+  (redisplay t)
+  (delete-other-windows)
+  (redisplay t))
+
 (defun nhwl-gui--with-layer-buffer (fn)
-  "Call FN in one window showing 400 numbered lines from the top, with the cursor not blinking; clean up after."
+  "Call FN in one window showing 400 numbered lines from the top, with the cursor not blinking and no window layer
+\(a row that scrolls without this helper, e.g. `nhwl-gui/scroll-run-damages-exposed-rows', leaves its layer for the
+two quiet seconds); clean up after."
   (nhwl-gui--with-blink
    nil
    (lambda ()
      (let ((buf (generate-new-buffer " *nhwl-layers*")))
        (unwind-protect
            (progn
-             (delete-other-windows)
+             (nhwl-gui--drop-layers)
              (switch-to-buffer buf)
              (dotimes (i 400) (insert (format "line %03d of the window-layer rows, wide enough to fill columns\n" i)))
              (goto-char (point-min))
@@ -150,11 +159,8 @@ Idle means no tooltip either: a tip an earlier row left shown hides at its own t
              (gui-runner-wait-settled)
              (funcall fn))
          (kill-buffer buf)
-         ;; a split resizes the window, which takes its layer away: the next row starts without one
-         (split-window)
-         (redisplay t)
-         (delete-other-windows)
-         (redisplay t))))))
+         ;; the next row starts without a layer too
+         (nhwl-gui--drop-layers))))))
 
 (defun nhwl-gui--layer-commits (mark)
   "The subsurface commits since MARK that set a viewport source: the window layers'."
