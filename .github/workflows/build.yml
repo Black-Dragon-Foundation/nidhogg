@@ -178,6 +178,20 @@ jobs:
           persist-credentials: false
       # emacs-nox: ci-test.sh reads every file the macOS lane loads
       - run: sudo apt-get update && sudo apt-get install -y unifdef emacs-nox
+      # the macOS rounds branch (scratch/ng-mac-rounds, never forced): a round is a merge over the last one with the
+      # round's commit as second parent and its tree, or a live session's empty commit on top; the rules read the
+      # round's own commit, not the branch's history (other rounds' merges and live-session commits)
+      - name: The round's own commit (macOS rounds branch)
+        if: ${{ github.ref == 'refs/heads/scratch/ng-mac-rounds' }}
+        run: |
+          c=$(git rev-parse HEAD) t=$(git rev-parse 'HEAD^{tree}')
+          while [ "$(git rev-list --parents -n 1 "$c" | wc -w)" = 2 ] && [ "$(git rev-parse "$c^^{tree}")" = "$t" ] \
+                && git log -1 --format=%s "$c" | grep -q '\[ng-live\]$'; do c=$(git rev-parse "$c^"); done
+          if [ "$(git rev-list --parents -n 1 "$c" | wc -w)" = 3 ] && [ "$(git rev-parse "$c^2^{tree}")" = "$t" ]; then
+            c=$(git rev-parse "$c^2")
+          fi
+          echo "the round's commit: $(git log -1 --format='%h %s' "$c")"
+          git checkout -q --detach "$c"
       - run: TREE_TEST_SELF=1 bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/tree-test.sh
       - run: bash nidhogg/test/ci-test.sh
