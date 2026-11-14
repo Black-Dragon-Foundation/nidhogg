@@ -158,6 +158,32 @@ pub fn key(
     Ok(())
 }
 
+/// A press and a release of the function key `c` (`NSF1FunctionKey` … `NSF35FunctionKey`) posted at the end of the
+/// queue for window number `window`, with no focus change: the wake `test-wake-after` arms.
+pub fn function_key(app: &NSApplication, window: isize, c: u16) {
+    let chars = NSString::from_str(
+        &char::from_u32(u32::from(c))
+            .map(String::from)
+            .unwrap_or_default(),
+    );
+    for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
+        if let Some(ev) = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            kind,
+            NSPoint::new(0.0, 0.0),
+            NSEventModifierFlags(0),
+            0.0,
+            window,
+            None,
+            &chars,
+            &chars,
+            false,
+            0,
+        ) {
+            app.postEvent_atStart(&ev, false);
+        }
+    }
+}
+
 /// The subtype of the application-defined event a posted press, release, drag or move waits as.
 const POSTED: i16 = 0x6e6d;
 

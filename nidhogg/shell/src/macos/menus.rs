@@ -32,6 +32,10 @@ thread_local! {
     /// The popup being tracked, and the index of the item the test hook chooses in it.
     static TRACKING: RefCell<Option<Retained<NSMenu>>> = const { RefCell::new(None) };
     static TEST_CHOOSE: Cell<Option<isize>> = const { Cell::new(None) };
+    /// The armed wake (`test_wake_after`): its number and the window number it posts to; None when disarmed.
+    static WAKE: Cell<Option<(u32, isize)>> = const { Cell::new(None) };
+    /// The number of the last wake armed.
+    static WAKE_ARMS: Cell<u32> = const { Cell::new(0) };
 }
 
 thread_local! {
@@ -76,6 +80,19 @@ define_class!(
                     m.performActionForItemAtIndex(i);
                 }
                 m.cancelTracking();
+            }
+        }
+
+        /// Test hook: a wake's time came: post `f34` to its window, unless it was disarmed or another armed since.
+        #[cfg(feature = "test-hooks")]
+        #[unsafe(method(testWake:))]
+        fn test_wake(&self, _sender: Option<&AnyObject>) {
+            let arm = self.ivars().generation;
+            if let Some((a, window)) = WAKE.with(Cell::get)
+                && a == arm
+            {
+                WAKE.with(|w| w.set(None));
+                super::inject::function_key(&NSApplication::sharedApplication(self.mtm()), window, 0xF725);
             }
         }
     }
@@ -246,6 +263,28 @@ pub fn test_end_popup_after(mtm: MainThreadMarker, secs: f64, choose: Option<isi
     // SAFETY: `testEndTracking:` is defined on Target; the run loop retains the target until it fires.
     unsafe {
         let _: () = msg_send![&target, performSelector: sel!(testEndTracking:), withObject: std::ptr::null::<AnyObject>(), afterDelay: secs, inModes: &*modes];
+    }
+}
+
+/// Test hook: `secs` from now, in every run loop mode, post `f34` to window number `window`, ending a row's read with no
+/// time limit (the only read that starts Emacs's idleness) when what it waits for has not come; arming again replaces
+/// the wake armed before, and a negative `secs` disarms it.
+#[cfg(feature = "test-hooks")]
+pub fn test_wake_after(mtm: MainThreadMarker, window: isize, secs: f64) {
+    if secs < 0.0 {
+        WAKE.with(|w| w.set(None));
+        return;
+    }
+    let arm = WAKE_ARMS.with(|n| {
+        n.set(n.get().wrapping_add(1));
+        n.get()
+    });
+    WAKE.with(|w| w.set(Some((arm, window))));
+    let target = Target::new(mtm, arm, true);
+    let modes = NSArray::from_retained_slice(&[NSString::from_str("kCFRunLoopCommonModes")]);
+    // SAFETY: `testWake:` is defined on Target; the run loop retains the target until it fires.
+    unsafe {
+        let _: () = msg_send![&target, performSelector: sel!(testWake:), withObject: std::ptr::null::<AnyObject>(), afterDelay: secs, inModes: &*modes];
     }
 }
 
