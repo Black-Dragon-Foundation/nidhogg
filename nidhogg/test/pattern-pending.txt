@@ -2,14 +2,10 @@
 # One row per file: FILE # reason.  The list only shrinks: a row whose file has a line, or is gone, fails the check.
 # Handshake files park a job or child at a named point and go on from what is announced (see the lint's header).
 # `exempt FILE TEST FORM # reason': the handshake rule's exemptions, a banned call that is the stimulus under test.
-fake-portal-tests.el # not yet audited against the handshake rules
 nhwl-gui-w4-tests.el # GUI rows run the command loop from a 0.02 s stepping timer (run-at-time) with a deadline, a poll rather than a handshake; not yet audited against the handshake rules
 watchdog-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 callproc-env-tests.el # not yet audited against the handshake rules
-nhwl-session-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-nhwl-portal-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 wl-trace-check-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
-nhwl-settings-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 recorder-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 watchdog-modal-gui-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
 nhwl-gui-w2-tests.el # GUI rows wait on the compositor through the gui-runner waits; not yet audited against the handshake rules
