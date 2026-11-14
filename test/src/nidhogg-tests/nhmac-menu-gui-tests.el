@@ -69,7 +69,8 @@
 `sit-for' and `accept-process-output' wait with a time limit and so never start idleness (keyboard.c starts it only
 for a read without one): the idle build would not run.  This reads with no limit, and PRED is asked after each idle
 build, which ends the read with an `f35' it posts through the shell; the shell's wake (`test-wake-after') ends it with
-`f34' after SECONDS.  Other events read meanwhile go back to the queue, in order."
+`f34' after SECONDS.  At the end an `f33' posted behind them all is read up to, so no announcement is left for the
+next row.  Other events read meanwhile go back to the queue, in order."
   (let ((post (lambda (&rest _) (nhmac--call 'test-post-key (selected-frame) #xF726 #xF726 0)))
         (got nil) (kept nil) e)
     (advice-add 'nhmac-menu-build :after post)
@@ -80,9 +81,11 @@ build, which ends the read with an `f35' it posts through the shell; the shell's
           (unless (eq e 'f35) (push e kept)))
       (nhmac--call 'test-wake-after (selected-frame) -1)
       (advice-remove 'nhmac-menu-build post)
-      ;; an announcement posted before the wait ended is read here, not by the next row
-      (while (input-pending-p)
-        (unless (memq (setq e (read-event)) '(f34 f35)) (push e kept)))
+      ;; the announcements still queued (a second build's `f35', a wake that fired as the wait ended) come before the
+      ;; `f33' posted now: read up to it
+      (nhmac--call 'test-post-key (selected-frame) #xF724 #xF724 0)
+      (while (not (eq (setq e (read-event)) 'f33))
+        (unless (memq e '(f34 f35)) (push e kept)))
       (setq unread-command-events (append unread-command-events (nreverse kept))))
     got))
 
