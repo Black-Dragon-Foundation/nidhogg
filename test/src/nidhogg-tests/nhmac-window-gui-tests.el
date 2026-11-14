@@ -1,12 +1,14 @@
 ;;; nhmac-window-gui-tests.el --- Naglfar's window behaviour rows on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).  `test-window-state' reads
 ;; the NSWindow's own state.
 
 (require 'ert)
 (declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
+(declare-function nhmac-gui--until "nhmac-gui-tests" (pred secs))
 (require 'cl-lib)
 
 (defun nhmac-win-gui--naglfar-p ()
@@ -22,9 +24,8 @@ those wait for AppKit's own animations to end.  Round 6's runner took 2.6 to 4.8
 round 8's longer."
   (let* ((start (float-time)) (slow (memq key '(:fs-busy :miniaturized)))
          (deadline (+ start (if slow 12 4))) st)
-    (while (and (progn (setq st (nhmac-win-gui--state)) (not (eq (plist-get st key) want)))
-                (< (float-time) deadline))
-      (sit-for 0.2))
+    (nhmac-gui--until (lambda () (eq (plist-get (setq st (nhmac-win-gui--state)) key) want))
+                      (- deadline (float-time)))
     (if (eq (plist-get st key) want)
         (when slow
           (glitnir-gui--say "nhmac-win-gui--wait: %S %S after %.1f s" key want (- (float-time) start)))
@@ -113,7 +114,7 @@ too whenever Lisp runs, since `ns_select's `[NSApp run]' has returned by then."
     (make-frame-visible)
     (should (null (plist-get (nhmac-win-gui--wait :miniaturized nil) :miniaturized)))
     ;; round 9: back from the Dock, and the resize, keys and IME rows after it saw no events: whether it has focus
-    (sit-for 0.5)
+    (nhmac-gui--until (lambda () (eq (frame-focus-state) t)) 2)
     (glitnir-gui--say "nhmac-miniaturize: back, focus %S" (frame-focus-state))))
 
 (defun nhmac-win-gui--appearance-command (when)

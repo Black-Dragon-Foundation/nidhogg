@@ -1,6 +1,7 @@
 ;;; nhmac-resize-gui-tests.el --- Naglfar's own edge-drag resize, on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh (its default glob takes every nhmac-*gui-tests.el).  The rows drive the window
 ;; through `sendEvent:' with posted AppKit mouse events, so they need no Accessibility grant, except
@@ -10,6 +11,8 @@
 
 (require 'ert)
 (require 'cl-lib)
+(declare-function nhmac-gui--until "nhmac-gui-tests" (pred secs))
+(declare-function nhmac-gui--shown "nhmac-gui-tests" (&optional secs))
 
 (defconst nhmac-resize--option #x80000 "`NSEventModifierFlagOption'.")
 (defconst nhmac-resize--shift #x20000 "`NSEventModifierFlagShift'.")
@@ -25,14 +28,17 @@
 (defun nhmac-resize--stretched ()
   (plist-get (nhmac-stats) :stretched-frames))
 
+(defun nhmac-resize--answered (&optional secs)
+  "Wait (SECS at most, default 1) until the host has answered the resize waiting for it (`:pending' nil); the state."
+  (let (st)
+    (nhmac-gui--until (lambda () (not (plist-get (setq st (nhmac-resize--state)) :pending))) (or secs 1))
+    st))
+
 (defun nhmac-resize--settle ()
-  "Let the host answer the resize waiting, up to 4 s; the state."
-  (let ((deadline (+ (float-time) 4)) st)
-    (while (and (plist-get (setq st (nhmac-resize--state)) :pending)
-                (< (float-time) deadline))
-      (sit-for 0.02))
-    (sit-for 0.05)
-    (nhmac-resize--state)))
+  "Let the host answer the resize waiting, up to 4 s, and its frame be shown; the state."
+  (nhmac-resize--answered 4)
+  (nhmac-gui--shown 1)
+  (nhmac-resize--state))
 
 (defun nhmac-resize--point (edges &optional out)
   "A point OUT points (default 3) outside the frame on EDGES, as device pixels from the content's top left."
@@ -56,13 +62,14 @@ BUSY.  The settled state."
          (scale (/ (plist-get (nhmac-resize--state) :scale120) 120.0))
          (x (car at)) (y (cdr at)))
     (nhmac-resize--post 0 at (or flags 0))
-    (sit-for 0.02)
+    (nhmac-resize--answered)
     (dotimes (i steps)
       (setq x (+ x (* dx scale)) y (- y (* dy scale)))
       (nhmac-resize--post 2 (cons x y) (or flags 0))
       (if (and busy (= (% i 5) 4))
           (let ((end (+ (float-time) 0.05))) (while (< (float-time) end)))
-        (sit-for 0.01)))
+        ;; each step's resize waits for the host's answer
+        (nhmac-resize--answered)))
     (nhmac-resize--post 1 (cons x y) (or flags 0))
     (nhmac-resize--settle)))
 
@@ -79,14 +86,12 @@ its transition over.  While AppKit's exit animation runs the style mask still ha
 apply: the first press of min-size after green-button at scale 2 was not a band press (the live session, 2026-11-13)."
   (unless (eq (frame-parameter nil 'fullscreen) value)
     (set-frame-parameter nil 'fullscreen value))
-  (let ((deadline (+ (float-time) 4))
-        (want (and (memq value '(fullboth fullscreen)) t)))
-    (while (and (let ((st (nhmac--query 'test-window-state (selected-frame))))
-                  (not (and (eq (and (plist-get st :fullscreen) t) want)
-                            (eq (and (plist-get st :style-full) t) want)
-                            (not (plist-get st :fs-busy)))))
-                (< (float-time) deadline))
-      (sit-for 0.1)))
+  (let ((want (and (memq value '(fullboth fullscreen)) t)))
+    (nhmac-gui--until (lambda () (let ((st (nhmac--query 'test-window-state (selected-frame))))
+                                   (and (eq (and (plist-get st :fullscreen) t) want)
+                                        (eq (and (plist-get st :style-full) t) want)
+                                        (not (plist-get st :fs-busy)))))
+                      4))
   (nhmac-resize--settle))
 
 (defmacro nhmac-resize--row (&rest body)
@@ -131,10 +136,10 @@ and no commit shows a surface of a size other than the window's content."
            (at (nhmac-resize--point '(right)))
            (live nil))
       (nhmac-resize--post 0 at 0)
-      (sit-for 0.02)
+      (nhmac-resize--answered)
       (dotimes (i 10)
         (nhmac-resize--post 2 (cons (+ (car at) (* (1+ i) 2)) (cdr at)) 0)
-        (sit-for 0.02)
+        (nhmac-resize--answered)
         (push (plist-get (nhmac-resize--state) :live) live))
       (nhmac-resize--post 1 (cons (+ (car at) 20) (cdr at)) 0)
       (let ((st (nhmac-resize--settle)))
@@ -155,11 +160,17 @@ the window's `sendEvent:', starts our resize (`inLiveResize' NO) and grows the f
       (let* ((before (nhmac-resize--state)) (stretched (nhmac-resize--stretched))
              (d (nhmac-resize--outward edges)) (live nil))
         (nhmac--call 'test-post-real (selected-frame) 0 (if (memq 'bottom edges) 1 0) 3 0 0)
-        (sit-for 0.05)
+        ;; the window server delivers it: the window counts the band press
+        (nhmac-gui--until (lambda () (> (plist-get (nhmac-resize--state) :band-presses)
+                                        (plist-get before :band-presses)))
+                          1)
         (dotimes (i 10)
-          (nhmac--call 'test-post-real (selected-frame) 2 (if (memq 'bottom edges) 1 0) 3
-                       (* (1+ i) 2 (car d)) (* (1+ i) 2 (cdr d)))
-          (sit-for 0.03)
+          (let ((frame (plist-get (nhmac-resize--state) :frame)))
+            (nhmac--call 'test-post-real (selected-frame) 2 (if (memq 'bottom edges) 1 0) 3
+                         (* (1+ i) 2 (car d)) (* (1+ i) 2 (cdr d)))
+            ;; delivered: the window's frame follows the drag, and the host answered
+            (nhmac-gui--until (lambda () (not (equal (plist-get (nhmac-resize--state) :frame) frame))) 1)
+            (nhmac-resize--answered))
           (push (plist-get (nhmac-resize--state) :live) live))
         (nhmac--call 'test-post-real (selected-frame) 1 (if (memq 'bottom edges) 1 0) 3
                      (* 20 (car d)) (* 20 (cdr d)))
@@ -197,11 +208,10 @@ the window's `sendEvent:', starts our resize (`inLiveResize' NO) and grows the f
   (nhmac-resize--row
     (dolist (edges '((right) (left) (top) (bottom) (top left) (top right) (bottom left) (bottom right)))
       (nhmac-resize--post 3 (nhmac-resize--point edges 2) 0)
-      (sit-for 0.05)
-      (should (equal (list edges (nhmac--query 'test-resize-cursor (selected-frame)
-                                               (apply #'logior (mapcar (lambda (e) (alist-get e nhmac-resize--edges))
-                                                                       edges))))
-                     (list edges t))))))
+      (let ((bits (apply #'logior (mapcar (lambda (e) (alist-get e nhmac-resize--edges)) edges))))
+        (should (equal (list edges (nhmac-gui--until
+                                    (lambda () (nhmac--query 'test-resize-cursor (selected-frame) bits)) 1))
+                       (list edges t)))))))
 
 (ert-deftest nhmac-resize-green-button ()
   "`zoom:' zooms the window and back, and full screen enters and leaves, with no stretched frame across any of the
@@ -219,18 +229,12 @@ animations."
       (should (equal (plist-get (nhmac-resize--settle) :frame) before))
       (setq stretched (nhmac-resize--stretched))
       (set-frame-parameter nil 'fullscreen 'fullboth)
-      (let ((deadline (+ (float-time) 4)))
-        (while (and (not (plist-get (nhmac--query 'test-window-state (selected-frame)) :fullscreen))
-                    (< (float-time) deadline))
-          (sit-for 0.1)))
+      (nhmac-gui--until (lambda () (plist-get (nhmac--query 'test-window-state (selected-frame)) :fullscreen)) 4)
       (nhmac-resize--settle)
       (should (equal (list 'enter (- (nhmac-resize--stretched) stretched)) '(enter 0)))
       (setq stretched (nhmac-resize--stretched))
       (set-frame-parameter nil 'fullscreen nil)
-      (let ((deadline (+ (float-time) 4)))
-        (while (and (plist-get (nhmac--query 'test-window-state (selected-frame)) :fullscreen)
-                    (< (float-time) deadline))
-          (sit-for 0.1)))
+      (nhmac-gui--until (lambda () (not (plist-get (nhmac--query 'test-window-state (selected-frame)) :fullscreen))) 4)
       (nhmac-resize--settle)
       (should (equal (list 'leave (- (nhmac-resize--stretched) stretched)) '(leave 0))))))
 

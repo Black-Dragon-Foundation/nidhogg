@@ -1,6 +1,7 @@
 ;;; nhmac-focus-gui-tests.el --- Naglfar's focus across window transitions on macOS  -*- lexical-binding: t -*-
 
 ;; test-class: cond
+;; test-pattern: handshake
 
 ;; Run by nidhogg/test/nhmac-gui.sh, before the window rows (nhmac-lane.txt) and, for one row, after every other.
 ;; Round 11: after the full-screen and Dock rows the window was key and the application active, yet every key through
@@ -10,6 +11,7 @@
 
 (require 'ert)
 (declare-function glitnir-gui--say "gui-runner" (fmt &rest args)) ; the lane's log, not *Messages*
+(declare-function nhmac-gui--until "nhmac-gui-tests" (pred secs))
 (require 'cl-lib)
 
 (defun nhmac-focus--naglfar-p ()
@@ -17,11 +19,9 @@
 
 (defun nhmac-focus--wait (key want)
   "Wait up to 12 s (AppKit's animations on a CI runner) for the window state KEY to be WANT; the state."
-  (let ((deadline (+ (float-time) 12)) st)
-    (while (and (progn (setq st (nhmac--query 'test-window-state (selected-frame)))
-                       (not (eq (plist-get st key) want)))
-                (< (float-time) deadline))
-      (sit-for 0.2))
+  (let (st)
+    (nhmac-gui--until (lambda () (eq (plist-get (setq st (nhmac--query 'test-window-state (selected-frame))) key) want))
+                      12)
     st))
 
 (defun nhmac-focus--compose (row what)
