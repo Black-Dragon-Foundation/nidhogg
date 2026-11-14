@@ -203,6 +203,11 @@ thread_local! {
     static PRESS: Cell<Option<NSPoint>> = const { Cell::new(None) };
 }
 
+/// How many posted mouse events the pump has not sent yet (`test-posted`): 0 once every one posted is delivered.
+pub fn posted_pending() -> usize {
+    POSTED_EVENTS.with(|q| q.borrow().len())
+}
+
 /// The content's top left on the screen, in points (y up).
 fn content_top_left(w: &Win) -> NSPoint {
     let c = w.window.contentRectForFrameRect(w.window.frame());
