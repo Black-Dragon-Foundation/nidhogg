@@ -5099,6 +5099,30 @@ tests.  */)
   return states;
 }
 
+DEFUN ("nhwl--hold-configures", Fnhwl__hold_configures,
+       Snhwl__hold_configures, 1, 2, 0,
+       doc: /* Leave the compositor's configures to FRAME's display unread if ON.
+FRAME defaults to the selected frame.  While ON is non-nil the shell
+reads no configure (nor anything else its main queue carries): what
+the compositor sends waits, as a late answer would.  ON nil reads it
+at the next read of input, in the order it came.  Return nil.  For
+tests: a row that needs the compositor's answer read after something
+the frame does holds it back.  */)
+  (Lisp_Object on, Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  struct nhwl_display_info *dpyinfo;
+  int32_t rc;
+
+  if (!FRAME_NHWL_P (f))
+    error ("Not a Nidhogg shell frame");
+  dpyinfo = FRAME_DISPLAY_INFO (f);
+  rc = NHG (nhg_hold_main (dpyinfo->glue, !NILP (on)));
+  if (nhwl_glue_rc (dpyinfo, rc) < 0)
+    error ("The shell cannot hold its configures");
+  return Qnil;
+}
+
 DEFUN ("nhwl--focus-frames", Fnhwl__focus_frames, Snhwl__focus_frames,
        0, 1, 0,
        doc: /* Return the frames FRAME's display holds for focus, a plist.
@@ -5155,6 +5179,7 @@ syms_of_nhwlterm (void)
   defsubr (&Snhwl__scroll_layers);
   defsubr (&Snhwl__frame_states);
   defsubr (&Snhwl__focus_frames);
+  defsubr (&Snhwl__hold_configures);
   DEFSYM (QCfocus, ":focus");
   DEFSYM (QChighlight, ":highlight");
   DEFSYM (QCevent, ":event");

@@ -180,7 +180,8 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   frame's backing, without its child frames. Test primitives: `glitnir--draw-count` (the commits of a tree that showed
   something), `glitnir--stacking` (a root's child frames bottom to top), `glitnir--chrome` (the chrome the shell holds
   for a frame, in device pixels), `nhwl--frame-states` (the fullscreen and maximized states of the compositor's last
-  configure, its answer to the frame's `fullscreen` parameter). A panic in the glue drops the display it happened on and
+  configure, its answer to the frame's `fullscreen` parameter), `nhwl--hold-configures` (leave the compositor's
+  configures unread until released, so a row fixes the order of a late answer and what the frame does meanwhile). A panic in the glue drops the display it happened on and
   Emacs keeps running (`nhwl-glue-panics`).
 - **Dev build** (`--dev` or `NIDHOGG_BUILD_DEV=1`, for agents' task builds): configures `--with-native-compilation=yes`
   instead of `aot`, so only the preloaded Lisp is native-compiled and the other ~1,400 files stay bytecode (minutes instead

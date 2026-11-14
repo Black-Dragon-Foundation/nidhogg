@@ -1487,17 +1487,16 @@ reading nothing from the display: a wait that reads (`sit-for', `redisplay') wou
     (while (and (not (gui-runner--presented-p)) (< (float-time) deadline)))
     (gui-runner--presented-p)))
 
+;; Mutter answers a window's first buffer with a configure of that buffer's size, sent before it has read the frame's
+;; next commit.  A frame resized meanwhile (persist restoring a job window: `make-frame', then `set-frame-size') read that
+;; configure after its new size was applied and went back to its creation size.  The row holds the answer back
+;; (`nhwl--hold-configures') from the first buffer's flush until the new size is applied and committed, so it is read
+;; after the new size in every run, whenever mutter sends it; the shell knows it was sent before mutter read the new
+;; size, and leaves the size to the frame.
 (ert-deftest nhwl-gui/live-fresh-frame-keeps-its-new-size ()
   "A size set on a frame just shown holds after the compositor's configure: the last size asked wins.
 Mutter only: sway tiles a new window, whose size is the compositor's, and the recorder sends no configure of its own."
   :tags '(runs-last)
-  ;; Mutter answers a window's first buffer with a configure of that buffer's size, sent before it has read the frame's
-  ;; next commit.  A frame resized meanwhile (persist restoring a job window: `make-frame', then `set-frame-size') read
-  ;; that configure after its new size was applied and went back to its creation size.  The row shows the frame at its
-  ;; creation size, spins until that buffer has gone out, then sets the size and redisplays at once: `redisplay' reads
-  ;; the display before it draws, microseconds after the flush, before mutter can have answered, so the answer is read
-  ;; after the new size is applied.  The shell knows the configure was sent before mutter read the new size, and leaves
-  ;; the size to the frame.
   (skip-unless (and (nhwl-gui--live-p) (nhwl-gui--nhwl-frames) (equal (glitnir-gui--compositor) "mutter")))
   (let ((root (selected-frame)) (f nil)
         (text (lambda (f) (list (frame-text-width f) (frame-text-height f)))))
@@ -1505,19 +1504,25 @@ Mutter only: sway tiles a new window, whose size is the compositor's, and the re
         (progn
           (setq f (make-frame '((width . 60) (height . 20))))
           (redisplay t)
+          ;; nothing has read the display since the first buffer's redisplay drew it
+          (nhwl--hold-configures t f)
           (should (nhwl-gui--presented-unread 5))
           (should-not (equal (funcall text f) '(600 400)))
           (set-frame-size f 600 400 t)
           (redisplay t)
           (ert-info ("the resize's redisplay")
             (should (equal (funcall text f) '(600 400))))
-          ;; mutter's answer is read and applied, and what follows it has reached mutter
+          (should (nhwl-gui--presented-unread 5))
+          ;; mutter's answer is read now, after the new size, and what follows it reaches mutter
+          (nhwl--hold-configures nil f)
           (nhwl-gui--live-settle)
           (should (nhwl-gui--wait (lambda () (gui-runner-read-all) (nhwl-gui--shown-p)) 5))
           (redisplay t)
           (ert-info ((format "after mutter's answer, states %S" (nhwl--frame-states f)))
             (should (equal (funcall text f) '(600 400)))))
-      (when (frame-live-p f) (delete-frame f t))
+      (when (frame-live-p f)
+        (nhwl--hold-configures nil f)
+        (delete-frame f t))
       (select-frame root)
       (nhwl-gui--live-settle))))
 

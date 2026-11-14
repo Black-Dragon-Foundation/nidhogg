@@ -246,6 +246,13 @@ pub trait ShellBackend {
     fn flush_main(&mut self) -> ShellResult {
         self.dispatch_main()
     }
+    /// While `on`, leave the host thread's events (configures, the main queue's syncs) unread, as from a compositor
+    /// whose answer is late; off, they are read at the next drain, in the order they came.  For tests
+    /// (`nhwl--hold-configures`); `Unsupported` where the backend has no such queue.
+    fn hold_main(&mut self, on: bool) -> ShellResult {
+        let _ = on;
+        Err(ShellError::Unsupported)
+    }
     /// Why the connection ended: a protocol error's text, `INTERFACE@ID: error CODE: MESSAGE`; empty while it lives
     /// or after a plain hangup.
     fn last_error(&self) -> String {

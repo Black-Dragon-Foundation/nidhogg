@@ -735,6 +735,7 @@ typedef NhgCaps C;
 typedef NhgPresenterCounters P;
 #define POFF(m) offsetof (P, m)
 PROTO (nhg_dispatch_main, int32_t (NhgDisplay *));
+PROTO (nhg_hold_main, int32_t (NhgDisplay *, int32_t));
 PROTO (nhg_caps, int32_t (NhgDisplay *, NhgCaps *));
 PROTO (nhg_window_move, int32_t (NhgDisplay *, uint64_t));
 PROTO (nhg_window_resize, int32_t (NhgDisplay *, uint64_t, uint32_t));
@@ -745,6 +746,7 @@ PROTO (nhg_set_cursor_theme, int32_t (NhgDisplay *, const char *, uint32_t));";
         {
             use nhglue::ffi::*;
             let _: unsafe extern "C" fn(*mut NhgDisplay) -> i32 = nhg_dispatch_main;
+            let _: unsafe extern "C" fn(*mut NhgDisplay, i32) -> i32 = nhg_hold_main;
             let _: unsafe extern "C" fn(*mut NhgDisplay, *mut C) -> i32 = nhg_caps;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_window_move;
             let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u32) -> i32 = nhg_window_resize;
@@ -1688,6 +1690,7 @@ PROTO (nhg_last_error, int32_t (NhgDisplay *, char *, size_t, size_t *));";
             assert_eq!(nhg_close(null), NHG_OK);
             assert_eq!(nhg_fd(null), NHG_E_ARG);
             assert_eq!(nhg_dispatch_main(null), NHG_E_ARG);
+            assert_eq!(nhg_hold_main(null, 1), NHG_E_ARG);
         }
     }
 

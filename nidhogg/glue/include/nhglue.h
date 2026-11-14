@@ -66,6 +66,10 @@ int32_t nhg_fd (NhgDisplay *d);
 /* Run the shell's work that must happen on the host's thread (configure and surface events) and flush.  */
 int32_t nhg_dispatch_main (NhgDisplay *d);
 
+/* While ON is nonzero, leave the host-thread events (configures) unread; zero reads them at the next drain, in the
+   order they came.  For tests: a compositor's late answer (nhwl--hold-configures).  */
+int32_t nhg_hold_main (NhgDisplay *d, int32_t on);
+
 /* Commit now what the shell left for its next pump or wait (macOS: the commit is off the redisplay path); the host's
    deadline after a redisplay, for Lisp that runs on without waiting.  */
 int32_t nhg_flush_presents (NhgDisplay *d);
