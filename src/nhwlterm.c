@@ -668,15 +668,50 @@ nhwl_block_int (Lisp_Object v, int i, intmax_t dflt)
 	  : FLOATP (x) ? (intmax_t) XFLOAT_DATA (x) : dflt);
 }
 
-/* Whether ROW holds only overlay-string text displayed at END: it starts
-   at END, a glyph of its text area comes from a string and none from
-   the buffer.  Its end position is not asked: every row of a multi-row
+extern Lisp_Object Foverlays_in (Lisp_Object, Lisp_Object);
+
+/* The after-strings of the overlays of W's buffer that end at END (an
+   overlay holds its after-string at its end).  */
+static Lisp_Object
+nhwl_block_after_strings (struct window *w, ptrdiff_t end)
+{
+  specpdl_ref count = SPECPDL_INDEX ();
+  Lisp_Object list = Qnil;
+
+  record_unwind_current_buffer ();
+  set_buffer_internal (XBUFFER (w->contents));
+  /* Those that cover the character before END, and the empty ones and
+     those that start at END (which end at END only when empty).  */
+  for (int pass = 0; pass < 2; pass++)
+    {
+      Lisp_Object ovs
+	= (pass == 0
+	   ? (end > BEGV ? Foverlays_in (make_fixnum (end - 1), make_fixnum (end)) : Qnil)
+	   : Foverlays_in (make_fixnum (end), make_fixnum (min (end + 1, Z))));
+      for (; CONSP (ovs); ovs = XCDR (ovs))
+	{
+	  Lisp_Object ov = XCAR (ovs);
+	  if (OVERLAY_END (ov) != end)
+	    continue;
+	  Lisp_Object str = Foverlay_get (ov, Qafter_string);
+	  if (STRINGP (str))
+	    list = Fcons (str, list);
+	}
+    }
+  return unbind_to (count, list);
+}
+
+/* Whether ROW holds only text of an after-string in STRINGS (those of
+   the overlays that end at END) displayed at END: it starts at END, a
+   glyph of its text area comes from one of them and none from the
+   buffer.  Its end position is not asked: every row of a multi-row
    after-string but the first may end past END (the iterator has stepped
-   on from the string's newline), and so does the next block's own row.
-   Rows of an image or a display string count: their glyphs' object is
-   the string.  */
+   on from the string's newline).  A string row of another overlay
+   starting at END (the next cell's header, a before-string) is not
+   one.  Rows of an image or a space display of the string count: their
+   glyphs' object is the string.  */
 static bool
-nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
+nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end, Lisp_Object strings)
 {
   if (MATRIX_ROW_START_CHARPOS (row) != end)
     return false;
@@ -686,9 +721,21 @@ nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
     {
       if (BUFFERP (g->object))
 	return false;
-      from_string |= STRINGP (g->object);
+      if (STRINGP (g->object) && !NILP (Fmemq (g->object, strings)))
+	from_string = true;
     }
   return from_string;
+}
+
+/* Whether ROW has a glyph of the string STR.  */
+static bool
+nhwl_block_row_has_string_p (struct glyph_row *row, Lisp_Object str)
+{
+  struct glyph *g = row->glyphs[TEXT_AREA];
+  for (struct glyph *e = g + row->used[TEXT_AREA]; g < e; g++)
+    if (EQ (g->object, str))
+      return true;
+  return false;
 }
 
 /* List block V of leaf window W, whose text area is CLIP: the rows of
@@ -696,31 +743,40 @@ nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
    last row's bottom, from x0 to x1 of the text area.  V is
    [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB GAP
    SHADOW-RGB SHADOW-OPACITY HALO-RGB HALO-OPACITY OUTER-RGB OUTER-OPACITY
-   FILL-RGB FILL-OPACITY TOP-RGB TOP-OPACITY]
+   FILL-RGB FILL-OPACITY TOP-RGB TOP-OPACITY OVERLAY]
    as glitnir--block-vector makes it (KIND 0 a ring, 1 a rule, 2 a bar, 3 an
    inner panel; START and END positions, END exclusive, or equal: the rows of
-   the overlay strings displayed at that position, and no text row; X0,
+   the overlay strings displayed at that position, and no text row; OVERLAY an
+   overlay, or nil: the block then holds the rows with a glyph of its
+   after-string, START and END unread; X0,
    X1, RADIUS and GAP device pixels; an RGB -1 for none).  A block
    whose text starts above the window's first row (scrolled out) is open
    at the top; one that goes on below its last row, at the bottom.  Rows
-   of nothing but an overlay string at END (an after-string there, such
-   as a notebook cell's output, of any number of rows) are inside: they
-   start at END and show no buffer text, so a block starting at END
-   leaves them out.  This is all C does: the
+   of nothing but the after-string of an overlay ending at END (a notebook
+   cell's output, of any number of rows) are inside: they start at END and
+   show no buffer text, so a block starting at END leaves them out, and
+   so are the rows of a before-string of the next block's overlay.  This is all C does: the
    glue plans the layers and Glitnir draws.  */
 static void
 nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 {
   struct glyph_matrix *m = w->current_matrix;
 
-  if (!m || !VECTORP (v) || ASIZE (v) < 20)
+  if (!m || !VECTORP (v) || ASIZE (v) < 21)
     return;
+  /* An inner block may name the overlay whose after-string it holds:
+     its rows are those with a glyph of that string, wherever they
+     start.  */
+  Lisp_Object ov = AREF (v, 20);
+  Lisp_Object own = OVERLAYP (ov) ? Foverlay_get (ov, Qafter_string) : Qnil;
+  bool by_string = STRINGP (own);
   ptrdiff_t start = nhwl_block_pos (w, AREF (v, 1));
   ptrdiff_t end = nhwl_block_pos (w, AREF (v, 2));
-  if (start < 0 || end < start)
+  if (!by_string && (start < 0 || end < start))
     return;
   /* START = END: the rows of the overlay strings there and no text row.  */
   bool tail_only = end == start;
+  Lisp_Object strings = Qt;	/* not made yet */
 
   struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (m);
   struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
@@ -728,9 +784,26 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
   bool stopped = false;
   for (struct glyph_row *row = first; row < bottom && row->enabled_p; row++)
     {
+      if (by_string)
+	{
+	  if (nhwl_block_row_has_string_p (row, own))
+	    {
+	      if (!top)
+		top = row;
+	      last = row;
+	    }
+	  else if (top)
+	    {
+	      stopped = true;
+	      break;
+	    }
+	  continue;
+	}
       ptrdiff_t rs = MATRIX_ROW_START_CHARPOS (row);
       ptrdiff_t re = MATRIX_ROW_END_CHARPOS (row);
-      if (rs > end || (rs == end && !nhwl_block_tail_row_p (row, end)))
+      if (rs == end && EQ (strings, Qt))
+	strings = nhwl_block_after_strings (w, end);
+      if (rs > end || (rs == end && !nhwl_block_tail_row_p (row, end, strings)))
 	{
 	  stopped = true;
 	  break;
@@ -758,10 +831,24 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
   uint32_t flags = (EQ (AREF (v, 0), make_fixnum (1)) ? NHG_BLOCK_RULE
 		    : EQ (AREF (v, 0), make_fixnum (2)) ? NHG_BLOCK_BAR
 		    : EQ (AREF (v, 0), make_fixnum (3)) ? NHG_BLOCK_INNER : 0);
-  if (top == first && MATRIX_ROW_START_CHARPOS (top) > start)
-    flags |= NHG_BLOCK_OPEN_TOP;
-  if (!stopped && MATRIX_ROW_END_CHARPOS (last) < end)
-    flags |= NHG_BLOCK_OPEN_BOTTOM;
+  if (by_string)
+    {
+      /* open where the string goes on past the rows shown */
+      struct glyph *g = top->glyphs[TEXT_AREA], *e = g + top->used[TEXT_AREA];
+      for (; g < e && !EQ (g->object, own); g++)
+	;
+      if (top == first && g < e && g->charpos > 0)
+	flags |= NHG_BLOCK_OPEN_TOP;
+      if (!stopped)
+	flags |= NHG_BLOCK_OPEN_BOTTOM;
+    }
+  else
+    {
+      if (top == first && MATRIX_ROW_START_CHARPOS (top) > start)
+	flags |= NHG_BLOCK_OPEN_TOP;
+      if (!stopped && MATRIX_ROW_END_CHARPOS (last) < end)
+	flags |= NHG_BLOCK_OPEN_BOTTOM;
+    }
 
   if (nhwl_nblocks == nhwl_blocks_cap)
     nhwl_blocks = xpalloc (nhwl_blocks, &nhwl_blocks_cap, 1, -1,

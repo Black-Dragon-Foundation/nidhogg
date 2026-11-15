@@ -389,6 +389,91 @@ outside), in the gap.  Geometry in logical px times the scale."
       (delete-overlay ov)
       (kill-buffer buf))))
 
+;; The notebook's cell, as drgnx builds it: a head newline with a before-string (the header row) and a tail newline with
+;; two overlays ending after it, the output's after-string and the add row's (priority -20), at the position where the
+;; next cell's head newline begins, with its own before-string header row.  The output's rows and no others are the
+;; inner block's: not the source row before, not the add row, not the next cell's header.
+(defun glitnir-gui--notebook-buffer ()
+  "A buffer of two cells; return (BUFFER END OUTPUT-OVERLAY), END the tail's end where the second cell's head is."
+  (let ((buf (get-buffer-create "*glitnir-nb*")) end out)
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert "\nsrc one\nsrc two\n")                         ; head 1, two source rows, tail newline at the last
+      (let ((tail (1- (point))))
+        (setq end (point))
+        (insert "\nsrc three\n")                               ; head 2, a source row, tail newline
+        (let ((ov (make-overlay 1 2)))
+          (overlay-put ov 'before-string (propertize "[1] python" 'face 'bold)))
+        (let ((ov (make-overlay 1 end)))
+          (overlay-put ov 'line-prefix (propertize " " 'display '(space :width 12))))
+        (setq out (make-overlay tail end))
+        (overlay-put out 'after-string "16 0.0612\n64 0.2487\n[image 640x360]\n")
+        (let ((ov (make-overlay tail end)))
+          (overlay-put ov 'priority -20)
+          (overlay-put ov 'after-string "+ Code + Markdown\n"))
+        (let ((ov (make-overlay end (1+ end))))
+          (overlay-put ov 'before-string (propertize "[3] python" 'face 'bold)))
+        (let ((ov (make-overlay end (point))))
+          (overlay-put ov 'line-prefix (propertize " " 'display '(space :width 12)))))
+      (goto-char 1))
+    (list buf end out)))
+
+(ert-deftest glitnir-gui/a-ring-block-stops-before-the-next-cells-header ()
+  "A bar over a cell holds the output's and the add row's after-strings at its END, and stops before the next
+cell's header row, a before-string of an overlay starting at that END."
+  (glitnir-gui--skip-unless-tree)
+  (pcase-let* ((`(,buf ,end ,_out) (glitnir-gui--notebook-buffer)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks `((bar ,(copy-marker 1) ,(copy-marker end) :x1 6 :ring ("#ff0000" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (red (lambda (row) (equal (glitnir-gui--pixel snap (list (+ x 2) (+ y (* row lh) (/ lh 2)))) '(255 0 0)))))
+            (dotimes (row 7) (should (funcall red row)))     ; header 1, source, the output, the add row
+            (should-not (funcall red 7))                     ; header 2
+            (should-not (funcall red 8))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/an-inner-block-holds-the-outputs-rows-and-no-others ()
+  "An inner block naming the output's overlay holds the rows of that after-string: the first (which follows the
+source's row), the last, and not the add row's (another overlay's, at the same END), the next cell's header (a
+before-string row) or the source row above."
+  (glitnir-gui--skip-unless-tree)
+  (pcase-let* ((`(,buf ,end ,out) (glitnir-gui--notebook-buffer)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((inner ,(copy-marker end) ,(copy-marker end) :x0 4 :x1 30 :radius 6 :overlay ,out
+                        :fill ("#00ff00" . 1) :top ("#0000ff" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (green (lambda (row) (equal (glitnir-gui--pixel snap (list (+ x 16) (+ y (* row lh) (/ lh 2)))) '(0 255 0)))))
+            ;; rows: 0 header 1, 1-2 source, 3-5 the output, 6 the add row, 7 header 2, 8 source
+            (should-not (funcall green 2))
+            (should (funcall green 3))
+            (should (funcall green 4))
+            (should (funcall green 5))
+            (should-not (funcall green 6))
+            (should-not (funcall green 7))
+            (should-not (funcall green 8))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (kill-buffer buf))))
+
 ;; The overview ruler.  Its rows wait through `glitnir-gui--painted' (redisplay, the presenter settled), which every
 ;; shell gives; `glitnir--draw-count' is the Wayland shell's alone (0 on Naglfar).
 

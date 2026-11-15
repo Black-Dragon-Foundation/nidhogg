@@ -502,11 +502,14 @@ from `:x0' to `:x1' (so the card's span inset) are filled by `:fill'
 (as `:ring', translucent over the rows, corners rounded by `:radius'),
 framed by `:ring' (a 1 line border inside its edge) and given a
 hairline along its top, between the corners, by `:top' (as `:ring');
-`:beneath', `:gap', `:shadow', `:shadow-ring' and `:outer' mean nothing
-to it.  The vector is [KIND START END X0 X1 RADIUS RING-RGB
+`:overlay' (an overlay) names the overlay whose after-string the block
+holds: its rows are those with a glyph of that string, wherever they
+start (START and END are unread), so the next overlay's string, such as
+an add row at the same position, is outside it; `:beneath', `:gap',
+`:shadow', `:shadow-ring' and `:outer' mean nothing to it.  The vector is [KIND START END X0 X1 RADIUS RING-RGB
 RING-OPACITY BENEATH-RGB GAP SHADOW-RGB SHADOW-OPACITY HALO-RGB
 HALO-OPACITY OUTER-RGB OUTER-OPACITY FILL-RGB FILL-OPACITY TOP-RGB
-TOP-OPACITY], KIND 0 a ring, 1 a rule, 2 a bar and 3 an inner panel, an
+TOP-OPACITY OVERLAY], KIND 0 a ring, 1 a rule, 2 a bar and 3 an inner panel, an
 RGB -1 for none.  Signal `wrong-type-argument' for another shape."
   (unless (and (consp spec) (memq (car spec) '(ring rule bar inner)) (consp (cdr spec)) (consp (cddr spec)))
     (signal 'wrong-type-argument (list 'glitnir-block spec)))
@@ -535,7 +538,8 @@ RGB -1 for none.  Signal `wrong-type-argument' for another shape."
             (if halo (car halo) -1) (if halo (cdr halo) 0)
             (if outer (car outer) -1) (if outer (cdr outer) 0)
             (if fill (car fill) -1) (if fill (cdr fill) 0)
-            (if top (car top) -1) (if top (cdr top) 0))))
+            (if top (car top) -1) (if top (cdr top) 0)
+            (plist-get plist :overlay))))
 
 (defvar glitnir--blocks-any nil
   "Whether a window of the frame has blocks.
