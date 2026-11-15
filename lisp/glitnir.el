@@ -466,6 +466,9 @@ with the window when the frame publishes."
 ;; stand inside its rows by a gap, which shows the colour beneath, and
 ;; cast a shadow (a blur and a 1 px line) outside its edge, into the gap,
 ;; and have a second ring just outside it (a focused card's border step).
+;; An `inner' block is a panel inside such a card: a translucent rounded
+;; fill, a border and a hairline along its top, inset by its x0 and x1;
+;; with START = END it covers the after-string rows at that position.
 ;; The rows give their own fill.  It is resolved into `glitnir--blocks'
 ;; only when it, or the theme, changed; C resolves each block's rows
 ;; against the window's matrix when the frame publishes.  A block's rows
@@ -475,9 +478,12 @@ with the window when the frame publishes."
 
 (defun glitnir--block-vector (spec frame)
   "Return block SPEC as the vector C reads, for FRAME.
-SPEC is (KIND START END . PLIST): KIND `ring', `rule' or `bar' (the
-rectangle filled in the line's colour, square); START and END
-markers (or positions) of the window's buffer, END exclusive; PLIST
+SPEC is (KIND START END . PLIST): KIND `ring', `rule', `bar' (the
+rectangle filled in the line's colour, square) or `inner' (a panel
+inside a card, below); START and END markers (or positions) of the
+window's buffer, END exclusive, or the same position: then the rows are
+those of the overlay strings displayed there (an after-string) and no
+text row; PLIST
 `:x0' and `:x1' (pixels from the text area's left edge, default 0 and
 its width), `:radius' (pixels, a ring's outer corners), `:ring' (a face,
 whose foreground is the line's colour, or (FACE-OR-COLOUR . OPACITY)),
@@ -490,11 +496,19 @@ adjacent rows stand apart), and for a ring `:shadow' and `:shadow-ring'
 the shadow's 1 px line just outside it; logical px, in the gap or past
 the rows, never over them) and `:outer' (as `:ring': a second ring
 1 px just outside the ring's edge, over the shadow's line: the focus
-ring inside, the border step outside).  The vector is [KIND START END
-X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB GAP SHADOW-RGB
-SHADOW-OPACITY HALO-RGB HALO-OPACITY OUTER-RGB OUTER-OPACITY], KIND 0 a
-ring, 1 a rule and 2 a bar, an RGB -1 for none.  Signal `wrong-type-argument' for another shape."
-  (unless (and (consp spec) (memq (car spec) '(ring rule bar)) (consp (cdr spec)) (consp (cddr spec)))
+ring inside, the border step outside).  An `inner' block is a panel
+inside a card (a notebook cell's output under its hairline): its rows
+from `:x0' to `:x1' (so the card's span inset) are filled by `:fill'
+(as `:ring', translucent over the rows, corners rounded by `:radius'),
+framed by `:ring' (a 1 line border inside its edge) and given a
+hairline along its top, between the corners, by `:top' (as `:ring');
+`:beneath', `:gap', `:shadow', `:shadow-ring' and `:outer' mean nothing
+to it.  The vector is [KIND START END X0 X1 RADIUS RING-RGB
+RING-OPACITY BENEATH-RGB GAP SHADOW-RGB SHADOW-OPACITY HALO-RGB
+HALO-OPACITY OUTER-RGB OUTER-OPACITY FILL-RGB FILL-OPACITY TOP-RGB
+TOP-OPACITY], KIND 0 a ring, 1 a rule, 2 a bar and 3 an inner panel, an
+RGB -1 for none.  Signal `wrong-type-argument' for another shape."
+  (unless (and (consp spec) (memq (car spec) '(ring rule bar inner)) (consp (cdr spec)) (consp (cddr spec)))
     (signal 'wrong-type-argument (list 'glitnir-block spec)))
   (let* ((plist (nthcdr 3 spec))
          (ring-spec (plist-get plist :ring))
@@ -506,8 +520,10 @@ ring, 1 a rule and 2 a bar, an RGB -1 for none.  Signal `wrong-type-argument' fo
          (shadow (funcall line (plist-get plist :shadow)))
          (halo (funcall line (plist-get plist :shadow-ring)))
          (outer (funcall line (plist-get plist :outer)))
+         (fill (funcall line (plist-get plist :fill)))
+         (top (funcall line (plist-get plist :top)))
          (beneath (plist-get plist :beneath)))
-    (vector (pcase (car spec) ('rule 1) ('bar 2) (_ 0)) (nth 1 spec) (nth 2 spec)
+    (vector (pcase (car spec) ('rule 1) ('bar 2) ('inner 3) (_ 0)) (nth 1 spec) (nth 2 spec)
             (or (plist-get plist :x0) 0) (or (plist-get plist :x1) most-positive-fixnum)
             (or (plist-get plist :radius) 0)
             (if ring (car ring) -1) (if ring (cdr ring) 0)
@@ -517,7 +533,9 @@ ring, 1 a rule and 2 a bar, an RGB -1 for none.  Signal `wrong-type-argument' fo
             (or (plist-get plist :gap) 0)
             (if shadow (car shadow) -1) (if shadow (cdr shadow) 0)
             (if halo (car halo) -1) (if halo (cdr halo) 0)
-            (if outer (car outer) -1) (if outer (cdr outer) 0))))
+            (if outer (car outer) -1) (if outer (cdr outer) 0)
+            (if fill (car fill) -1) (if fill (cdr fill) 0)
+            (if top (car top) -1) (if top (cdr top) 0))))
 
 (defvar glitnir--blocks-any nil
   "Whether a window of the frame has blocks.

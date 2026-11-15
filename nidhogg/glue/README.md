@@ -279,7 +279,12 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   text area, holding Glitnir `Block`s in root device px; compose draws a ring just inside the block (its corners
   outside the rounded path in the beneath colour), a rule on its bottom pixel rows or a bar (`NHG_BLOCK_BAR`, kind
   `bar` in Lisp: the block's rectangle filled in the line's colour, square, a selected row's accent), over the frame's
-  pixels; only a bar fills. The block layers stay above the frame's outputs. A scale change and a reconnect give them again. A shell with
+  pixels; only a bar fills. An inner panel (`NHG_BLOCK_INNER`, kind `inner`: a notebook cell's output inside its card)
+  fills its rectangle in `fill` with corners rounded by the radius, over the rows (translucent: the text shows through),
+  frames it with the ring colour and draws a `top` hairline between the corners (none on an open top); with START = END its
+  rows are those of the overlay strings displayed there (`nhwl_block_add`: rows that start at the position and show no
+  buffer text), so it holds an after-string's rows and no text row. The `fill` and `top` colours come from Lisp (`:fill`, `:top`
+  of the block plist); macOS draws it through `block_overlay`, the same `draw_block`, with no change of its own. The block layers stay above the frame's outputs. A scale change and a reconnect give them again. A shell with
   cards on layers of its own (macOS) gets each window's blocks as one image instead (`blocks::images_at`,
   `glitnir::compose::block_overlay`), in the window's card list after its cards.
 - **Edges** (`src/edges.rs`): thin lines over a window's text from one buffer place to another, with rounded bends, an

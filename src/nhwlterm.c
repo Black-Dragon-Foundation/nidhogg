@@ -695,9 +695,12 @@ nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
    W's current matrix holding its text, from its first row's top to its
    last row's bottom, from x0 to x1 of the text area.  V is
    [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB GAP
-   SHADOW-RGB SHADOW-OPACITY HALO-RGB HALO-OPACITY OUTER-RGB OUTER-OPACITY]
-   as glitnir--block-vector makes it (KIND 0 a ring, 1 a rule; START and END positions, END
-   exclusive; X0, X1, RADIUS and GAP device pixels; an RGB -1 for none).  A block
+   SHADOW-RGB SHADOW-OPACITY HALO-RGB HALO-OPACITY OUTER-RGB OUTER-OPACITY
+   FILL-RGB FILL-OPACITY TOP-RGB TOP-OPACITY]
+   as glitnir--block-vector makes it (KIND 0 a ring, 1 a rule, 2 a bar, 3 an
+   inner panel; START and END positions, END exclusive, or equal: the rows of
+   the overlay strings displayed at that position, and no text row; X0,
+   X1, RADIUS and GAP device pixels; an RGB -1 for none).  A block
    whose text starts above the window's first row (scrolled out) is open
    at the top; one that goes on below its last row, at the bottom.  Rows
    of nothing but an overlay string at END (an after-string there, such
@@ -710,12 +713,14 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 {
   struct glyph_matrix *m = w->current_matrix;
 
-  if (!m || !VECTORP (v) || ASIZE (v) < 16)
+  if (!m || !VECTORP (v) || ASIZE (v) < 20)
     return;
   ptrdiff_t start = nhwl_block_pos (w, AREF (v, 1));
   ptrdiff_t end = nhwl_block_pos (w, AREF (v, 2));
-  if (start < 0 || end <= start)
+  if (start < 0 || end < start)
     return;
+  /* START = END: the rows of the overlay strings there and no text row.  */
+  bool tail_only = end == start;
 
   struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (m);
   struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
@@ -730,7 +735,9 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 	  stopped = true;
 	  break;
 	}
-      if (re <= start && !(row->ends_at_zv_p && re >= start))
+      if (tail_only
+	  ? rs < start
+	  : re <= start && !(row->ends_at_zv_p && re >= start))
 	continue;
       if (!top)
 	top = row;
@@ -749,7 +756,8 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
   int y0 = WINDOW_TO_FRAME_PIXEL_Y (w, top->y);
   int y1 = WINDOW_TO_FRAME_PIXEL_Y (w, last->y) + last->height;
   uint32_t flags = (EQ (AREF (v, 0), make_fixnum (1)) ? NHG_BLOCK_RULE
-		    : EQ (AREF (v, 0), make_fixnum (2)) ? NHG_BLOCK_BAR : 0);
+		    : EQ (AREF (v, 0), make_fixnum (2)) ? NHG_BLOCK_BAR
+		    : EQ (AREF (v, 0), make_fixnum (3)) ? NHG_BLOCK_INNER : 0);
   if (top == first && MATRIX_ROW_START_CHARPOS (top) > start)
     flags |= NHG_BLOCK_OPEN_TOP;
   if (!stopped && MATRIX_ROW_END_CHARPOS (last) < end)
@@ -759,7 +767,7 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
     nhwl_blocks = xpalloc (nhwl_blocks, &nhwl_blocks_cap, 1, -1,
 			   sizeof *nhwl_blocks);
   Lisp_Object op = AREF (v, 7), sop = AREF (v, 11), hop = AREF (v, 13);
-  Lisp_Object oop = AREF (v, 15);
+  Lisp_Object oop = AREF (v, 15), fop = AREF (v, 17), top_op = AREF (v, 19);
   nhwl_blocks[nhwl_nblocks++]
     = (NhgBlock) { w->sequence_number, clip,
 		   { clip.x + x0, y0, x1 - x0, y1 - y0 },
@@ -773,7 +781,11 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 		   (int32_t) nhwl_block_int (v, 12, -1),
 		   NUMBERP (hop) ? (float) XFLOATINT (hop) : 0.0f,
 		   (int32_t) nhwl_block_int (v, 14, -1),
-		   NUMBERP (oop) ? (float) XFLOATINT (oop) : 0.0f };
+		   NUMBERP (oop) ? (float) XFLOATINT (oop) : 0.0f,
+		   (int32_t) nhwl_block_int (v, 16, -1),
+		   NUMBERP (fop) ? (float) XFLOATINT (fop) : 0.0f,
+		   (int32_t) nhwl_block_int (v, 18, -1),
+		   NUMBERP (top_op) ? (float) XFLOATINT (top_op) : 0.0f };
 }
 
 /* Add a filled bar RECT in RGB at OPACITY to the list, clipped to CLIP,

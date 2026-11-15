@@ -7,8 +7,8 @@ mod blocks {
     use glitnir::scene::{BlockKind, Placed};
     use nhglue::backing::{Backings, NhgBacking, NhgFrameGeom, NhgRect};
     use nhglue::blocks::{
-        NHG_BLOCK_BAR, NHG_BLOCK_OPEN_TOP, NHG_BLOCK_RULE, NHG_BLOCK_STRIP, NhgBlock, block_id,
-        count, sync_at,
+        NHG_BLOCK_BAR, NHG_BLOCK_INNER, NHG_BLOCK_OPEN_TOP, NHG_BLOCK_RULE, NHG_BLOCK_STRIP,
+        NhgBlock, block_id, count, sync_at,
     };
     use std::sync::Arc;
 
@@ -85,12 +85,39 @@ mod blocks {
             halo_opacity: 0.0,
             outer_rgb: -1,
             outer_opacity: 0.0,
+            fill_rgb: -1,
+            fill_opacity: 0.0,
+            top_rgb: -1,
+            top_opacity: 0.0,
         }
     }
 
     /// Root px of a rectangle with the native area's origin.
     fn at(r: NhgRect) -> Rect {
         Rect::new(r.x, r.y + STRIP, r.w, r.h)
+    }
+
+    /// An inner block reaches Glitnir as kind `Inner` with its fill and top hairline premultiplied, its border the ring.
+    #[test]
+    fn an_inner_block_carries_its_fill_and_hairline() {
+        let mut b = Backings::default();
+        let (key, _v) = frame(&mut b, 120);
+        let inner = NhgBlock {
+            fill_rgb: 0x00_ff00,
+            fill_opacity: 1.0,
+            top_rgb: 0x00_00ff,
+            top_opacity: 0.5,
+            ring_rgb: -1,
+            ..block(rows(2, 3, 10, 95), NHG_BLOCK_INNER)
+        };
+        assert_eq!(sync_at(&mut b, key, &[inner]), Ok(1));
+        let (_, c) = commit(key);
+        let p = placed(&c, block_id(SEQ)).expect("the layer");
+        let x = p.blocks[0];
+        assert_eq!(x.kind, BlockKind::Inner);
+        assert_eq!(x.fill_argb, 0xff00_ff00);
+        assert_ne!(x.top_argb, 0);
+        assert_eq!(x.ring_argb, 0);
     }
 
     /// A window with a ring and a ruler: the ruler's strip bars are a block layer of their own (`seq | STRIP_TAG`), whose

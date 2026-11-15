@@ -1806,6 +1806,7 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
             ("NHG_BLOCK_OPEN_BOTTOM", NHG_BLOCK_OPEN_BOTTOM.into()),
             ("NHG_BLOCK_BAR", NHG_BLOCK_BAR.into()),
             ("NHG_BLOCK_STRIP", NHG_BLOCK_STRIP.into()),
+            ("NHG_BLOCK_INNER", NHG_BLOCK_INNER.into()),
             ("sizeof (B)", size_of::<B>() as i64),
             ("_Alignof (B)", align_of::<B>() as i64),
             ("offsetof (B, seq)", offset_of!(B, seq) as i64),
@@ -1837,6 +1838,16 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
             (
                 "offsetof (B, outer_opacity)",
                 offset_of!(B, outer_opacity) as i64,
+            ),
+            ("offsetof (B, fill_rgb)", offset_of!(B, fill_rgb) as i64),
+            (
+                "offsetof (B, fill_opacity)",
+                offset_of!(B, fill_opacity) as i64,
+            ),
+            ("offsetof (B, top_rgb)", offset_of!(B, top_rgb) as i64),
+            (
+                "offsetof (B, top_opacity)",
+                offset_of!(B, top_opacity) as i64,
             ),
         ];
         let decls = "\

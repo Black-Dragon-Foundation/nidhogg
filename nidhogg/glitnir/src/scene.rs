@@ -174,6 +174,9 @@ pub enum BlockKind {
     /// The whole rectangle filled in the line's colour, square (a selected row's accent bar: its x0..x1 the bar's
     /// width).
     Bar,
+    /// A panel inside a card (the notebook's output under its hairline): its rectangle filled in `fill_argb` with
+    /// rounded corners, `ring_argb` a border around it, `top_argb` a hairline along its top between the corners.
+    Inner,
 }
 
 /// A block of rows inside a window ([`Scene::set_blocks`]), drawn OVER the frame's pixels: a ring inside its rectangle
@@ -207,6 +210,11 @@ pub struct Block {
     /// A second ring, `ring_px` wide just outside the ring's edge, over the shadow's line (premultiplied, 0: none): the
     /// focus ring inside, the border step outside.
     pub outer_argb: u32,
+    /// An inner panel's fill (premultiplied, 0: none), rounded by `radius_px`, over the rows.
+    pub fill_argb: u32,
+    /// An inner panel's hairline along its top, `ring_px` thick between the corners (premultiplied, 0: none); none on
+    /// an open top.
+    pub top_argb: u32,
 }
 
 impl Block {

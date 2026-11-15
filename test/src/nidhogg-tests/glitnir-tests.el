@@ -572,11 +572,17 @@ radius, the ring's colour from a face's foreground and the colour beneath; a bad
                                             :gap 8 :shadow ("#000000" . 0.5) :shadow-ring ("#00ff00" . 1)
                                             :outer ("#0000ff" . 0.5))
                                      (selected-frame))))
-      (should (equal (append v nil) (list 0 s e 40 300 6 #xff0000 1 #x0000ff 8 #x000000 0.5 #x00ff00 1 #x0000ff 0.5)))
+      (should (equal (append v nil) (list 0 s e 40 300 6 #xff0000 1 #x0000ff 8 #x000000 0.5 #x00ff00 1 #x0000ff 0.5 -1 0 -1 0)))
       (should (= (aref (glitnir--block-vector `(rule ,s ,e :ring ("#ff0000" . 0.5)) (selected-frame)) 0) 1))
       ;; a bar (a selected row's accent): kind 2, its x0..x1 the bar's width
       (should (equal (append (glitnir--block-vector `(bar ,s ,e :x1 3 :ring ("#ff0000" . 1)) (selected-frame)) nil)
-                     (list 2 s e 0 3 0 #xff0000 1 (aref (glitnir--block-vector `(bar ,s ,e) (selected-frame)) 8) 0 -1 0 -1 0 -1 0)))
+                     (list 2 s e 0 3 0 #xff0000 1 (aref (glitnir--block-vector `(bar ,s ,e) (selected-frame)) 8) 0 -1 0 -1 0 -1 0 -1 0 -1 0)))
+      ;; an inner block (a panel inside a card): kind 3, a rounded fill and a top hairline, START and END alike
+      (should (equal (append (glitnir--block-vector `(inner ,s ,s :x0 8 :x1 90 :radius 6 :fill ("#00ff00" . 0.25) :top ("#0000ff" . 1))
+                                                    (selected-frame))
+                             nil)
+                     (list 3 s s 8 90 6 -1 0 (aref (glitnir--block-vector `(bar ,s ,e) (selected-frame)) 8) 0 -1 0 -1 0 -1 0
+                           #x00ff00 0.25 #x0000ff 1)))
       ;; no ring: -1; no beneath: the frame's background
       (cl-letf (((symbol-function 'frame-parameter)
                  (lambda (_f p) (and (eq p 'background-color) "#00ff00"))))

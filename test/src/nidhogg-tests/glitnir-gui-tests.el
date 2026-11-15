@@ -337,6 +337,46 @@ in the gap."
            (propertize " " 'display (create-image "P1\n4 4\n1 0 0 1\n0 1 1 0\n0 1 1 0\n1 0 0 1\n" 'pbm t :scale 6)) "\n"
            "+ Code + Markdown\n")))
 
+;; An `inner' block: a panel inside a card (the notebook's output under its hairline).  Its START and END are one position,
+;; so its rows are the after-string's rows there, no row of the text before or after.
+(ert-deftest glitnir-gui/an-inner-block-fills-the-after-string-rows-under-a-hairline ()
+  "An inner block at END of line 0: a rounded fill (green) over the two after-string rows from x0 to x1, a hairline
+(blue) along their top between the corners; the text rows around it keep none of either."
+  (glitnir-gui--skip-unless-tree)
+  (let* ((buf (glitnir-gui--text-buffer "*glitnir-inner*" 10)) (w (selected-window))
+         (end (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 1) (point))))
+         (ov (with-current-buffer buf (make-overlay end end))))
+    (unwind-protect
+        (progn
+          (overlay-put ov 'after-string "      out 1\n      out 2\n")
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((inner ,(copy-marker end) ,(copy-marker end) :x0 4 :x1 30 :radius 6
+                        :fill ("#00ff00" . 1) :top ("#0000ff" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (top (+ y lh))              ; the first after-string row: the row after line 0
+                       (at (lambda (dx dy) (glitnir-gui--pixel snap (list (+ x dx) dy)))))
+            (should (equal (funcall at 16 top) '(0 0 255)))                     ; the hairline, between the corners
+            (should (equal (funcall at 16 (+ top (/ lh 2))) '(0 255 0)))        ; the first row's fill
+            (should (equal (funcall at 16 (+ top lh (/ lh 2))) '(0 255 0)))     ; the second row's
+            (should (equal (funcall at 16 (+ top (* 2 lh) -1)) '(0 255 0)))     ; the last pixel row
+            (should-not (equal (funcall at 5 top) '(0 0 255)))                  ; no hairline in the corner
+            (should-not (equal (funcall at 4 top) '(0 255 0)))                  ; the corner is rounded off
+            (should-not (equal (funcall at 2 (+ top lh)) '(0 255 0)))           ; left of x0
+            (should-not (equal (funcall at 32 (+ top lh)) '(0 255 0)))          ; right of x1
+            (should-not (equal (funcall at 16 (+ y (/ lh 2))) '(0 255 0)))      ; line 0, above
+            (should-not (equal (funcall at 16 (+ top (* 2 lh) (/ lh 2))) '(0 255 0))))) ; line 1, below
+      (set-window-parameter w 'glitnir-blocks nil)
+      (delete-overlay ov)
+      (kill-buffer buf))))
+
 ;; The overview ruler.  Its rows wait through `glitnir-gui--painted' (redisplay, the presenter settled), which every
 ;; shell gives; `glitnir--draw-count' is the Wayland shell's alone (0 on Naglfar).
 

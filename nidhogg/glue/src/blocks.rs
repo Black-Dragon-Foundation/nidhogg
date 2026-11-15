@@ -9,6 +9,8 @@
 //! - **Per frame:** C lists the blocks of every frame of a published tree, child frames too (each is a root of its
 //!   own), in the frame's native-area coordinates: a child frame that moves keeps them, one whose scale changes gets
 //!   them again at the new scale.
+//! - **Inner panels:** a block of kind `inner` is a panel inside a card: its rows' rectangle filled (rounded, over the rows),
+//!   an optional border and a hairline along its top; its rows may be those of an after-string at one position.
 //! - **What C gives ([`NhgBlock`]):** the rectangle and the text area in device px, the radius in device px, the
 //!   ring's and the beneath colour as 0xRRGGBB, a ring's gap (its inset from the rows' top and bottom, in the colour
 //!   beneath) in device px, a ring's shadow, its line and the outer ring as colours (the shadow a 3 px blur 1 px down, logical px, as
@@ -41,6 +43,8 @@ pub const NHG_BLOCK_BAR: u32 = 8;
 /// [`NhgBlock::flags`]: a bar of the window's strip (the overview ruler, in its right fringe): planned as a layer of
 /// its own (`seq | STRIP_TAG`), whose clip is the strip, so the window's other blocks keep theirs.
 pub const NHG_BLOCK_STRIP: u32 = 16;
+/// [`NhgBlock::flags`]: an inner panel (a fill, a border and a top hairline inside a card), not a ring.
+pub const NHG_BLOCK_INNER: u32 = 32;
 
 /// One block of one Emacs window as C resolves it at publish.  Layout equals `NhgBlock`.
 #[repr(C)]
@@ -72,6 +76,11 @@ pub struct NhgBlock {
     /// A ring's outer ring 0xRRGGBB (-1: none) at its opacity: one logical px just outside its edge.
     pub outer_rgb: i32,
     pub outer_opacity: f32,
+    /// An inner panel's fill and its top hairline, 0xRRGGBB (-1: none) at their opacities.
+    pub fill_rgb: i32,
+    pub fill_opacity: f32,
+    pub top_rgb: i32,
+    pub top_opacity: f32,
 }
 
 /// What a block layer was last given: its rectangle, scale and blocks.
@@ -128,7 +137,9 @@ pub fn plan(
         let rgb = |c: i32| u32::try_from(c).ok().map(|c| c & 0xff_ffff);
         let block = Block {
             rect,
-            kind: if b.flags & NHG_BLOCK_BAR != 0 {
+            kind: if b.flags & NHG_BLOCK_INNER != 0 {
+                BlockKind::Inner
+            } else if b.flags & NHG_BLOCK_BAR != 0 {
                 BlockKind::Bar
             } else if b.flags & NHG_BLOCK_RULE != 0 {
                 BlockKind::Rule
@@ -147,6 +158,8 @@ pub fn plan(
             shadow_y_px: s.round() as i32,
             halo_argb: rgb(b.halo_rgb).map_or(0, |c| premultiplied(c, b.halo_opacity)),
             outer_argb: rgb(b.outer_rgb).map_or(0, |c| premultiplied(c, b.outer_opacity)),
+            fill_argb: rgb(b.fill_rgb).map_or(0, |c| premultiplied(c, b.fill_opacity)),
+            top_argb: rgb(b.top_rgb).map_or(0, |c| premultiplied(c, b.top_opacity)),
         };
         // a window's strip is a layer of its own: one clip a layer
         let k = if b.flags & NHG_BLOCK_STRIP != 0 {

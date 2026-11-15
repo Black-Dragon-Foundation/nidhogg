@@ -858,6 +858,7 @@ int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
 #define NHG_BLOCK_OPEN_BOTTOM  4   /* the block goes on below its last text row: no bottom side */
 #define NHG_BLOCK_BAR          8   /* the whole rectangle filled in the line's colour, not a ring */
 #define NHG_BLOCK_STRIP       16   /* a bar of the window's strip (the overview ruler): a layer of its own, its clip the strip */
+#define NHG_BLOCK_INNER       32   /* a panel inside a card: the rectangle filled (rounded), an optional border, a hairline along its top */
 
 /* One block of Emacs window SEQ: CLIP its text area (window_box (w, TEXT_AREA)) and RECT the block's rows from x0 to
    x1, both device pixels with the native area's origin; FLAGS NHG_BLOCK_*; RADIUS the outer corner radius in device
@@ -883,6 +884,10 @@ typedef struct
   float halo_opacity;
   int32_t outer_rgb;
   float outer_opacity;
+  int32_t fill_rgb;   /* an inner panel's fill and its top hairline (0xRRGGBB, -1 none) at their opacities */
+  float fill_opacity;
+  int32_t top_rgb;
+  float top_opacity;
 } NhgBlock;
 
 /* FRAME (WINDOW its own shell window, a child frame's too) is about to be published with the N blocks at BLOCKS: each

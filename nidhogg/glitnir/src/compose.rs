@@ -752,6 +752,81 @@ impl CardRing {
     }
 }
 
+/// Rectangle Q (root px, inside the target) filled whole in ARGB.
+fn solid_rect(k: &Kernels, t: &mut TargetView, q: Rect, argb: u32) {
+    if q.is_empty() {
+        return;
+    }
+    let full = vec![255u8; q.w as usize];
+    let mask = Mask {
+        data: &full,
+        stride: 0,
+    };
+    k.solid_over(&mut t.at(q), argb, &mask, q.w as usize, q.h as usize);
+}
+
+/// Inner block B within CLIP (root px, inside the target, the window and B's rectangle): a panel inside a card.  Its
+/// rectangle is filled (corners rounded by the radius, over the rows), then a border ring around it, then a hairline
+/// along its top between the corners.  An open side lies past the rectangle (by the radius), so its corners, border
+/// and hairline fall outside it and are not drawn.  The fill and the hairline are translucent when their colours are:
+/// the rows' own text and fill show through.
+fn draw_inner(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Rect) {
+    let rect = b.rect;
+    let w = b.ring_px.min(1 << 12) as i32;
+    let wu = w as u32;
+    let r0 = if b.ring_argb != 0 {
+        b.radius_px.max(wu)
+    } else {
+        b.radius_px
+    };
+    let (top, bottom) = (
+        if b.open_top { r0 as i32 + w } else { 0 },
+        if b.open_bottom { r0 as i32 + w } else { 0 },
+    );
+    let ext = Rect::new(rect.x, rect.y - top, rect.w, rect.h + top + bottom);
+    let r = clamp_radius(ext.w as usize, ext.h as usize, r0);
+    let ri = r as i32;
+    if b.fill_argb != 0 {
+        // the straight parts: the middle band whole, the top and bottom bands between the corners
+        for q in [
+            Rect::new(ext.x, ext.y + ri, ext.w, ext.h - 2 * ri),
+            Rect::new(ext.x + ri, ext.y, ext.w - 2 * ri, ri),
+            Rect::new(ext.x + ri, ext.y + ext.h - ri, ext.w - 2 * ri, ri),
+        ] {
+            solid_rect(k, t, q.intersect(&clip), b.fill_argb);
+        }
+        if r > 0 {
+            let inside = corner_coverage(r);
+            let (n, ru) = (2 * r as usize, r as usize);
+            let squares = [
+                Rect::new(ext.x, ext.y, ri, ri),
+                Rect::new(ext.x + ext.w - ri, ext.y, ri, ri),
+                Rect::new(ext.x, ext.y + ext.h - ri, ri, ri),
+                Rect::new(ext.x + ext.w - ri, ext.y + ext.h - ri, ri, ri),
+            ];
+            for (i, sq) in squares.iter().enumerate() {
+                let q = sq.intersect(&clip);
+                if q.is_empty() {
+                    continue;
+                }
+                let mask = quadrant(&inside, n, ((i % 2) * ru, (i / 2) * ru), *sq, q);
+                k.solid_over(&mut t.at(q), b.fill_argb, &mask, q.w as usize, q.h as usize);
+            }
+        }
+    }
+    if b.ring_argb != 0 && ext.w >= 2 * w && ext.h >= 2 * w {
+        // the border: a card's ring around the rectangle w px in, so its outer edge is the rectangle's
+        let inner = Rect::new(ext.x + w, ext.y + w, ext.w - 2 * w, ext.h - 2 * w);
+        let ring = CardRing::around(inner, r.max(wu) - wu, wu, b.ring_argb);
+        let mut dst = t.at(clip);
+        ring.draw(k, &mut dst, clip);
+    }
+    if b.top_argb != 0 && !b.open_top {
+        let line = Rect::new(rect.x + ri, rect.y, rect.w - 2 * ri, w);
+        solid_rect(k, t, line.intersect(&clip), b.top_argb);
+    }
+}
+
 /// Block B within CLIP (root px, inside the target and the window): a rule's bottom line; a ring's gap bands (its
 /// rectangle's top and bottom `gap_px` rows) in the colour beneath, its corners outside its rounded path in that
 /// colour, then the ring just inside the rectangle less the gap.  An open side lies past the rectangle (by the radius),
@@ -781,21 +856,13 @@ fn draw_block(
     let w = b.ring_px.min(1 << 12) as i32;
     let ring_kind = b.kind == crate::scene::BlockKind::Ring;
     let any = b.ring_argb != 0
-        || (ring_kind && (b.shadow_argb != 0 || b.halo_argb != 0 || b.outer_argb != 0));
+        || (ring_kind && (b.shadow_argb != 0 || b.halo_argb != 0 || b.outer_argb != 0))
+        || b.fill_argb != 0
+        || b.top_argb != 0;
     if clip.is_empty() || !any || w == 0 {
         return;
     }
-    let solid = |k: &Kernels, t: &mut TargetView, q: Rect, argb: u32| {
-        if q.is_empty() {
-            return;
-        }
-        let full = vec![255u8; q.w as usize];
-        let mask = Mask {
-            data: &full,
-            stride: 0,
-        };
-        k.solid_over(&mut t.at(q), argb, &mask, q.w as usize, q.h as usize);
-    };
+    let solid = solid_rect;
     if b.kind == crate::scene::BlockKind::Rule {
         let line = Rect::new(rect.x, rect.y + rect.h - w, rect.w, w);
         solid(k, t, line.intersect(&clip), b.ring_argb);
@@ -803,6 +870,10 @@ fn draw_block(
     }
     if b.kind == crate::scene::BlockKind::Bar {
         solid(k, t, clip, b.ring_argb);
+        return;
+    }
+    if b.kind == crate::scene::BlockKind::Inner {
+        draw_inner(k, t, b, clip);
         return;
     }
     // the gap: the bands above and below the ring in the colour beneath
@@ -3542,6 +3613,77 @@ mod tests {
                         "scale {scale}: beside the bar at {x},{y}"
                     );
                 }
+            }
+        }
+
+        /// Inner blocks: the rectangle filled with its corners rounded off, a hairline along the top between the corners,
+        /// nothing beside it; a border ring inside the rectangle's edge; an open top has neither corners nor hairline.
+        #[test]
+        fn inner_blocks_fill_round_and_have_a_top_hairline() {
+            const FILL: u32 = 0xff00_8800;
+            const HAIR: u32 = 0xff00_0088;
+            for scale in [1.0, 2.0] {
+                let r = Rect::new(20, 10, 40, 30);
+                let inner = Block {
+                    kind: BlockKind::Inner,
+                    fill_argb: FILL,
+                    top_argb: HAIR,
+                    ring_argb: 0,
+                    ..ring(r, 6, 1)
+                };
+                let s = blocked(ALL, &[inner], scale);
+                let out = compose_all(&s, &Buf::new(120, 80, FRONT), scale);
+                assert_eq!(
+                    out.at(40, 10),
+                    HAIR,
+                    "scale {scale}: the hairline, between the corners"
+                );
+                assert_eq!(out.at(40, 11), FILL, "scale {scale}: the fill under it");
+                assert_eq!(out.at(21, 25), FILL, "scale {scale}: the fill at the side");
+                assert_eq!(out.at(40, 39), FILL, "scale {scale}: the last row");
+                assert_eq!(
+                    out.at(20, 10),
+                    FRONT,
+                    "scale {scale}: the top-left corner is rounded off"
+                );
+                assert_eq!(
+                    out.at(59, 39),
+                    FRONT,
+                    "scale {scale}: the bottom-right corner too"
+                );
+                assert_eq!(
+                    out.at(21, 10),
+                    FRONT,
+                    "scale {scale}: no hairline in the corner"
+                );
+                for (x, y) in [(19, 25), (60, 25), (40, 9), (40, 40)] {
+                    assert_eq!(
+                        out.at(x, y),
+                        FRONT,
+                        "scale {scale}: beside the panel at {x},{y}"
+                    );
+                }
+                // a border instead of a fill, and an open top: no corners and no hairline there
+                let framed = Block {
+                    kind: BlockKind::Inner,
+                    fill_argb: 0,
+                    top_argb: HAIR,
+                    open_top: true,
+                    ..ring(r, 6, 1)
+                };
+                let s = blocked(ALL, &[framed], scale);
+                let out = compose_all(&s, &Buf::new(120, 80, FRONT), scale);
+                assert_eq!(
+                    out.at(40, 10),
+                    FRONT,
+                    "scale {scale}: an open top has no hairline"
+                );
+                assert_eq!(
+                    out.at(20, 20),
+                    RING,
+                    "scale {scale}: the border on the left side"
+                );
+                assert_eq!(out.at(40, 39), RING, "scale {scale}: the border below");
             }
         }
 
