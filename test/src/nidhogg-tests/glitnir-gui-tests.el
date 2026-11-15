@@ -492,6 +492,38 @@ after-string at that END) is not."
       (set-window-parameter w 'glitnir-blocks nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/an-inner-block-pads-its-top-and-bottom ()
+  "An inner block's `:pad-top' and `:pad-bottom' (device px) shorten the drawn panel from the top and the bottom, its
+rows unchanged: the hairline sits that much below the first row's top, the fill ends that much above the last row's
+bottom.  Geometry in logical px times the scale."
+  (glitnir-gui--skip-unless-tree)
+  (pcase-let* ((`(,buf ,end ,out) (glitnir-gui--notebook-buffer)) (w (selected-window))
+               (pt (glitnir-gui--logical 4)) (pb (glitnir-gui--logical 8)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((inner ,(copy-marker end) ,(copy-marker end) :x0 4 :x1 30 :overlay ,out :pad-top ,pt :pad-bottom ,pb
+                        :fill ("#00ff00" . 1) :top ("#0000ff" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (top (+ y (* 3 lh))) (bottom (+ y (* 6 lh)))   ; the output's rows 3 to 5
+                       (at (lambda (dy) (glitnir-gui--pixel snap (list (+ x 16) dy)))))
+            (should-not (member (funcall at (1- (+ top pt))) '((0 0 255) (0 255 0))))   ; above the panel
+            (should (equal (funcall at (+ top pt)) '(0 0 255)))                           ; the hairline
+            (should (equal (funcall at (+ top pt (glitnir-gui--line))) '(0 255 0)))       ; the fill under it
+            (should (equal (funcall at (- bottom pb 1)) '(0 255 0)))                      ; the fill's last pixel row
+            (should-not (equal (funcall at (- bottom pb)) '(0 255 0)))                    ; the padding below it
+            (should-not (equal (funcall at (1- bottom)) '(0 255 0)))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (kill-buffer buf))))
+
 (ert-deftest glitnir-gui/an-inner-block-holds-the-outputs-rows-and-no-others ()
   "An inner block naming the output's overlay holds the rows of that after-string: the first (which follows the
 source's row), the last, and not the add row's (another overlay's, at the same END), the next cell's header (a

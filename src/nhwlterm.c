@@ -743,13 +743,15 @@ nhwl_block_row_has_string_p (struct glyph_row *row, Lisp_Object str)
    last row's bottom, from x0 to x1 of the text area.  V is
    [KIND START END X0 X1 RADIUS RING-RGB RING-OPACITY BENEATH-RGB GAP
    SHADOW-RGB SHADOW-OPACITY HALO-RGB HALO-OPACITY OUTER-RGB OUTER-OPACITY
-   FILL-RGB FILL-OPACITY TOP-RGB TOP-OPACITY OVERLAY]
+   FILL-RGB FILL-OPACITY TOP-RGB TOP-OPACITY OVERLAY PAD-TOP PAD-BOTTOM]
    as glitnir--block-vector makes it (KIND 0 a ring, 1 a rule, 2 a bar, 3 an
    inner panel; START and END positions, END exclusive, or equal: the rows of
    the overlay strings displayed at that position, and no text row; OVERLAY an
    overlay, or nil: the block then holds the rows with a glyph of its
    after-string, START and END unread (a block of another kind takes
-   only that overlay's after-string for the rows after its END); X0,
+   only that overlay's after-string for the rows after its END);
+   PAD-TOP and PAD-BOTTOM device px, an inner panel's rectangle shorter
+   by them (the rows are the same); X0,
    X1, RADIUS and GAP device pixels; an RGB -1 for none).  A block
    whose text starts above the window's first row (scrolled out) is open
    at the top; one that goes on below its last row, at the bottom.  Rows
@@ -766,7 +768,7 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 {
   struct glyph_matrix *m = w->current_matrix;
 
-  if (!m || !VECTORP (v) || ASIZE (v) < 21)
+  if (!m || !VECTORP (v) || ASIZE (v) < 23)
     return;
   /* An inner block may name the overlay whose after-string it holds:
      its rows are those with a glyph of that string, wherever they
@@ -869,6 +871,17 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 	flags |= NHG_BLOCK_OPEN_BOTTOM;
     }
 
+  /* An inner panel's padding: the drawn rectangle is shorter, the rows
+     are not; none at a side the window cuts off.  */
+  if (EQ (AREF (v, 0), make_fixnum (3)))
+    {
+      int pt = (flags & NHG_BLOCK_OPEN_TOP) ? 0 : max (0, (int) nhwl_block_int (v, 21, 0));
+      int pb = (flags & NHG_BLOCK_OPEN_BOTTOM) ? 0 : max (0, (int) nhwl_block_int (v, 22, 0));
+      pt = min (pt, y1 - y0);
+      pb = min (pb, y1 - y0 - pt);
+      y0 += pt;
+      y1 -= pb;
+    }
   if (nhwl_nblocks == nhwl_blocks_cap)
     nhwl_blocks = xpalloc (nhwl_blocks, &nhwl_blocks_cap, 1, -1,
 			   sizeof *nhwl_blocks);

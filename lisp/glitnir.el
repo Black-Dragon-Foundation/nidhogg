@@ -508,11 +508,14 @@ start (START and END are unread), so the next overlay's string, such as
 an add row at the same position, is outside it.  A `ring', `rule' or
 `bar' takes `:overlay' too: of the after-strings at its END only that
 overlay's rows are inside it, so an add row stands between cards.
-`:beneath', `:gap', `:shadow', `:shadow-ring' and `:outer' mean nothing
-to an inner block.  The vector is [KIND START END X0 X1 RADIUS RING-RGB
+`:pad-top' and `:pad-bottom' (device px) shorten the drawn panel from
+the top and the bottom, its rows the same (the notebook card keeps 8
+logical px between its output panel and its own bottom edge); not at a
+side the window cuts off.  `:beneath', `:gap', `:shadow', `:shadow-ring'
+and `:outer' mean nothing to an inner block.  The vector is [KIND START END X0 X1 RADIUS RING-RGB
 RING-OPACITY BENEATH-RGB GAP SHADOW-RGB SHADOW-OPACITY HALO-RGB
 HALO-OPACITY OUTER-RGB OUTER-OPACITY FILL-RGB FILL-OPACITY TOP-RGB
-TOP-OPACITY OVERLAY], KIND 0 a ring, 1 a rule, 2 a bar and 3 an inner panel, an
+TOP-OPACITY OVERLAY PAD-TOP PAD-BOTTOM], KIND 0 a ring, 1 a rule, 2 a bar and 3 an inner panel, an
 RGB -1 for none.  Signal `wrong-type-argument' for another shape."
   (unless (and (consp spec) (memq (car spec) '(ring rule bar inner)) (consp (cdr spec)) (consp (cddr spec)))
     (signal 'wrong-type-argument (list 'glitnir-block spec)))
@@ -542,7 +545,8 @@ RGB -1 for none.  Signal `wrong-type-argument' for another shape."
             (if outer (car outer) -1) (if outer (cdr outer) 0)
             (if fill (car fill) -1) (if fill (cdr fill) 0)
             (if top (car top) -1) (if top (cdr top) 0)
-            (plist-get plist :overlay))))
+            (plist-get plist :overlay)
+            (or (plist-get plist :pad-top) 0) (or (plist-get plist :pad-bottom) 0))))
 
 (defvar glitnir--blocks-any nil
   "Whether a window of the frame has blocks.
