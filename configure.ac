@@ -128,6 +128,11 @@ AC_ARG_WITH([nidhogg-history],
   [AS_HELP_STRING([--with-nidhogg-history],
     [build the edit history's change hook at every buffer-text change site (needs --with-glitnir)])],
   [], [with_nidhogg_history=no])
+dnl Nidhogg: the define-key redirect (see README.md, "Key redirect").
+AC_ARG_WITH([nidhogg-keys],
+  [AS_HELP_STRING([--with-nidhogg-keys],
+    [build the define-key redirect, a function that may move any key definition to another keymap])],
+  [], [with_nidhogg_keys=no])
 dnl Nidhogg: seeded delays at the workers' sync points; test runs only, never a release.
 AC_ARG_WITH([nidhogg-chaos],
   [AS_HELP_STRING([--with-nidhogg-chaos],
@@ -7981,6 +7986,12 @@ case $with_nidhogg_history in
   *) AC_MSG_ERROR([--with-nidhogg-history takes yes or no]) ;;
 esac
 AC_SUBST([NIDHOGG_HISTORY_OBJ])
+dnl Nidhogg: the define-key redirect (src/keymap.c).
+case $with_nidhogg_keys in
+  yes) AC_DEFINE([HAVE_NIDHOGG_KEYS], [1], [Define to 1 to build the define-key redirect.]) ;;
+  no) ;;
+  *) AC_MSG_ERROR([--with-nidhogg-keys takes yes or no]) ;;
+esac
 case $with_nidhogg_chaos in
   yes) AC_DEFINE([NH_CHAOS], [1], [Define to 1 for seeded delays at the workers' sync points.]) ;;
   no) ;;

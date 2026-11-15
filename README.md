@@ -40,11 +40,11 @@ for upstreaming.
 - Every commit on `emacs-31.1..nidhogg-31` has a subject starting `nidhogg: `.
 - Files only Nidhogg owns live under `nidhogg/`, `.github/` and `README.md`, so rebases do not conflict.
 - C patches sit behind `--with-nidhogg-<feature>` configure flags. The identity patch is unconditional.
-- Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`, `shell`, `history`; the stack order is watchdog, then workers, then glitnir, and the check is
+- Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`, `shell`, `history`, `keys`; the stack order is watchdog, then workers, then glitnir, and the check is
   order-independent; `FLAG_GROUPS`,
   overridable: name:define:feature) and its own base: `<GROUP>_BASE` (overridable, e.g. `GLITNIR_BASE`) is the parent of
   the oldest such commit on HEAD; a group with none is skipped. The groups may stack in either order. With the defines
-  of every group that has commits in `base..HEAD` undefined (`HAVE_GLITNIR`, `HAVE_NIDHOGG_WATCHDOG`, `HAVE_NIDHOGG_WORKERS`, `HAVE_NIDHOGG_HISTORY`, …), every C file under
+  of every group that has commits in `base..HEAD` undefined (`HAVE_GLITNIR`, `HAVE_NIDHOGG_WATCHDOG`, `HAVE_NIDHOGG_WORKERS`, `HAVE_NIDHOGG_HISTORY`, `HAVE_NIDHOGG_KEYS`, …), every C file under
   `src/` the group touched must equal its base version (`unifdef -U…`); a changed `lisp/` file is new or `lisp/loadup.el`
   with one `(featurep 'FEATURE)` line per group; a commit in the range touching `src/` that belongs to no group goes
   below the groups. Needs `unifdef`.
@@ -1229,6 +1229,30 @@ needs each change to a buffer's text, wherever it comes from: `after-change-func
 - Tests: `test/src/nidhogg-tests/history-tests.el` (det; in `check-subset.txt`), one row per site: each replays the
   drained changes onto the text the buffer had when it was tracked and compares with the buffer; they skip on a build
   without the flag. The rings' own tests are Glitnir's (`history::tests`, `nidhogg/glitnir/check.sh`).
+
+## Key redirect
+
+drgnx keeps its global keys in a composed map (your keys, then the profile's, then `global-map`). A plain
+`define-key` into that map, or into one of its prefix maps, would land in the wrong layer. Advice on `define-key`
+misses native-compiled callers (`keymap-set`, `global-set-key` and any package's code) when subr trampolines are off,
+so Nidhogg asks in C.
+
+- Build flag: `--with-nidhogg-keys` (defines `HAVE_NIDHOGG_KEYS`). `build.sh` passes it on every target, Glitnir or
+  not, unless given `--without-nidhogg-keys`. The whole patch is in `src/keymap.c`.
+- `nidhogg-define-key-redirect-function` (nil by default): `define-key` calls it with (KEYMAP KEY DEF REMOVE), KEYMAP
+  already resolved, before the prefix walk. nil leaves the definition where it was asked for; a keymap gets the whole
+  KEY instead (the prefix walk runs there, making its own prefix maps). It runs with the variable bound to nil, so a
+  definition it makes is not redirected again; its errors are `define-key`'s, and nothing is defined then. A value
+  that is not a keymap signals `wrong-type-argument`. Unset, a definition costs one test of the variable.
+- It sees every `define-key` call, C's included: a tty frame's set-up defines its function keys in `input-decode-map`
+  under `internal_condition_case` (`term.c`), so a function that signals there loses those keys silently. The function
+  must return nil at once for a keymap it does not manage and never signal. Changes made without `define-key` (list
+  surgery, `store_in_keymap`) are not seen.
+- A build has it when the variable is bound (no feature: `syms_of_keymap` runs before `features` exists).
+- Tests: `test/src/nidhogg-tests/keys-tests.el` (det; in `check-subset.txt`): every caller (`keymap-set`,
+  `global-set-key`, `local-set-key`, `funcall`, `apply`) reaches it, REMOVE and the prefix walk follow the returned map,
+  the composed-map case, recursion and errors; a row checks those callers are native-compiled (skipped without native
+  compilation). They skip on a build without the flag.
 
 ## Sjá, the native view model
 

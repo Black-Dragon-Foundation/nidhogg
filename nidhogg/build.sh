@@ -53,7 +53,7 @@ DISTROS="fedora-45 ubuntu-26.04 debian-13 arch"
 usage() {
   cat >&2 <<USAGE
 usage: nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memory SIZE]
-                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--without-nidhogg-history] [--naglfar] [--dry-config] [--dry-run]
+                        [--build-dir DIR] [--check FILE] [--out FILE] [--stage build|check|pack] [--without-glitnir] [--nidhogg-wayland] [--dev] [--chaos] [--without-nidhogg-watchdog] [--without-nidhogg-workers] [--without-nidhogg-history] [--without-nidhogg-keys] [--naglfar] [--dry-config] [--dry-run]
   DISTRO: $DISTROS
 USAGE
   exit 2
@@ -67,6 +67,7 @@ NHWL=0       # --nidhogg-wayland was asked for by name
 WATCHDOG=1  # the stall watchdog is built in unless --without-nidhogg-watchdog
 WORKERS=1    # the worker threads are built in unless --without-nidhogg-workers
 HISTORY=1    # the edit history's change hook is built in with Glitnir (it holds the rings) unless --without-nidhogg-history
+KEYS=1       # the define-key redirect is built in unless --without-nidhogg-keys
 NAGLFAR=0    # --naglfar: the macOS shell (the default on a macOS host)
 DRYCONF=0    # --dry-config: configure only
 CHECKING=0   # --checking: --enable-checking, so the test hooks are built; dev builds only
@@ -93,6 +94,7 @@ while [ $# -gt 0 ]; do
     --without-nidhogg-watchdog) WATCHDOG=0; shift ;;
     --without-nidhogg-workers) WORKERS=0; shift ;;
     --without-nidhogg-history) HISTORY=0; shift ;;
+    --without-nidhogg-keys) KEYS=0; shift ;;
     --dry-run) DRY=1; shift ;;
     --naglfar) NAGLFAR=1; shift ;;
     --dry-config) DRYCONF=1; shift ;;
@@ -212,6 +214,7 @@ if [ -n "$GLITNIR" ]; then PKGS="$PKGS)"; else PKGS="$PKGS | grep -vxE 'cargo|ru
 [ "$WATCHDOG" = 0 ] || CONF="$CONF --with-nidhogg-watchdog"
 [ "$WORKERS" = 0 ] || CONF="$CONF --with-nidhogg-workers"
 [ "$HISTORY" = 0 ] || [ -z "$GLITNIR" ] || CONF="$CONF --with-nidhogg-history"
+[ "$KEYS" = 0 ] || CONF="$CONF --with-nidhogg-keys"
 [ "$CHAOS" = 0 ] || CONF="$CONF --with-nidhogg-chaos"
 [ "$CHECKING" = 0 ] || CONF="$CONF --enable-checking"
 [ "$HOOKS" = 0 ] || CONF="$CONF --enable-nidhogg-test-hooks"

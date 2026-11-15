@@ -13,7 +13,7 @@ command -v unifdef >/dev/null || { echo "TREE FAIL: unifdef is not installed (th
 # FLAG_GROUPS (overridable) = name:define:feature, space separated; define is a comma list (a group's own defines).  ${NAME}_BASE (upper case; GLITNIR_BASE keeps
 # working, overridable) defaults to the parent of the oldest commit on HEAD whose subject starts 'nidhogg: <name>:'.
 # Order-independent: either group may be on top.
-FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers shell:HAVE_NHWL,NHWL_WAYLAND:nidhogg-wayland history:HAVE_NIDHOGG_HISTORY:nidhogg-history naglfar:HAVE_NHMAC:naglfar'
+FLAG_GROUPS_DEFAULT='glitnir:HAVE_GLITNIR:glitnir watchdog:HAVE_NIDHOGG_WATCHDOG:nidhogg-watchdog workers:HAVE_NIDHOGG_WORKERS:nidhogg-workers shell:HAVE_NHWL,NHWL_WAYLAND:nidhogg-wayland history:HAVE_NIDHOGG_HISTORY:nidhogg-history keys:HAVE_NIDHOGG_KEYS:nidhogg-keys naglfar:HAVE_NHMAC:naglfar'
 # Commits listed in SERIES_EXCEPTIONS (default nidhogg/test/series-exceptions.txt: "<sha> <reason>" per line) are
 # misfiled commits the release rebuild re-subjects; the rule does not count them.
 series_exception() {

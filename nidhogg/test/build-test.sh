@@ -101,6 +101,13 @@ run -- --dry-run --container fedora-45 --without-nidhogg-history
 rcis 0; hasnt "--with-nidhogg-history"; has "--with-nidhogg-workers"
 run -- --dry-run --container fedora-45 --without-glitnir
 rcis 0; hasnt "--with-nidhogg-history"
+# the define-key redirect on every target, Glitnir or not, unless --without-nidhogg-keys
+run -- --dry-run --container fedora-45 --without-glitnir
+rcis 0; has "--with-nidhogg-keys"
+run NIDHOGG_BUILD_UNAME=Darwin -- --dry-run --host --prefix /tmp/n
+rcis 0; has "--with-nidhogg-keys"
+run -- --dry-run --container fedora-45 --without-nidhogg-keys
+rcis 0; hasnt "--with-nidhogg-keys"; has "--with-nidhogg-history"
 # --chaos: seeded delays in a dev build, never a release
 run -- --dry-run --container fedora-45
 rcis 0; hasnt "--with-nidhogg-chaos"

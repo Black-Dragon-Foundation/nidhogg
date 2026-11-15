@@ -1120,6 +1120,23 @@ binding KEY to DEF is added at the front of KEYMAP.  */)
   bool metized = false;
 
   keymap = get_keymap (keymap, 1, 1);
+#ifdef HAVE_NIDHOGG_KEYS
+
+  /* Nidhogg: `nidhogg-define-key-redirect-function' sees every
+     definition, from Lisp or from native code, before the prefix walk,
+     and may move it to another keymap.  It runs with itself bound to
+     nil, so a definition it makes is not redirected again.  */
+  if (!NILP (Vnidhogg_define_key_redirect_function))
+    {
+      specpdl_ref count = SPECPDL_INDEX ();
+      Lisp_Object fn = Vnidhogg_define_key_redirect_function;
+      specbind (Qnidhogg_define_key_redirect_function, Qnil);
+      Lisp_Object to = calln (fn, keymap, key, def, remove);
+      unbind_to (count, Qnil);
+      if (!NILP (to))
+	keymap = get_keymap (to, 1, 1);
+    }
+#endif
 
   ptrdiff_t length = CHECK_VECTOR_OR_STRING (key);
   if (length == 0)
@@ -3484,4 +3501,24 @@ that describe key bindings.  That is why the default is nil.  */);
   DEFSYM (Qnon_key_event, "non-key-event");
   DEFSYM (Qprinc, "princ");
   DEFSYM (Qsuppress_keymap, "suppress-keymap");
+#ifdef HAVE_NIDHOGG_KEYS
+
+  DEFVAR_LISP ("nidhogg-define-key-redirect-function",
+	       Vnidhogg_define_key_redirect_function,
+	       doc: /* Function that may move a key definition to another keymap, or nil.
+When non-nil, `define-key' calls it with KEYMAP KEY DEF REMOVE, the
+arguments it was given (KEYMAP already resolved to a keymap), before it
+walks KEY's prefixes, at every call of `define-key': from Lisp, from
+native code, from C (a terminal's function keys) and from `keymap-set',
+`global-set-key' and the other functions built on it.  Changes that do
+not go through `define-key' (list surgery on a keymap) are not seen.
+The function should return nil at once for a keymap it does not manage
+and never signal: C callers such as a tty's set-up ignore errors.  It returns nil to leave the definition where it was
+asked for, or a keymap, in which the whole of KEY is defined instead.
+While it runs this variable is nil, so a definition it makes itself is
+not redirected.  An error it signals is the error of `define-key'.  */);
+  Vnidhogg_define_key_redirect_function = Qnil;
+  DEFSYM (Qnidhogg_define_key_redirect_function,
+	  "nidhogg-define-key-redirect-function");
+#endif
 }
