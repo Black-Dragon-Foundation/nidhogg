@@ -442,6 +442,56 @@ cell's header row, a before-string of an overlay starting at that END."
       (set-window-parameter w 'glitnir-blocks nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/a-block-starting-at-the-end-leaves-the-previous-cells-output ()
+  "The next cell's block starts at the previous one's END, where the output's after-string rows are: its rows are
+the header and its source, not the output rows after the first (whose end is past that START)."
+  (glitnir-gui--skip-unless-tree)
+  (pcase-let* ((`(,buf ,end ,_out) (glitnir-gui--notebook-buffer)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((bar ,(copy-marker 1) ,(copy-marker end) :x1 6 :ring ("#ff0000" . 1))
+                 (bar ,(copy-marker end) ,(copy-marker (with-current-buffer buf (point-max))) :x0 8 :x1 14 :ring ("#0000ff" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (blue (lambda (row) (equal (glitnir-gui--pixel snap (list (+ x 10) (+ y (* row lh) (/ lh 2)))) '(0 0 255)))))
+            (dotimes (row 7) (should-not (funcall blue row)))   ; header 1, source, the output, the add row
+            (should (funcall blue 7))                          ; header 2
+            (should (funcall blue 8))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/a-bar-block-naming-an-overlay-holds-only-its-rows-after-its-end ()
+  "A bar with `:overlay' the output's: the output's rows after its END are inside, the add row (another overlay's
+after-string at that END) is not."
+  (glitnir-gui--skip-unless-tree)
+  (pcase-let* ((`(,buf ,end ,out) (glitnir-gui--notebook-buffer)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks `((bar ,(copy-marker 1) ,(copy-marker end) :x1 6 :overlay ,out :ring ("#ff0000" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (red (lambda (row) (equal (glitnir-gui--pixel snap (list (+ x 2) (+ y (* row lh) (/ lh 2)))) '(255 0 0)))))
+            (dotimes (row 6) (should (funcall red row)))     ; header 1, source, the output
+            (should-not (funcall red 6))                     ; the add row
+            (should-not (funcall red 7))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (kill-buffer buf))))
+
 (ert-deftest glitnir-gui/an-inner-block-holds-the-outputs-rows-and-no-others ()
   "An inner block naming the output's overlay holds the rows of that after-string: the first (which follows the
 source's row), the last, and not the add row's (another overlay's, at the same END), the next cell's header (a

@@ -748,15 +748,19 @@ nhwl_block_row_has_string_p (struct glyph_row *row, Lisp_Object str)
    inner panel; START and END positions, END exclusive, or equal: the rows of
    the overlay strings displayed at that position, and no text row; OVERLAY an
    overlay, or nil: the block then holds the rows with a glyph of its
-   after-string, START and END unread; X0,
+   after-string, START and END unread (a block of another kind takes
+   only that overlay's after-string for the rows after its END); X0,
    X1, RADIUS and GAP device pixels; an RGB -1 for none).  A block
    whose text starts above the window's first row (scrolled out) is open
    at the top; one that goes on below its last row, at the bottom.  Rows
    of nothing but the after-string of an overlay ending at END (a notebook
    cell's output, of any number of rows) are inside: they start at END and
    show no buffer text, so a block starting at END leaves them out, and
-   so are the rows of a before-string of the next block's overlay.  This is all C does: the
-   glue plans the layers and Glitnir draws.  */
+   so are the rows of a before-string of the next block's overlay.  A
+   block starting at START leaves out the rows of the after-strings of
+   overlays ending at START: they are the previous block's, though a row
+   of a multi-row string but the first ends at START + 1.  This is all C
+   does: the glue plans the layers and Glitnir draws.  */
 static void
 nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 {
@@ -769,14 +773,18 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
      start.  */
   Lisp_Object ov = AREF (v, 20);
   Lisp_Object own = OVERLAYP (ov) ? Foverlay_get (ov, Qafter_string) : Qnil;
-  bool by_string = STRINGP (own);
+  /* An inner block holds the rows of that string; another kind takes
+     only that overlay's after-string for the rows after its END.  */
+  bool by_string = STRINGP (own) && EQ (AREF (v, 0), make_fixnum (3));
   ptrdiff_t start = nhwl_block_pos (w, AREF (v, 1));
   ptrdiff_t end = nhwl_block_pos (w, AREF (v, 2));
   if (!by_string && (start < 0 || end < start))
     return;
   /* START = END: the rows of the overlay strings there and no text row.  */
   bool tail_only = end == start;
-  Lisp_Object strings = Qt;	/* not made yet */
+  Lisp_Object strings = (STRINGP (own) && !by_string
+			 ? list1 (own) : Qt);	/* Qt: not made yet */
+  Lisp_Object before = Qt;	/* the same for the rows at START */
 
   struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (m);
   struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
@@ -803,6 +811,17 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
       ptrdiff_t re = MATRIX_ROW_END_CHARPOS (row);
       if (rs == end && EQ (strings, Qt))
 	strings = nhwl_block_after_strings (w, end);
+      /* a row of the after-string of the overlays ending at START is the
+	 previous block's, though its end is past START (a row of a
+	 multi-row string but the first ends at START + 1); the block's
+	 own header there is a before-string */
+      if (!tail_only && rs == start)
+	{
+	  if (EQ (before, Qt))
+	    before = nhwl_block_after_strings (w, start);
+	  if (nhwl_block_tail_row_p (row, start, before))
+	    continue;
+	}
       if (rs > end || (rs == end && !nhwl_block_tail_row_p (row, end, strings)))
 	{
 	  stopped = true;

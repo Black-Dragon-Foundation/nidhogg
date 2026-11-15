@@ -505,8 +505,11 @@ hairline along its top, between the corners, by `:top' (as `:ring');
 `:overlay' (an overlay) names the overlay whose after-string the block
 holds: its rows are those with a glyph of that string, wherever they
 start (START and END are unread), so the next overlay's string, such as
-an add row at the same position, is outside it; `:beneath', `:gap',
-`:shadow', `:shadow-ring' and `:outer' mean nothing to it.  The vector is [KIND START END X0 X1 RADIUS RING-RGB
+an add row at the same position, is outside it.  A `ring', `rule' or
+`bar' takes `:overlay' too: of the after-strings at its END only that
+overlay's rows are inside it, so an add row stands between cards.
+`:beneath', `:gap', `:shadow', `:shadow-ring' and `:outer' mean nothing
+to an inner block.  The vector is [KIND START END X0 X1 RADIUS RING-RGB
 RING-OPACITY BENEATH-RGB GAP SHADOW-RGB SHADOW-OPACITY HALO-RGB
 HALO-OPACITY OUTER-RGB OUTER-OPACITY FILL-RGB FILL-OPACITY TOP-RGB
 TOP-OPACITY OVERLAY], KIND 0 a ring, 1 a rule, 2 a bar and 3 an inner panel, an
