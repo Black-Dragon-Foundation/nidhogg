@@ -2087,6 +2087,9 @@ nhwl_tip_map (struct frame *tip_f, struct frame *pf, int width, int height,
   int rc;
 
   out->scale120 = po->scale120 ? po->scale120 : 120;
+  /* Its border widths are logical pixels (nhwl_border_device), set
+     before it had this scale.  */
+  nhwl_scale_borders (tip_f);
   tip_f->pixel_width = width;
   tip_f->pixel_height = height;
 
@@ -2446,9 +2449,11 @@ nhwl_popup_show (struct frame *f)
   popup_parse (get_frame_param (f, Qnhwl_popup), &p);
   owner = FRAME_NHWL_OUTPUT (popup_owner (f))->window;
 
-  /* A popup starts at its parent's scale, and at the size the frame is
-     about to take.  */
+  /* A popup starts at its parent's scale (its border widths, logical
+     pixels set before it had one, follow: nhwl_border_device), and at the
+     size the frame is about to take.  */
   out->scale120 = po->scale120 ? po->scale120 : 120;
+  nhwl_scale_borders (f);
   w = f->new_size_p ? f->new_width : FRAME_PIXEL_WIDTH (f);
   h = f->new_size_p ? f->new_height : FRAME_PIXEL_HEIGHT (f);
   popup_touch_parent (&p.anchor, p.gravity, max (1, w), max (1, h),

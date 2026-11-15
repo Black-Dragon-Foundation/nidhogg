@@ -1878,6 +1878,10 @@ nhwl_create_frame_window (struct frame *f, uint64_t in_place)
   out->scale120 = nhwl_start_scale (f);
   if (was && was != nhwl_frame_res (f))
     nhwl_res_changed (f, was);
+  /* Border widths are logical pixels (nhwlfns.c's nhwl_border_device),
+     set before the frame had this scale: made before it had a window, or
+     moved to a parent at another one.  */
+  nhwl_scale_borders (f);
   desc.w = max (1, nhwl_to_logical (FRAME_PIXEL_WIDTH (f), out->scale120));
   desc.h = max (1, nhwl_to_logical (FRAME_PIXEL_HEIGHT (f), out->scale120));
   desc.title = STRINGP (encoded) ? SSDATA (encoded) : "";
