@@ -492,6 +492,44 @@ after-string at that END) is not."
       (set-window-parameter w 'glitnir-blocks nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/an-inner-block-holds-an-output-at-the-end-of-the-buffer ()
+  "The last cell's output is an after-string at the buffer's end (no next cell, no text after it), its first row
+starting with a display space (the card's pad) before its label: an inner block naming its overlay holds every row,
+the label row too, and the hairline is at the label row's top."
+  (glitnir-gui--skip-unless-tree)
+  (let* ((buf (get-buffer-create "*glitnir-nb-end*")) (w (selected-window)) out)
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert "\nsrc\n")                                   ; head newline, one source row, the tail newline at the end
+      (setq out (make-overlay (1- (point)) (point)))
+      (overlay-put out 'after-string
+                   (concat (propertize " " 'display '(space :width 12))
+                           "error\nNameError: x\n  Cell In[3]\n"
+                           (propertize " " 'display '(space :width (1) :height (8))) "\n"))
+      (goto-char 1))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((inner ,(copy-marker (point-max)) ,(copy-marker (point-max)) :x0 4 :x1 30 :overlay ,out
+                        :fill ("#00ff00" . 1) :top ("#0000ff" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (px (lambda (row dy) (glitnir-gui--pixel snap (list (+ x 16) (+ y (* row lh) dy)))))
+                       (green (lambda (row) (equal (funcall px row (/ lh 2)) '(0 255 0)))))
+            ;; rows: 0 head, 1 source, 2 the label, 3-4 the output, 5 the pad row
+            (should-not (funcall green 1))
+            (should (equal (funcall px 2 0) '(0 0 255)))      ; the hairline at the label row's top
+            (dolist (row '(2 3 4 5)) (should (funcall green row)))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (kill-buffer buf))))
+
 (ert-deftest glitnir-gui/an-inner-block-pads-its-top-and-bottom ()
   "An inner block's `:pad-top' and `:pad-bottom' (device px) shorten the drawn panel from the top and the bottom, its
 rows unchanged: the hairline sits that much below the first row's top, the fill ends that much above the last row's
