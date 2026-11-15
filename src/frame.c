@@ -5455,6 +5455,21 @@ gui_report_frame_params (struct frame *f, Lisp_Object *alistptr)
 		  : Qnil);
   store_in_alist (alistptr, Qinternal_border_width,
 		  make_fixnum (FRAME_INTERNAL_BORDER_WIDTH (f)));
+#ifdef HAVE_NHWL
+  /* A native-shell frame's border widths are logical pixels (nhwlfns.c's
+     nhwl_border_device): the parameters read back as they were set, as
+     GTK's do, and the drawn widths are frame-internal-border-width's and
+     frame-child-frame-border-width's.  */
+  if (FRAME_NHWL_P (f))
+    {
+      Lisp_Object w = get_frame_param (f, Qchild_frame_border_width);
+      if (FIXNUMP (w))
+	store_in_alist (alistptr, Qchild_frame_border_width, w);
+      w = get_frame_param (f, Qinternal_border_width);
+      if (FIXNUMP (w))
+	store_in_alist (alistptr, Qinternal_border_width, w);
+    }
+#endif
   store_in_alist (alistptr, Qright_divider_width,
 		  make_fixnum (FRAME_RIGHT_DIVIDER_WIDTH (f)));
   store_in_alist (alistptr, Qbottom_divider_width,
