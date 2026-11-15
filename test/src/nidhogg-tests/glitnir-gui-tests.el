@@ -259,38 +259,50 @@ colour beneath, so cards on adjacent rows stand apart.  The columns at x 20 are 
     (should (equal (funcall at 20 (- (* 3 lh) 7)) '(255 0 0))) ; the ring at the bottom
     (should (equal (funcall at 20 (- (* 3 lh) 3)) '(0 0 255))))) ; the gap below
 
+(defun glitnir-gui--line ()
+  "A one logical px line in whole device px at the frame's scale, as the glue makes it."
+  (max 1 (round (frame-scale-factor))))
+
+(defun glitnir-gui--logical (n)
+  "N logical px as device px at the frame's scale (the gap's px are device px)."
+  (round (* n (frame-scale-factor))))
+
 (ert-deftest glitnir-gui/a-ring-block-casts-a-shadow ()
-  "A ring's `:shadow' and `:shadow-ring': a 1 px line just outside the card's edge, and a 3 px blur 1 px down, both
-in the gap only, never over the card's rows."
+  "A ring's `:shadow' and `:shadow-ring': a 1 logical px line just outside the card's edge, and a 3 px blur 1 px down,
+both in the gap only, never over the card's rows.  Geometry in logical px times the scale."
   (glitnir-gui--skip-unless-tree)
-  (glitnir-gui--with-card
-      `((ring ,(copy-marker 1) ,(copy-marker end) :x0 10 :x1 300 :radius 4 :gap 8
-              :ring ("#ff0000" . 1) :beneath "#0000ff" :shadow ("#000000" . 1) :shadow-ring ("#00ff00" . 1)))
-    (let ((edge (- (* 3 lh) 8)))                               ; the card's bottom edge (exclusive)
-      (should (equal (funcall at 20 1) '(0 0 255)))            ; past the shadow's reach above
-      (should (equal (funcall at 20 7) '(0 255 0)))            ; the shadow's ring above the card
-      (should (equal (funcall at 20 8) '(255 0 0)))            ; the card's own ring
-      (should (equal (funcall at 20 9) '(255 255 0)))          ; the rows: no shadow over them
-      (should (equal (funcall at 20 edge) '(0 255 0)))         ; the shadow's ring below
-      (pcase-let ((`(,r ,g ,b) (funcall at 20 (+ edge 2))))   ; the blur below: blue darkened
-        (should (and (= r 0) (= g 0) (< 0 b 250))))
-      (should (equal (funcall at 20 (1- (* 3 lh))) '(0 0 255)))))) ; the gap's far side: past the reach
+  (let ((l (glitnir-gui--line)) (g (glitnir-gui--logical 8)))
+    (glitnir-gui--with-card
+        `((ring ,(copy-marker 1) ,(copy-marker end) :x0 10 :x1 300 :radius 4 :gap ,g
+                :ring ("#ff0000" . 1) :beneath "#0000ff" :shadow ("#000000" . 1) :shadow-ring ("#00ff00" . 1)))
+      (let ((edge (- (* 3 lh) g)))                             ; the card's bottom edge (exclusive)
+        (should (equal (funcall at 20 1) '(0 0 255)))          ; past the shadow's reach above
+        (should (equal (funcall at 20 (1- g)) '(0 255 0)))     ; the shadow's ring above the card
+        (should (equal (funcall at 20 (- g l)) '(0 255 0)))
+        (should (equal (funcall at 20 g) '(255 0 0)))          ; the card's own ring
+        (should (equal (funcall at 20 (+ g l -1)) '(255 0 0)))
+        (should (equal (funcall at 20 (+ g l)) '(255 255 0)))  ; the rows: no shadow over them
+        (should (equal (funcall at 20 edge) '(0 255 0)))       ; the shadow's ring below
+        (pcase-let ((`(,r ,gr ,b) (funcall at 20 (+ edge l 1)))) ; the blur below: blue darkened
+          (should (and (= r 0) (= gr 0) (< 0 b 250))))
+        (should (equal (funcall at 20 (1- (* 3 lh))) '(0 0 255)))))))  ; the gap's far side: past the reach
 
 (ert-deftest glitnir-gui/a-ring-block-has-an-outer-ring ()
-  "A ring's `:outer': a second line 1 px wide just outside the ring (the focus ring inside, the border step outside),
-in the gap."
+  "A ring's `:outer': a second line 1 logical px wide just outside the ring (the focus ring inside, the border step
+outside), in the gap.  Geometry in logical px times the scale."
   (glitnir-gui--skip-unless-tree)
-  (glitnir-gui--with-card
-      `((ring ,(copy-marker 1) ,(copy-marker end) :x0 10 :x1 300 :radius 4 :gap 8
-              :ring ("#ff0000" . 1) :outer ("#00ff00" . 1) :beneath "#0000ff"))
-    (let ((edge (- (* 3 lh) 8)))
-      (should (equal (funcall at 20 6) '(0 0 255)))
-      (should (equal (funcall at 20 7) '(0 255 0)))            ; the outer ring
-      (should (equal (funcall at 20 8) '(255 0 0)))            ; the ring inside it
-      (should (equal (funcall at 20 9) '(255 255 0)))
-      (should (equal (funcall at 20 (1- edge)) '(255 0 0)))
-      (should (equal (funcall at 20 edge) '(0 255 0)))
-      (should (equal (funcall at 20 (1+ edge)) '(0 0 255))))))
+  (let ((l (glitnir-gui--line)) (g (glitnir-gui--logical 8)))
+    (glitnir-gui--with-card
+        `((ring ,(copy-marker 1) ,(copy-marker end) :x0 10 :x1 300 :radius 4 :gap ,g
+                :ring ("#ff0000" . 1) :outer ("#00ff00" . 1) :beneath "#0000ff"))
+      (let ((edge (- (* 3 lh) g)))
+        (should (equal (funcall at 20 (- g l 1)) '(0 0 255)))
+        (should (equal (funcall at 20 (1- g)) '(0 255 0)))     ; the outer ring
+        (should (equal (funcall at 20 g) '(255 0 0)))          ; the ring inside it
+        (should (equal (funcall at 20 (+ g l)) '(255 255 0)))
+        (should (equal (funcall at 20 (1- edge)) '(255 0 0)))
+        (should (equal (funcall at 20 edge) '(0 255 0)))
+        (should (equal (funcall at 20 (+ edge l)) '(0 0 255)))))))
 
 ;; A cell's output in the notebook is one after-string of several rows at the cell's END; a bar over the cell must reach the
 ;; last of them, whatever the rows hold.  The helper puts STRING after line 1 of a text buffer, a bar over line 0 to
