@@ -292,6 +292,51 @@ in the gap."
       (should (equal (funcall at 20 edge) '(0 255 0)))
       (should (equal (funcall at 20 (1+ edge)) '(0 0 255))))))
 
+;; A cell's output in the notebook is one after-string of several rows at the cell's END; a bar over the cell must reach the
+;; last of them, whatever the rows hold.  The helper puts STRING after line 1 of a text buffer, a bar over line 0 to
+;; there, and judges every pixel row from the window's top to where the next line's text starts.
+(defun glitnir-gui--tail-check (string)
+  "Run a bar block from line 0 to line 1's start, with STRING an after-string there; each row down to line 1 is red."
+  (glitnir-gui--skip-unless-tree)
+  (let* ((buf (glitnir-gui--text-buffer "*glitnir-tail-rows*" 10)) (w (selected-window))
+         (end (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 1) (point))))
+         (ov (with-current-buffer buf (make-overlay end end))))
+    (unwind-protect
+        (progn
+          (overlay-put ov 'after-string string)
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn
+            (with-current-buffer buf
+              (set-window-parameter
+               w 'glitnir-blocks
+               `((bar ,(copy-marker 1) ,(copy-marker end) :x1 6 :ring ("#ff0000" . 1))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (next (nth 1 (pos-visible-in-window-p end w t)))
+                       (lh (with-current-buffer buf (line-pixel-height))))
+            (should (> next (* 2 lh)))  ; the string made rows
+            (let ((gaps (cl-loop for dy from 0 below next
+                                 unless (equal (glitnir-gui--pixel snap (list (+ x 2) (+ y dy))) '(255 0 0))
+                                 collect dy)))
+              (should-not gaps))
+            (should-not (equal (glitnir-gui--pixel snap (list (+ x 2) (+ y next (/ lh 2)))) '(255 0 0)))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (delete-overlay ov)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/a-block-holds-four-after-string-rows ()
+  "Four text rows after a block's END, the last with the add row's text: all inside."
+  (glitnir-gui--tail-check (propertize "16 \u2026\n64 \u2026\n[image/png 5x5]\n+ Code + Markdown\n" 'face 'bold)))
+
+(ert-deftest glitnir-gui/a-block-holds-an-after-string-row-of-a-display-string ()
+  "A row of a display string and one of an image, among the after-string rows at a block's END: inside."
+  (glitnir-gui--tail-check
+   (concat "16 \u2026\n" (propertize " " 'display '(space :width 40 :height 30)) "\n"
+           (propertize " " 'display (create-image "P1\n4 4\n1 0 0 1\n0 1 1 0\n0 1 1 0\n1 0 0 1\n" 'pbm t :scale 6)) "\n"
+           "+ Code + Markdown\n")))
+
 ;; The overview ruler.  Its rows wait through `glitnir-gui--painted' (redisplay, the presenter settled), which every
 ;; shell gives; `glitnir--draw-count' is the Wayland shell's alone (0 on Naglfar).
 

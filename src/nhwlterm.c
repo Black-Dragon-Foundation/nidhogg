@@ -668,19 +668,27 @@ nhwl_block_int (Lisp_Object v, int i, intmax_t dflt)
 	  : FLOATP (x) ? (intmax_t) XFLOAT_DATA (x) : dflt);
 }
 
-/* Whether ROW holds only an overlay string displayed at END: it starts
-   and ends at END, and a glyph of its text area comes from a string.  */
+/* Whether ROW holds only overlay-string text displayed at END: it starts
+   at END, a glyph of its text area comes from a string and none from
+   the buffer.  Its end position is not asked: every row of a multi-row
+   after-string but the first may end past END (the iterator has stepped
+   on from the string's newline), and so does the next block's own row.
+   Rows of an image or a display string count: their glyphs' object is
+   the string.  */
 static bool
 nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
 {
-  if (MATRIX_ROW_START_CHARPOS (row) != end
-      || MATRIX_ROW_END_CHARPOS (row) != end)
+  if (MATRIX_ROW_START_CHARPOS (row) != end)
     return false;
+  bool from_string = false;
   struct glyph *g = row->glyphs[TEXT_AREA];
   for (struct glyph *e = g + row->used[TEXT_AREA]; g < e; g++)
-    if (STRINGP (g->object))
-      return true;
-  return false;
+    {
+      if (BUFFERP (g->object))
+	return false;
+      from_string |= STRINGP (g->object);
+    }
+  return from_string;
 }
 
 /* List block V of leaf window W, whose text area is CLIP: the rows of
@@ -693,8 +701,9 @@ nhwl_block_tail_row_p (struct glyph_row *row, ptrdiff_t end)
    whose text starts above the window's first row (scrolled out) is open
    at the top; one that goes on below its last row, at the bottom.  Rows
    of nothing but an overlay string at END (an after-string there, such
-   as a notebook cell's output) are inside: they start and end at END,
-   so a block starting at END leaves them out.  This is all C does: the
+   as a notebook cell's output, of any number of rows) are inside: they
+   start at END and show no buffer text, so a block starting at END
+   leaves them out.  This is all C does: the
    glue plans the layers and Glitnir draws.  */
 static void
 nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
