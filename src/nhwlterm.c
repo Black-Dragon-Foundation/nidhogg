@@ -3178,6 +3178,9 @@ nhwl_scale_changed (struct frame *f, uint32_t scale120)
     gui_set_left_fringe (f, Qnil, Qnil);
   if (!FIXNUMP (get_frame_param (f, Qright_fringe)))
     gui_set_right_fringe (f, Qnil, Qnil);
+  /* Border widths are logical pixels too (nhwlfns.c's
+     nhwl_border_device).  */
+  nhwl_scale_borders (f);
   if (old && old != scale120)
     {
 #ifdef NHWL_WAYLAND

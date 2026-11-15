@@ -429,15 +429,56 @@ NHWL_PARAM_SETTER (static, nhwl_set_tab_bar_lines, NHG_PK_TAB_BAR_LINES,
 NHWL_PARAM_SETTER (static, nhwl_set_tool_bar_lines, NHG_PK_TOOL_BAR_LINES,
 		   Qtool_bar_lines, 0)
 
+/* A border width ARG of frame F in device pixels: the parameter is
+   logical pixels, as a box's line widths are (xfaces.c) and NS's points,
+   so a width above 0 is ARG times F's scale, rounded half up and at
+   least 1 (nhwl_scale_borders sets it again when the scale changes).
+   nil, 0 and anything else (an error, a negative internal border) stay
+   for the glue to decide.  */
+static Lisp_Object
+nhwl_border_device (struct frame *f, Lisp_Object arg)
+{
+  if (!FIXNUMP (arg) || XFIXNUM (arg) <= 0)
+    return arg;
+  double d = XFIXNUM (arg) * nhwl_frame_scale_factor (f) + 0.5;
+  return make_fixnum (d >= INT_MAX ? INT_MAX : max (1, (int) d));
+}
+
 /* Adapted from pgtk_set_child_frame_border_width and
-   pgtk_set_internal_border_width.  */
-NHWL_PARAM_SETTER (static, nhwl_set_child_frame_border_width,
-		   NHG_PK_CHILD_FRAME_BORDER_WIDTH,
-		   Qchild_frame_border_width,
-		   FRAME_CHILD_FRAME_BORDER_WIDTH (f))
-NHWL_PARAM_SETTER (static, nhwl_set_internal_border_width,
-		   NHG_PK_INTERNAL_BORDER_WIDTH, Qinternal_border_width,
-		   FRAME_INTERNAL_BORDER_WIDTH (f))
+   pgtk_set_internal_border_width; their widths are logical pixels
+   (nhwl_border_device).  */
+static void
+nhwl_set_child_frame_border_width (struct frame *f, Lisp_Object arg,
+				   Lisp_Object old)
+{
+  nhwl_param (f, NHG_PK_CHILD_FRAME_BORDER_WIDTH, Qchild_frame_border_width,
+	      FRAME_CHILD_FRAME_BORDER_WIDTH (f), old,
+	      nhwl_border_device (f, arg), Qnil);
+}
+
+static void
+nhwl_set_internal_border_width (struct frame *f, Lisp_Object arg,
+				Lisp_Object old)
+{
+  nhwl_param (f, NHG_PK_INTERNAL_BORDER_WIDTH, Qinternal_border_width,
+	      FRAME_INTERNAL_BORDER_WIDTH (f), old,
+	      nhwl_border_device (f, arg), Qnil);
+}
+
+/* F's scale changed: its border widths, logical pixels, are set again at
+   the new one (from nhwl_scale_changed).  A parameter that names no
+   width keeps the default's.  */
+void
+nhwl_scale_borders (struct frame *f)
+{
+  Lisp_Object w = get_frame_param (f, Qinternal_border_width);
+
+  if (FIXNUMP (w))
+    nhwl_set_internal_border_width (f, w, w);
+  w = get_frame_param (f, Qchild_frame_border_width);
+  if (FIXNUMP (w))
+    nhwl_set_child_frame_border_width (f, w, w);
+}
 
 /* The shell takes the flag when the window is made, and
    nhwl_set_undecorated_hint changes it later.  */

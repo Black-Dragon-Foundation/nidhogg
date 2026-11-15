@@ -496,6 +496,7 @@ extern void nhwl_set_scroll_bar_default_width (struct frame *);
 extern void nhwl_set_scroll_bar_default_height (struct frame *);
 extern void nhwl_default_font_parameter (struct frame *, Lisp_Object);
 extern double nhwl_frame_scale_factor (struct frame *);
+extern void nhwl_scale_borders (struct frame *);
 extern double nhwl_frame_res (struct frame *);
 extern const char *nhwl_get_string_resource (XrmDatabase, const char *,
 					     const char *);
