@@ -4421,6 +4421,27 @@ check_current_matrix_flags (struct window *w)
 
 #endif /* GLYPH_DEBUG */
 
+#ifdef HAVE_GLITNIR
+/* Make the visible height of ROW, W's tab or header line row at its
+   place, the part of it W's box holds.  A window squeezed below its
+   tab and header lines draws them past its bottom, and the window
+   under it draws over that; once the window grows, the row's glyphs
+   and place are the same, so it was not drawn again and the other
+   window's old pixels stayed where it belongs.  update_text_area
+   draws a row whose visible height changed, so it is drawn whole
+   then.  Drawing does not read it: a mode-line row is clipped by its
+   height.  */
+
+static void
+top_line_room (struct window *w, struct glyph_row *row)
+{
+  if (!w->pseudo_window_p)
+    row->visible_height
+      = max (0, min (row->height,
+		     WINDOW_BOX_HEIGHT_NO_MODE_LINE (w) - row->y));
+}
+
+#endif
 
 /* Update display of window W.  */
 
@@ -4573,6 +4594,9 @@ update_window (struct window *w)
   if (tab_line_row && tab_line_row->enabled_p)
     {
       tab_line_row->y = 0;
+#ifdef HAVE_GLITNIR
+      top_line_room (w, tab_line_row);
+#endif
       update_window_line (w, 0, &mouse_face_overwritten_p);
     }
 
@@ -4582,6 +4606,9 @@ update_window (struct window *w)
   if (header_line_row && header_line_row->enabled_p)
     {
       header_line_row->y = tab_line_row ? CURRENT_TAB_LINE_HEIGHT (w) : 0;
+#ifdef HAVE_GLITNIR
+      top_line_room (w, header_line_row);
+#endif
       update_window_line (w, tab_line_row ? 1 : 0, &mouse_face_overwritten_p);
     }
 

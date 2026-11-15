@@ -1312,6 +1312,19 @@ a debugger's breakpoint column can show a faint dot under the pointer.
 - Naglfar draws through the same `draw_glyphs` with the area, so it needs nothing beyond reporting pointer motion.
 - Tests: `test/src/nidhogg-tests/margin-mouse-face-gui-tests.el`.
 
+### Tab and header lines of a window that grows
+
+In stock Emacs a window squeezed below its own tab and header lines draws them past its bottom, and the window under
+it draws over that part. When the window grows again, the rows' glyphs and places are the same, so `update_window`
+does not draw them again, and the other window's old pixels stay where the header line belongs (drgnx's sidebar showed
+the Explorer's "Files" over the Open section, whose window had been squeezed while the island header grew). Nidhogg
+gives a tab or header line row the visible height the window's box holds (`top_line_room` in `src/dispnew.c`), so
+`update_text_area`, which compares visible heights, draws the row whole once the window grows (group `glitnir`,
+`HAVE_GLITNIR`). Drawing does not read it: a mode-line row is clipped by its height.
+
+- Tests: drgnx's `drgnx-ui-look-open-fit/a-squeezed-window-draws-its-header-line-when-it-grows` (the picture against a
+  full redraw).
+
 ## Reporting issues
 
 - Problems specific to Nidhogg (its patches, build, or `nidhogg-version`) go to this repository's issue tracker.
