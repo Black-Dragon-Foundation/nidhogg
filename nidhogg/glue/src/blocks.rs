@@ -135,7 +135,7 @@ pub fn plan(
             continue;
         }
         let rgb = |c: i32| u32::try_from(c).ok().map(|c| c & 0xff_ffff);
-        let block = Block {
+        let mut block = Block {
             rect,
             kind: if b.flags & NHG_BLOCK_INNER != 0 {
                 BlockKind::Inner
@@ -161,6 +161,16 @@ pub fn plan(
             fill_argb: rgb(b.fill_rgb).map_or(0, |c| premultiplied(c, b.fill_opacity)),
             top_argb: rgb(b.top_rgb).map_or(0, |c| premultiplied(c, b.top_opacity)),
         };
+        // a strip bar with a radius (the scroll bar's thumb, a dot) is a rounded fill in its colour, no border, and
+        // whole: never open at a side, so its corners round where it meets the strip's ends
+        if b.flags & NHG_BLOCK_STRIP != 0 && block.kind == BlockKind::Bar && block.radius_px > 0 {
+            block.kind = BlockKind::Inner;
+            block.fill_argb = block.ring_argb;
+            block.ring_argb = 0;
+            block.top_argb = 0;
+            block.open_top = false;
+            block.open_bottom = false;
+        }
         // a window's strip is a layer of its own: one clip a layer
         let k = if b.flags & NHG_BLOCK_STRIP != 0 {
             b.seq | STRIP_TAG

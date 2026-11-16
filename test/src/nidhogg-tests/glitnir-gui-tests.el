@@ -686,6 +686,137 @@ glitnir-nhmac-gui-tests.el's `nhmac-ruler-*'."
       (set-window-fringes w nil nil)
       (kill-buffer buf))))
 
+;; The ruler as the window's scroll bar (the minimap design's state A, docs/specs/drgnx/2026-11-15-minimap-folding-
+;; design.md §4 in the org folder): hidden while the text fits, a thumb inset and rounded, a view's span.
+
+(defun glitnir-gui--strip-has (snap w rgb)
+  "Whether any pixel of window W's ruler strip (12 wide, 2 in from its right edge) in SNAP is RGB."
+  (pcase-let* ((`(,_ ,_ ,right ,_) (window-pixel-edges w))
+               (`(,_ ,ty ,_ ,ty1) (window-inside-pixel-edges w))
+               (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2))
+               (found nil))
+    (cl-loop for y from ty below ty1 by 2 until found
+             do (cl-loop for x from (- x1 12) below x1 until found
+                         do (when (equal (glitnir-gui--pixel snap (list x y)) rgb) (setq found t))))
+    found))
+
+(ert-deftest glitnir-gui/the-ruler-hides-when-the-text-fits ()
+  "With `:hide-short', the strip draws nothing while the window shows all of its buffer, and the thumb and marks
+once the text runs past the window; the text area keeps its width throughout (the fringe holds the strip either
+way, so nothing reflows), and no Lisp decides it: the same parameter, only the text changes."
+  (glitnir-gui--skip-unless-tree "nhmac-ruler-hides-when-the-text-fits")
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-short*" 10)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (set-window-parameter w 'glitnir-ruler
+                                '(:width 12 :right 2 :height 4 :hide-short t :band ("#0000ff" . 1)
+                                         :marks ((1 0 12 ("#ff0000" . 1)))))
+          (let ((body (window-body-width w t)) (snap (glitnir-gui--painted)))
+            (should-not (glitnir-gui--strip-has snap w '(0 0 255)))
+            (should-not (glitnir-gui--strip-has snap w '(255 0 0)))
+            ;; the text grows past the window: the thumb and the mark show
+            (with-current-buffer buf
+              (save-excursion (goto-char (point-max))
+                              (dotimes (i 990) (insert (format "%5d %s\n" i (make-string 70 ?x))))))
+            (setq snap (glitnir-gui--painted))
+            (should (glitnir-gui--strip-has snap w '(0 0 255)))
+            (should (glitnir-gui--strip-has snap w '(255 0 0)))
+            (should (= (window-body-width w t) body))
+            ;; and shrinks under it again: gone
+            (with-current-buffer buf
+              (delete-region (save-excursion (goto-char 1) (forward-line 10) (point)) (point-max)))
+            (setq snap (glitnir-gui--painted))
+            (should-not (glitnir-gui--strip-has snap w '(0 0 255)))
+            (should (= (window-body-width w t) body))))
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/the-ruler-thumb-is-inset-and-rounded ()
+  "`:thumb-inset' 3 and `:radius' 3: the thumb fills only the strip's middle, 3 in from each side, and its top corner
+is cut by the rounding (its corner pixel is not the thumb's colour, the pixel two rows in at its middle is)."
+  (glitnir-gui--skip-unless-tree "nhmac-ruler-hides-when-the-text-fits")
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-thumb*" 1000)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (set-window-parameter w 'glitnir-ruler
+                                '(:width 12 :right 2 :height 4 :thumb-inset 3 :radius 3 :band ("#0000ff" . 1)))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,_ ,_ ,right ,_) (window-pixel-edges w))
+                       (`(,_ ,ty ,_ ,_) (window-inside-pixel-edges w))
+                       (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2))
+                       (at (lambda (dx y) (glitnir-gui--pixel snap (list (+ (- x1 12) dx) y)))))
+            (should (equal (funcall at 5 (+ ty 4)) '(0 0 255)))   ; the thumb's middle
+            (should (equal (funcall at 8 (+ ty 4)) '(0 0 255)))
+            (should-not (equal (funcall at 1 (+ ty 4)) '(0 0 255))) ; the inset, left
+            (should-not (equal (funcall at 10 (+ ty 4)) '(0 0 255))) ; and right
+            (should-not (equal (funcall at 3 ty) '(0 0 255)))))   ; the rounded corner
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/a-ruler-mark-runs-to-its-end ()
+  "A mark with an END (a run of changed lines) runs from its position down to END's: lines 1 to 500 of 1,000 fill the
+strip's top half in its lane, and nothing below."
+  (glitnir-gui--skip-unless-tree "nhmac-ruler-hides-when-the-text-fits")
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-end*" 1000)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (set-window-parameter
+           w 'glitnir-ruler
+           `(:width 12 :right 2 :height 2
+                    :marks ((1 0 4 ("#ff0000" . 1) 2 0
+                               ,(with-current-buffer buf (save-excursion (goto-char 1) (forward-line 500) (point)))))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,_ ,_ ,right ,_) (window-pixel-edges w))
+                       (`(,_ ,ty ,_ ,ty1) (window-inside-pixel-edges w))
+                       (h (- ty1 ty))
+                       (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2))
+                       (at (lambda (dx y) (glitnir-gui--pixel snap (list (+ (- x1 12) dx) y)))))
+            (should (equal (funcall at 2 (+ ty 1)) '(255 0 0)))
+            (should (equal (funcall at 2 (+ ty (/ h 4))) '(255 0 0)))
+            (should (equal (funcall at 2 (+ ty (/ h 2) -3)) '(255 0 0)))
+            (should-not (equal (funcall at 2 (+ ty (* 3 (/ h 4)))) '(255 0 0)))))
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/the-ruler-maps-a-view-span ()
+  "`:span (500 100 1000)': the buffer holds rows 500 to 600 of a view of 1,000, so a window at the buffer's top shows
+the thumb half way down the strip, not at its top; and with `:hide-short' the strip still shows, the view having
+more rows than the buffer, though the buffer fits the window."
+  (glitnir-gui--skip-unless-tree "nhmac-ruler-hides-when-the-text-fits")
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-span*" 10)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (set-window-parameter w 'glitnir-ruler
+                                '(:width 12 :right 2 :height 4 :hide-short t :span (500 10 1000)
+                                         :band ("#0000ff" . 1)))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,_ ,_ ,right ,_) (window-pixel-edges w))
+                       (`(,_ ,ty ,_ ,ty1) (window-inside-pixel-edges w))
+                       (h (- ty1 ty))
+                       (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2))
+                       (at (lambda (dx y) (glitnir-gui--pixel snap (list (+ (- x1 12) dx) y)))))
+            (should (equal (funcall at 6 (+ ty (/ h 2) 1)) '(0 0 255)))
+            (should-not (equal (funcall at 6 (+ ty 2)) '(0 0 255)))
+            (should-not (equal (funcall at 6 (- ty1 3)) '(0 0 255)))))
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (kill-buffer buf))))
+
 ;; Edges.
 
 (ert-deftest glitnir-gui/an-edge-joins-two-places-and-leaves-with-a-scroll ()

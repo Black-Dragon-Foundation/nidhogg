@@ -1166,6 +1166,42 @@ at the strip's middle gives the buffer's middle; a scroll moves the band to the 
          (set-window-fringes w nil nil)
          (with-current-buffer buf (erase-buffer)))))))
 
+(ert-deftest nhmac-ruler-hides-when-the-text-fits ()
+  "The ruler as a scroll bar on macOS: with `:hide-short' nothing shows while 10 lines fit; past the window the inset
+thumb shows (narrower than the strip); a `:span' of a bigger view puts it half way down though the buffer fits
+\(glitnir-gui/the-ruler-hides-when-the-text-fits, -thumb-is-inset-and-rounded and -maps-a-view-span on Linux)."
+  :tags '(draws)
+  (should (fboundp 'glitnir-ruler-fraction))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let* ((w (selected-window)) (buf (window-buffer w)) (s (glitnir-nhmac--scale))
+            (spec (lambda (&rest more)
+                    `(:width ,(round (* 12 s)) :right ,(round (* 2 s)) :height ,(round (* 4 s)) :hide-short t
+                             :thumb-inset ,(round (* 3 s)) :radius ,(round (* 3 s))
+                             :band (,(glitnir-nhmac--hex glitnir-nhmac--ruler-band) . 1) ,@more))))
+       (with-current-buffer buf (dotimes (i 10) (insert (format "line %d\n" (1+ i)))))
+       (set-window-point w 1)
+       (set-window-start w 1)
+       (unwind-protect
+           (progn
+             (set-window-fringes w nil (round (* 16 s)))
+             (set-window-parameter w 'glitnir-ruler (funcall spec))
+             (redisplay t)
+             (should-not (plist-get (glitnir-nhmac--ruler-boxes (glitnir-nhmac--grab "ruler-short") w) :band))
+             (set-window-parameter w 'glitnir-ruler (funcall spec :span '(500 10 1000)))
+             (redisplay t)
+             (let* ((b (glitnir-nhmac--ruler-boxes (glitnir-nhmac--grab "ruler-span") w)) (band (plist-get b :band))
+                    (mid (/ (+ (plist-get b :top) (plist-get b :bottom)) 2)))
+               (nhmac-gui--say "nhmac-ruler-hides-when-the-text-fits: span %S" b)
+               (should band)
+               (should (<= (nth 1 band) (1+ mid)))
+               (should (> (nth 1 band) (+ (plist-get b :top) (round (* 10 s)))))
+               ;; inset: narrower than the strip's 12
+               (should (<= (- (nth 2 band) (nth 0 band)) (round (* 7 s))))))
+         (set-window-parameter w 'glitnir-ruler nil)
+         (set-window-fringes w nil nil)
+         (with-current-buffer buf (erase-buffer)))))))
+
 (ert-deftest nhmac-ruler-beside-a-ring ()
   "A window with both a ring block and a ruler shows both: the ring in its text area, the ruler in its fringe (the
 glue keeps each its own clip)."

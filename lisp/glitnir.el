@@ -593,17 +593,30 @@ SPEC is a plist: `:width' (the strip's width), `:right' (its gap from
 the window's right inner edge), `:height' (a mark's least height), all
 device pixels; `:band' (the colour of the band over the part of the
 buffer the window shows: a face, whose foreground is used, a colour
-name, or (FACE-OR-COLOUR . OPACITY)); `:marks', a list of
-\(POS X0 X1 COLOUR): a buffer position (a marker or an integer), the x
-range of its lane in the strip and its colour, as for `:band'.  The
-vector is [WIDTH RIGHT HEIGHT BAND-RGB BAND-OPACITY MARK...], each MARK
-[POS X0 X1 RGB OPACITY], RGB -1 for none."
-  (let ((band (glitnir--ruler-colour (plist-get spec :band) frame)))
+name, or (FACE-OR-COLOUR . OPACITY)); `:thumb-inset' (the band's
+inset from either side of the strip) and `:radius' (its corners), device
+pixels; `:hide-short' (non-nil: nothing is drawn while the window shows
+all there is); `:span' (FROM LENGTH TOTAL): the buffer holds rows FROM
+to FROM + LENGTH of a view of TOTAL rows, and the strip stands for all
+TOTAL; `:marks', a list of (POS X0 X1 COLOUR [HEIGHT RADIUS END]): a
+buffer position (a marker or an integer), the x range of its lane in
+the strip, its colour, as for `:band', and optionally its own height,
+corner radius and a position it runs down to (a run of changed lines).  The vector is [WIDTH RIGHT HEIGHT BAND-RGB BAND-OPACITY
+FLAGS INSET RADIUS FROM LENGTH TOTAL MARK...], FLAGS 1 for
+`:hide-short', TOTAL 0 without a span, each MARK [POS X0 X1 RGB OPACITY
+HEIGHT RADIUS END] (HEIGHT 0: the strip's, END nil for none), RGB -1 for
+none."
+  (let ((band (glitnir--ruler-colour (plist-get spec :band) frame))
+        (span (plist-get spec :span)))
     (vconcat (vector (or (plist-get spec :width) 0) (or (plist-get spec :right) 0) (or (plist-get spec :height) 1)
-                     (if band (car band) -1) (if band (cdr band) 0))
+                     (if band (car band) -1) (if band (cdr band) 0)
+                     (if (plist-get spec :hide-short) 1 0)
+                     (or (plist-get spec :thumb-inset) 0) (or (plist-get spec :radius) 0)
+                     (or (nth 0 span) 0) (or (nth 1 span) 0) (or (nth 2 span) 0))
              (mapcar (lambda (m)
                        (let ((c (glitnir--ruler-colour (nth 3 m) frame)))
-                         (vector (nth 0 m) (nth 1 m) (nth 2 m) (if c (car c) -1) (if c (cdr c) 0))))
+                         (vector (nth 0 m) (nth 1 m) (nth 2 m) (if c (car c) -1) (if c (cdr c) 0)
+                                 (or (nth 4 m) 0) (or (nth 5 m) 0) (nth 6 m))))
                      (plist-get spec :marks)))))
 
 (defun glitnir--recheck-ruler (window)
@@ -689,18 +702,31 @@ never had edges gets no parameter of them."
     (when (window-parameter window 'glitnir--edges)
       (setq glitnir--blocks-any t))))
 
-(defun glitnir-ruler-position (posn)
-  "The buffer position at the y of POSN, a click on a window's overview ruler.
-The strip stands for the whole buffer, top to bottom, by characters, as
-C draws it; nil when POSN's window has no ruler."
+(defun glitnir-ruler-fraction (posn)
+  "The fraction, 0 to 1, of the whole the y of POSN stands for, a click on a window's overview ruler.
+Of the buffer's characters, or, with a `:span', of the view's rows; nil
+when POSN's window has no ruler."
   (let ((w (posn-window posn)))
     (when (and (windowp w) (window-parameter w 'glitnir--ruler))
       (pcase-let* ((`(,_ ,top ,_ ,_) (window-pixel-edges w))
                    (`(,_ ,btop ,_ ,bbot) (window-inside-pixel-edges w))
-                   (y (- (+ top (cdr (posn-x-y posn))) btop))
-                   (frac (min 1.0 (max 0.0 (/ (float y) (max 1 (- bbot btop)))))))
-        (with-current-buffer (window-buffer w)
-          (+ (point-min) (round (* frac (- (point-max) (point-min))))))))))
+                   (y (- (+ top (cdr (posn-x-y posn))) btop)))
+        (min 1.0 (max 0.0 (/ (float y) (max 1 (- bbot btop)))))))))
+
+(defun glitnir-ruler-position (posn)
+  "The buffer position at the y of POSN, a click on a window's overview ruler.
+The strip stands for the whole buffer, top to bottom, by characters, as
+C draws it, or with a `:span' for the view's rows: a place outside the
+rows the buffer holds gives the nearer end of the buffer.  Nil when
+POSN's window has no ruler."
+  (when-let* ((frac (glitnir-ruler-fraction posn)))
+    (let* ((w (posn-window posn)) (v (window-parameter w 'glitnir--ruler))
+           (total (if (> (length v) 10) (aref v 10) 0)))
+      (when (> total 0)
+        (let ((from (aref v 8)) (length (max 1 (aref v 9))))
+          (setq frac (min 1.0 (max 0.0 (/ (- (* frac total) from) (float length)))))))
+      (with-current-buffer (window-buffer w)
+        (+ (point-min) (round (* frac (- (point-max) (point-min)))))))))
 
 (defvar glitnir--blocks-seen (make-hash-table :test 'eq :weakness 'key)
   "Per frame, the last value of its `glitnir--blocks' parameter.

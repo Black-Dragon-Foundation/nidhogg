@@ -753,8 +753,9 @@ generation, never per redisplay, and sets the frame's `glitnir--blocks' flag, so
               (set-window-parameter w 'glitnir-ruler spec)
               (glitnir--recheck-frame-cards w)
               (should (equal (window-parameter w 'glitnir--ruler)
-                             (vector 12 0 2 #x808080 0.25 (vector (car (nth 0 (plist-get spec :marks))) 3 9 #xff0000 1)
-                                     (vector 9 0 3 #x00ff00 0.5))))
+                             (vector 12 0 2 #x808080 0.25 0 0 0 0 0 0
+                                     (vector (car (nth 0 (plist-get spec :marks))) 3 9 #xff0000 1 0 0 nil)
+                                     (vector 9 0 3 #x00ff00 0.5 0 0 nil))))
               (should (eq (frame-parameter nil 'glitnir--blocks) t))
               (should (= sets 1))
               (glitnir--recheck-frame-cards w)
@@ -767,7 +768,7 @@ generation, never per redisplay, and sets the frame's `glitnir--blocks' flag, so
               (set-window-parameter w 'glitnir-ruler (plist-put (copy-sequence spec) :marks nil))
               (glitnir--recheck-frame-cards w)
               (should (= sets 2))
-              (should (= (length (window-parameter w 'glitnir--ruler)) 5))
+              (should (= (length (window-parameter w 'glitnir--ruler)) 11))
               (set-window-parameter w 'glitnir-ruler nil)
               (glitnir--recheck-frame-cards w)
               (should-not (window-parameter w 'glitnir--ruler))
@@ -776,6 +777,37 @@ generation, never per redisplay, and sets the frame's `glitnir--blocks' flag, so
             (set-window-parameter w k nil))
           (clrhash glitnir--blocks-seen)
           (set-frame-parameter nil 'glitnir--blocks nil))))))
+
+;; The ruler as a scroll bar (docs/specs/drgnx/2026-11-15-minimap-folding-design.md §4 A, in the org folder).
+
+(ert-deftest glitnir-ruler-vector-carries-the-scroll-bar-fields ()
+  "`:hide-short', `:thumb-inset', `:radius' and `:span' go into the vector's header, and a mark's own height and
+radius and its end into its vector; without them, zeros (C's defaults: drawn always, square, a whole-buffer strip)."
+  (should (equal (glitnir--ruler-vector
+                  '(:width 12 :right 1 :height 2 :band ("#808080" . 0.25) :hide-short t :thumb-inset 3 :radius 3
+                           :span (400 100 2000) :marks ((7 3 9 ("#ff0000" . 1) 6 3 40)))
+                  (selected-frame))
+                 (vector 12 1 2 #x808080 0.25 1 3 3 400 100 2000 (vector 7 3 9 #xff0000 1 6 3 40))))
+  (should (equal (glitnir--ruler-vector '(:width 12) (selected-frame)) (vector 12 0 1 -1 0 0 0 0 0 0 0))))
+
+(ert-deftest glitnir-ruler-position-reads-a-span ()
+  "With a `:span', a click's fraction is of the view's rows: inside the rows held it gives the place by the buffer's
+characters, outside them the nearer end; `glitnir-ruler-fraction' gives the fraction of the whole."
+  (let ((w (selected-window)))
+    (with-temp-buffer
+      (dotimes (i 100) (insert (format "row %03d\n" i)))
+      (set-window-buffer w (current-buffer))
+      (unwind-protect
+          (cl-letf (((symbol-function 'window-pixel-edges) (lambda (&rest _) '(0 0 100 1000)))
+                    ((symbol-function 'window-inside-pixel-edges) (lambda (&rest _) '(0 0 100 1000))))
+            (set-window-parameter w 'glitnir--ruler (vector 12 0 1 -1 0 0 0 0 400 100 1000))
+            (let ((at (lambda (y) (list w 'right-fringe (cons 0 y) 0 nil nil nil nil nil nil))))
+              (should (< (abs (- (glitnir-ruler-fraction (funcall at 450)) 0.45)) 0.001))
+              ;; row 450 is the held rows' middle
+              (should (< (abs (- (glitnir-ruler-position (funcall at 450)) (+ (point-min) (/ (buffer-size) 2)))) 2))
+              (should (= (glitnir-ruler-position (funcall at 100)) (point-min)))
+              (should (= (glitnir-ruler-position (funcall at 900)) (point-max)))))
+        (set-window-parameter w 'glitnir--ruler nil)))))
 
 (ert-deftest glitnir-ruler-faces-through-the-theme ()
   "A ruler mark given as a face takes the theme's colour again after a theme change."
@@ -792,11 +824,11 @@ generation, never per redisplay, and sets the frame's `glitnir--blocks' flag, so
             (set-window-parameter w 'glitnir-ruler '(:width 12 :marks ((1 0 12 window-divider))))
             (enable-theme 'glitnir-test-red)
             (glitnir--recheck-frame-cards w)
-            (should (= (aref (aref (window-parameter w 'glitnir--ruler) 5) 3) #xff0000))
+            (should (= (aref (aref (window-parameter w 'glitnir--ruler) 11) 3) #xff0000))
             (disable-theme 'glitnir-test-red)
             (enable-theme 'glitnir-test-blue)
             (glitnir--recheck-frame-cards w)
-            (should (= (aref (aref (window-parameter w 'glitnir--ruler) 5) 3) #x0000ff)))
+            (should (= (aref (aref (window-parameter w 'glitnir--ruler) 11) 3) #x0000ff)))
         (disable-theme 'glitnir-test-red)
         (disable-theme 'glitnir-test-blue)
         (dolist (k '(glitnir-ruler glitnir--ruler glitnir--ruler-key))

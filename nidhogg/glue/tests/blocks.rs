@@ -120,6 +120,46 @@ mod blocks {
         assert_eq!(x.ring_argb, 0);
     }
 
+    /// A strip bar with a radius (the scroll bar's thumb, a breakpoint's dot) reaches Glitnir as a rounded fill: kind
+    /// `Inner`, its colour the fill, no border; one with no radius stays a square `Bar`.
+    #[test]
+    fn a_rounded_strip_bar_is_a_rounded_fill() {
+        use nhglue::backing::STRIP_TAG;
+        let mut b = Backings::default();
+        let (key, _v) = frame(&mut b, 120);
+        let strip = NhgRect {
+            x: 200,
+            y: ROW,
+            w: 12,
+            h: 100,
+        };
+        let bar = |radius| NhgBlock {
+            clip: strip,
+            rect: NhgRect {
+                x: 203,
+                y: ROW + 20,
+                w: 6,
+                h: 30,
+            },
+            radius,
+            ring_rgb: 0x00_ff00,
+            ..block(strip, NHG_BLOCK_BAR | NHG_BLOCK_STRIP)
+        };
+        assert_eq!(sync_at(&mut b, key, &[bar(3)]), Ok(1));
+        let (_, c) = commit(key);
+        let s = placed(&c, block_id(SEQ | STRIP_TAG)).expect("the strip's layer");
+        let x = s.blocks[0];
+        assert_eq!(x.kind, BlockKind::Inner);
+        assert_eq!(x.radius_px, 3);
+        assert_eq!(x.fill_argb, 0xff00_ff00);
+        assert_eq!(x.ring_argb, 0);
+        assert!(!x.open_top && !x.open_bottom);
+        assert_eq!(sync_at(&mut b, key, &[bar(0)]), Ok(1));
+        let (_, c) = commit(key);
+        let s = placed(&c, block_id(SEQ | STRIP_TAG)).expect("the strip's layer");
+        assert_eq!(s.blocks[0].kind, BlockKind::Bar);
+    }
+
     /// A window with a ring and a ruler: the ruler's strip bars are a block layer of their own (`seq | STRIP_TAG`), whose
     /// clip is the strip, and the ring keeps its layer at the text area; neither cuts the other.
     #[test]

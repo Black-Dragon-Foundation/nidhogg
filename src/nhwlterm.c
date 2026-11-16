@@ -908,10 +908,10 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 }
 
 /* Add a filled bar RECT in RGB at OPACITY to the list, clipped to CLIP,
-   for window W.  */
+   for window W, its corners rounded by RADIUS device pixels (0: square).  */
 static void
 nhwl_bar_add (struct window *w, NhgRect clip, NhgRect rect, intmax_t rgb,
-	      float opacity)
+	      float opacity, int radius)
 {
   if (rgb < 0 || rect.w <= 0 || rect.h <= 0)
     return;
@@ -920,42 +920,70 @@ nhwl_bar_add (struct window *w, NhgRect clip, NhgRect rect, intmax_t rgb,
 			   sizeof *nhwl_blocks);
   nhwl_blocks[nhwl_nblocks++]
     = (NhgBlock) { w->sequence_number, clip, rect,
-		   NHG_BLOCK_BAR | NHG_BLOCK_STRIP, 0,
+		   NHG_BLOCK_BAR | NHG_BLOCK_STRIP, max (0, radius),
 		   (int32_t) rgb, opacity, (int32_t) rgb };
 }
 
+/* The ruler vector's header: [WIDTH RIGHT HEIGHT BAND-RGB BAND-OPACITY
+   FLAGS INSET RADIUS FROM LENGTH TOTAL], then its marks.  */
+enum { NHWL_RULER_HEAD = 11 };
+enum { NHWL_RULER_HIDE_SHORT = 1 };
+
 /* List the overview ruler V of leaf window W, whose text area spans
    TOP to TOP + HEIGHT: a strip WIDTH wide at the window's right inner
-   edge less RIGHT, standing for the whole buffer.  The band over the
-   part the window shows goes first, then each mark at its position's
-   fraction of the buffer, at least HEIGHT tall, inside the strip.
-   Fractions are of characters, as the scroll bar measures, so a scroll
-   needs nothing of Lisp.  V is [WIDTH RIGHT HEIGHT BAND-RGB BAND-OPACITY
-   MARK...], each MARK [POS X0 X1 RGB OPACITY], as glitnir--ruler-vector
-   makes it.  */
+   edge less RIGHT, standing for the whole of what the buffer shows.  It
+   is the window's scroll bar: the band (the thumb) over the part the
+   window shows goes first, INSET in from either side of the strip with
+   corners of RADIUS, then each mark at its position's fraction, at
+   least HEIGHT tall, inside the strip.  Fractions are of characters, as
+   the scroll bar measures, so a scroll needs nothing of Lisp.  When
+   TOTAL is positive the buffer holds rows FROM to FROM + LENGTH of a
+   view of TOTAL rows (a list the hub sends a window of): the strip
+   stands for the TOTAL rows and a position maps into the held rows by
+   its character fraction of the buffer.  With FLAGS' hide-short bit,
+   nothing is drawn while the window shows all there is.  V is the
+   header above then MARK..., each MARK [POS X0 X1 RGB OPACITY HEIGHT
+   RADIUS END] (HEIGHT 0: the header's; END nil or a position the mark
+   runs down to), as glitnir--ruler-vector makes it.  */
 static void
 nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 {
-  if (!VECTORP (v) || ASIZE (v) < 5 || height <= 0)
+  if (!VECTORP (v) || ASIZE (v) < NHWL_RULER_HEAD || height <= 0)
     return;
   struct buffer *b = XBUFFER (w->contents);
   int width = nhwl_block_int (v, 0, 0);
   int right = nhwl_block_int (v, 1, 0);
   int least = max (1, (int) nhwl_block_int (v, 2, 1));
+  intmax_t flags = nhwl_block_int (v, 5, 0);
+  int inset = max (0, (int) nhwl_block_int (v, 6, 0));
+  int radius = max (0, (int) nhwl_block_int (v, 7, 0));
+  intmax_t from = max (0, nhwl_block_int (v, 8, 0));
+  intmax_t length = max (0, nhwl_block_int (v, 9, 0));
+  intmax_t total = nhwl_block_int (v, 10, 0);
   int x1 = (WINDOW_RIGHT_EDGE_X (w) - WINDOW_RIGHT_DIVIDER_WIDTH (w)
 	    - WINDOW_RIGHT_SCROLL_BAR_AREA_WIDTH (w) - right);
   if (width <= 0)
     return;
   NhgRect strip = { x1 - width, top, width, height };
   ptrdiff_t begv = BUF_BEGV (b), span = max (1, BUF_ZV (b) - begv);
-#define NHWL_RULER_Y(pos) \
-  (top + (int) ((double) (clip_to_bounds (begv, pos, begv + span) - begv) \
-		* height / span))
+  bool spanned = total > 0;
+  if (spanned)
+    from = min (from, total), length = min (length, total - from);
+  /* The fraction of the whole a position stands at: of the buffer's
+     characters, or of the view's rows through the rows held.  */
+#define NHWL_RULER_FRAC(pos)						\
+  ((double) (clip_to_bounds (begv, pos, begv + span) - begv) / span)
+#define NHWL_RULER_Y(pos)						\
+  (top + (int) ((spanned							\
+		 ? (from + NHWL_RULER_FRAC (pos) * length) / total	\
+		 : NHWL_RULER_FRAC (pos))					\
+		* height))
 
   Lisp_Object op = AREF (v, 4);
   /* The part shown: the current matrix's first and last text rows (the
      window's end is not kept valid between redisplays).  */
   ptrdiff_t start = marker_position (w->start), end = start;
+  bool at_zv = false;
   struct glyph_matrix *m = w->current_matrix;
   if (m)
     {
@@ -967,15 +995,28 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 	    start = MATRIX_ROW_START_CHARPOS (row);
 	  end = MATRIX_ROW_END_CHARPOS (row);
 	  if (row->ends_at_zv_p)
-	    break;
+	    {
+	      at_zv = true;
+	      break;
+	    }
 	}
     }
+  /* All of it shows: the first row starts the accessible text, a row
+     ends it, and a view's window holds every row.  */
+  if ((flags & NHWL_RULER_HIDE_SHORT)
+      && start <= begv && at_zv
+      && (!spanned || (from == 0 && length >= total)))
+    return;
   int y0 = NHWL_RULER_Y (start);
   int y1 = max (y0 + least, NHWL_RULER_Y (end));
-  nhwl_bar_add (w, strip, (NhgRect) { strip.x, y0, width, min (y1, top + height) - y0 },
-		nhwl_block_int (v, 3, -1), NUMBERP (op) ? XFLOATINT (op) : 1.0f);
+  int bw = max (1, width - 2 * inset);
+  nhwl_bar_add (w, strip,
+		(NhgRect) { strip.x + min (inset, (width - 1) / 2), y0, bw,
+			    min (y1, top + height) - y0 },
+		nhwl_block_int (v, 3, -1), NUMBERP (op) ? XFLOATINT (op) : 1.0f,
+		radius);
 
-  for (ptrdiff_t i = 5; i < ASIZE (v); i++)
+  for (ptrdiff_t i = NHWL_RULER_HEAD; i < ASIZE (v); i++)
     {
       Lisp_Object m = AREF (v, i);
       if (!VECTORP (m) || ASIZE (m) < 5)
@@ -985,13 +1026,24 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 	continue;
       int mx0 = clip_to_bounds (0, nhwl_block_int (m, 1, 0), width);
       int mx1 = clip_to_bounds (mx0, nhwl_block_int (m, 2, width), width);
-      int y = min (NHWL_RULER_Y (pos), top + height - least);
+      int mh = ASIZE (m) > 5 ? (int) nhwl_block_int (m, 5, 0) : 0;
+      int mr = ASIZE (m) > 6 ? (int) nhwl_block_int (m, 6, 0) : 0;
+      if (mh <= 0)
+	mh = least;
+      /* A mark with an END runs from its position to END's (a run of
+	 changed lines), at least its height.  */
+      ptrdiff_t endpos = ASIZE (m) > 7 ? nhwl_block_pos (w, AREF (m, 7)) : -1;
+      if (endpos > pos)
+	mh = max (mh, NHWL_RULER_Y (endpos) - NHWL_RULER_Y (pos) + mh);
+      mh = min (mh, height);
+      int y = min (NHWL_RULER_Y (pos), top + height - mh);
       Lisp_Object mop = AREF (m, 4);
-      nhwl_bar_add (w, strip, (NhgRect) { strip.x + mx0, y, mx1 - mx0, least },
+      nhwl_bar_add (w, strip, (NhgRect) { strip.x + mx0, y, mx1 - mx0, mh },
 		    nhwl_block_int (m, 3, -1),
-		    NUMBERP (mop) ? XFLOATINT (mop) : 1.0f);
+		    NUMBERP (mop) ? XFLOATINT (mop) : 1.0f, mr);
     }
 #undef NHWL_RULER_Y
+#undef NHWL_RULER_FRAC
 }
 
 /* The edges nhg_edges_sync takes, kept between publishes.  */
