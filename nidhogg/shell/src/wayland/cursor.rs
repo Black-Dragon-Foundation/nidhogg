@@ -37,7 +37,18 @@ impl WaylandShell {
         if !self.main.is_window(id) {
             return Err(ShellError::State);
         }
-        self.apply_cursor(id, shape)?;
+        let serial = self
+            .shared
+            .serials
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(SerialKind::MouseEnter)
+            .as_raw();
+        // Redisplay sets the frame's shape again and again with no input; the pointer shows it already.
+        if self.main.cursor.sent != Some((serial, shape)) {
+            self.apply_cursor(id, shape)?;
+            self.main.cursor.sent = Some((serial, shape));
+        }
         self.main.cursor.last = Some((id, shape));
         Ok(())
     }

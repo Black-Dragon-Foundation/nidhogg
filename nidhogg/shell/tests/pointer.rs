@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use nhshell::api::{NHSHELL_CURSOR_TEXT, ShellBackend, WindowDesc};
+use nhshell::api::{NHSHELL_CURSOR_POINTER, NHSHELL_CURSOR_TEXT, ShellBackend, WindowDesc};
 use nhshell::event::*;
 use nhshell::wayland::WaylandShell;
 use std::time::{Duration, Instant};
@@ -100,6 +100,30 @@ mod pointer {
             assert!(Instant::now() < deadline, "no set_shape in {log}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// A shape the pointer already shows sends no request: redisplay sets the frame's shape again and again with no
+    /// input (a mouse-face under a resting pointer), and each request costs the compositor a cursor update.
+    #[test]
+    fn an_unchanged_shape_sends_one_request() {
+        let (rec, mut shell, id) = setup("mutter");
+        rec.control(r#"{"cmd":"pointer","pos":[10,10]}"#);
+        wait_event(&mut shell, Kind::PointerEnter);
+        for _ in 0..3 {
+            shell.set_cursor(id, NHSHELL_CURSOR_TEXT).unwrap();
+        }
+        // a different shape after them: once it is in the log, so is every request before it
+        shell.set_cursor(id, NHSHELL_CURSOR_POINTER).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let log = loop {
+            let log = rec.control(r#"{"cmd":"input_log","since":1}"#);
+            if log.contains(r#""shape":"pointer""#) {
+                break log;
+            }
+            assert!(Instant::now() < deadline, "no pointer shape in {log}");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(log.matches(r#""shape":"text""#).count(), 1, "{log}");
     }
 
     /// Move, resize and menus carry the serial of the latest press.

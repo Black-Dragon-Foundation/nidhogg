@@ -49,6 +49,8 @@ pub struct ThemeCursor {
     surface: Option<WlSurface>,
     /// The latest shape request, so a new theme can be shown at once.
     pub last: Option<(WindowId, u32)>,
+    /// The pointer `enter` serial and shape of the latest request sent: the same pair again sends nothing.
+    pub sent: Option<(u32, u32)>,
 }
 
 impl ThemeCursor {
