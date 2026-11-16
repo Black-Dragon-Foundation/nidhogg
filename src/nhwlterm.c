@@ -1011,7 +1011,9 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 	  if (row == MATRIX_FIRST_TEXT_ROW (m))
 	    start = MATRIX_ROW_START_CHARPOS (row);
 	  end = MATRIX_ROW_END_CHARPOS (row);
-	  if (row->ends_at_zv_p)
+	  /* A row that reaches ZV ends the text too: in a window fitted to
+	     its lines the final newline's empty line has no row.  */
+	  if (row->ends_at_zv_p || end >= BUF_ZV (b))
 	    {
 	      at_zv = true;
 	      break;

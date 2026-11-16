@@ -735,6 +735,36 @@ way, so nothing reflows), and no Lisp decides it: the same parameter, only the t
       (set-window-fringes w nil nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/the-ruler-hides-in-a-window-fitted-to-its-lines ()
+  "A window whose body is exactly its buffer's lines (a header fitted to its text, the final newline's empty line
+below the last row) shows all there is: with `:hide-short' the strip draws nothing."
+  (glitnir-gui--skip-unless-tree "nhmac-ruler-hides-when-the-text-fits")
+  (let* ((buf (get-buffer-create "*glitnir-ruler-fitted*"))
+         (top (selected-window))
+         (w (split-window top nil 'below)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (erase-buffer)
+            (dotimes (i 3) (insert (format "line %d\n" i)))
+            (setq-local mode-line-format nil))
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (let ((window-resize-pixelwise t)
+                (want (* 3 (with-current-buffer buf (default-line-height)))))
+            (window-resize w (- want (window-body-height w t)) nil t t)
+            (should (= (window-body-height w t) want)))
+          (set-window-parameter w 'glitnir-ruler
+                                '(:width 12 :right 2 :height 4 :hide-short t :band ("#0000ff" . 1)
+                                         :marks ((1 0 12 ("#ff0000" . 1)))))
+          (let ((snap (glitnir-gui--painted)))
+            (should-not (glitnir-gui--strip-has snap w '(0 0 255)))
+            (should-not (glitnir-gui--strip-has snap w '(255 0 0)))))
+      (set-window-parameter w 'glitnir-ruler nil)
+      (delete-window w)
+      (kill-buffer buf))))
+
 (ert-deftest glitnir-gui/the-ruler-thumb-is-inset-and-rounded ()
   "`:thumb-inset' 3 and `:radius' 3: the thumb fills only the strip's middle, 3 in from each side, and its top corner
 is cut by the rounding (its corner pixel is not the thumb's colour, the pixel two rows in at its middle is)."
