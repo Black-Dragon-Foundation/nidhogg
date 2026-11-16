@@ -40,6 +40,13 @@ fn guard(f: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(HLID_E_PANIC)
 }
 
+/// KEY's model under the lock, for a Rust caller in the same process (the glue's minimap reads its rows), on the
+/// host's main thread as the C ABI is; `None` when KEY has no model.
+pub fn with_model<R>(key: u64, f: impl FnOnce(&mut Model) -> R) -> Option<R> {
+    let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    ms.iter_mut().find(|(k, _)| *k == key).map(|(_, m)| f(m))
+}
+
 fn with(key: u64, f: impl FnOnce(&mut Model) -> i32) -> i32 {
     guard(|| {
         let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());

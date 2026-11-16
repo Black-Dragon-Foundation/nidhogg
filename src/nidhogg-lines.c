@@ -192,7 +192,7 @@ nh_lines_forget (struct buffer *b)
 }
 
 /* B's model key, after a stale model was built again; 0 when B's text has no model.  */
-static uint64_t
+uint64_t
 nh_lines_model (struct buffer *b)
 {
   struct nh_lines_text *t = BUFFER_LIVE_P (b) ? nh_lines_find (b->text) : NULL;

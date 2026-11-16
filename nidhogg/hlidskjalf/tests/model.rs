@@ -219,3 +219,32 @@ fn a_bad_edit_makes_the_model_stale() {
     p.m.rebuild(&[&p.text], false);
     assert!(!p.m.stale());
 }
+
+#[test]
+fn the_rows_leave_out_the_hidden_lines_and_the_generation_counts_changes() {
+    // line i: i spaces, a digit and a newline (indent i, i + 2 characters)
+    let text: String = (0..10).map(|i| format!("{}{i}\n", " ".repeat(i))).collect();
+    let mut p = Pair::new(&text, false);
+    let total = p.m.index().unwrap().lines();
+    assert_eq!(p.m.visible_lines(), Some(total));
+    let indents = |v: Vec<hlidskjalf::Line>| v.iter().map(|l| l.indent).collect::<Vec<_>>();
+    assert_eq!(indents(p.m.visible_rows(0, 3).unwrap()), [0, 1, 2]);
+    let g = p.m.generation();
+    // hide lines 2–6: (the end of line 1, the start of line 6]
+    p.m.set_hidden(&[(5, 28)]);
+    assert!(p.m.generation() > g);
+    assert_eq!(p.m.visible_lines(), Some(total - 5));
+    assert_eq!(indents(p.m.visible_rows(0, 4).unwrap()), [0, 1, 7, 8]);
+    assert_eq!(indents(p.m.visible_rows(2, 1).unwrap()), [7]);
+    assert_eq!(p.m.visible_line(1), Some(1));
+    assert_eq!(p.m.visible_line(2), Some(7));
+    assert_eq!(p.m.visible_line(total - 5), None);
+    // the rows end with the text
+    assert_eq!(p.m.visible_rows(total - 6, 9).unwrap().len(), 1);
+    let g = p.m.generation();
+    p.edit(1, 0, "x");
+    assert!(p.m.generation() > g);
+    let g = p.m.generation();
+    p.m.rebuild(&[&p.text], false);
+    assert!(p.m.generation() > g);
+}

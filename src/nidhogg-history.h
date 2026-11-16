@@ -63,6 +63,7 @@ extern void nh_lines_change (struct buffer *b,
 extern void nh_lines_resync (struct buffer *b);
 extern void nh_lines_forget (struct buffer *b);
 extern bool nh_lines_fraction (struct buffer *b, ptrdiff_t pos, double *out);
+extern uint64_t nh_lines_model (struct buffer *b);
 extern void syms_of_nidhogg_lines (void);
 
 /* The guard at the sites.  The positions are evaluated only when a

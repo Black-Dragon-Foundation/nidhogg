@@ -68,6 +68,8 @@ pub struct Model {
     hidden_lines: Option<Vec<(u64, u64, u64)>>,
     trail: VecDeque<u64>,
     pub edits: u64,
+    /// Bumped by every change of the lines or of the hidden ones (what a drawing of the rows depends on).
+    generation: u64,
 }
 
 impl Model {
@@ -85,6 +87,7 @@ impl Model {
             hidden_lines: None,
             trail: VecDeque::new(),
             edits: 0,
+            generation: 0,
         };
         m.rebuild(parts, background);
         m
@@ -92,6 +95,7 @@ impl Model {
 
     /// Read the text again (lines only: marks, folds and the trail are positions and stay).
     pub fn rebuild(&mut self, parts: &[&[u8]], background: bool) {
+        self.generation += 1;
         self.stale = false;
         self.hidden_lines = None;
         if background {
@@ -136,6 +140,7 @@ impl Model {
             return;
         }
         let (h, log) = self.building.take().expect("building");
+        self.generation += 1;
         match h.join() {
             Ok(idx) => {
                 self.idx = Some(idx);
@@ -174,6 +179,7 @@ impl Model {
         seg: &[&[u8]],
     ) -> Result<(), Stale> {
         self.edits += 1;
+        self.generation += 1;
         let shift = |p: u64| -> u64 {
             if p <= start {
                 p
@@ -360,6 +366,58 @@ impl Model {
         r.sort_unstable();
         self.hidden = r;
         self.hidden_lines = None;
+        self.generation += 1;
+    }
+
+    /// A count bumped by every change of the lines or of the hidden ones: a drawing of the rows made at one
+    /// generation holds while it does not change.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The visible lines (the text's lines but the hidden ones), when the lines are built.
+    pub fn visible_lines(&mut self) -> Option<u64> {
+        let hidden: u64 = self.hidden_lines()?.iter().map(|r| r.1 - r.0).sum();
+        Some(self.idx.as_ref()?.lines() - hidden)
+    }
+
+    /// The line (0-based) of visible row ROW: past each hidden run that starts at or before it; `None` past the text's
+    /// end or while the lines are not built.
+    pub fn visible_line(&mut self, row: u64) -> Option<u64> {
+        self.hidden_lines()?;
+        let (h, idx) = (self.hidden_lines.as_deref()?, self.idx.as_ref()?);
+        let mut line = row;
+        for r in h {
+            if r.0 > line {
+                break;
+            }
+            line += r.1 - r.0;
+        }
+        (line < idx.lines()).then_some(line)
+    }
+
+    /// The lines of at most N visible rows from visible row FIRST (0-based), the hidden lines left out; fewer at the
+    /// text's end.
+    pub fn visible_rows(&mut self, first: u64, n: usize) -> Option<Vec<Line>> {
+        self.hidden_lines()?;
+        let (h, idx) = (self.hidden_lines.as_deref()?, self.idx.as_ref()?);
+        // row FIRST's line: past each hidden run that starts at or before it
+        let (mut line, mut i) = (first, 0);
+        while i < h.len() && h[i].0 <= line {
+            line += h[i].1 - h[i].0;
+            i += 1;
+        }
+        let mut out = Vec::with_capacity(n.min(4096));
+        while out.len() < n && line < idx.lines() {
+            if i < h.len() && h[i].0 == line {
+                line = h[i].1;
+                i += 1;
+                continue;
+            }
+            out.push(idx.line(line));
+            line += 1;
+        }
+        Some(out)
     }
 
     fn hidden_lines(&mut self) -> Option<&[(u64, u64, u64)]> {
