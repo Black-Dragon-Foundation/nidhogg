@@ -325,6 +325,13 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   definition 10.5 logical px in `label_rgb`, a nested one in `sub_rgb` and indented 8 px a depth (4 at most), a MARK
   section 9.5 px in `mark_rgb`, the one under the pointer in `accent_rgb` (a move onto another label publishes the
   frame). Each lies over a backing of the surface, so the bars under it make way.
+- **The minimap on Naglfar** (`minimap_layers.rs`, `minimap::images_at`): a shell that shows window images on layers
+  of its own gets each minimap as pieces, each a card of its own after the frame's cards, blocks and edges: the
+  surface, the shades, each tile, each label over its backing, the bands.  A piece keeps its id and image while its
+  pixels are the same (a tile or sprite by identity, a fill or band by size and colours), so a scroll moves layers and
+  uploads only the tiles that came into view; a piece past the minimap's edge is given with `shown`, the part inside,
+  so nothing is drawn again for a scroll or the reveal.  Labels there come from Core Text: C's renderer
+  (`nhmac_minimap_label_render`) calls `nhg_label_raster` with the label face's font, which takes no glue lock.
 - **The minimap's pointer** (`minimap::pointer`, `timer`, `frame_ready`): the glue keeps the deadlines and asks the
   shell for a wake-up at the nearest (`ShellBackend::set_timer`, a `Timer` event). The pointer resting 150 ms on the
   window's ruler strip (`NhgMinimap::strip`) opens the minimap, revealed from its outer edge over 120 ms on frame

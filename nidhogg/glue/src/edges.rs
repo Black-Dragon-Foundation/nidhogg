@@ -237,6 +237,7 @@ pub fn images_at(
                     clip.h as u32,
                 ),
                 argb: Some(glitnir::compose::edge_overlay(clip, &v, s).into()),
+                shown: None,
             })
             .collect(),
     ))
@@ -269,9 +270,12 @@ pub fn sync(
                 id,
                 rect,
                 argb: None,
+                shown: None,
             })
             .collect();
         full.extend(list.iter().cloned());
+        // the minimaps' pieces on top, as they are (`minimap::sync`)
+        full.extend(crate::minimap::kept(&mut state.backings, frame));
         let given = match state.csd_parts(window) {
             Ok((backend, ..)) => backend.set_cards(window, &full).is_ok(),
             Err(_) => false,

@@ -334,6 +334,7 @@ pub fn images_at(
                     id: p.id,
                     rect: (r.x - origin.0, r.y - origin.1, r.w as u32, r.h as u32),
                     argb: Some(px.into()),
+                    shown: None,
                 })
             })
             .collect(),
@@ -370,8 +371,11 @@ pub fn sync(
                     id,
                     rect,
                     argb: None,
+                    shown: None,
                 }),
         );
+        // the minimaps' pieces on top, as they are (`minimap::sync`)
+        full.extend(crate::minimap::kept(&mut state.backings, frame));
         if let Ok((backend, ..)) = state.csd_parts(window) {
             // as for a child's chrome, a refused list is given again with the next change
             let _ = backend.set_cards(window, &full);

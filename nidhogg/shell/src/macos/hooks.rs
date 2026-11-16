@@ -574,7 +574,11 @@ impl MacShell {
                     c.map_or(0, |c| c.images),
                     c.map_or_else(Vec::new, |c| c.shown())
                         .iter()
-                        .map(|(id, (x, y, w, h))| format!("({id} {x} {y} {w} {h})"))
+                        // a card cut at an edge: the part that shows after its place
+                        .map(|(id, (x, y, w, h), cut)| match cut {
+                            Some((a, b, c, d)) => format!("({id} {x} {y} {w} {h} {a} {b} {c} {d})"),
+                            None => format!("({id} {x} {y} {w} {h})"),
+                        })
                         .collect::<Vec<_>>()
                         .join(" ")
                 )

@@ -989,6 +989,12 @@ typedef int32_t (*NhgLabelRender) (void *host, int32_t face, const uint8_t *text
    going first) until it goes.  */
 void nhg_minimap_set_label_render (NhgLabelRender f);
 
+/* Naglfar's label raster, for its NhgLabelRender (which knows the label face's font): TEXT (LEN bytes of UTF-8) in the
+   open font FONT (nhg_font_open's handle) at PX100 / 100 device pixels in RGB, drawn by Core Text into BUF as an
+   NhgLabelRender draws.  Returns 0 when it drew, -1 otherwise (always without Core Text).  */
+int32_t nhg_label_raster (uint64_t font, uint32_t px100, const uint8_t *text, size_t len, uint32_t rgb, uint32_t *buf,
+                          int32_t cap_w, int32_t cap_h, int32_t *w, int32_t *h);
+
 /* FRAME (WINDOW its tree's shell window) is about to be published with the N minimaps at LIST: each window with one
    gets its minimap layer, above its blocks and edges, the others lose theirs.  Returns how many windows have minimap
    layers.  */

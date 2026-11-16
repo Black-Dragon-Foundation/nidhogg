@@ -1858,11 +1858,24 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
 typedef NhgMinimap M;
 PROTO (nhg_minimap_sync, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgMinimap *, size_t));
 PROTO (nhg_minimap_count, int32_t (NhgDisplay *, uint64_t));
-PROTO (nhg_minimap_set_label_render, void (NhgLabelRender));";
+PROTO (nhg_minimap_set_label_render, void (NhgLabelRender));
+PROTO (nhg_label_raster, int32_t (uint64_t, uint32_t, const uint8_t *, size_t, uint32_t, uint32_t *, int32_t, int32_t, int32_t *, int32_t *));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const M, usize) -> i32 =
             nhg_minimap_sync;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_minimap_count;
         let _: extern "C" fn(Option<NhgLabelRender>) = nhg_minimap_set_label_render;
+        let _: unsafe extern "C" fn(
+            u64,
+            u32,
+            *const u8,
+            usize,
+            u32,
+            *mut u32,
+            i32,
+            i32,
+            *mut i32,
+            *mut i32,
+        ) -> i32 = nhg_label_raster;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());

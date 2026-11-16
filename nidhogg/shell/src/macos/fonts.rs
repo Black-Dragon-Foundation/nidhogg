@@ -58,6 +58,12 @@ unsafe extern "C" {
     fn CTFontGetSize(font: *const c_void) -> f64;
     fn CTFontCreateWithName(name: *const c_void, size: f64, matrix: *const c_void)
     -> *const c_void;
+    fn CTFontCreateCopyWithAttributes(
+        font: *const c_void,
+        size: f64,
+        matrix: *const c_void,
+        attributes: *const c_void,
+    ) -> *const c_void;
     fn CTFontGetAscent(font: *const c_void) -> f64;
     fn CTFontGetDescent(font: *const c_void) -> f64;
     fn CTFontGetLeading(font: *const c_void) -> f64;
@@ -238,6 +244,47 @@ pub fn find(family: &str, size: f64) -> Option<u64> {
         .filter(|(_, o)| o.family.eq_ignore_ascii_case(family) && o.size == size)
         .map(|(h, _)| *h)
         .max()
+}
+
+/// The open font `handle` at `size` pixels (`CTFontCreateCopyWithAttributes`), drawn with its synthesised traits: a
+/// handle opened once per (font, size) and kept while `handle` is open (the minimap's labels draw a face's font
+/// smaller).  `None`: not open.
+pub fn sized(handle: u64, size: f64) -> Option<u64> {
+    static SIZED: OnceLock<Mutex<HashMap<(u64, u64), u64>>> = OnceLock::new();
+    let mut sized = SIZED
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let mut open = open_fonts().lock().unwrap_or_else(|p| p.into_inner());
+    // copies of fonts closed since go with them
+    sized.retain(|(h, _), c| {
+        if !open.1.contains_key(h) {
+            open.1.remove(c);
+            return false;
+        }
+        open.1.contains_key(c)
+    });
+    if let Some(&h) = sized.get(&(handle, size.to_bits())) {
+        return Some(h);
+    }
+    let o = open.1.get(&handle)?;
+    // SAFETY: a live font; the copy is +1, owned by `Cf`.
+    let font = Cf::new(unsafe {
+        CTFontCreateCopyWithAttributes(o.font.get(), size, std::ptr::null(), std::ptr::null())
+    })?;
+    let copy = OpenFont {
+        font,
+        synthetic_italic: o.synthetic_italic,
+        synthetic_bold: o.synthetic_bold,
+        family: o.family.clone(),
+        size,
+        cmap: OnceLock::new(),
+    };
+    open.0 += 1;
+    let h = open.0;
+    open.1.insert(h, copy);
+    sized.insert((handle, size.to_bits()), h);
+    Some(h)
 }
 
 pub fn close(handle: u64) {

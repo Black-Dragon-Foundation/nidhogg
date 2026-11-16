@@ -792,10 +792,13 @@ mod tests {
 }
 
 /// One window card for [`ShellBackend::set_cards`]: its id, its place in the root's surface (device pixels: x, y, width,
-/// height) and its image there (premultiplied ARGB, row by row), or `None` to keep the image it has.
+/// height) and its image there (premultiplied ARGB, row by row), or `None` to keep the image it has; `shown`, the part
+/// of the place that shows (inside it; `None`: all of it), so a card that slides past an edge is cut there without a
+/// new image (the minimap's pieces).
 #[derive(Debug, Clone)]
 pub struct CardImage {
     pub id: u64,
     pub rect: (i32, i32, u32, u32),
     pub argb: Option<std::sync::Arc<[u32]>>,
+    pub shown: Option<(i32, i32, u32, u32)>,
 }

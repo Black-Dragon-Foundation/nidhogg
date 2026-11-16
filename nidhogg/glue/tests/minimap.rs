@@ -6,13 +6,14 @@ mod minimap {
     use glitnir::geom::Rect;
     use glitnir::hlidskjalf::abi::{hlid_build, hlid_drop, with_model};
     use glitnir::scene::Placed;
+    use nhglue::backing::MINIMAP_TAG;
     use nhglue::backing::{Backings, NhgFrameGeom, NhgRect};
     use nhglue::edges::{NHG_EDGE_POINTS, NhgEdge, NhgPoint, edge_id};
     use nhglue::minimap::{
         CLOSE_DELAY_NS, DWELL_NS, NHG_MINIMAP_CLICK, NHG_MINIMAP_DRAG, NHG_MINIMAP_DWELL,
         NHG_MINIMAP_LEFT, NHG_MINIMAP_NESTING, NHG_MINIMAP_OPEN, NHG_MINIMAP_REDUCED_MOTION,
-        NhgMinimap, OPEN_DELAY_NS, REVEAL_NS, Rows, STEP_NS, count, minimap_id, of, place, rows_of,
-        sync_at, sync_at_time,
+        NhgMinimap, OPEN_DELAY_NS, REVEAL_NS, Rows, STEP_NS, count, images_at, minimap_id, of,
+        place, rows_of, sync_at, sync_at_time,
     };
     use std::sync::Arc;
 
@@ -91,6 +92,69 @@ mod minimap {
             },
             ..NhgMinimap::default()
         }
+    }
+
+    /// On a shell that shows window images on layers of its own (Naglfar), the minimap is pieces: the first sync
+    /// gives each with its image, an unchanged one gives nothing, and a scroll moves the pieces, uploading no more
+    /// than the tile that came into view (design §6 "Naglfar", review 6).
+    #[test]
+    fn on_layers_a_scroll_moves_pieces_and_uploads_only_what_came_into_view() {
+        let mut b = Backings::default();
+        let key = frame(&mut b, 120);
+        let text = 0x6d6d_0042;
+        let t = model(text, 2000);
+        let zv = t.len() as u64 + 1;
+        let pos = |l: u64| 1 + (0..l).map(|i| 11 + i % 8).sum::<u64>();
+        let open = NHG_MINIMAP_OPEN | NHG_MINIMAP_REDUCED_MOTION;
+        let at = |l: u64| entry(text, pos(l), pos(l + 50), zv, open);
+        let first = images_at(&mut b, key, &[at(600)], 1)
+            .unwrap()
+            .expect("pieces");
+        // the surface, the tiles in view, the band; each with its image, each a minimap piece of this window
+        assert!(first.len() >= 3, "{first:?}");
+        assert!(first.iter().all(|c| c.argb.is_some()));
+        assert!(
+            first
+                .iter()
+                .all(|c| c.id & MINIMAP_TAG != 0 && c.id & 0xff_ffff_ffff == SEQ)
+        );
+        let sent: Vec<_> = first
+            .iter()
+            .map(|c| nhshell::api::CardImage {
+                argb: None,
+                ..c.clone()
+            })
+            .collect();
+        of(&mut b, key).unwrap().sent = sent;
+        assert!(
+            images_at(&mut b, key, &[at(600)], 2).unwrap().is_none(),
+            "nothing changed"
+        );
+        // a scroll by 40 lines: the band and tiles move; at most one tile is new
+        let second = images_at(&mut b, key, &[at(640)], 3)
+            .unwrap()
+            .expect("moved");
+        let uploads: Vec<_> = second.iter().filter(|c| c.argb.is_some()).collect();
+        assert!(uploads.len() <= 1, "{uploads:?}");
+        assert!(
+            uploads.iter().all(|c| c.rect.3 <= 512),
+            "a tile at most, never the whole minimap: {uploads:?}"
+        );
+        // the pieces kept their ids
+        let kept = second
+            .iter()
+            .filter(|c| first.iter().any(|f| f.id == c.id))
+            .count();
+        assert!(kept >= second.len() - 1);
+        // each piece shows only inside the minimap
+        let mm = first[0].rect;
+        for c in &second {
+            let (x, y, w, h) = c.shown.unwrap_or(c.rect);
+            assert!(x >= mm.0 && y >= mm.1, "{c:?} inside {mm:?}");
+            assert!(i64::from(x) + i64::from(w) <= i64::from(mm.0) + i64::from(mm.2));
+            assert!(i64::from(y) + i64::from(h) <= i64::from(mm.1) + i64::from(mm.3));
+        }
+        hlid_drop(text);
     }
 
     /// Each line is a row; the window's start and end give the band's rows; BEGV's line is row 0.

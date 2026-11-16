@@ -19,6 +19,7 @@ mod ime;
 #[cfg(feature = "test-hooks")]
 mod inject;
 mod kq;
+pub mod labels;
 mod layers;
 mod menus;
 mod nsapp;

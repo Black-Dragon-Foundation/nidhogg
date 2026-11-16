@@ -287,6 +287,7 @@ pub fn images_at(
                     clip.h as u32,
                 ),
                 argb: Some(glitnir::compose::block_overlay(clip, &v, s).into()),
+                shown: None,
             })
             .collect(),
     ))
@@ -316,10 +317,13 @@ pub fn sync(
             id,
             rect,
             argb: None,
+            shown: None,
         };
         let mut full: Vec<CardImage> = cards.iter().map(kept).collect();
         full.extend(list.iter().cloned());
         full.extend(edges.iter().map(kept));
+        // the minimaps' pieces on top, as they are (`minimap::sync`)
+        full.extend(crate::minimap::kept(&mut state.backings, frame));
         let given = state.backend().set_cards(window, &full).is_ok();
         let f = state.backings.frame_mut(frame)?;
         if given {

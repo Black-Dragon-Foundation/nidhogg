@@ -32,6 +32,7 @@ use glitnir::minimap::{
     raster,
 };
 use glitnir::scene::LayerDesc;
+use nhshell::api::CardImage;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
@@ -249,6 +250,69 @@ pub extern "C" fn nhg_minimap_set_label_render(f: Option<NhgLabelRender>) {
     *RENDER.lock().unwrap_or_else(|e| e.into_inner()) = f;
 }
 
+/// Naglfar's label raster, called by C's renderer there (`nhmac_minimap_label_render`, which knows the label face's
+/// font): TEXT (LEN bytes of UTF-8) in the open font FONT (`nhg_font_open`'s handle) at PX100 / 100 device px in RGB,
+/// drawn by Core Text into BUF as [`NhgLabelRender`] draws; 0 when it drew, -1 otherwise (always without Core Text).
+///
+/// # Safety
+/// TEXT holds LEN readable bytes, BUF CAP_W × CAP_H writable words, and W and H are writable (each may be null: -1).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nhg_label_raster(
+    font: u64,
+    px100: u32,
+    text: *const u8,
+    len: usize,
+    rgb: u32,
+    buf: *mut u32,
+    cap_w: i32,
+    cap_h: i32,
+    w: *mut i32,
+    h: *mut i32,
+) -> i32 {
+    if text.is_null() || buf.is_null() || w.is_null() || h.is_null() || cap_w <= 0 || cap_h <= 0 {
+        return -1;
+    }
+    // SAFETY: the caller's promise for TEXT.
+    let Ok(name) = std::str::from_utf8(unsafe { std::slice::from_raw_parts(text, len) }) else {
+        return -1;
+    };
+    // SAFETY: the caller's promise for BUF.
+    let px = unsafe { std::slice::from_raw_parts_mut(buf, (cap_w as usize) * (cap_h as usize)) };
+    let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        label_raster(font, f64::from(px100) / 100.0, name, rgb, px, cap_w, cap_h)
+    }))
+    .ok()
+    .flatten();
+    let Some((uw, uh)) = drawn else {
+        return -1;
+    };
+    // SAFETY: W and H are writable (the caller's promise).
+    unsafe {
+        w.write(uw);
+        h.write(uh);
+    }
+    0
+}
+
+/// Core Text's label (`nhshell::macos::labels`); none elsewhere.
+fn label_raster(
+    font: u64,
+    px: f64,
+    name: &str,
+    rgb: u32,
+    buf: &mut [u32],
+    cap_w: i32,
+    cap_h: i32,
+) -> Option<(i32, i32)> {
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    return nhshell::macos::labels::render(font, px, name, rgb, buf, cap_w, cap_h);
+    #[cfg(not(all(feature = "macos", target_os = "macos")))]
+    {
+        let _ = (font, px, name, rgb, buf, cap_w, cap_h);
+        None
+    }
+}
+
 /// TEXT's sprite for window E in RGB at PX100, at most CAP_W × CAP_H: from CACHE, else rendered; `None` without a
 /// renderer or when it did not draw.
 #[allow(clippy::too_many_arguments)]
@@ -393,6 +457,8 @@ struct Window {
     /// The labels drawn at the last publish: their boxes' top and bottom (root px), and which one was in the accent.
     boxes: Vec<(i32, i32)>,
     accent: Option<usize>,
+    /// The pieces last given to a shell that shows the minimap on layers of its own (`minimap_layers`).
+    given: crate::minimap_layers::Given,
 }
 
 /// Where a window's minimap was at its last publish (root device px), for the pointer.
@@ -498,6 +564,9 @@ pub struct Minimaps {
     pub(crate) shell_window: u64,
     /// Where the pointer last moved (root px): a button record carries no position of its own.
     last: Option<(f64, f64)>,
+    /// The pieces last given to a shell that shows the minimaps on layers of its own (`cards_on_layers`), without
+    /// their images: the other window images' syncs give them again as they are.
+    pub sent: Vec<CardImage>,
 }
 
 /// Root px point (`x`, `y`) in `r`.
@@ -1072,14 +1141,17 @@ pub fn now_ns() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
-/// [`sync_at`] at `now` (the pointer's legs are read at it).
-pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<u32, i32> {
+/// The frame's minimaps planned by [`plan`]: each window's by its `sequence_number`, the scale (×120) and the origin.
+type Planned = (BTreeMap<u64, Minimap>, u32, (i32, i32));
+
+/// Frame `key`'s minimaps from C's `list` at `now`: each window's [`Minimap`] (the other windows on its text add
+/// their bands); `None` before the frame has a scale.
+fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Option<Planned>, i32> {
     let f = b.frame_mut(key)?;
     let (s120, origin) = (f.scale120(), f.origin());
     if s120 == 0 {
-        return Ok(0);
+        return Ok(None);
     }
-    let s = f64::from(s120) / 120.0;
     let mm = &mut f.minimaps;
     let mut planned: BTreeMap<u64, Minimap> = BTreeMap::new();
     for e in list {
@@ -1118,6 +1190,16 @@ pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -
         }
         m.bands = bands.into();
     }
+    Ok(Some((planned, s120, origin)))
+}
+
+/// [`sync_at`] at `now` (the pointer's legs are read at it).
+pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<u32, i32> {
+    let Some((planned, s120, _)) = plan(b, key, list, now)? else {
+        return Ok(0);
+    };
+    let s = f64::from(s120) / 120.0;
+    let mm = &mut b.frame_mut(key)?.minimaps;
     glitnir::scene::with(key, |sc| {
         for (seq, m) in &planned {
             let win = mm.windows.get_mut(seq).expect("planned from it");
@@ -1169,8 +1251,46 @@ pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -
     Ok(u32::try_from(mm.windows.len()).unwrap_or(u32::MAX))
 }
 
-/// [`sync_at`] for frame `frame` of shell window `window`; nothing on a shell that shows the cards on layers of its
-/// own (macOS: Naglfar's minimap layers).
+/// [`sync_at`] for a shell that shows window images on layers of its own (`cards_on_layers`, Naglfar): each window's
+/// minimap as pieces (`minimap_layers`), placed in the frame's native area, at `now`; `None` when no piece came, went,
+/// moved or changed (or the frame has no scale yet).  Windows without a minimap are forgotten.
+pub fn images_at(
+    b: &mut Backings,
+    key: u64,
+    list: &[NhgMinimap],
+    now: u64,
+) -> Result<Option<Vec<CardImage>>, i32> {
+    let Some((planned, _, origin)) = plan(b, key, list, now)? else {
+        return Ok(None);
+    };
+    let mm = &mut b.frame_mut(key)?.minimaps;
+    mm.windows.retain(|q, _| planned.contains_key(q));
+    let mut out = Vec::new();
+    for (seq, m) in &planned {
+        let win = mm.windows.get_mut(seq).expect("planned from it");
+        out.extend(crate::minimap_layers::cards(
+            *seq,
+            m,
+            origin,
+            &mut win.given,
+        ));
+    }
+    let same = out.len() == mm.sent.len()
+        && out.iter().zip(&mm.sent).all(|(a, b)| {
+            a.argb.is_none() && a.id == b.id && a.rect == b.rect && a.shown == b.shown
+        });
+    Ok((!same).then_some(out))
+}
+
+/// The pieces last given, as they are (no image): what the other window images' syncs put after their own.
+pub(crate) fn kept(b: &mut Backings, key: u64) -> Vec<CardImage> {
+    b.frame_mut(key)
+        .map(|f| f.minimaps.sent.clone())
+        .unwrap_or_default()
+}
+
+/// [`sync_at`] for frame `frame` of shell window `window`, or on a shell that shows window images on layers of its
+/// own, [`images_at`] given with the frame's cards, blocks and edges as they are, the minimaps last (on top).
 pub fn sync(
     state: &mut Display,
     window: u64,
@@ -1178,7 +1298,53 @@ pub fn sync(
     list: &[NhgMinimap],
 ) -> Result<u32, GlueError> {
     if matches!(state.csd_parts(window), Ok((backend, ..)) if backend.cards_on_layers()) {
-        return Ok(0);
+        if let Some(pieces) = images_at(&mut state.backings, frame, list, now_ns())? {
+            let (cards, blocks, edges) = state
+                .backings
+                .frame_mut(frame)
+                .map(|f| {
+                    (
+                        f.cards.sent.clone(),
+                        f.blocks.sent.clone(),
+                        f.edges.sent.clone(),
+                    )
+                })
+                .unwrap_or_default();
+            let mut full: Vec<CardImage> = cards
+                .iter()
+                .chain(blocks.iter())
+                .chain(edges.iter())
+                .map(|&(id, rect)| CardImage {
+                    id,
+                    rect,
+                    argb: None,
+                    shown: None,
+                })
+                .collect();
+            full.extend(pieces.iter().cloned());
+            let given = match state.csd_parts(window) {
+                Ok((backend, ..)) => backend.set_cards(window, &full).is_ok(),
+                Err(_) => false,
+            };
+            let mm = &mut state.backings.frame_mut(frame)?.minimaps;
+            if given {
+                mm.sent = pieces
+                    .into_iter()
+                    .map(|c| CardImage { argb: None, ..c })
+                    .collect();
+            } else {
+                // refused: every piece given again, with its image, at the next publish
+                mm.sent.clear();
+                for w in mm.windows.values_mut() {
+                    w.given = Default::default();
+                }
+            }
+        }
+        if let Ok(f) = state.backings.frame_mut(frame) {
+            f.minimaps.shell_window = window;
+        }
+        rearm(state);
+        return Ok(u32::try_from(count(&mut state.backings, frame)).unwrap_or(u32::MAX));
     }
     let n = sync_at(&mut state.backings, frame, list)?;
     if let Ok(f) = state.backings.frame_mut(frame) {
@@ -1305,7 +1471,9 @@ pub fn forget_all(b: &mut Backings) {
     for (_, f) in b.frames_mut() {
         for w in f.minimaps.windows.values_mut() {
             w.applied = None;
+            w.given = Default::default();
         }
+        f.minimaps.sent.clear();
     }
 }
 
