@@ -1796,6 +1796,20 @@ click on an item then chooses."
       (mapc #'cancel-timer timers))
     (should (eq open-after-first t))))
 
+(ert-deftest nhwl-gui/a-menu-cancelled-while-quitting-is-inhibited-reads-no-keys ()
+  "A context menu cancelled ends `read-key-sequence-vector' in a quit (read_key_sequence's -1).  Read with
+`inhibit-quit' (a process filter, a timer) the quit waits, and the read returns no keys: an empty vector, never a
+vector of -1 elements."
+  (skip-unless (fboundp 'nhwl-menu-popup))
+  (let ((context-menu-mode t) (v nil) (q nil)
+        (unread-command-events (list (list 'down-mouse-3 (posn-at-x-y 100 100 (selected-frame) t)))))
+    (cl-letf (((symbol-function 'nhwl-menu-popup) (lambda (_position _menu) nil)))   ; the menu cancelled
+      (let ((inhibit-quit t))
+        (setq v (read-key-sequence-vector nil) q quit-flag quit-flag nil)))
+    (should (eq q t))                   ; the quit was asked for
+    ;; tags only: a vector of -1 elements is not one, and looking inside it aborts
+    (should (equal '(t 0) (list (vectorp v) (and (vectorp v) (length v)))))))
+
 (ert-deftest nhwl-gui/menu-click-outside-returns-nil ()
   "A click outside the popup dismisses it: `x-popup-menu' returns nil and the connection is intact."
   (skip-unless (nhwl-gui--recorder-p))

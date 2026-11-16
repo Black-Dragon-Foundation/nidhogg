@@ -12180,6 +12180,11 @@ read_key_sequence_vs (Lisp_Object prompt, Lisp_Object continue_echo,
     {
       Vquit_flag = Qt;
       maybe_quit ();
+#ifdef HAVE_NHWL
+      /* Quitting is inhibited (a process filter, a timer): the quit
+	 waits, and no keys were read.  */
+      i = 0;
+#endif
     }
 
   return unbind_to (count,
