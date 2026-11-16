@@ -3613,6 +3613,81 @@ nhwl_key_frame (struct nhwl_display_info *dpyinfo, struct frame *f)
   return f ? nhwl_focus_target (nhwl_tree_root (f)) : dpyinfo->x_focus_frame;
 }
 
+/* The modifier key pressed alone so far (its keysym), or 0: its release
+   with no other key or button between gives a lone-modifier event
+   (`nidhogg-lone-modifier-events').  */
+static uint32_t nhwl_lone_keysym;
+
+/* The modifier (`alt', `control', `shift' or `super') of KEYSYM, a
+   modifier key, or nil; *OWN gets the NHG_MOD_* bits it sets.  */
+static Lisp_Object
+nhwl_lone_modifier (uint32_t keysym, uint32_t *own)
+{
+  switch (keysym)
+    {
+    case 0xffe9: case 0xffea:	/* Alt_L, Alt_R */
+    case 0xffe7: case 0xffe8:	/* Meta_L, Meta_R */
+      *own = NHG_MOD_ALT | NHG_MOD_META;
+      return Qalt;
+    case 0xffe3: case 0xffe4:	/* Control_L, Control_R */
+      *own = NHG_MOD_CTRL;
+      return Qcontrol;
+    case 0xffe1: case 0xffe2:	/* Shift_L, Shift_R */
+      *own = NHG_MOD_SHIFT;
+      return Qshift;
+    case 0xffeb: case 0xffec:	/* Super_L, Super_R */
+      *own = NHG_MOD_SUPER | NHG_MOD_HYPER;
+      return Qsuper;
+    default:
+      return Qnil;
+    }
+}
+
+/* Follow the KEY action A for lone modifiers: a modifier key pressed
+   with no other modifier held starts one, any other press (or a
+   repeat's press of another key) ends it, and the release of the key
+   that started it gives `lone-alt' (`lone-control', `lone-shift',
+   `lone-super') to F when `nidhogg-lone-modifier-events' names the
+   modifier.  Return the number of events stored.  */
+static int
+nhwl_lone_note (struct frame *f, const NhgAction *a,
+		struct input_event *hold_quit)
+{
+  uint32_t keysym = (uint32_t) a->code, own = 0;
+  Lisp_Object mod = nhwl_lone_modifier (keysym, &own);
+  struct input_event ie;
+
+  if (a->flags & NHG_KEY_REPEAT)
+    {
+      if (keysym != nhwl_lone_keysym)
+	nhwl_lone_keysym = 0;
+      return 0;
+    }
+  if (!(a->flags & NHG_KEY_RELEASE))
+    {
+      /* The mask is the one before this key's own modifiers event.  */
+      nhwl_lone_keysym = (!NILP (mod) && !(a->mods & ~own & ~NHG_MOD_CAPS)
+			  ? keysym : 0);
+      return 0;
+    }
+  if (keysym != nhwl_lone_keysym)
+    {
+      nhwl_lone_keysym = 0;
+      return 0;
+    }
+  nhwl_lone_keysym = 0;
+  if (!f || NILP (Fmemq (mod, Vnidhogg_lone_modifier_events)))
+    return 0;
+  EVENT_INIT (ie);
+  ie.kind = NHWL_LONE_MODIFIER_EVENT;
+  ie.arg = (EQ (mod, Qalt) ? Qlone_alt : EQ (mod, Qcontrol) ? Qlone_control
+	    : EQ (mod, Qshift) ? Qlone_shift : Qlone_super);
+  ie.timestamp = a->time_ms;
+  XSETFRAME (ie.frame_or_window, f);
+  kbd_buffer_store_event_hold (&ie, hold_quit);
+  return 1;
+}
+
 /* Apply the glue's KEY action A, whose window is F's (NULL: none): the
    key goes to the frame of F's tree that Emacs focused.  A release
    becomes a `key-release' special event, only while
@@ -3625,17 +3700,19 @@ nhwl_key_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
 {
   union buffered_input_event inev;
   bool release = a->flags & NHG_KEY_RELEASE;
+  int lone;
 
-  if (release && NILP (Vnidhogg_key_events))
-    return 0;
   f = nhwl_key_frame (dpyinfo, f);
+  lone = nhwl_lone_note (f, a, hold_quit);
+  if (release && NILP (Vnidhogg_key_events))
+    return lone;
   if (!f)
-    return 0;
+    return lone;
   EVENT_INIT (inev.ie);
   inev.ie.kind = NO_EVENT;
   inev.ie.arg = Qnil;
   if (!nhwl_key_event (f, a, &inev) || inev.ie.kind == NO_EVENT)
-    return 0;
+    return lone;
   if (release)
     {
       inev.ie.arg = Fcons (make_fixnum (inev.ie.kind),
@@ -3645,7 +3722,7 @@ nhwl_key_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
   else if (a->flags & NHG_KEY_REPEAT)
     inev.ie.arg = Qnidhogg_key_repeat;
   kbd_buffer_store_event_hold (&inev.ie, hold_quit);
-  return 1;
+  return lone + 1;
 }
 
 /* Apply the glue's PREEDIT, COMMIT or IM_DELETE action A, whose window is
@@ -3745,6 +3822,8 @@ nhwl_click_apply (struct nhwl_display_info *dpyinfo, struct frame *f,
   int code = a->code, x, y;
   bool down = a->flags == NHG_BUTTON_PRESSED;
 
+  if (down)
+    nhwl_lone_keysym = 0;	/* a click between: no lone modifier */
   EVENT_INIT (inev.ie);
   inev.ie.kind = NO_EVENT;
   inev.ie.arg = Qnil;
@@ -5422,6 +5501,15 @@ in `special-event-map' to handle it.  A release whose press gave no
 event (a dead key, a key pressed before the frame had the keyboard)
 gives none.  Nil, the default, drops releases.  */);
   Vnidhogg_key_events = Qnil;
+  DEFVAR_LISP ("nidhogg-lone-modifier-events", Vnidhogg_lone_modifier_events,
+    doc: /* Modifiers whose key pressed and released alone is an event.
+A list of `alt', `control', `shift' and `super'.  A key of a modifier in
+it (Alt or Meta, Control, Shift, Super or Hyper), pressed while no other
+modifier is held and released with no other key or mouse button pressed
+between, gives the event `lone-alt' (`lone-control', `lone-shift',
+`lone-super'), which a keymap can bind like a function key.  Nil, the
+default, gives none.  */);
+  Vnidhogg_lone_modifier_events = Qnil;
   DEFVAR_LISP ("nidhogg-last-key-repeat", Vnidhogg_last_key_repeat,
     doc: /* Non-nil if the last key event read was a key repeat.
 Set as each keystroke is read: t when the keyboard repeated a held key,
@@ -5483,6 +5571,11 @@ means never.  Takes effect at the next redisplay.  */);
   DEFSYM (Qmeta, "meta");
   DEFSYM (Qsuper, "super");
   DEFSYM (Qcontrol, "control");
+  DEFSYM (Qshift, "shift");
+  DEFSYM (Qlone_alt, "lone-alt");
+  DEFSYM (Qlone_control, "lone-control");
+  DEFSYM (Qlone_shift, "lone-shift");
+  DEFSYM (Qlone_super, "lone-super");
 
   Fput (Qalt, Qmodifier_value, make_fixnum (alt_modifier));
   Fput (Qhyper, Qmodifier_value, make_fixnum (hyper_modifier));

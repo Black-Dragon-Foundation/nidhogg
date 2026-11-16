@@ -7507,6 +7507,10 @@ make_lispy_event (struct input_event *event)
 	press.arg = Qnil;
 	return list2 (Qkey_release, make_lispy_event (&press));
       }
+    case NHWL_LONE_MODIFIER_EVENT:
+      /* A keystroke of its own (a function key's way, frame switch
+	 included): `lone-alt' and its kin.  */
+      return event->arg;
 #endif
       /* The 'kind' field of the event is something we don't recognize.  */
     default:

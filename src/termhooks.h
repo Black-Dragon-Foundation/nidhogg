@@ -315,6 +315,10 @@ enum event_kind
      press gave; .modifiers and .frame_or_window are the release's.
      make_lispy_event makes it (key-release EVENT), a special event.  */
   , NHWL_KEY_RELEASE_EVENT
+  /* A modifier key was pressed and released alone, while
+     `nidhogg-lone-modifier-events' names it.  .arg is the event's
+     symbol (`lone-alt', ...), which make_lispy_event returns.  */
+  , NHWL_LONE_MODIFIER_EVENT
 #endif
   /* Either the mouse wheel has been released without it being
      clicked, or the user has lifted his finger from a touchpad.

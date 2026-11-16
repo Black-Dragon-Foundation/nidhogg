@@ -889,6 +889,42 @@ user displays takes this path, and a build without the image libraries would not
             (should (memq t seen))))
       (kill-buffer buf))))
 
+;; evdev keycodes: KEY_LEFTALT 56, KEY_F 33.
+(defun nhwl-gui--lone-read ()
+  "The keystrokes read until none came for half a second: characters and lone-modifier symbols."
+  (let (got)
+    (nhwl-gui--wait (lambda ()
+                      (let ((ev (read-event nil nil 0.1)))
+                        (when (or (integerp ev) (memq ev '(lone-alt lone-control lone-shift lone-super)))
+                          (push ev got)))
+                      nil)
+                    0.5)
+    (nreverse got)))
+
+(ert-deftest nhwl-gui/lone-modifier-events ()
+  "Alt pressed and released alone is `lone-alt' only while `nidhogg-lone-modifier-events' names `alt'; with F
+pressed between it is M-f and no `lone-alt'; a click between leaves none either."
+  (skip-unless (nhwl-gui--recorder-p))
+  (let ((buf (generate-new-buffer " *nhwl-lone*"))
+        (nidhogg-lone-modifier-events nil)
+        (alt (lambda (&rest between)
+               (gui-runner-recorder '(:cmd "key" :keycode 56 :state "press"))
+               (dolist (c between) (gui-runner-recorder c))
+               (gui-runner-recorder '(:cmd "key" :keycode 56 :state "release"))
+               (nhwl-gui--lone-read))))
+    (unwind-protect
+        (progn
+          (switch-to-buffer buf)
+          (gui-runner-recorder '(:cmd "focus" :surface "toplevel"))
+          (nhwl-gui--pump)
+          ;; off: nothing
+          (should-not (funcall alt))
+          (setq nidhogg-lone-modifier-events '(alt))
+          (should (equal (funcall alt) '(lone-alt)))
+          (should (equal (funcall alt '(:cmd "key" :keycode 33 :state "press") '(:cmd "key" :keycode 33 :state "release"))
+                         (list ?\M-f))))
+      (kill-buffer buf))))
+
 ;; Child frames (nhwlchild.c).  A child frame is a subsurface of its parent's window; the recorder's `tree'
 ;; shows each surface's role, parent, position (logical), input region and buffer.
 

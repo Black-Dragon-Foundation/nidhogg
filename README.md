@@ -1282,6 +1282,10 @@ types). Emacs reads only presses, so Nidhogg's native shell (Wayland and Naglfar
   `(key-release EVENT)`, EVENT the event its press gave (with the modifiers held at the release). Bind `key-release` in
   `special-event-map`. A release whose press gave no event (a dead key, a key pressed before the frame had the
   keyboard) gives none, and a release is no input: it neither hides the mouse highlight nor starts a frame-time record.
+- `nidhogg-lone-modifier-events`: a list of `alt`, `control`, `shift` and `super`; a key of a modifier in it (Alt or
+  Meta, Control, Shift, Super or Hyper) pressed while no other modifier is held and released with no other key or mouse
+  button pressed between is the event `lone-alt` (`lone-control`, `lone-shift`, `lone-super`), bound in a keymap like a
+  function key (VS Code's lone Alt opening the menu). Nil, the default, gives none.
 - `nidhogg-last-key-repeat`: t when the last keystroke read was the keyboard repeating a held key, nil otherwise; set
   as each keystroke is read.
 - Files: the glue keeps each held key's press (`nidhogg/glue/src/keys.rs`, `NHG_KEY_RELEASE`); `src/nhwlterm.c`
