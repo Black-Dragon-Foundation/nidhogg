@@ -227,6 +227,9 @@ dependencies = [
 [[package]]
 name = "hlidskjalf"
 version = "0.1.0"
+dependencies = [
+ "regex-lite",
+]
 
 [[package]]
 name = "image-webp"
@@ -608,6 +611,12 @@ checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "regex-lite"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53a49587ad06b26609c52e423de037e7f57f20d53535d66e08c695f347df952a"
 
 [[package]]
 name = "resvg"

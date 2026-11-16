@@ -11,6 +11,9 @@ bar's marks and folding. It keeps, for each buffer text a window shows with the 
   edits and capped (the smallest dropped first).
 - **Hidden lines:** the ranges drgnx's folds hide, so the scroll bar and minimap measure visible lines.
 - **The trail:** the last 20 visited lines.
+- **MARK sections:** with an expression (`nidhogg-lines-set-section-regexp`, Rust regex syntax), the lines that match
+  it and their names (the group `name`, else the first group, else the match), found at each build and in each edit's
+  lines, kept sorted and shifted like the marks; the minimap draws them as labels (`sections.rs`).
 
 Positions are Emacs's: 1-based characters over the whole text, narrowing ignored. Emacs feeds the model from
 `src/nidhogg-lines.c`: the change hook at every buffer-text change site (beside the edit history's), a rebuild when the
@@ -18,7 +21,8 @@ text is replaced as a whole, and the `nidhogg-lines-*` functions.
 
 ## Crate rules
 
-- Standard library only; no dependencies.
+- Standard library, and `regex-lite` (exact pin, no default features) for the MARK sections' expression, which
+  drgnx documents in Rust regex syntax; nothing else.
 - The first build of a text of 1 MB or more runs on a thread of its own, from a copy of the text; the edits made
   meanwhile are kept and replayed when it is installed. Everything else runs on the thread that holds Emacs's global
   lock.

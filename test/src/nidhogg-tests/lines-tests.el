@@ -276,4 +276,27 @@ rebuilt it.  The buffer is killed after."
     (should-not (nidhogg-lines-describe b))))
 
 (provide 'lines-tests)
+(ert-deftest lines/mark-sections-follow-edits ()
+  "With an expression (Rust regex syntax) the model finds the MARK sections, (POS . NAME) with POS the line's start,
+shifts them with an edit above and finds one typed; BEG limits them.  An expression that does not compile signals
+`invalid-regexp' and keeps the one before; nil drops them."
+  (with-temp-buffer
+    (insert "a\n;;;; One\nb\n")
+    (nidhogg-lines-enable nil t)
+    (should-not (nidhogg-lines-sections))
+    (nidhogg-lines-set-section-regexp nil "^;;;;\\s*(.+)$")
+    (should (equal (nidhogg-lines-sections) '((3 . "One"))))
+    (goto-char 1)
+    (insert "x\n")
+    (should (equal (nidhogg-lines-sections) '((5 . "One"))))
+    (goto-char (point-max))
+    (insert ";;;; Two\n")
+    (should (equal (nidhogg-lines-sections) '((5 . "One") (16 . "Two"))))
+    (should (equal (nidhogg-lines-sections nil 6) '((16 . "Two"))))
+    (should-error (nidhogg-lines-set-section-regexp nil "(") :type 'invalid-regexp)
+    (should (= (length (nidhogg-lines-sections)) 2))
+    (nidhogg-lines-set-section-regexp nil nil)
+    (should-not (nidhogg-lines-sections))
+    (nidhogg-lines-disable)))
+
 ;;; lines-tests.el ends here

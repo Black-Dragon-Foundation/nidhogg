@@ -455,3 +455,61 @@ pub unsafe extern "C" fn hlid_describe(key: u64, out: *mut HlidStats) -> i32 {
         HLID_OK
     })
 }
+
+/// KEY's MARK sections' expression: the N bytes at RE (UTF-8, Rust regex syntax), or none for a null RE.  HLID_E_ARG
+/// when it does not compile (nothing changes).  The sections are found at the next build, which the caller asks for.
+///
+/// # Safety
+/// RE must be readable for N bytes unless null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_set_sections(key: u64, re: *const u8, n: usize) -> i32 {
+    let text = if re.is_null() {
+        None
+    } else {
+        // SAFETY: the caller promises N readable bytes.
+        match std::str::from_utf8(unsafe { std::slice::from_raw_parts(re, n) }) {
+            Ok(t) => Some(t.to_owned()),
+            Err(_) => return HLID_E_ARG,
+        }
+    };
+    with(key, |m| match m.set_section_regex(text.as_deref()) {
+        Ok(()) => HLID_OK,
+        Err(_) => HLID_E_ARG,
+    })
+}
+
+/// KEY's Ith MARK section whose line starts in BEG..END: its line's start into *POS, its name into *NAME (UTF-8, valid
+/// until KEY's model next changes) and *LEN.  HLID_NOTHING past the last; the model's state while it is built.
+///
+/// # Safety
+/// POS, NAME and LEN must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_section(
+    key: u64,
+    beg: u64,
+    end: u64,
+    i: usize,
+    pos: *mut u64,
+    name: *mut *const u8,
+    len: *mut usize,
+) -> i32 {
+    if pos.is_null() || name.is_null() || len.is_null() {
+        return HLID_E_ARG;
+    }
+    with(key, |m| {
+        let st = state(m);
+        if st != HLID_OK {
+            return st;
+        }
+        match m.sections(beg, end).get(i) {
+            // SAFETY: checked non-null; the caller promises them writable.  The name lives in the model.
+            Some(s) => unsafe {
+                *pos = s.pos;
+                *name = s.name.as_ptr();
+                *len = s.name.len();
+                HLID_OK
+            },
+            None => HLID_NOTHING,
+        }
+    })
+}

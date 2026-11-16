@@ -10,8 +10,9 @@ publish = false
 [lib]
 crate-type = ["rlib"]
 
-# std only: no dependencies (README, "Crate rules")
+# std and one dependency, for the MARK sections' expression (README, "Crate rules"): an exact pin, no defaults
 [dependencies]
+regex-lite = { version = "=0.1.6", default-features = false, features = ["std", "string"] }
 
 [profile.test]
 opt-level = 1

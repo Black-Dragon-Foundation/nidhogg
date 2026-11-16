@@ -64,6 +64,11 @@ int32_t hlid_set_hidden (uint64_t key, const uint64_t *ranges, size_t n);
 int32_t hlid_trail_note (uint64_t key, uint64_t pos);
 int32_t hlid_trail (uint64_t key, uint64_t *out, size_t cap, size_t *n);
 int32_t hlid_describe (uint64_t key, hlid_stats *out);
+/* MARK sections: the expression (RE null: none), then the Ith section whose
+   line starts in BEG..END (its name valid until the model next changes).  */
+int32_t hlid_set_sections (uint64_t key, const uint8_t *re, size_t n);
+int32_t hlid_section (uint64_t key, uint64_t beg, uint64_t end, size_t i,
+		      uint64_t *pos, const uint8_t **name, size_t *len);
 
 #ifdef __cplusplus
 }

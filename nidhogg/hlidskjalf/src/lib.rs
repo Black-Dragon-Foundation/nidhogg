@@ -10,11 +10,14 @@
 
 pub mod abi;
 pub mod index;
+pub mod sections;
 
 use std::collections::VecDeque;
 use std::thread::JoinHandle;
 
 pub use index::{BLANK, Line, LineIndex};
+use regex_lite::Regex;
+pub use sections::Section;
 
 /// A mark: an owner's position (with an optional end, for a run of lines) in a lane, of a class and kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,11 +58,17 @@ struct Pending {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Stale;
 
+/// What the build thread hands back: the lines and the MARK sections found in them.
+type Built = (LineIndex, Vec<Section>);
+
 pub struct Model {
     multibyte: bool,
     tab_width: u16,
     idx: Option<LineIndex>,
-    building: Option<(JoinHandle<LineIndex>, Vec<Pending>)>,
+    building: Option<(JoinHandle<Built>, Vec<Pending>)>,
+    /// The MARK sections' expression, and the sections found with it (kept with the lines: built and edited with them).
+    section_re: Option<Regex>,
+    sections: Vec<Section>,
     stale: bool,
     marks: Vec<Mark>,
     folds: Vec<Fold>,
@@ -80,6 +89,8 @@ impl Model {
             tab_width,
             idx: None,
             building: None,
+            section_re: None,
+            sections: Vec::new(),
             stale: false,
             marks: Vec::new(),
             folds: Vec::new(),
@@ -100,10 +111,14 @@ impl Model {
         self.hidden_lines = None;
         if background {
             let text: Vec<u8> = parts.concat();
-            let (mb, tw) = (self.multibyte, self.tab_width);
-            let h =
-                std::thread::spawn(move || LineIndex::new(index::parse(&[&text], mb, tw, true)));
+            let (mb, tw, re) = (self.multibyte, self.tab_width, self.section_re.clone());
+            let h = std::thread::spawn(move || {
+                let idx = LineIndex::new(index::parse(&[&text], mb, tw, true));
+                let found = re.map_or_else(Vec::new, |re| sections::scan(&re, &text, 1, mb));
+                (idx, found)
+            });
             self.idx = None;
+            self.sections.clear();
             self.building = Some((h, Vec::new()));
         } else {
             self.building = None;
@@ -113,6 +128,10 @@ impl Model {
                 self.tab_width,
                 true,
             )));
+            self.sections = match &self.section_re {
+                Some(re) => sections::scan(re, &parts.concat(), 1, self.multibyte),
+                None => Vec::new(),
+            };
         }
     }
 
@@ -142,8 +161,9 @@ impl Model {
         let (h, log) = self.building.take().expect("building");
         self.generation += 1;
         match h.join() {
-            Ok(idx) => {
+            Ok((idx, found)) => {
                 self.idx = Some(idx);
+                self.sections = found;
                 for p in log {
                     if self
                         .edit_lines(p.start, p.old_end, p.new_end, &[&p.seg])
@@ -250,8 +270,40 @@ impl Model {
         if new_chars + old_end != old_chars + new_end {
             return Err(Stale);
         }
+        let ls = idx.start_of(l0) + 1;
         idx.replace(l0, l1 - l0 + 1, new);
+        if let Some(re) = &self.section_re {
+            sections::edit(
+                &mut self.sections,
+                re,
+                ls,
+                old_chars,
+                &seg.concat(),
+                self.multibyte,
+            );
+        }
         Ok(())
+    }
+
+    /// The MARK sections' expression (Rust regex syntax; `None`: none are looked for).  The sections are found again
+    /// when the lines are next built, which the caller asks for (the text is the host's).  An expression that does not
+    /// compile changes nothing.
+    pub fn set_section_regex(&mut self, re: Option<&str>) -> Result<(), String> {
+        self.section_re = match re {
+            Some(r) => Some(Regex::new(r).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        self.sections.clear();
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// The MARK sections whose line starts at BEG or after and before END, in order (none while the lines are built).
+    pub fn sections(&mut self, beg: u64, end: u64) -> &[Section] {
+        self.poll(false);
+        let a = self.sections.partition_point(|s| s.pos < beg);
+        let b = self.sections.partition_point(|s| s.pos < end).max(a);
+        &self.sections[a..b]
     }
 
     /// The 0-based line of position POS.

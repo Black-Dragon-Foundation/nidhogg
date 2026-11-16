@@ -37,6 +37,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "lisp.h"
 #include "buffer.h"
+#include "coding.h"
 #include "nidhogg-history.h"
 
 #include <hlidskjalf.h>
@@ -528,6 +529,58 @@ DEFUN ("nidhogg-lines-trail", Fnidhogg_lines_trail, Snidhogg_lines_trail,
   return out;
 }
 
+DEFUN ("nidhogg-lines-set-section-regexp", Fnidhogg_lines_set_section_regexp,
+       Snidhogg_lines_set_section_regexp, 2, 2, 0,
+       doc: /* Find MARK sections in BUFFER's text with REGEXP, nil for none.
+REGEXP is in Rust's regex syntax, not Emacs's, matched against each line
+(the minimap draws a section's name: the group named `name', else the
+first group, else the whole match, trimmed).  The model's lines are
+built again to find them, and kept with every edit after.  BUFFER's text
+must have a model (`nidhogg-lines-enable').  Signals `invalid-regexp'
+when REGEXP does not compile; the expression before it stays.  */)
+  (Lisp_Object buffer, Lisp_Object regexp)
+{
+  struct buffer *b = nh_lines_buffer (buffer);
+  struct nh_lines_text *t = nh_lines_find (b->text);
+  if (!t)
+    error ("No line model for this buffer (nidhogg-lines-enable)");
+  Lisp_Object re = Qnil;
+  if (!NILP (regexp))
+    {
+      CHECK_STRING (regexp);
+      re = ENCODE_UTF_8 (regexp);
+    }
+  if (hlid_set_sections (nh_lines_key (b->text),
+			 NILP (re) ? NULL : SDATA (re),
+			 NILP (re) ? 0 : SBYTES (re)) != HLID_OK)
+    xsignal1 (Qinvalid_regexp, regexp);
+  nh_lines_build (b, t, true);
+  return Qnil;
+}
+
+DEFUN ("nidhogg-lines-sections", Fnidhogg_lines_sections,
+       Snidhogg_lines_sections, 0, 3, 0,
+       doc: /* The MARK sections of BUFFER's text, as (POS . NAME) in order.
+POS is the start of the section's line; only lines starting in BEG..END
+count, by default the whole text.  nil while the lines are being built or
+with no expression (`nidhogg-lines-set-section-regexp').  */)
+  (Lisp_Object buffer, Lisp_Object beg, Lisp_Object end)
+{
+  uint64_t key = nh_lines_key_of (buffer);
+  uint64_t b = NILP (beg) ? 0 : nh_lines_pos (beg);
+  uint64_t e = NILP (end) ? UINT64_MAX : nh_lines_pos (end);
+  Lisp_Object out = Qnil;
+  uint64_t pos;
+  const uint8_t *name;
+  size_t len;
+  for (size_t i = 0;
+       hlid_section (key, b, e, i, &pos, &name, &len) == HLID_OK; i++)
+    out = Fcons (Fcons (make_uint (pos),
+			make_string_from_utf8 ((const char *) name, len)),
+		 out);
+  return Fnreverse (out);
+}
+
 DEFUN ("nidhogg-lines-describe", Fnidhogg_lines_describe,
        Snidhogg_lines_describe, 0, 1, 0,
        doc: /* The line model of BUFFER's text as a plist, or nil when it has none.
@@ -580,6 +633,8 @@ nil builds every model at once, on the main thread.  */);
   defsubr (&Snidhogg_lines_set_hidden);
   defsubr (&Snidhogg_lines_trail_note);
   defsubr (&Snidhogg_lines_trail);
+  defsubr (&Snidhogg_lines_set_section_regexp);
+  defsubr (&Snidhogg_lines_sections);
   defsubr (&Snidhogg_lines_describe);
   Fprovide (intern_c_string ("nidhogg-lines"), Qnil);
 }

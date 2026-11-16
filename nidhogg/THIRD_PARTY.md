@@ -69,3 +69,7 @@ which `cargo deny` checks): `resvg` 0.45.1 and `usvg` 0.45.1, with `arrayref` 0.
 0.15.3, `tiny-skia` 0.11.4, `tiny-skia-path` 0.11.4, `tinyvec` 1.13.3, `ttf-parser` 0.25.1, `unicode-bidi` 0.3.18,
 `unicode-bidi-mirroring` 0.4.0, `unicode-ccc` 0.4.0, `unicode-properties` 0.1.5, `unicode-script` 0.5.9, `unicode-vo`
 0.1.0, `version_check` 0.9.5 and `xmlwriter` 0.1.0.
+
+Crate locked for the line model's MARK sections (`nidhogg/hlidskjalf`, carried by the glitnir crate into the glue's
+and the shell's builds; `Cargo.lock` of each; fetched from crates.io, vendored unmodified in the release's vendor
+tarball; MIT OR Apache-2.0, accepted by `deny.toml`): `regex-lite` 0.1.6, no default features but `std` and `string`.
