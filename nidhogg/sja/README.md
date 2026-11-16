@@ -116,6 +116,7 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_HUB_LOST` | | nil |
 | `SJA_STATS` | | views, instances, bytes, panics, broken views |
 | `SJA_PUSH` | a whole `view-model` line | `(VIEW VERSION DECISION)`: 0 queue, 1 reset, 2 drop, 3 resync, 4 none (no instance of the view); nil when the line is not a `view-model` |
+|  | a `view-model` line whose data holds `minimap` (a file's hub layer: `labels`, `folds`, `heat:SOURCE` or `density`, its version and items; null items remove it) | nil: kept by file (`minimap.rs`), the newest version per layer, at most 64 files; a malformed layer is `SJA_E_ARG` and changes nothing |
 |  | a `view-model` line whose data holds `rows` | `(VIEW VERSION DECISION CLASS)`: 0 apply, 1 drop, 2 hold, 3 resync, 4 quiet (a resync outstanding), 5 broken, 6 paused; nil when no instance holds rows |
 | `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status (0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken), the stream's newest version or nil |
 | `SJA_NAMED` | view, version | nil: a row patch named that model version |
@@ -123,6 +124,7 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_ROWS` | handle, verb, int or nil, string or nil | the view's row store: `on`, `idprop`, `draw` (the edits, see Rows), `drawn`, `epoch`, `place`, `pos`, `span`, `prop`, `spans`, `dimruns`, `pause`, `redraw`, `refresh`, `forget`, `state` (`nidhogg-view-rows` says each) |
 | `SJA_BAR` | a bar's spec (a line of integers: the room, the pads, the separators, the ellipsis and each segment's drop rank and width, the cuttable one's character widths) | `(LEFT RIGHT CUT RIGHT-WIDTH)`: the segments that fit and where the cuttable one is cut (`bar.rs`, `nidhogg-view-bar`); a version 2 spec ends with a centred segment (its width, gap and the room assumed on the right) and the answer with `(KEPT BEFORE AFTER)`, its gaps (a title row's search box); no view, no state |
 | `SJA_PICK` | `"load"` and a list's text (a `KIND RECENT LABEL` line per candidate); `"top"`, handle, input, N; `"close"`, handle | a local list (`pick.rs`, `nidhogg-view-pick`, the palette): `load` answers a handle (at most 16 kept, the oldest goes), `top` the indices of the first N candidates for the input (filtered, scored, sorted, grouped here), `close` nil |
+| `SJA_MINIMAP` | `"layers"`, file; `"get"`, file, layer; `"forget"`, file | the minimap's hub layers (`minimap.rs`, `nidhogg-view-minimap`): `layers` answers `((NAME . VERSION) …)`, `get` `(VERSION COUNT)` or nil, `forget` nil; the line model and the minimap layer read them in Rust (`sja::minimap::with_layer`) |
 
 Codes: `SJA_E_ARG` (an unknown op, handle, tag or type, bad UTF-8), `SJA_E_NOMEM` (too little stack), `SJA_E_STATE`
 (the table was held), `SJA_E_PANIC`.

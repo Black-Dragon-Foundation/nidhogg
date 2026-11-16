@@ -369,6 +369,21 @@ command first, then the other, then the file; a closed list is refused."
     (nidhogg-view-pick 'close h)
     (should-error (nidhogg-view-pick 'top h "" 1) :type 'args-out-of-range)))
 
+(ert-deftest sja/a-minimap-layer-is-kept-by-file ()
+  "A hub's minimap layer pushed as a `view-model' line is kept by file,
+the newer version winning, an older one dropped; `forget' drops the
+file's layers."
+  (let ((line (lambda (v items)
+                (format "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"/t/m.el\",\"layer\":\"folds\",\"version\":%d,\"items\":%s}}}"
+                        v items))))
+    (should-not (nidhogg-view-push (funcall line 2 "[[1,9,\"block\"],[3,4,\"block\"]]")))
+    (should (equal (nidhogg-view-minimap 'get "/t/m.el" "folds") '(2 2)))
+    (nidhogg-view-push (funcall line 1 "[[1,2,\"block\"]]"))
+    (should (equal (nidhogg-view-minimap 'get "/t/m.el" "folds") '(2 2)))
+    (should (equal (nidhogg-view-minimap 'layers "/t/m.el") '(("folds" . 2))))
+    (nidhogg-view-minimap 'forget "/t/m.el")
+    (should-not (nidhogg-view-minimap 'layers "/t/m.el"))))
+
 (provide 'sja-tests)
 
 ;;; sja-tests.el ends here

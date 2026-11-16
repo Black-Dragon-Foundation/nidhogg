@@ -624,3 +624,62 @@ fn a_bar_is_laid_out_through_the_c_door() {
         ])
     );
 }
+
+/// The minimap's hub layers as the hub writes them (`tests/fixtures/minimap-push.json`, written by drgnx's
+/// `view::minimap` test of the same name) reach Sjá on the model's push and are kept by file: the newest version of
+/// each layer, an older one dropped, a removal taking its layer; a malformed layer is refused and changes nothing.
+#[test]
+fn the_hub_layer_lines_are_kept_by_file() {
+    let _g = lock();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/minimap-push.json")).unwrap();
+    let file = fixture["file"].as_str().unwrap();
+    for l in fixture["lines"].as_array().unwrap() {
+        assert_eq!(ok(SJA_PUSH, &[text(l.as_str().unwrap())]), Ans::Nil, "{l}");
+    }
+    let i = |n: i64| Ans::Int(n);
+    let get = |layer: &str| ok(SJA_MINIMAP, &[text("get"), text(file), text(layer)]);
+    assert_eq!(
+        get("labels"),
+        Ans::List(vec![i(2), i(1)]),
+        "the newer labels"
+    );
+    assert_eq!(
+        get("folds"),
+        Ans::List(vec![i(1), i(2)]),
+        "an older folds layer dropped"
+    );
+    assert_eq!(get("density"), Ans::List(vec![i(1), i(2)]));
+    assert_eq!(get("heat:blame"), Ans::Nil, "removed");
+    let pair = |n: &str, v: i64| Ans::Dotted(vec![Ans::Str(n.into()), i(v)]);
+    assert_eq!(
+        ok(SJA_MINIMAP, &[text("layers"), text(file)]),
+        Ans::List(vec![
+            pair("density", 1),
+            pair("folds", 1),
+            pair("labels", 2)
+        ])
+    );
+    // the Rust side the layer and the line model read
+    assert_eq!(
+        sja::minimap::with_layer(file, "folds", |_, d| d.clone()),
+        Some(sja::minimap::Data::Folds(vec![
+            (3, 20, "block".into()),
+            (5, 9, "comment".into())
+        ]))
+    );
+    // a late heat layer older than its removal stays out
+    let late = r#"{"event":"view-model","data":{"minimap":{"file":"/r/a.rs","layer":"heat:blame","version":2,"items":[[1,2,5]]}}}"#;
+    assert_eq!(ok(SJA_PUSH, &[text(late)]), Ans::Nil);
+    assert_eq!(get("heat:blame"), Ans::Nil);
+    // malformed: refused, nothing changes
+    let bad = r#"{"event":"view-model","data":{"minimap":{"file":"/r/a.rs","layer":"folds","version":9,"items":[[1,"x"]]}}}"#;
+    assert_eq!(call_for_test(SJA_PUSH, &[text(bad)]).err(), Some(SJA_E_ARG));
+    assert_eq!(get("folds"), Ans::List(vec![i(1), i(2)]));
+    // forget: gone
+    assert_eq!(ok(SJA_MINIMAP, &[text("forget"), text(file)]), Ans::Nil);
+    assert_eq!(
+        ok(SJA_MINIMAP, &[text("layers"), text(file)]),
+        Ans::List(vec![])
+    );
+}

@@ -13,6 +13,7 @@ pub mod apply;
 pub mod bar;
 pub mod class;
 pub mod guard;
+pub mod minimap;
 pub mod model;
 pub mod names;
 pub mod pick;

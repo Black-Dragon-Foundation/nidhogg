@@ -48,6 +48,9 @@ pub const SJA_ROWS: i32 = 15;
 pub const SJA_BAR: i32 = 16;
 /// A local list (`pick.rs`): `("load" TEXT)` → handle, `("top" H INPUT N)` → indices, `("close" H)`.
 pub const SJA_PICK: i32 = 17;
+/// The minimap's hub layers (`minimap.rs`): `("layers" FILE)` → `((NAME . VERSION) ...)`, `("get" FILE LAYER)` →
+/// `(VERSION COUNT)` or nil, `("forget" FILE)` → nil.
+pub const SJA_MINIMAP: i32 = 18;
 /// Feature `test-hooks` only: panic inside the named view's guard.
 pub const SJA_TEST_PANIC: i32 = 99;
 
@@ -799,12 +802,46 @@ fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
                 _ => Err(Refused::Arg),
             }
         }
+        SJA_MINIMAP => {
+            use crate::minimap;
+            let file = arg(args, 1).str()?;
+            match arg(args, 0).str()? {
+                "layers" => Ok(Ans::List(
+                    minimap::layers(file)
+                        .into_iter()
+                        .map(|(n, v)| {
+                            Ans::Dotted(vec![
+                                Ans::Str(n),
+                                Ans::Int(i64::try_from(v).unwrap_or(i64::MAX)),
+                            ])
+                        })
+                        .collect(),
+                )),
+                "get" => Ok(minimap::with_layer(file, arg(args, 2).str()?, |v, d| {
+                    Ans::List(vec![
+                        Ans::Int(i64::try_from(v).unwrap_or(i64::MAX)),
+                        Ans::Int(d.len() as i64),
+                    ])
+                })
+                .unwrap_or(Ans::Nil)),
+                "forget" => {
+                    minimap::forget(file);
+                    Ok(Ans::Nil)
+                }
+                _ => Err(Refused::Arg),
+            }
+        }
         SJA_PUSH => {
             let line = arg(args, 0).str()?;
             // a model line (typed first), else a rows line, else a model line through `Value` (its errors stand)
             let read = match crate::queue::read_line_typed(line) {
                 Some((e, ops)) => Some((e, Ok(ops))),
                 None => {
+                    // a minimap layer: kept by file, answered nil (no view's model changed)
+                    if let Some(p) = crate::minimap::read_line(line) {
+                        crate::minimap::push(p.map_err(|()| Refused::Arg)?);
+                        return Ok(Ans::Nil);
+                    }
                     if let Some((view, class, patch)) = crate::rows::read_line(line) {
                         return push_rows(&view, class.as_deref(), patch);
                     }

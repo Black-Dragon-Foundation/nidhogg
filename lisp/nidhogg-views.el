@@ -36,7 +36,8 @@
   (defconst nidhogg-view--ops
     '((open . 2) (close . 3) (follow . 4) (walk . 5) (walk-to . 6)
       (set . 7) (get . 8) (hub-lost . 9) (stats . 10) (push . 11) (drain . 12)
-      (named . 13) (due . 14) (rows . 15) (bar . 16) (pick . 17) (test-panic . 99))
+      (named . 13) (due . 14) (rows . 15) (bar . 16) (pick . 17) (minimap . 18)
+      (test-panic . 99))
     "Sjá's op numbers (nidhogg/sja/include/sja.h)."))
 
 (defvar nidhogg-view-more nil
@@ -66,7 +67,9 @@ VIEW's row store (`nidhogg-view-rows'): the answer is (VIEW VERSION
 DECISION CLASS), DECISION `apply', `drop', `hold' (an older env epoch:
 held for a reset), `resync' (ask the hub for a reset), `quiet' (a resync
 is outstanding), `broken' or `paused'; nil when no instance of VIEW
-holds rows."
+holds rows.
+A line whose data holds `minimap' (a file's hub layer for the minimap)
+is kept by file (`nidhogg-view-minimap'); the answer is nil."
   (nidhogg-view--pushed (nidhogg-view--call (nidhogg-view--op push) line)))
 
 (defconst nidhogg-view--row-decisions [apply drop hold resync quiet broken paused]
@@ -228,6 +231,14 @@ answer is the indices of the first C candidates whose label holds every
 word of B, best first, in the groups Commands, Files, Agents.  `close':
 A the handle.  At most 16 lists are kept; the oldest goes first."
   (nidhogg-view--call (nidhogg-view--op pick) (symbol-name what) a b c))
+
+(defsubst nidhogg-view-minimap (what file &optional layer)
+  "The minimap's hub layers of FILE that Sjá keeps (labels, folds, heat,
+density), pushed by the hub on the model's raw path.  WHAT is `layers',
+`get' or `forget'.  `layers': the answer is ((NAME . VERSION) ...).
+`get': LAYER's (VERSION COUNT), or nil when FILE has no such layer.
+`forget': drop FILE's layers (its last buffer was killed)."
+  (nidhogg-view--call (nidhogg-view--op minimap) (symbol-name what) file layer))
 
 (defsubst nidhogg-view-hub-lost ()
   "The hub connection went: every view is stale; keys keep working."

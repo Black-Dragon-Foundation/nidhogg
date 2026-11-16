@@ -1,0 +1,12 @@
+{
+  "file": "/r/a.rs",
+  "lines": [
+    "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"/r/a.rs\",\"layer\":\"labels\",\"version\":1,\"items\":[[3,\"function\",\"main\"],[40,\"mark\",\"Parsing\"]]}}}",
+    "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"/r/a.rs\",\"layer\":\"folds\",\"version\":1,\"items\":[[3,20,\"block\"],[5,9,\"comment\"]]}}}",
+    "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"/r/a.rs\",\"layer\":\"heat:blame\",\"version\":1,\"items\":[[1,10,1000],[11,30,250]]}}}",
+    "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"/r/a.rs\",\"layer\":\"density\",\"version\":1,\"items\":{\"buckets\":[[4096,2,1],[4100,0,0]],\"total\":8}}}}",
+    "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"/r/a.rs\",\"layer\":\"labels\",\"version\":2,\"items\":[[4,\"function\",\"main\"]]}}}",
+    "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"/r/a.rs\",\"layer\":\"folds\",\"version\":0,\"items\":[[1,2,\"block\"]]}}}",
+    "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"/r/a.rs\",\"layer\":\"heat:blame\",\"version\":3,\"items\":null}}}"
+  ]
+}
