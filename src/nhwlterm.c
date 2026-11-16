@@ -1560,6 +1560,33 @@ nhwl_hide_hourglass (struct frame *f)
 {
 }
 
+/* DIAGNOSTIC (dropped before the tag): with NHWL_CURSOR_TRACE set, each
+   shape request goes to stderr with its frame, shape, the mouse
+   highlight's point and the caller (as an offset from
+   nhwl_define_frame_cursor, for addr2line): the first 300, then every
+   1000th.  */
+static void
+nhwl_cursor_trace (struct frame *f, Emacs_Cursor cursor, void *caller)
+{
+  static int on = -1;
+  static uintmax_t n;
+  if (on < 0)
+    on = getenv ("NHWL_CURSOR_TRACE") != NULL;
+  if (!on || (++n > 300 && n % 1000))
+    return;
+  Mouse_HLInfo *hl = MOUSE_HL_INFO (f);
+  struct timespec t = current_timespec ();
+  fprintf (stderr,
+	   "nhwl-cursor %ju %jd.%06ld frame %p %s shape %d at %d,%d"
+	   " lit %d redisplaying %d caller %+td\n",
+	   n, (intmax_t) t.tv_sec, t.tv_nsec / 1000, (void *) f,
+	   STRINGP (f->name) ? SSDATA (f->name) : "?",
+	   (int) ((intptr_t) cursor - 1), hl->mouse_face_mouse_x,
+	   hl->mouse_face_mouse_y, !NILP (hl->mouse_face_window),
+	   redisplaying_p,
+	   (char *) caller - (char *) (void *) nhwl_cursor_trace);
+}
+
 /* Adapted from pgtk_define_frame_cursor.  */
 static void
 nhwl_define_frame_cursor (struct frame *f, Emacs_Cursor cursor)
@@ -1569,6 +1596,7 @@ nhwl_define_frame_cursor (struct frame *f, Emacs_Cursor cursor)
   if (!f->pointer_invisible && out->current_cursor != cursor && out->window
       && cursor)
     {
+      nhwl_cursor_trace (f, cursor, __builtin_return_address (0));
       block_input ();
       NHG (nhg_window_set_cursor (FRAME_NHG (f), out->window,
 				  (uint32_t) ((intptr_t) cursor - 1)));
@@ -2034,6 +2062,7 @@ nhwl_title_bar_action (struct frame *f, const NhgAction *a)
       /* The border's shape there; the event goes no further.  */
       if (out->current_cursor != nhwl_cursor_for_shape (a->code))
 	{
+	  nhwl_cursor_trace (f, nhwl_cursor_for_shape (a->code), NULL);
 	  NHG (nhg_window_set_cursor (FRAME_NHG (f), out->window, a->code));
 	  out->current_cursor = nhwl_cursor_for_shape (a->code);
 	}
