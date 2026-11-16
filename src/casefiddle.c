@@ -558,7 +558,7 @@ casify_region (enum case_action flag, Lisp_Object b, Lisp_Object e)
 #ifdef HAVE_NIDHOGG_HISTORY
   ptrdiff_t nh_start = start, nh_start_byte = 0, nh_old_end_byte = 0;
   ptrdiff_t nh_z_byte = Z_BYTE;
-  if (nh_history_ntracked)
+  if (nh_history_ntracked || nh_lines_ntracked)
     {
       nh_start_byte = CHAR_TO_BYTE (start);
       nh_old_end_byte = CHAR_TO_BYTE (end);

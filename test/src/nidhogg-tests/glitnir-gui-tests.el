@@ -790,6 +790,42 @@ strip's top half in its lane, and nothing below."
       (set-window-fringes w nil nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/the-ruler-measures-visible-lines ()
+  "With a line model (`nidhogg-lines-enable') the strip measures visible lines: lines 2 to 899 of 1,000 folded away,
+a mark on line 950 sits half way down the strip (52 of 102 visible lines), not near its foot as its character
+fraction would put it."
+  (glitnir-gui--skip-unless-tree "nhmac-ruler-hides-when-the-text-fits")
+  (skip-unless (fboundp 'nidhogg-lines-enable))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-lines*" 1000)) (w (selected-window)))
+    (unwind-protect
+        (let* ((line (lambda (n) (with-current-buffer buf
+                                   (save-excursion (goto-char 1) (forward-line n) (point)))))
+               (beg (1- (funcall line 1))) (end (1- (funcall line 899)))
+               (ov (with-current-buffer buf (make-overlay beg end))))
+          (overlay-put ov 'invisible t)
+          (nidhogg-lines-enable buf t)
+          (nidhogg-lines-set-hidden buf (list (cons beg end)))
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (set-window-parameter w 'glitnir-ruler
+                                `(:width 12 :right 2 :height 2
+                                         :marks ((,(funcall line 949) 0 4 ("#ff0000" . 1)))))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,_ ,_ ,right ,_) (window-pixel-edges w))
+                       (`(,_ ,ty ,_ ,ty1) (window-inside-pixel-edges w))
+                       (h (- ty1 ty))
+                       (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2))
+                       (y (cl-loop for y from ty below ty1
+                                   when (equal (glitnir-gui--pixel snap (list (+ (- x1 12) 2) y)) '(255 0 0))
+                                   return (- y ty))))
+            (should y)
+            (should (< (* 0.4 h) y (* 0.6 h)))))
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
 (ert-deftest glitnir-gui/the-ruler-maps-a-view-span ()
   "`:span (500 100 1000)': the buffer holds rows 500 to 600 of a view of 1,000, so a window at the buffer's top shows
 the thumb half way down the strip, not at its top; and with `:hide-short' the strip still shows, the view having

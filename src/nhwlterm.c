@@ -65,6 +65,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "font.h"
 #include "process.h"
 #include "pdumper.h"
+#include "nidhogg-history.h"
 
 /* Chain of existing displays */
 struct nhwl_display_info *x_display_list;
@@ -945,6 +946,22 @@ enum { NHWL_RULER_HIDE_SHORT = 1 };
    header above then MARK..., each MARK [POS X0 X1 RGB OPACITY HEIGHT
    RADIUS END] (HEIGHT 0: the header's; END nil or a position the mark
    runs down to), as glitnir--ruler-vector makes it.  */
+/* The fraction of B's accessible part BEGV..BEGV+SPAN that POS stands
+   at: by visible lines when B's text has a line model (Hlidskjalf; folded
+   lines left out, so a mark keeps its place when the strip becomes the
+   minimap), else by characters.  */
+static double
+nhwl_ruler_frac (struct buffer *b, ptrdiff_t begv, ptrdiff_t span,
+		 ptrdiff_t pos)
+{
+#ifdef HAVE_NIDHOGG_HISTORY
+  double f;
+  if (nh_lines_ntracked && nh_lines_fraction (b, pos, &f))
+    return f;
+#endif
+  return (double) (clip_to_bounds (begv, pos, begv + span) - begv) / span;
+}
+
 static void
 nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 {
@@ -970,9 +987,9 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
   if (spanned)
     from = min (from, total), length = min (length, total - from);
   /* The fraction of the whole a position stands at: of the buffer's
-     characters, or of the view's rows through the rows held.  */
-#define NHWL_RULER_FRAC(pos)						\
-  ((double) (clip_to_bounds (begv, pos, begv + span) - begv) / span)
+     visible lines or characters, or of the view's rows through the rows
+     held.  */
+#define NHWL_RULER_FRAC(pos) nhwl_ruler_frac (b, begv, span, pos)
 #define NHWL_RULER_Y(pos)						\
   (top + (int) ((spanned							\
 		 ? (from + NHWL_RULER_FRAC (pos) * length) / total	\

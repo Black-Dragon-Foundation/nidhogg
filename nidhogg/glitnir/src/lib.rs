@@ -42,6 +42,11 @@ pub mod testclock;
 pub use sja;
 pub use sja::abi::sja_call;
 
+/// Hlidskjalf, the line model (the `hlidskjalf` crate): carried here so that this archive holds its entry points
+/// (Emacs's nidhogg-lines.c calls them), and the glue's archive through its `pub use glitnir::*`.
+pub use hlidskjalf;
+pub use hlidskjalf::abi::hlid_build;
+
 /// The library's global state, behind one lock, used from the host's main thread only.
 #[derive(Debug, Default)]
 pub(crate) struct State {

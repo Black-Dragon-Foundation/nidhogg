@@ -2539,6 +2539,7 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 #endif
 #ifdef HAVE_NIDHOGG_HISTORY
       syms_of_nidhogg_history ();
+      syms_of_nidhogg_lines ();
 #endif
       syms_of_pdumper ();
       syms_of_json ();

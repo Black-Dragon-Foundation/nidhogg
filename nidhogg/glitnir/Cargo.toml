@@ -19,6 +19,8 @@ image-webp = { version = "=0.2.4", default-features = false, optional = true }
 # Sjá, the native view model (README "Sjá"): carried here so every Rust-carrying build (NS's libglitnir.a, the glue's
 # libnhglue.a) has its entry point
 sja = { path = "../sja", version = "0.1.0" }
+# Hlidskjalf, the line model (README "Hlidskjalf"): carried here for the same reason; Emacs's nidhogg-lines.c calls it
+hlidskjalf = { path = "../hlidskjalf", version = "0.1.0" }
 
 [features]
 default = ["images"]

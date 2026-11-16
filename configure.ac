@@ -4094,8 +4094,11 @@ if test "${with_glitnir}" = yes; then
   dnl Sjá (the native view model) is a crate Glitnir carries: its sources rebuild the library, its header is sja.h.
   sja_dir=`cd "$srcdir/nidhogg/sja" && pwd` ||
     AC_MSG_ERROR([nidhogg/sja is missing])
-  GLITNIR_CRATE_DEPS="$sja_dir"
-  GLITNIR_CRATE_INCLUDE="-I$sja_dir/include"
+  dnl Hlidskjalf (the line model) likewise: its header is hlidskjalf.h.
+  hlid_dir=`cd "$srcdir/nidhogg/hlidskjalf" && pwd` ||
+    AC_MSG_ERROR([nidhogg/hlidskjalf is missing])
+  GLITNIR_CRATE_DEPS="$sja_dir $hlid_dir"
+  GLITNIR_CRATE_INCLUDE="-I$sja_dir/include -I$hlid_dir/include"
   dnl Nidhogg's own Wayland shell: the glue's libnhglue.a replaces libglitnir.a (it carries the shell and every
   dnl glitnir_* symbol; two Rust static libraries in one binary would collide on std's symbols).  GLITNIR_CRATE_DEPS
   dnl lists the crates whose sources rebuild it.
@@ -4113,8 +4116,8 @@ if test "${with_glitnir}" = yes; then
       AC_MSG_ERROR([nidhogg/shell is missing])
     GLITNIR_SRCDIR=`cd "$srcdir/nidhogg/glue" && pwd` ||
       AC_MSG_ERROR([nidhogg/glue is missing])
-    GLITNIR_CRATE_DEPS="$GLITNIR_SRCDIR $nhwl_shell_dir `cd "$srcdir/nidhogg/glitnir" && pwd` $sja_dir"
-    GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include -I$sja_dir/include"
+    GLITNIR_CRATE_DEPS="$GLITNIR_SRCDIR $nhwl_shell_dir `cd "$srcdir/nidhogg/glitnir" && pwd` $sja_dir $hlid_dir"
+    GLITNIR_CRATE_INCLUDE="-I`cd "$srcdir/nidhogg/glitnir" && pwd`/include -I$sja_dir/include -I$hlid_dir/include"
     NHWL_OBJ="nhwlterm.o nhwlfns.o nhwldraw.o glitnir-decor.o"
     dnl macOS: the glue with the AppKit backend instead of the Wayland one (its frameworks come back in
     dnl native-static-libs); Glitnir's chrome is Core Animation layers, not Cairo tiles
@@ -7979,7 +7982,8 @@ case $with_nidhogg_history in
   yes)
     test "$HAVE_GLITNIR" = yes ||
       AC_MSG_ERROR([--with-nidhogg-history needs Glitnir (--with-glitnir), which holds its change rings])
-    NIDHOGG_HISTORY_OBJ="nidhogg-history.o"
+    dnl the line model (nidhogg-lines.c, Hlidskjalf) shares the hook's change sites
+    NIDHOGG_HISTORY_OBJ="nidhogg-history.o nidhogg-lines.o"
     AC_DEFINE([HAVE_NIDHOGG_HISTORY], [1], [Define to 1 to build the edit history's change hook.])
     ;;
   no) ;;

@@ -53,6 +53,18 @@ extern void nh_history_forget (struct buffer *b);
 
 extern void syms_of_nidhogg_history (void);
 
+/* The line model's side of the same sites (nidhogg-lines.c): the texts
+   with a model, and their change, resync and forget calls.  */
+extern int nh_lines_ntracked;
+extern void nh_lines_change (struct buffer *b,
+			     ptrdiff_t start, ptrdiff_t start_byte,
+			     ptrdiff_t old_end, ptrdiff_t old_end_byte,
+			     ptrdiff_t new_end, ptrdiff_t new_end_byte);
+extern void nh_lines_resync (struct buffer *b);
+extern void nh_lines_forget (struct buffer *b);
+extern bool nh_lines_fraction (struct buffer *b, ptrdiff_t pos, double *out);
+extern void syms_of_nidhogg_lines (void);
+
 /* The guard at the sites.  The positions are evaluated only when a
    text is tracked.  */
 #define NH_HISTORY_CHANGE(b, start, start_byte, old_end, old_end_byte,	\
@@ -61,18 +73,25 @@ extern void syms_of_nidhogg_history (void);
     if (nh_history_ntracked)						\
       nh_history_change (b, start, start_byte, old_end, old_end_byte,	\
 			 new_end, new_end_byte);			\
+    if (nh_lines_ntracked)						\
+      nh_lines_change (b, start, start_byte, old_end, old_end_byte,	\
+		       new_end, new_end_byte);				\
   } while (false)
 
 #define NH_HISTORY_RESYNC(b)			\
   do {						\
     if (nh_history_ntracked)			\
       nh_history_resync (b);			\
+    if (nh_lines_ntracked)			\
+      nh_lines_resync (b);			\
   } while (false)
 
 #define NH_HISTORY_FORGET(b)			\
   do {						\
     if (nh_history_ntracked)			\
       nh_history_forget (b);			\
+    if (nh_lines_ntracked)			\
+      nh_lines_forget (b);			\
   } while (false)
 
 #endif /* HAVE_NIDHOGG_HISTORY */

@@ -5,7 +5,8 @@
 #    denylist is built from the build tree each time.  Calls through function pointers are invisible here; there are
 #    none, because C passes no callbacks to the glue (a header rule).
 # (1b. Sjá's sja_call is defined in the archive; src/nidhogg-views.c calls it directly, outside NHG: it runs inside a
-#  DEFUN, never while waiting for input, so no signal handler's longjmp can cross it, and Sjá's guard checks headroom.)
+#  DEFUN, never while waiting for input, so no signal handler's longjmp can cross it, and Sjá's guard checks headroom.
+#  Hlidskjalf's hlid_* likewise: src/nidhogg-lines.c calls them from DEFUNs, the change sites and redisplay.)
 # 2. Every glue call in src/nhwl*.c and src/nhmac*.c goes through the NHG (…) macro (it clears waiting_for_input, so no
 #    longjmp crosses a Rust frame): a line with an `nhg_name (` call and no `NHG (` is reported.  A warning until the
 #    macro exists.

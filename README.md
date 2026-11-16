@@ -1230,6 +1230,34 @@ needs each change to a buffer's text, wherever it comes from: `after-change-func
   drained changes onto the text the buffer had when it was tracked and compares with the buffer; they skip on a build
   without the flag. The rings' own tests are Glitnir's (`history::tests`, `nidhogg/glitnir/check.sh`).
 
+## Line model (Hlidskjalf)
+
+drgnx's scroll bar, minimap and folding need a buffer's lines, marks and folds without Lisp per change or per frame:
+thousands of Lisp markers would slow every insertion, and a line number from Lisp costs a scan. The crate
+`nidhogg/hlidskjalf` keeps them in Rust (`nidhogg/hlidskjalf/README.md`), fed from the edit history's change sites.
+
+- Build: part of `--with-nidhogg-history` (the same sites; `src/nidhogg-lines.c` is built with `nidhogg-history.c`).
+  Glitnir carries the crate, so `libglitnir.a` and `libnhglue.a` hold its `hlid_*` entry points (`hlidskjalf.h`).
+- **Feeding it.** `NH_HISTORY_CHANGE` also calls `nh_lines_change` while any text has a model: it sends the new text of
+  the whole lines the change touched (from the start of the change's first line to the end of its last). The table
+  keeps Z and Z_BYTE like the history's; a change whose sizes do not add up, or one the model cannot apply, builds the
+  lines again from the text, as `buffer-swap-text` and `set-buffer-multibyte` do. Keyed by the text, so an indirect
+  buffer shares its base's model. A text of `nidhogg-lines-sync-limit` bytes (1 MiB) or more is built on a thread of
+  its own from a copy; edits made meanwhile are kept and replayed.
+- **The scroll bar** (the `glitnir-ruler` strip) measures visible lines when the window's text has a model: lines
+  hidden with `nidhogg-lines-set-hidden` do not count, so a mark keeps its place when the strip widens into the
+  minimap. Without a model it measures characters, as before.
+- Lisp: `(nidhogg-lines-enable &optional BUFFER WAIT)`, `nidhogg-lines-disable`; `nidhogg-lines-line`,
+  `nidhogg-lines-line-start`, `nidhogg-lines-fraction`; marks by kind (0–63): `nidhogg-lines-set-marks`,
+  `nidhogg-lines-next-mark`, `nidhogg-lines-counts`; folds by source: `nidhogg-lines-set-folds`, `nidhogg-lines-folds`,
+  `nidhogg-lines-fold-at`; `nidhogg-lines-set-hidden`; `nidhogg-lines-trail-note`, `nidhogg-lines-trail`;
+  `nidhogg-lines-describe` → `(:lines :chars :chunks :marks :folds :hidden :bytes :edits :state :rebuilds)`. The feature
+  is `nidhogg-lines`.
+- Tests: `test/src/nidhogg-tests/lines-tests.el` (det; in `check-subset.txt`): every change site keeps the lines with
+  no rebuild, marks, folds, hidden lines, the trail, swaps, indirect buffers, the background build;
+  `glitnir-gui/the-ruler-measures-visible-lines`; the crate's own (`nidhogg/hlidskjalf/check.sh`, random edits against
+  a plain text).
+
 ## Key redirect
 
 drgnx keeps its global keys in a composed map (your keys, then the profile's, then `global-map`). A plain

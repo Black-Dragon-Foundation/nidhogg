@@ -218,10 +218,15 @@ name = "glitnir"
 version = "0.1.0"
 dependencies = [
  "gif",
+ "hlidskjalf",
  "image-webp",
  "png 0.18.1",
  "sja",
 ]
+
+[[package]]
+name = "hlidskjalf"
+version = "0.1.0"
 
 [[package]]
 name = "image-webp"

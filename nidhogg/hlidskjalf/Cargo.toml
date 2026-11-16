@@ -1,0 +1,17 @@
+[package]
+name = "hlidskjalf"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+description = "Hlidskjalf, a buffer text's line model: line index, marks, folds and hidden lines, with a C ABI"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+# std only: no dependencies (README, "Crate rules")
+[dependencies]
+
+[profile.test]
+opt-level = 1
