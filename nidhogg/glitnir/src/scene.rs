@@ -28,6 +28,7 @@ use crate::decor::{Anchor, Anchors, Label, Sprites};
 pub use crate::edge::Edge;
 use crate::ffi::{GLITNIR_E_ARG, GLITNIR_E_STATE};
 use crate::geom::Rect;
+use crate::minimap::Minimap;
 use crate::stack::Stack;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -245,12 +246,14 @@ impl Block {
     }
 }
 
-/// The parts of the scene the blocks and edges of a window layer at P draw (root px, clipped to its rectangle).
+/// The parts of the scene the blocks, edges and minimap of a window layer at P draw (root px, clipped to its
+/// rectangle).
 pub fn block_patches(p: &Placed) -> Vec<Rect> {
     p.blocks
         .iter()
         .map(Block::bounds)
         .chain(p.edges.iter().map(crate::edge::bounds))
+        .chain(p.minimap.iter().map(|m| m.rect))
         .map(|r| r.intersect(&p.rect))
         .filter(|r| !r.is_empty())
         .collect()
@@ -468,6 +471,8 @@ struct Layer {
     blocks: Arc<[Block]>,
     /// A window layer's edges.
     edges: Arc<[Edge]>,
+    /// A window layer's minimap.
+    minimap: Option<Arc<Minimap>>,
     /// A window layer that is its own output.
     own: bool,
 }
@@ -487,6 +492,8 @@ pub struct Placed {
     pub blocks: Arc<[Block]>,
     /// A window layer's edges ([`Scene::set_edges`]).
     pub edges: Arc<[Edge]>,
+    /// A window layer's minimap ([`Scene::set_minimap`]).
+    pub minimap: Option<Arc<Minimap>>,
     /// [`bounds`] of the rectangle and chrome, with a card's ring.
     pub bounds: Rect,
 }
@@ -500,6 +507,7 @@ impl Placed {
             && self.card == o.card
             && self.blocks == o.blocks
             && self.edges == o.edges
+            && self.minimap == o.minimap
     }
 }
 
@@ -533,18 +541,19 @@ impl Scene {
                 self.mark_restacked(d.id);
             }
         }
-        let (chrome, card, blocks, edges, own) =
-            self.layers
-                .get(&d.id)
-                .map_or((None, None, Arc::from([]), Arc::from([]), false), |l| {
-                    (
-                        l.chrome,
-                        l.card.clone(),
-                        Arc::clone(&l.blocks),
-                        Arc::clone(&l.edges),
-                        l.own,
-                    )
-                });
+        let (chrome, card, blocks, edges, minimap, own) = self.layers.get(&d.id).map_or(
+            (None, None, Arc::from([]), Arc::from([]), None, false),
+            |l| {
+                (
+                    l.chrome,
+                    l.card.clone(),
+                    Arc::clone(&l.blocks),
+                    Arc::clone(&l.edges),
+                    l.minimap.clone(),
+                    l.own,
+                )
+            },
+        );
         let window = kind == Kind::Window;
         self.layers.insert(
             d.id,
@@ -557,6 +566,7 @@ impl Scene {
                 card: card.filter(|_| window),
                 blocks: if window { blocks } else { Arc::from([]) },
                 edges: if window { edges } else { Arc::from([]) },
+                minimap: minimap.filter(|_| window),
                 own: own && window,
             },
         );
@@ -649,6 +659,18 @@ impl Scene {
         match self.layers.get_mut(&id) {
             Some(l) if l.kind == Kind::Window => {
                 l.blocks = blocks;
+                Ok(())
+            }
+            _ => Err(GLITNIR_E_ARG),
+        }
+    }
+
+    /// Set window layer ID's minimap (none: no minimap).  `GLITNIR_E_ARG` for an unknown id or a layer that is not a
+    /// window.
+    pub fn set_minimap(&mut self, id: u64, minimap: Option<Arc<Minimap>>) -> Result<(), i32> {
+        match self.layers.get_mut(&id) {
+            Some(l) if l.kind == Kind::Window => {
+                l.minimap = minimap;
                 Ok(())
             }
             _ => Err(GLITNIR_E_ARG),
@@ -824,6 +846,7 @@ impl Scene {
                     card: l.card.clone(),
                     blocks: Arc::clone(&l.blocks),
                     edges: Arc::clone(&l.edges),
+                    minimap: l.minimap.clone(),
                     bounds: card_bounds(l.rect, l.chrome.as_ref(), l.card.as_ref()),
                 });
                 self.walk(id, out);
@@ -921,7 +944,7 @@ impl Scene {
                         } else {
                             out.extend(card_change(o, n));
                         }
-                        if o.blocks != n.blocks || o.edges != n.edges {
+                        if o.blocks != n.blocks || o.edges != n.edges || o.minimap != n.minimap {
                             out.extend(block_patches(o));
                             out.extend(block_patches(n));
                         }
@@ -1053,6 +1076,12 @@ pub fn with<R>(root: u64, f: impl FnOnce(&mut Scene) -> Result<R, i32>) -> Resul
 /// none.
 pub fn set_card(root: u64, layer: u64, card: Option<Card>) -> Result<(), i32> {
     with(root, |s| s.set_card(layer, card))
+}
+
+/// Set window layer LAYER's minimap in ROOT's scene ([`Scene::set_minimap`]); `GLITNIR_E_STATE` when ROOT has no
+/// scene.
+pub fn set_minimap(root: u64, layer: u64, minimap: Option<Arc<Minimap>>) -> Result<(), i32> {
+    with(root, |s| s.set_minimap(layer, minimap))
 }
 
 /// Set window layer LAYER's blocks in ROOT's scene ([`Scene::set_blocks`]); `GLITNIR_E_STATE` when ROOT has no scene.

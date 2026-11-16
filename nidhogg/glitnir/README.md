@@ -83,7 +83,11 @@ a row with gaps of at most `CARD_GROUP_GAP` px, and gives the rectangle and the 
 the dividers between the windows, in `fill_argb`, before its corners; the outer edges alone are rounded and ringed.
 The model is the `Card`, so another compositor (Naglfar on macOS) draws the same from the same vector. A card's
 change damages where it draws (its corners, its fill and its bounds outside the window), and so does its raise or lower; a change of the rectangles
-it keeps out damages only those that came or went. Pixels no
+it keeps out damages only those that came or went. A window layer with a minimap (`scene::set_minimap`, Rust only: a
+`minimap::Minimap`) then draws it over the window, after the card: its fill, its tiles (`minimap::raster`, 256 rows of
+bars each, a line one bar from its indent to its end in its class's colour, premultiplied) and its bands (a fill and a
+1 px outline), all clipped to the part revealed (`reveal_px` wide from the side it sits on), so opening it grows a clip
+and never rescales a tile. A minimap's change damages only its rectangle. Pixels no
 layer covers are left alone. A pixel's value never depends on how the rectangles cut it, so composing the damage
 equals composing everything. A source whose device scale is not the target's is refused (`GLITNIR_E_STATE`) and the
 host draws that root the stock way. The time taken and the layers drawn fill the root's next frame-time entry.

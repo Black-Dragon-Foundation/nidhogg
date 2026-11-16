@@ -322,6 +322,7 @@ pub fn images_at(
             card: Some(card),
             blocks: std::sync::Arc::from([]),
             edges: std::sync::Arc::from([]),
+            minimap: None,
         })
         .collect();
     Ok(Some(

@@ -587,8 +587,68 @@ fn compose_layers(
                 plan.draw(k, t, card, c.intersect(&frame), (&below, &above));
             }
         }
+        // a window's minimap goes over everything else of it, inside the window, when its frame is drawn here
+        if let Some(m) = &p.minimap
+            && p.kind == Kind::Window
+            && sources.iter().any(|s| s.layer == p.parent)
+            && let Some(frame) = scene.iter().find(|q| q.id == p.parent).map(|q| q.rect)
+        {
+            let area = m.shown().intersect(&p.rect).intersect(&frame);
+            for c in &pieces {
+                draw_minimap(k, t, m, c.intersect(&area));
+            }
+        }
     }
     Ok(drawn)
+}
+
+/// Fill Q (inside the target) with COLOUR over what is there.
+fn fill_over(k: &Kernels, t: &mut TargetView, q: Rect, colour: u32) {
+    if q.is_empty() || colour == 0 {
+        return;
+    }
+    let row = vec![0xffu8; q.w as usize];
+    let mask = Mask {
+        data: &row,
+        stride: 0,
+    };
+    k.solid_over(&mut t.at(q), colour, &mask, q.w as usize, q.h as usize);
+}
+
+/// Minimap M within CLIP (its shown part, root px): the surface, the tiles over it, then the bands with their outlines.
+fn draw_minimap(k: &Kernels, t: &mut TargetView, m: &crate::minimap::Minimap, clip: Rect) {
+    if clip.is_empty() {
+        return;
+    }
+    fill_over(k, t, clip, m.fill_argb);
+    let w = m.rect.w.max(0) as usize;
+    for tile in m.tiles.iter() {
+        let at = Rect::new(m.rect.x, tile.y, m.rect.w, tile.h as i32);
+        let q = at.intersect(&clip);
+        if q.is_empty() || tile.px.len() < w * tile.h as usize {
+            continue;
+        }
+        let off = (q.y - at.y) as usize * w + (q.x - at.x) as usize;
+        let src = Pixels {
+            data: &tile.px[off..],
+            stride: w,
+        };
+        k.over(&mut t.at(q), &src, q.w as usize, q.h as usize);
+    }
+    for b in m.bands.iter() {
+        fill_over(k, t, b.rect.intersect(&clip), b.fill_argb);
+        if b.line_argb != 0 && !b.rect.is_empty() {
+            let r = b.rect;
+            for side in [
+                Rect::new(r.x, r.y, r.w, 1),
+                Rect::new(r.x, r.y + r.h - 1, r.w, 1),
+                Rect::new(r.x, r.y + 1, 1, r.h - 2),
+                Rect::new(r.x + r.w - 1, r.y + 1, 1, r.h - 2),
+            ] {
+                fill_over(k, t, side.intersect(&clip), b.line_argb);
+            }
+        }
+    }
 }
 
 /// The other cards of card P's frame whose chrome reaches one of P's corner squares within PIECES, below P and above it
@@ -3774,6 +3834,96 @@ mod tests {
                     "{p:?} damaged: {d:?}"
                 );
             }
+        }
+
+        /// A minimap over window WIN (ALL), 40 px wide at the right edge, revealed REVEAL px: a grey surface, one tile
+        /// of 4 rows of 2 px (bars of 10, 0, 30 and 50 columns), and a filled, outlined band over rows 1 and 2.
+        fn minimap(reveal: u32) -> crate::minimap::Minimap {
+            use crate::minimap::{Band, Minimap, Row, TileAt, TileSpec, raster};
+            let band = Band {
+                rect: Rect::new(80, 2, 40, 4),
+                fill_argb: 0,
+                line_argb: 0xff_00_00_ff,
+            };
+            let spec = TileSpec {
+                width: 40,
+                row_px: 2,
+                col_px: 1,
+                argb: [0xff_ff_ff_ff; crate::minimap::CLASSES],
+            };
+            let rows = [10, 0, 30, 50].map(|end| Row {
+                indent: 0,
+                end,
+                class: 0,
+            });
+            Minimap {
+                rect: Rect::new(80, 0, 40, 80),
+                reveal_px: reveal,
+                left: false,
+                fill_argb: 0xff_20_20_20,
+                tiles: [TileAt {
+                    y: 0,
+                    h: 8,
+                    px: raster(&spec, &rows).into(),
+                }]
+                .into(),
+                bands: [band].into(),
+            }
+        }
+
+        /// A window's minimap is drawn over its frame's pixels, only in the part revealed from its outer edge: the
+        /// surface, the tiles' bars, the band's outline; the text beside it keeps its pixels.
+        #[test]
+        fn a_minimap_draws_its_tiles_and_bands_in_the_part_revealed() {
+            let (mut s, mut f) = (Scene::default(), Frames::new());
+            s.upsert(&desc(ROOT, 0, 1, ALL, 1.0, true)).unwrap();
+            s.upsert(&desc(WIN, ROOT, 2, ALL, 1.0, true)).unwrap();
+            s.set_minimap(WIN, Some(minimap(40).into())).unwrap();
+            s.commit(ROOT, &mut f);
+            let out = compose_all(&s, &Buf::new(120, 80, FRONT), 1.0);
+            assert_eq!(out.at(79, 0), FRONT, "the text beside it");
+            assert_eq!(out.at(85, 0), 0xff_ff_ff_ff, "row 0's bar (10 columns)");
+            assert_eq!(out.at(95, 0), 0xff_20_20_20, "past it, the surface");
+            assert_eq!(out.at(81, 7), 0xff_ff_ff_ff, "row 3's bar");
+            assert_eq!(out.at(100, 2), 0xff_00_00_ff, "the band's top line");
+            assert_eq!(out.at(119, 4), 0xff_00_00_ff, "the band's right line");
+            assert_eq!(
+                out.at(100, 40),
+                0xff_20_20_20,
+                "below the tile, the surface"
+            );
+            // half revealed: only the outer 20 px show
+            let (mut s, mut f) = (Scene::default(), Frames::new());
+            s.upsert(&desc(ROOT, 0, 1, ALL, 1.0, true)).unwrap();
+            s.upsert(&desc(WIN, ROOT, 2, ALL, 1.0, true)).unwrap();
+            s.set_minimap(WIN, Some(minimap(20).into())).unwrap();
+            s.commit(ROOT, &mut f);
+            let out = compose_all(&s, &Buf::new(120, 80, FRONT), 1.0);
+            assert_eq!(out.at(85, 0), FRONT, "not yet revealed");
+            assert_eq!(out.at(99, 0), FRONT);
+            assert_eq!(out.at(100, 0), 0xff_20_20_20, "the revealed part");
+            assert_eq!(out.at(105, 6), 0xff_ff_ff_ff, "row 3's bar reaches it");
+        }
+
+        /// A change of the minimap only damages its rectangle, not the window.
+        #[test]
+        fn a_minimap_change_damages_only_the_minimap() {
+            let (mut s, mut f) = (Scene::default(), Frames::new());
+            s.upsert(&desc(ROOT, 0, 1, ALL, 1.0, true)).unwrap();
+            s.upsert(&desc(WIN, ROOT, 2, ALL, 1.0, true)).unwrap();
+            s.commit(ROOT, &mut f);
+            s.set_minimap(WIN, Some(minimap(10).into())).unwrap();
+            let d = s.commit(ROOT, &mut f).to_vec();
+            let area: u64 = d.iter().map(Rect::area).sum();
+            assert!(area <= 40 * 80, "damage {d:?}");
+            assert!(d.iter().any(|r| r.contains(119, 79)), "{d:?}");
+            assert!(!d.iter().any(|r| r.contains(10, 10)), "{d:?}");
+            s.set_minimap(WIN, None).unwrap();
+            let d = s.commit(ROOT, &mut f).to_vec();
+            assert!(
+                d.iter().any(|r| r.contains(80, 0)),
+                "closing damages it: {d:?}"
+            );
         }
 
         /// A change of the edges only damages their bounds, old and new, not the window.
