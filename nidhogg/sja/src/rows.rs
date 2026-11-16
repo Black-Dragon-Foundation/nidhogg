@@ -12,7 +12,8 @@
 //! - else applied: a reset takes its hub, drops the held patches and answers the outstanding resync.
 //!
 //! A resync is asked for at most once while outstanding.  Three resyncs (or caps) within 10 s mark the store broken;
-//! between resyncs there is a back-off of 1 s, then 4 s: a resync asked for sooner is counted but not sent.
+//! between resyncs there is a back-off of 1 s, then 4 s: a resync asked for sooner is counted but not sent.  A pair
+//! that starts over (`forget`: the hub went, a new env or class) closes the breaker again.
 //!
 //! **The draw.**  The drawn state is the list of rows the buffer holds, in order, each with its length in characters
 //! (its text plus the newline) and its content hash.  `draw` compares it with the rows and answers edits in buffer
@@ -679,12 +680,17 @@ impl Store {
         kept.into_iter().map(|p| self.push(p, now)).collect()
     }
 
-    /// The hub went away: forget its hub, version, held patches and resync.
+    /// The hub went away, or the pair starts over (a new env, a new class): forget its hub, version, held patches and
+    /// resync, and close the breaker: the resyncs of the old pair count no more, so a view a reconnect sends again
+    /// draws again instead of staying broken until Emacs restarts.
     pub fn forget(&mut self) {
         self.hub = None;
         self.version = None;
         self.resync = false;
         self.held.clear();
+        self.broken = false;
+        self.resync_times.clear();
+        self.last_resync = None;
     }
 
     fn apply(&mut self, p: Patch) -> Result<(), ()> {
@@ -1344,6 +1350,25 @@ mod tests {
             s.push(p(1, 0, 9, json!([{"reset": []}])), 3_000),
             Decision::Broken
         );
+    }
+
+    #[test]
+    fn a_new_pair_starts_with_the_breaker_closed() {
+        // the hub went, or the pair was sent again (a reconnect, a new class): the hub starts it over, so the
+        // resyncs of the old pair count no more; else a view stays broken until Emacs restarts
+        let mut s = Store::new(true);
+        for t in [0, 2_000, 4_000] {
+            s.resync_now(t);
+        }
+        assert!(s.broken);
+        s.forget();
+        assert!(!s.broken);
+        assert_eq!(
+            s.push(p(2, 0, 1, json!([{"reset": []}])), 5_000),
+            Decision::Apply
+        );
+        // and the breaker counts afresh: one resync is sent, not held by the old back-off
+        assert_eq!(s.push(p(2, 5, 6, json!([])), 5_100), Decision::Resync);
     }
 
     #[test]
