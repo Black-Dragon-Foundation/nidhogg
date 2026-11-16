@@ -48,7 +48,7 @@ use glitnir::compose::{
 };
 use glitnir::geom::Rect;
 use glitnir::kernels::kernels;
-use glitnir::layout::{LayoutLeg, active_tiles, compose_leg, subtract, tick_px};
+use glitnir::layout::{LayoutLeg, active_tiles, compose_leg, disjoint, subtract, tick_px};
 use glitnir::motion::{Kind, Motion, MotionSpec, Sample};
 use glitnir::pool::IDLE_NS;
 use glitnir::stats::StatsEntry;
@@ -1189,6 +1189,8 @@ impl Stage {
                 let (old, stride) = (&run.capture.px, front.w as usize);
                 let mut active = active_tiles(&run.leg, old, &front.data, stride);
                 active.append(&mut run.inherit);
+                // what the replaced leg drew overlaps this one's: each pixel is composed once a frame
+                let active = disjoint(active);
                 if tick_px(&active) > budget {
                     s.damage.extend(active);
                     done.push((key, true));
