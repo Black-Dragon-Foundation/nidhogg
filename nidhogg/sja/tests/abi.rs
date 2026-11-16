@@ -678,6 +678,17 @@ fn the_hub_layer_lines_are_kept_by_file() {
         )])),
         "a label's depth"
     );
+    // a nested label keeps its depth, and the labels are kept in the order of their lines
+    let nested = r#"{"event":"view-model","data":{"minimap":{"file":"/r/a.rs","layer":"labels","version":3,"items":[[9,2,"method","run"],[4,0,"function","main"]]}}}"#;
+    assert_eq!(ok(SJA_PUSH, &[text(nested)]), Ans::Nil);
+    assert_eq!(
+        sja::minimap::with_layer(file, "labels", |_, d| d.clone()),
+        Some(sja::minimap::Data::Labels(vec![
+            (4, 0, "function".into(), "main".into()),
+            (9, 2, "method".into(), "run".into())
+        ])),
+        "a nested label's depth"
+    );
     // a late heat layer older than its removal stays out
     let late = r#"{"event":"view-model","data":{"minimap":{"file":"/r/a.rs","layer":"heat:blame","version":2,"items":[[1,2,5]]}}}"#;
     assert_eq!(ok(SJA_PUSH, &[text(late)]), Ans::Nil);
