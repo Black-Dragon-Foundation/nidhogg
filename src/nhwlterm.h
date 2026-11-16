@@ -681,6 +681,10 @@ extern void nhmac_deadline_wake (int64_t);
 /* nhmacfont.c */
 extern void syms_of_nhmacfont (void);
 extern struct font_driver const nhmacfont_driver;
+extern int32_t nhmac_minimap_label_render (void *, int32_t, const uint8_t *,
+					   size_t, uint32_t, uint32_t,
+					   uint32_t *, int32_t, int32_t,
+					   int32_t *, int32_t *);
 extern Lisp_Object nhmac_cascade_spec (Lisp_Object, struct face *);
 /* nhmacdraw.c: the primitives under nhwldraw.c's shared geometry,
    emitting draw records (their Cairo twins are nhwldraw.c's own).  */

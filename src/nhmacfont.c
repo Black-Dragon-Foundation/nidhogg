@@ -551,6 +551,27 @@ nhmacfont_variation_glyphs (struct font *font, int c, unsigned variations[256])
   return n;
 }
 
+/* glitnir's minimap label renderer under Naglfar (an NhgLabelRender, set by
+   nhwlterm.c; glitnir-decor.c's Cairo one is its twin on Wayland): TEXT (LEN
+   bytes of UTF-8) in the font of face FACE_ID of frame HOST, at PX100 / 100
+   device pixels, in RGB, drawn by Core Text through the glue into BUF.  Called
+   by the glue during a minimap sync, so it calls the glue directly (no NHG):
+   nhg_label_raster takes no lock.  Returns 0 when it drew.  */
+int32_t
+nhmac_minimap_label_render (void *host, int32_t face_id, const uint8_t *text,
+			    size_t len, uint32_t px100, uint32_t rgb,
+			    uint32_t *buf, int32_t cap_w, int32_t cap_h,
+			    int32_t *w, int32_t *h)
+{
+  struct frame *f = host;
+  struct face *face = f ? FACE_FROM_ID_OR_NULL (f, face_id) : NULL;
+  if (!face || !face->font || face->font->driver != &nhmacfont_driver)
+    return -1;
+  uint64_t handle = ((struct nhmac_font_info *) face->font)->handle;
+  return nhg_label_raster (handle, px100, text, len, rgb, buf, cap_w, cap_h,
+			   w, h);
+}
+
 struct font_driver const nhmacfont_driver =
   {
     .type = LISPSYM_INITIALLY (Qnaglfar),

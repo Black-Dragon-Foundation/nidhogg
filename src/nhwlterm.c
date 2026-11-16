@@ -1149,6 +1149,8 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
 	{
 #ifdef NHWL_WAYLAND
 	  nhg_minimap_set_label_render (nhwl_minimap_label_render);
+#elif defined HAVE_NHMAC
+	  nhg_minimap_set_label_render (nhmac_minimap_label_render);
 #endif
 	  render_set = true;
 	}

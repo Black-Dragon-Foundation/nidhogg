@@ -2049,4 +2049,93 @@ equals the root drawn at once without one (tolerance 0)."
          (set-window-parameter nil 'glitnir-layout-capture nil)
          (redisplay t))))))
 
+;;; The minimap on Naglfar: pieces on layers of their own (design §6 "Naglfar", stage 3m)
+
+(defconst glitnir-nhmac--minimap-fill #x2a5c8a "The minimap's surface in the minimap rows (no other row uses it).")
+
+(defun glitnir-nhmac--minimap-pieces (&optional settle)
+  "The root's cards that are minimap pieces (the minimap's tag, bit 58): (ID X Y W H [SX SY SW SH]) each, after a
+redisplay; with SETTLE, the commits it makes too."
+  (seq-filter (lambda (c) (/= 0 (logand (car c) (ash 1 58))))
+              (plist-get (glitnir-nhmac--cards settle) :cards)))
+
+(defun glitnir-nhmac--minimap-on (w lines)
+  "Window W shows a buffer of LINES lines (indented 0 to 7 columns) from its start, the line model on, and an open
+minimap 120 logical px wide over its text's right edge.  Returns the buffer."
+  (let ((buf (window-buffer w)) (s (glitnir-nhmac--scale)))
+    (with-current-buffer buf
+      (dotimes (i lines) (insert (format "%s%s\n" (make-string (% i 8) ?\s) (make-string 40 (+ ?a (% i 26)))))))
+    (set-window-point w 1)
+    (set-window-start w 1)
+    (nidhogg-lines-enable buf t)
+    (set-window-parameter w 'glitnir-minimap
+                          `(:width ,(round (* 120 s)) :open t
+                                   :fill (,(glitnir-nhmac--hex glitnir-nhmac--minimap-fill) . 1)
+                                   :text ("#101010" . 1)))
+    (nhmac-gui--settle)
+    buf))
+
+(defun glitnir-nhmac--minimap-off (w buf)
+  "Window W's minimap closed and its buffer BUF emptied, the line model off: no piece is left on the root."
+  (set-window-parameter w 'glitnir-minimap nil)
+  (nidhogg-lines-disable buf)
+  (with-current-buffer buf (erase-buffer))
+  (nhmac-gui--settle))
+
+(ert-deftest nhmac-minimap-shows-as-pieces-over-the-text ()
+  "An open `glitnir-minimap' on macOS shows over the text's right edge as pieces on layers of their own (minimap
+cards: its surface, its tiles, its band): its surface's colour fills a box at the text's right edge, as wide as the
+minimap, inside the window; closed, no piece is left (glitnir-gui/the-minimap-draws-the-lines-over-the-text-without-
+reflow on Linux)."
+  :tags '(draws)
+  ;; required on macOS (never skipped): the minimap's macOS path
+  (should (fboundp 'nidhogg-lines-enable))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let* ((w (selected-window)) (s (glitnir-nhmac--scale)) (buf (glitnir-nhmac--minimap-on w 3000)))
+       (unwind-protect
+           (let* ((pieces (glitnir-nhmac--minimap-pieces t))
+                  (box (glitnir-nhmac--box (glitnir-nhmac--grab "minimap") glitnir-nhmac--minimap-fill)))
+             (nhmac-gui--say "nhmac-minimap-shows-as-pieces-over-the-text: pieces %S, surface's box %S" pieces box)
+             ;; the surface, at least one tile, the band
+             (should (>= (length pieces) 3))
+             (should box)
+             ;; as wide as the minimap (120 logical px), within a pixel or two of rounding
+             (should (<= (abs (- (1+ (- (nth 2 box) (nth 0 box))) (round (* 120 s)))) (* 2 (ceiling s)))))
+         (glitnir-nhmac--minimap-off w buf))
+       (should-not (glitnir-nhmac--minimap-pieces t))))))
+
+(ert-deftest nhmac-minimap-scroll-uploads-no-whole-image ()
+  "A scroll with the minimap open moves its pieces: at most one tile's image is uploaded (the one that came into
+view), never the whole minimap again, and a tile reaching past the minimap's edge shows only its part inside (the
+pieces' cut), so the scroll draws no image again (design §8's macOS gate, review 6)."
+  :tags '(draws)
+  (should (fboundp 'nidhogg-lines-enable))
+  (glitnir-nhmac--with-white
+   (lambda ()
+     (let* ((w (selected-window)) (buf (glitnir-nhmac--minimap-on w 3000)))
+       (unwind-protect
+           (let* ((before (plist-get (glitnir-nhmac--cards t) :images))
+                  (pieces (glitnir-nhmac--minimap-pieces)))
+             (dotimes (i 5)
+               (let ((p (with-current-buffer buf (save-excursion (goto-char 1) (forward-line (* 40 (1+ i))) (point)))))
+                 (set-window-point w p)
+                 (set-window-start w p))
+               (nhmac-gui--settle))
+             (let* ((after (plist-get (glitnir-nhmac--cards t) :images))
+                    (moved (glitnir-nhmac--minimap-pieces))
+                    (cut (seq-filter (lambda (c) (= (length c) 9)) moved)))
+               (nhmac-gui--say "nhmac-minimap-scroll-uploads-no-whole-image: images %S -> %S, pieces %S -> %S"
+                               before after pieces moved)
+               ;; five scrolls of 40 lines: each at most one new tile (a tile is 256 lines)
+               (should (<= (- after before) 5))
+               ;; the pieces kept their ids but the tiles that came
+               (should (>= (seq-count (lambda (c) (assq (car c) pieces)) moved) (- (length moved) 5)))
+               ;; a tile past the minimap's top or bottom shows only its part inside
+               (should cut)
+               (dolist (c cut)
+                 (pcase-let ((`(,_ ,x ,y ,cw ,ch ,sx ,sy ,sw ,sh) c))
+                   (should (and (>= sx x) (>= sy y) (<= (+ sx sw) (+ x cw)) (<= (+ sy sh) (+ y ch))))))))
+         (glitnir-nhmac--minimap-off w buf))))))
+
 ;;; glitnir-nhmac-gui-tests.el ends here
