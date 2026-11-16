@@ -49,8 +49,8 @@ pub struct ThemeCursor {
     surface: Option<WlSurface>,
     /// The latest shape request, so a new theme can be shown at once.
     pub last: Option<(WindowId, u32)>,
-    /// The pointer `enter` serial and shape of the latest request sent: the same pair again sends nothing.
-    pub sent: Option<(u32, u32)>,
+    /// The pointer `enter` serial, shape and integer scale of the latest request sent: the same again sends nothing.
+    pub sent: Option<(u32, u32, u32)>,
 }
 
 impl ThemeCursor {
@@ -63,11 +63,12 @@ impl ThemeCursor {
         }
     }
 
-    /// The connection was made again: the theme and the surface belonged to the old one (the name, size and latest
-    /// shape stay).
+    /// The connection was made again: the theme, the surface and the request sent belonged to the old one (the name,
+    /// size and latest shape stay).
     pub fn forget_connection(&mut self) {
         self.loaded = None;
         self.surface = None;
+        self.sent = None;
     }
 
     /// Show the first of `names` the theme has over `pointer`, with `serial`, at the integer `scale`.  A theme with
