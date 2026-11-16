@@ -43,7 +43,7 @@ pub use sja;
 pub use sja::abi::sja_call;
 
 /// Hlidskjalf, the line model (the `hlidskjalf` crate): carried here so that this archive holds its entry points
-/// (Emacs's nidhogg-lines.c calls them), and the glue's archive through its `pub use glitnir::*`.
+/// (the host's line model C file calls them), and the glue's archive through its `pub use glitnir::*`.
 pub use hlidskjalf;
 pub use hlidskjalf::abi::hlid_build;
 
