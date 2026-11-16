@@ -1727,21 +1727,43 @@ minimap it stays open; back over the text it closes, not before half a second (6
       (should (>= (- (float-time) t0) 0.5)))))
 
 (ert-deftest glitnir-gui/no-mouse-face-or-help-echo-fires-under-the-minimap ()
-  "Over the open minimap Emacs sees no motion (the glue sends it a leave): a `mouse-face' on the text under it does
-not light up beside the minimap, and its `help-echo' is never asked."
+  "Over the open minimap Emacs sees no motion (the glue sends it a leave): the text under it neither lights up its
+`mouse-face', nor asks its `help-echo', nor calls its `mouse-sensor-functions'.  The same pointer over the text beside
+the minimap first lights the face and calls the sensor (the row's control: the text and its properties work here)."
   (glitnir-gui--with-hover-minimap '(:width 120 :open t :fill ("#203040" . 1) :text ("#ff00ff" . 1))
-    (let ((asked nil) (ov (with-current-buffer buf (make-overlay (point-min) (point-max)))))
+    ;; lines long enough to wrap: text lies under the pointer over the minimap (past a line's end there is none)
+    (with-current-buffer buf
+      (goto-char (point-min))
+      (while (not (eobp))
+        (end-of-line)
+        (insert (make-string 400 ?x))
+        (forward-line 1)))
+    (let* ((asked nil) (sensed nil) (mouse-sensor-enabled t)
+           (ov (with-current-buffer buf (make-overlay (point-min) (point-max))))
+           (tx (nth 0 (window-inside-pixel-edges w)))
+           (beside (list tx (nth 1 mm) (- (nth 0 mm) tx) (nth 3 mm)))
+           (cyan (lambda () (glitnir-gui--count-in (glitnir-gui--painted) beside '(0 255 255))))
+           (fringe (lambda () (glitnir-gui--vp-to vp map (- tx 3) mid) (gui-runner-observe 0.5 #'gui-runner-read-all))))
       (overlay-put ov 'mouse-face '(:background "#00ffff"))
       (overlay-put ov 'help-echo (lambda (&rest _) (setq asked t) "echo"))
+      (overlay-put ov 'mouse-sensor-functions (list (lambda (_w _p dir) (push dir sensed))))
+      ;; the control: over the text beside the minimap all three fire
+      (funcall fringe)
+      (setq asked nil sensed nil)
+      (glitnir-gui--vp-to vp map (+ tx 100) mid)
+      (should (gui-runner-wait (lambda () (gui-runner-read-all) (memq 'entered sensed)) 3))
+      (should (> (funcall cyan) 0))
+      ;; off the text, then over the minimap: none of them
+      (funcall fringe)
+      (setq asked nil sensed nil)
       (glitnir-gui--vp-to vp map (+ (nth 0 mm) 60) mid)
-      (setq asked nil)
       (gui-runner-observe 1.0 #'gui-runner-read-all)
-      (let ((snap (glitnir-gui--painted)))
-        (should-not asked)
-        (should (= 0 (glitnir-gui--count-in snap (list (nth 0 (window-inside-pixel-edges w)) (nth 1 mm)
-                                                       (- (nth 0 mm) (nth 0 (window-inside-pixel-edges w)))
-                                                       (nth 3 mm))
-                                            '(0 255 255))))))))
+      ;; Emacs never had the pointer over it: its last place is off the minimap
+      (let ((xy (cdr (mouse-pixel-position))))
+        (should-not (and (car xy) (>= (car xy) (nth 0 mm)) (< (car xy) (+ (nth 0 mm) (nth 2 mm))))))
+      (should-not asked)
+      (should-not (memq 'entered sensed))
+      (should (= 0 (funcall cyan))))))
 
 (ert-deftest glitnir-gui/a-click-on-the-minimap-scrolls-the-window-there ()
   "A click on the minimap's lower part scrolls the window so the row clicked is in its middle, through the
