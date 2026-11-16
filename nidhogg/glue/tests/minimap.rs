@@ -89,6 +89,7 @@ mod minimap {
                 w: 12,
                 h: 200,
             },
+            ..NhgMinimap::default()
         }
     }
 
@@ -423,6 +424,162 @@ mod minimap {
         assert_eq!(m.bands[1].rect, Rect::new(200, top + 100, 100, 20));
         assert_eq!(m.bands[1].fill_argb, 0);
         assert_ne!(m.bands[1].line_argb, 0);
+        hlid_drop(key);
+    }
+
+    use nhglue::minimap::{
+        NHG_MINIMAP_LABELS_ALL, NHG_MINIMAP_LABELS_MARKS, nhg_minimap_set_label_render,
+    };
+    use std::sync::Mutex;
+
+    /// The texts the fake renderer was asked for.
+    static RENDERED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// A renderer that fills 5 px a byte (at most the room) by the whole height, in the colour asked.
+    unsafe extern "C" fn fake_render(
+        _host: *mut std::ffi::c_void,
+        _face: i32,
+        text: *const u8,
+        len: usize,
+        _px100: u32,
+        rgb: u32,
+        buf: *mut u32,
+        cap_w: i32,
+        cap_h: i32,
+        w: *mut i32,
+        h: *mut i32,
+    ) -> i32 {
+        // SAFETY: the glue passes readable text and a writable CAP_W × CAP_H buffer, and writable W and H.
+        unsafe {
+            let t = std::str::from_utf8(std::slice::from_raw_parts(text, len)).unwrap();
+            RENDERED.lock().unwrap().push(t.to_owned());
+            let ww = (len as i32 * 5).min(cap_w);
+            for y in 0..cap_h {
+                for x in 0..ww {
+                    *buf.add((y * cap_w + x) as usize) = 0xff00_0000 | rgb;
+                }
+            }
+            *w = ww;
+            *h = cap_h;
+        }
+        0
+    }
+
+    const MARK_RE: &str = r"^\s*//\s*MARK:\s*(?P<name>.+)$";
+
+    /// Labels (design M1): the hub's definitions from Sjá by the file's name and the model's MARK sections (in
+    /// capitals, with a hairline), placed with none overlapping (a deeper one yields), indented by depth, a nested one
+    /// in its own colour, the one under the pointer in the accent (the pointer's move onto it publishes); MARK sections
+    /// alone with `NHG_MINIMAP_LABELS_MARKS`, none with 0.
+    #[test]
+    fn labels_come_from_the_hub_and_the_mark_sections() {
+        let key = 0x6d6d_0007;
+        let text: String = (0..100)
+            .map(|i| match i {
+                9 => "// MARK: parse\n".to_owned(),
+                59 => "// MARK: two\n".to_owned(),
+                _ => format!("{}x\n", " ".repeat(i % 4)),
+            })
+            .collect();
+        let t = text.as_bytes();
+        let build = || {
+            // SAFETY: T is readable for its length.
+            let rc = unsafe { hlid_build(key, 0, 8, t.as_ptr(), t.len(), std::ptr::null(), 0, 0) };
+            assert_eq!(rc, 0);
+        };
+        build();
+        with_model(key, |m| m.set_section_regex(Some(MARK_RE)).unwrap());
+        build();
+        let file = "/t/labels-test.rs";
+        let line = format!(
+            r#"{{"event":"view-model","data":{{"minimap":{{"file":"{file}","layer":"labels","version":1,"items":[[3,0,"function","main"],[4,1,"method","deep"],[30,1,"method","go"]]}}}}}}"#
+        );
+        glitnir::sja::minimap::push(glitnir::sja::minimap::read_line(&line).unwrap().unwrap());
+        nhg_minimap_set_label_render(Some(fake_render));
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let zv = t.len() as u64 + 1;
+        let e = NhgMinimap {
+            labels: NHG_MINIMAP_LABELS_ALL,
+            file: file.as_ptr(),
+            file_len: file.len(),
+            label_rgb: 0x11_1111,
+            sub_rgb: 0x22_2222,
+            accent_rgb: 0x33_3333,
+            mark_rgb: 0x44_4444,
+            ..entry(key, 1, 100, zv, NHG_MINIMAP_OPEN)
+        };
+        let get = |b: &mut Backings, e: &NhgMinimap| {
+            sync_at(b, f, std::slice::from_ref(e)).unwrap();
+            placed(&commit(f).1, minimap_id(SEQ))
+                .unwrap()
+                .minimap
+                .unwrap()
+        };
+        let m = get(&mut b, &e);
+        let top = 10 + STRIP;
+        let mut got: Vec<(i32, i32, u32)> =
+            m.labels.iter().map(|l| (l.y - top, l.x, l.px[0])).collect();
+        got.sort();
+        // rows of 2 px: main (line 3) at 4, deep (line 4, 2 px under it) yields, PARSE (line 10) at 18, go at 58, TWO
+        // at 118; a nested one indented 8 px
+        assert_eq!(
+            got,
+            [
+                (4, 212, 0xff11_1111),
+                (18, 212, 0xff44_4444),
+                (58, 220, 0xff22_2222),
+                (118, 212, 0xff44_4444)
+            ]
+        );
+        assert!(
+            m.labels
+                .iter()
+                .all(|l| l.h == 13 && l.back_argb == m.fill_argb)
+        );
+        let texts = RENDERED.lock().unwrap().clone();
+        assert!(
+            texts.contains(&"PARSE".to_owned()) && texts.contains(&"TWO".to_owned()),
+            "{texts:?}"
+        );
+        assert!(
+            !texts.contains(&"deep".to_owned()),
+            "a label not placed is not rendered: {texts:?}"
+        );
+        // the MARK sections' hairlines
+        assert!(
+            m.bands
+                .iter()
+                .any(|b| b.rect == Rect::new(212, top + 18, 78, 1)),
+            "{:?}",
+            m.bands
+        );
+        // the pointer onto main: a publish, and main in the accent
+        let r = of(&mut b, f)
+            .unwrap()
+            .motion(Some((250.0, f64::from(top + 6))), 1_000_000_000);
+        assert!(r.publish && r.swallow);
+        let m = get(&mut b, &e);
+        let main = m.labels.iter().find(|l| l.y == top + 4).unwrap();
+        assert_eq!(main.px[0], 0xff33_3333);
+        // within the same label: no publish
+        let r = of(&mut b, f)
+            .unwrap()
+            .motion(Some((251.0, f64::from(top + 8))), 1_000_000_001);
+        assert!(!r.publish);
+        // MARK sections only; none
+        let m = get(
+            &mut b,
+            &NhgMinimap {
+                labels: NHG_MINIMAP_LABELS_MARKS,
+                ..e
+            },
+        );
+        assert_eq!(m.labels.len(), 2);
+        let m = get(&mut b, &NhgMinimap { labels: 0, ..e });
+        assert!(m.labels.is_empty());
+        nhg_minimap_set_label_render(None);
+        glitnir::sja::minimap::forget(file);
         hlid_drop(key);
     }
 }

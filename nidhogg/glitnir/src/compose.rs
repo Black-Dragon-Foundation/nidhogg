@@ -615,8 +615,8 @@ fn fill_over(k: &Kernels, t: &mut TargetView, q: Rect, colour: u32) {
     k.solid_over(&mut t.at(q), colour, &mask, q.w as usize, q.h as usize);
 }
 
-/// Minimap M within CLIP (its shown part, root px): the surface, its shades, the tiles over them, then the bands with
-/// their outlines.
+/// Minimap M within CLIP (its shown part, root px): the surface, its shades, the tiles over them, the labels (each over
+/// its backing), then the bands with their outlines.
 fn draw_minimap(k: &Kernels, t: &mut TargetView, m: &crate::minimap::Minimap, clip: Rect) {
     if clip.is_empty() {
         return;
@@ -636,6 +636,20 @@ fn draw_minimap(k: &Kernels, t: &mut TargetView, m: &crate::minimap::Minimap, cl
         let src = Pixels {
             data: &tile.px[off..],
             stride: w,
+        };
+        k.over(&mut t.at(q), &src, q.w as usize, q.h as usize);
+    }
+    for l in m.labels.iter() {
+        let at = Rect::new(l.x, l.y, l.w as i32, l.h as i32);
+        let q = at.intersect(&clip);
+        if q.is_empty() || l.px.len() < (l.w * l.h) as usize {
+            continue;
+        }
+        fill_over(k, t, q, l.back_argb);
+        let off = (q.y - at.y) as usize * l.w as usize + (q.x - at.x) as usize;
+        let src = Pixels {
+            data: &l.px[off..],
+            stride: l.w as usize,
         };
         k.over(&mut t.at(q), &src, q.w as usize, q.h as usize);
     }
@@ -3879,6 +3893,19 @@ mod tests {
                     line_argb: 0,
                 }]
                 .into(),
+                // a label at y 40: a 10 × 4 sprite, its left half red, over a backing
+                labels: [crate::minimap::LabelAt {
+                    x: 90,
+                    y: 40,
+                    w: 10,
+                    h: 4,
+                    px: (0..40)
+                        .map(|i| if i % 10 < 5 { 0xff_ff_00_00 } else { 0 })
+                        .collect::<Vec<u32>>()
+                        .into(),
+                    back_argb: 0xff_10_10_10,
+                }]
+                .into(),
             }
         }
 
@@ -3905,6 +3932,13 @@ mod tests {
             );
             assert_eq!(out.at(100, 65), 0xff_40_40_40, "a shade");
             assert_eq!(out.at(82, 65), 0xff_20_20_20, "left of its inset");
+            assert_eq!(out.at(92, 41), 0xff_ff_00_00, "a label's sprite");
+            assert_eq!(
+                out.at(97, 41),
+                0xff_10_10_10,
+                "its backing, where the sprite is clear"
+            );
+            assert_eq!(out.at(97, 45), 0xff_20_20_20, "below it, the surface");
             // half revealed: only the outer 20 px show
             let (mut s, mut f) = (Scene::default(), Frames::new());
             s.upsert(&desc(ROOT, 0, 1, ALL, 1.0, true)).unwrap();

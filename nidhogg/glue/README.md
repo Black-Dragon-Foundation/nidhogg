@@ -316,6 +316,15 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   model's first four depths is a faint band (4.5 % of the bars' opacity) behind the bars, inset 4 logical px a depth.
   Closed, the layer stays with nothing revealed. A shell with cards on layers of its own (macOS) gets no minimap from
   here.
+- **The minimap's labels** (design M1): with `labels`, the names of the hub's definitions of the window's `file`
+  (Sjá's `labels` layer for that name, `sja::minimap`) and the model's MARK sections (in capitals, with a hairline
+  above), for the rows the minimap shows. Placed in the glitnir crate (`minimap::place_labels`): 13 logical px tall,
+  none overlapping another, a MARK section first, then by depth (a deeper one yields), then from the top. Each is a
+  sprite C renders (`nhg_minimap_set_label_render`: Cairo in the label face, `glitnir-decor.c`), cached per frame
+  (freed with it) by text, colour, size and room, at most 2048 (when full, the least recently used eighth goes); a
+  definition 10.5 logical px in `label_rgb`, a nested one in `sub_rgb` and indented 8 px a depth (4 at most), a MARK
+  section 9.5 px in `mark_rgb`, the one under the pointer in `accent_rgb` (a move onto another label publishes the
+  frame). Each lies over a backing of the surface, so the bars under it make way.
 - **The minimap's pointer** (`minimap::pointer`, `timer`, `frame_ready`): the glue keeps the deadlines and asks the
   shell for a wake-up at the nearest (`ShellBackend::set_timer`, a `Timer` event). The pointer resting 150 ms on the
   window's ruler strip (`NhgMinimap::strip`) opens the minimap, revealed from its outer edge over 120 ms on frame

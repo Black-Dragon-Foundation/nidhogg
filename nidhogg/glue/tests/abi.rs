@@ -1841,15 +1841,28 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
                 offset_of!(M, band_opacity) as i64,
             ),
             ("offsetof (M, strip)", offset_of!(M, strip) as i64),
+            ("offsetof (M, labels)", offset_of!(M, labels) as i64),
+            ("offsetof (M, label_face)", offset_of!(M, label_face) as i64),
+            ("offsetof (M, host)", offset_of!(M, host) as i64),
+            ("offsetof (M, file)", offset_of!(M, file) as i64),
+            ("offsetof (M, file_len)", offset_of!(M, file_len) as i64),
+            ("offsetof (M, label_rgb)", offset_of!(M, label_rgb) as i64),
+            ("offsetof (M, sub_rgb)", offset_of!(M, sub_rgb) as i64),
+            ("offsetof (M, accent_rgb)", offset_of!(M, accent_rgb) as i64),
+            ("offsetof (M, mark_rgb)", offset_of!(M, mark_rgb) as i64),
+            ("NHG_MINIMAP_LABELS_ALL", NHG_MINIMAP_LABELS_ALL.into()),
+            ("NHG_MINIMAP_LABELS_MARKS", NHG_MINIMAP_LABELS_MARKS.into()),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 typedef NhgMinimap M;
 PROTO (nhg_minimap_sync, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgMinimap *, size_t));
-PROTO (nhg_minimap_count, int32_t (NhgDisplay *, uint64_t));";
+PROTO (nhg_minimap_count, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_minimap_set_label_render, void (NhgLabelRender));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const M, usize) -> i32 =
             nhg_minimap_sync;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_minimap_count;
+        let _: extern "C" fn(Option<NhgLabelRender>) = nhg_minimap_set_label_render;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());

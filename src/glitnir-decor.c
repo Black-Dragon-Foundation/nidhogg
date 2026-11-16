@@ -989,6 +989,90 @@ sprite_render (struct glyph_string *s, Lisp_Object label, double sx,
   return ok;
 }
 
+#ifdef NHWL_WAYLAND
+/* The minimap's label renderer (the glue's NhgLabelRender, set by
+   nhwlterm.c): TEXT (LEN bytes of UTF-8) in face FACE_ID of frame HOST
+   at PX100 / 100 device pixels, in 0xRRGGBB RGB, into BUF (CAP_W x
+   CAP_H, premultiplied ARGB32, cleared), vertically centred.  A text
+   wider than the room ends in an ellipsis.  Laid out glyph by glyph from
+   the font's character map, as the name tags are.  */
+
+int32_t
+nhwl_minimap_label_render (void *host, int32_t face_id, const uint8_t *text,
+			   size_t len, uint32_t px100, uint32_t rgb,
+			   uint32_t *buf, int32_t cap_w, int32_t cap_h,
+			   int32_t *w, int32_t *h)
+{
+  struct frame *f = host;
+  struct face *face = f ? FACE_FROM_ID_OR_NULL (f, face_id) : NULL;
+  if (!face || cap_w <= 0 || cap_h <= 0 || len > INT_MAX)
+    return -1;
+  cairo_scaled_font_t *sf = label_font (face, px100 / 100.0);
+  if (!sf)
+    return -1;
+  cairo_glyph_t *glyphs = NULL, *dots = NULL;
+  int n = 0, nd = 0;
+  if (cairo_scaled_font_text_to_glyphs (sf, 0, 0, (const char *) text, len,
+					&glyphs, &n, NULL, NULL, NULL)
+      != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_scaled_font_destroy (sf);
+      return -1;
+    }
+  cairo_text_extents_t te;
+  cairo_font_extents_t fe;
+  cairo_scaled_font_glyph_extents (sf, glyphs, n, &te);
+  cairo_scaled_font_extents (sf, &fe);
+  int used = (int) ceil (te.x_advance);
+  if (used > cap_w
+      && cairo_scaled_font_text_to_glyphs (sf, 0, 0, "\xe2\x80\xa6", -1, &dots,
+					   &nd, NULL, NULL, NULL)
+	 == CAIRO_STATUS_SUCCESS && nd > 0)
+    {
+      /* Keep the glyphs that end before the ellipsis's room.  */
+      cairo_text_extents_t de;
+      cairo_scaled_font_glyph_extents (sf, dots, nd, &de);
+      double room = cap_w - de.x_advance;
+      int k = 0;
+      while (k < n && (k + 1 < n ? glyphs[k + 1].x : te.x_advance) <= room)
+	k++;
+      double at = k < n ? glyphs[k].x : te.x_advance;
+      for (int i = 0; i < nd; i++)
+	dots[i].x += at;
+      n = k;
+      used = cap_w;
+    }
+  cairo_surface_t *img
+    = cairo_image_surface_create_for_data ((unsigned char *) buf,
+					   CAIRO_FORMAT_ARGB32, cap_w, cap_h,
+					   cap_w * 4);
+  cairo_t *cr = cairo_create (img);
+  cairo_set_source_rgb (cr, ((rgb >> 16) & 0xff) / 255.0,
+			((rgb >> 8) & 0xff) / 255.0, (rgb & 0xff) / 255.0);
+  cairo_set_scaled_font (cr, sf);
+  double base = (cap_h - (fe.ascent + fe.descent)) / 2.0 + fe.ascent;
+  for (int i = 0; i < n; i++)
+    glyphs[i].y += base;
+  for (int i = 0; i < nd; i++)
+    dots[i].y += base;
+  cairo_rectangle (cr, 0, 0, cap_w, cap_h);
+  cairo_clip (cr);
+  cairo_show_glyphs (cr, glyphs, n);
+  if (dots)
+    cairo_show_glyphs (cr, dots, nd);
+  cairo_destroy (cr);
+  cairo_surface_flush (img);
+  cairo_surface_destroy (img);
+  cairo_glyph_free (glyphs);
+  if (dots)
+    cairo_glyph_free (dots);
+  cairo_scaled_font_destroy (sf);
+  *w = max (1, min (used, cap_w));
+  *h = cap_h;
+  return 0;
+}
+#endif
+
 void
 glitnir_decor_record (struct glyph_string *s)
 {

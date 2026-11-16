@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! {"event": "view-model", "data": {"minimap": {"file": F, "layer": L, "version": N, "items": I}}}
-//! L = "labels"   I = [[line, kind, text]]
+//! L = "labels"   I = [[line, depth, kind, text]]    depth 0 outermost
 //!   | "folds"    I = [[first, last, kind]]
 //!   | "heat:" S  I = [[first, last, value]]          value 0..=1000
 //!   | "density"  I = {"buckets": [[bytes, errors, warnings]], "total": n}
@@ -29,8 +29,8 @@ pub const LABEL_MAX: usize = 256;
 /// A layer's items.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Data {
-    /// (line, kind, text).
-    Labels(Vec<(u32, Box<str>, Box<str>)>),
+    /// (line, depth, kind, text), in the order of their lines.
+    Labels(Vec<(u32, u32, Box<str>, Box<str>)>),
     /// (first line, last line, kind).
     Folds(Vec<(u32, u32, Box<str>)>),
     /// (first line, last line, value 0..=1000).
@@ -122,10 +122,15 @@ fn items<T>(v: &Value, f: impl Fn(&[Value]) -> Option<T>) -> Option<Vec<T>> {
 
 fn data(layer: &str, v: &Value) -> Option<Data> {
     Some(match layer {
-        "labels" => Data::Labels(items(v, |i| match i {
-            [l, k, t] => Some((u32_of(l)?, text(k, 64)?, text(t, LABEL_MAX)?)),
-            _ => None,
-        })?),
+        "labels" => Data::Labels({
+            let mut v = items(v, |i| match i {
+                [l, d, k, t] => Some((u32_of(l)?, u32_of(d)?, text(k, 64)?, text(t, LABEL_MAX)?)),
+                _ => None,
+            })?;
+            // the minimap looks them up by line
+            v.sort_by_key(|x| x.0);
+            v
+        }),
         "folds" => Data::Folds(items(v, |i| match i {
             [a, b, k] => Some((u32_of(a)?, u32_of(b)?, text(k, 64)?)),
             _ => None,

@@ -12,6 +12,11 @@
 //!   and the colour stay; a scroll that shows the same tiles only moves them.
 //! - **What C gives ([`NhgMinimap`]):** the text area, the model's key, the window's start and end and the accessible
 //!   part's bounds (positions), the flags, the width and rows per line (logical px), and the colours.
+//! - **Labels** (design M1): the hub's definitions of the window's file (Sjá's `labels` layer, by the file's name)
+//!   and the model's MARK sections, each a sprite C renders (Cairo, the label face) through the renderer set with
+//!   [`nhg_minimap_set_label_render`], cached here by text, colour, size and room.  Placed in the crate
+//!   ([`glitnir::minimap::place_labels`]): none overlaps another, a deeper one yields; the one under the pointer is in
+//!   the accent colour.  A MARK section is in capitals in its colour, with a hairline above.
 //! - **When:** at each publish while the frame has blocks, edges, minimaps or their layers ([`sync_at`]); a reconnect
 //!   gives them all again ([`forget_all`]).  A shell that shows the cards on layers of its own (macOS) gets its
 //!   minimap layers from Naglfar, not from here.
@@ -22,10 +27,14 @@ use crate::display::Display;
 use crate::guard::GlueError;
 use glitnir::geom::Rect;
 use glitnir::hlidskjalf::{BLANK, Line, abi::with_model};
-use glitnir::minimap::{Band, CLASSES, Minimap, Row, TILE_ROWS, TileAt, TileSpec, raster};
+use glitnir::minimap::{
+    Band, CLASSES, Candidate, LabelAt, Minimap, Row, TILE_ROWS, TileAt, TileSpec, place_labels,
+    raster,
+};
 use glitnir::scene::LayerDesc;
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::c_void;
+use std::sync::{Arc, Mutex};
 
 /// Glitnir's `GLITNIR_LAYER_WINDOW`.
 const LAYER_WINDOW: u32 = 2;
@@ -55,9 +64,27 @@ pub const REVEAL_NS: u64 = 120_000_000;
 /// A reveal leg's step on the shell's timer (about 120 Hz), beside the frame callbacks'.
 pub const STEP_NS: u64 = 8_000_000;
 
+/// [`NhgMinimap::labels`]: the hub's definitions and the MARK sections.
+pub const NHG_MINIMAP_LABELS_ALL: u32 = 1;
+/// [`NhgMinimap::labels`]: the MARK sections alone.
+pub const NHG_MINIMAP_LABELS_MARKS: u32 = 2;
+
+/// A label's height, its font sizes (a definition's, a MARK section's), the room left of it and right of it, and the
+/// indent per depth: logical px (the mockup's `.mmap .lab`).
+pub const LABEL_H: f64 = 13.0;
+pub const LABEL_PX: f64 = 10.5;
+pub const MARK_PX: f64 = 9.5;
+pub const LABEL_LEFT: f64 = 12.0;
+pub const LABEL_RIGHT: f64 = 10.0;
+pub const LABEL_INDENT: f64 = 8.0;
+/// The deepest indent drawn.
+pub const LABEL_DEPTHS: u32 = 4;
+/// A MARK section's hairline: its colour's opacity.
+pub const MARK_LINE_OPACITY: f32 = 0.45;
+
 /// One window's minimap as C gives it at publish.  Layout equals `NhgMinimap`.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NhgMinimap {
     /// The window's `sequence_number`.
     pub seq: u64,
@@ -86,6 +113,198 @@ pub struct NhgMinimap {
     /// The window's scroll bar strip (the overview ruler, `glitnir--ruler`), same coordinates as `clip`; empty for
     /// none.  The pointer resting on it opens the minimap.
     pub strip: NhgRect,
+    /// `NHG_MINIMAP_LABELS_*`, 0 for no labels.
+    pub labels: u32,
+    /// The face the labels are rendered in (an Emacs face id) and the frame (C's, passed back to the renderer).
+    pub label_face: i32,
+    pub host: *mut c_void,
+    /// The file's name, `file_len` bytes of UTF-8 (null: none): the key of the hub's labels in Sjá.
+    pub file: *const u8,
+    pub file_len: usize,
+    /// A definition's, a nested definition's, the one under the pointer's and a MARK section's 0xRRGGBB (-1: none).
+    pub label_rgb: i32,
+    pub sub_rgb: i32,
+    pub accent_rgb: i32,
+    pub mark_rgb: i32,
+}
+
+impl Default for NhgMinimap {
+    fn default() -> Self {
+        NhgMinimap {
+            seq: 0,
+            clip: NhgRect::default(),
+            key: 0,
+            start: 0,
+            end: 0,
+            begv: 0,
+            zv: 0,
+            flags: 0,
+            width: 0,
+            scale: 0,
+            fill_rgb: -1,
+            fill_opacity: 0.0,
+            text_rgb: -1,
+            text_opacity: 0.0,
+            band_rgb: -1,
+            band_opacity: 0.0,
+            strip: NhgRect::default(),
+            labels: 0,
+            label_face: 0,
+            host: std::ptr::null_mut(),
+            file: std::ptr::null(),
+            file_len: 0,
+            label_rgb: -1,
+            sub_rgb: -1,
+            accent_rgb: -1,
+            mark_rgb: -1,
+        }
+    }
+}
+
+impl NhgMinimap {
+    /// The file's name, when it has one in UTF-8.
+    fn file_name(&self) -> Option<&str> {
+        if self.file.is_null() || self.file_len == 0 {
+            return None;
+        }
+        // SAFETY: C passes `file_len` readable bytes, valid for the publish this record is part of.
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(self.file, self.file_len) }).ok()
+    }
+}
+
+/// C's label renderer: TEXT (LEN bytes of UTF-8) in face FACE of frame HOST at PX100 / 100 device px, in 0xRRGGBB
+/// RGB, drawn into BUF (premultiplied ARGB32, CAP_W × CAP_H, rows of CAP_W pixels, cleared) from its top-left, the
+/// text's top at the top; the box it used into *W and *H.  0 when it drew.
+pub type NhgLabelRender = unsafe extern "C" fn(
+    host: *mut c_void,
+    face: i32,
+    text: *const u8,
+    len: usize,
+    px100: u32,
+    rgb: u32,
+    buf: *mut u32,
+    cap_w: i32,
+    cap_h: i32,
+    w: *mut i32,
+    h: *mut i32,
+) -> i32;
+
+static RENDER: Mutex<Option<NhgLabelRender>> = Mutex::new(None);
+
+/// A label's sprite key: (text, rgb, px100, room, face).
+pub type SpriteKey = (Box<str>, u32, u32, i32, i32);
+/// A rendered sprite: width, height, pixels.
+pub type Sprite = (u32, u32, Arc<[u32]>);
+/// The most sprites a frame keeps.
+pub const SPRITES_MAX: usize = 2048;
+
+/// A frame's label sprites (it goes with the frame's minimaps, so with the frame): at most [`SPRITES_MAX`]; when full,
+/// the least recently used eighth goes.
+#[derive(Debug, Default)]
+pub struct SpriteCache {
+    map: HashMap<SpriteKey, (Sprite, u64)>,
+    tick: u64,
+}
+
+impl SpriteCache {
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Whether KEY is held (not a use).
+    pub fn contains(&self, key: &SpriteKey) -> bool {
+        self.map.contains_key(key)
+    }
+
+    /// KEY's sprite, a use; else RENDER's, kept.
+    pub fn get_or_render(
+        &mut self,
+        key: SpriteKey,
+        render: impl FnOnce() -> Option<Sprite>,
+    ) -> Option<Sprite> {
+        self.tick += 1;
+        if let Some((s, t)) = self.map.get_mut(&key) {
+            *t = self.tick;
+            return Some(s.clone());
+        }
+        let s = render()?;
+        if self.map.len() >= SPRITES_MAX {
+            let mut ticks: Vec<u64> = self.map.values().map(|(_, t)| *t).collect();
+            ticks.sort_unstable();
+            let cut = ticks[SPRITES_MAX / 8 - 1];
+            self.map.retain(|_, (_, t)| *t > cut);
+        }
+        self.map.insert(key, (s.clone(), self.tick));
+        Some(s)
+    }
+}
+
+/// Set the label renderer (null: none).
+#[unsafe(no_mangle)]
+pub extern "C" fn nhg_minimap_set_label_render(f: Option<NhgLabelRender>) {
+    *RENDER.lock().unwrap_or_else(|e| e.into_inner()) = f;
+}
+
+/// TEXT's sprite for window E in RGB at PX100, at most CAP_W × CAP_H: from CACHE, else rendered; `None` without a
+/// renderer or when it did not draw.
+#[allow(clippy::too_many_arguments)]
+fn sprite(
+    cache: &mut SpriteCache,
+    e: &NhgMinimap,
+    text: &str,
+    rgb: u32,
+    px100: u32,
+    cap_w: i32,
+    cap_h: i32,
+) -> Option<Sprite> {
+    if cap_w <= 0 || cap_h <= 0 {
+        return None;
+    }
+    let key: SpriteKey = (text.into(), rgb, px100, cap_w, e.label_face);
+    cache.get_or_render(key, || render_sprite(e, text, rgb, px100, cap_w, cap_h))
+}
+
+/// Ask C's renderer for TEXT's sprite.
+fn render_sprite(
+    e: &NhgMinimap,
+    text: &str,
+    rgb: u32,
+    px100: u32,
+    cap_w: i32,
+    cap_h: i32,
+) -> Option<Sprite> {
+    let render = (*RENDER.lock().unwrap_or_else(|p| p.into_inner()))?;
+    let mut buf = vec![0u32; (cap_w * cap_h) as usize];
+    let (mut w, mut h) = (0i32, 0i32);
+    // SAFETY: TEXT and BUF are readable and writable for the lengths given; W and H are writable.
+    let rc = unsafe {
+        render(
+            e.host,
+            e.label_face,
+            text.as_ptr(),
+            text.len(),
+            px100,
+            rgb,
+            buf.as_mut_ptr(),
+            cap_w,
+            cap_h,
+            &mut w,
+            &mut h,
+        )
+    };
+    if rc != 0 || w <= 0 || h <= 0 {
+        return None;
+    }
+    let (w, h) = (w.min(cap_w), h.min(cap_h));
+    let mut px = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        px.extend_from_slice(&buf[(y * cap_w) as usize..(y * cap_w + w) as usize]);
+    }
+    Some((w as u32, h as u32, px.into()))
 }
 
 /// The rows a window's minimap stands for, as the line model counts them (visible lines of the accessible part).
@@ -171,6 +390,9 @@ struct Window {
     applied: Option<(Rect, u32, Arc<Minimap>)>,
     geom: Option<Geom>,
     hover: Hover,
+    /// The labels drawn at the last publish: their boxes' top and bottom (root px), and which one was in the accent.
+    boxes: Vec<(i32, i32)>,
+    accent: Option<usize>,
 }
 
 /// Where a window's minimap was at its last publish (root device px), for the pointer.
@@ -202,8 +424,9 @@ struct Hover {
     inside: bool,
     /// The left button went down on the minimap and is held.
     drag: bool,
-    /// The row under the pointer (from the minimap's row 0).
+    /// The row under the pointer (from the minimap's row 0), and the pointer's y (root px).
     row: Option<u64>,
+    y: Option<f64>,
 }
 
 impl Hover {
@@ -269,6 +492,8 @@ pub struct Reply {
 #[derive(Debug, Default)]
 pub struct Minimaps {
     windows: BTreeMap<u64, Window>,
+    /// The labels' sprites, kept while the frame is.
+    pub sprites: SpriteCache,
     /// The shell window the frame is in (its tree's root's), as the last sync said: pointer events come by it.
     pub(crate) shell_window: u64,
     /// Where the pointer last moved (root px): a button record carries no position of its own.
@@ -327,9 +552,10 @@ impl Minimaps {
         self.last = at;
         let mut r = Reply::default();
         for (seq, w) in &mut self.windows {
-            let (Some(g), h) = (w.geom, &mut w.hover) else {
+            let Some(g) = w.geom else {
                 continue;
             };
+            let h = &mut w.hover;
             let over = at.is_some_and(|(x, y)| within(&g.shown, x, y));
             let on_strip = at.is_some_and(|(x, y)| within(&g.strip, x, y));
             if over || h.drag {
@@ -344,6 +570,11 @@ impl Minimaps {
                         / u64::from(g.row_px.max(1))
                 });
                 let row = row.map(|v| v.min(g.rows.total.saturating_sub(1)));
+                h.y = at.map(|(_, y)| y);
+                // the label under the pointer changed: drawn again in the accent
+                if accent_of(&w.boxes, h.y) != w.accent {
+                    r.publish = true;
+                }
                 if row != h.row {
                     h.row = row;
                     h.dwell_at = Some(now + DWELL_NS);
@@ -358,7 +589,11 @@ impl Minimaps {
             if h.inside {
                 h.inside = false;
                 h.row = None;
+                h.y = None;
                 h.dwell_at = None;
+                if w.accent.is_some() {
+                    r.publish = true;
+                }
             }
             if on_strip {
                 h.strip_since.get_or_insert(now);
@@ -428,6 +663,163 @@ impl Minimaps {
         }
         r
     }
+}
+
+/// The label box (of `boxes`, root px top and bottom) the pointer at `y` is in.
+fn accent_of(boxes: &[(i32, i32)], y: Option<f64>) -> Option<usize> {
+    let y = y?;
+    boxes
+        .iter()
+        .position(|&(a, b)| y >= f64::from(a) && y < f64::from(b))
+}
+
+/// What [`labels`] gives: the sprites placed, the hairlines, each label's rows (top, bottom) and the accented one.
+type Labels = (Vec<LabelAt>, Vec<Band>, Vec<(i32, i32)>, Option<usize>);
+
+/// The labels of window `e`'s minimap `p` over `rows` (each `row_px` tall) at scale `s`: the sprites placed, and the
+/// MARK sections' hairlines; `hover_y` the pointer's y (root px), whose label is in the accent; `back` the backing.
+#[allow(clippy::too_many_arguments)]
+fn labels(
+    e: &NhgMinimap,
+    rows: &Rows,
+    p: &Placement,
+    row_px: u32,
+    s: f64,
+    hover_y: Option<f64>,
+    back: u32,
+    cache: &mut SpriteCache,
+) -> Labels {
+    let none = (Vec::new(), Vec::new(), Vec::new(), None);
+    if e.labels == 0 {
+        return none;
+    }
+    let row = u64::from(row_px.max(1));
+    let r0 = rows.first + p.offset / row;
+    let r1 = rows.first + (p.offset + p.rect.h.max(0) as u64) / row + 1;
+    // the lines the minimap shows, and their positions
+    let Some((la, lb, pa, pb)) = with_model(e.key, |m| {
+        let la = m.visible_line(r0)?;
+        let lb = m.visible_line(r1).unwrap_or(u64::MAX);
+        let pa = m.pos_of(la)?;
+        let pb = if lb == u64::MAX {
+            u64::MAX
+        } else {
+            m.pos_of(lb).unwrap_or(u64::MAX)
+        };
+        Some((la, lb, pa, pb))
+    })
+    .flatten() else {
+        return none;
+    };
+    // (line, depth, mark, text)
+    let mut found: Vec<(u64, u32, bool, String)> = Vec::new();
+    if e.labels == NHG_MINIMAP_LABELS_ALL
+        && let Some(file) = e.file_name()
+    {
+        glitnir::sja::minimap::with_layer(file, "labels", |_, d| {
+            if let glitnir::sja::minimap::Data::Labels(v) = d {
+                let a = v.partition_point(|x| u64::from(x.0) < la + 1);
+                for x in v[a..]
+                    .iter()
+                    .take_while(|x| u64::from(x.0) <= lb.saturating_add(1))
+                    .take(4096)
+                {
+                    found.push((u64::from(x.0) - 1, x.1, false, x.3.to_string()));
+                }
+            }
+        });
+    }
+    let placed_rows = with_model(e.key, |m| {
+        let marks: Vec<(u64, String)> = m
+            .sections(pa, pb)
+            .iter()
+            .take(4096)
+            .map(|x| (x.pos, x.name.to_uppercase()))
+            .collect();
+        for (pos, name) in marks {
+            if let Some(l) = m.line_of(pos) {
+                found.push((l, 0, true, name));
+            }
+        }
+        let mut out = Vec::new();
+        for (l, depth, mark, text) in found.drain(..) {
+            match m.visible_before(l) {
+                Some((v, false)) if v >= rows.first => {
+                    out.push((v - rows.first, depth, mark, text))
+                }
+                _ => {}
+            }
+        }
+        out
+    })
+    .unwrap_or_default();
+    let px = |logical: f64| (logical * s).round() as i32;
+    let h = px(LABEL_H).max(1);
+    let cands: Vec<Candidate> = placed_rows
+        .iter()
+        .map(|(r, depth, mark, _)| Candidate {
+            y: (i64::from(p.rect.y) + (*r * row) as i64 - p.offset as i64)
+                .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            h: h as u32,
+            depth: *depth,
+            mark: *mark,
+        })
+        .collect();
+    let chosen = place_labels(&cands, p.rect.y, p.rect.y + p.rect.h, px(1.0).max(1));
+    let boxes: Vec<(i32, i32)> = chosen
+        .iter()
+        .map(|&i| (cands[i].y, cands[i].y + h))
+        .collect();
+    let accent = accent_of(&boxes, hover_y);
+    let mut out = Vec::new();
+    let mut lines = Vec::new();
+    for (k, &i) in chosen.iter().enumerate() {
+        let (_, depth, mark, text) = &placed_rows[i];
+        let rgb = if accent == Some(k) {
+            e.accent_rgb
+        } else if *mark {
+            e.mark_rgb
+        } else if *depth > 0 {
+            e.sub_rgb
+        } else {
+            e.label_rgb
+        };
+        let Ok(rgb) = u32::try_from(rgb) else {
+            continue;
+        };
+        let indent = if *mark {
+            0
+        } else {
+            (*depth).min(LABEL_DEPTHS) as i32 * px(LABEL_INDENT)
+        };
+        let x = p.rect.x + px(LABEL_LEFT) + indent;
+        let cap_w = p.rect.x + p.rect.w - px(LABEL_RIGHT) - x;
+        let size = if *mark { MARK_PX } else { LABEL_PX };
+        let px100 = (size * s * 100.0).round() as u32;
+        if let Some((w, sh, spx)) = sprite(cache, e, text, rgb & 0xff_ffff, px100, cap_w, h) {
+            out.push(LabelAt {
+                x,
+                y: cands[i].y,
+                w,
+                h: sh,
+                px: spx,
+                back_argb: back,
+            });
+        }
+        if *mark && let Ok(m) = u32::try_from(e.mark_rgb) {
+            lines.push(Band {
+                rect: Rect::new(
+                    p.rect.x + px(LABEL_LEFT),
+                    cands[i].y,
+                    (p.rect.w - px(LABEL_LEFT) - px(LABEL_RIGHT)).max(0),
+                    px(1.0).max(1),
+                ),
+                fill_argb: premultiplied(m & 0xff_ffff, MARK_LINE_OPACITY),
+                line_argb: 0,
+            });
+        }
+    }
+    (out, lines, boxes, accent)
 }
 
 /// The nesting shades of model `key` for the rows minimap `p` shows: a band per fold range of depth below
@@ -547,6 +939,7 @@ fn minimap(
     origin: (i32, i32),
     win: &mut Window,
     now: u64,
+    sprites: &mut SpriteCache,
 ) -> Option<Minimap> {
     let s = f64::from(s120) / 120.0;
     let px = |logical: f64| (logical * s).round().max(1.0) as u32;
@@ -620,18 +1013,29 @@ fn minimap(
     } else {
         Vec::new()
     };
+    let fill = colour(e.fill_rgb, e.fill_opacity);
+    let (labels, hairlines, boxes, accent) = if reveal_px > 0 {
+        labels(e, &rows, &p, row_px, s, win.hover.y, fill, sprites)
+    } else {
+        (Vec::new(), Vec::new(), Vec::new(), None)
+    };
+    win.boxes = boxes;
+    win.accent = accent;
+    let mut bands = hairlines;
+    bands.push(Band {
+        rect: p.band,
+        fill_argb: band,
+        line_argb: colour(e.band_rgb, (e.band_opacity * 2.0).min(1.0)),
+    });
     let m = Minimap {
         rect: p.rect,
         reveal_px,
         left,
-        fill_argb: colour(e.fill_rgb, e.fill_opacity),
+        fill_argb: fill,
         tiles: tiles.into(),
-        bands: Arc::from([Band {
-            rect: p.band,
-            fill_argb: band,
-            line_argb: colour(e.band_rgb, (e.band_opacity * 2.0).min(1.0)),
-        }]),
+        bands: bands.into(),
         shades: shades.into(),
+        labels: labels.into(),
     };
     win.geom = Some(Geom {
         key: e.key,
@@ -680,7 +1084,7 @@ pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -
     let mut planned: BTreeMap<u64, Minimap> = BTreeMap::new();
     for e in list {
         let win = mm.windows.entry(e.seq).or_default();
-        if let Some(m) = minimap(e, s120, origin, win, now) {
+        if let Some(m) = minimap(e, s120, origin, win, now, &mut mm.sprites) {
             planned.insert(e.seq, m);
         }
     }
@@ -914,4 +1318,42 @@ pub fn of(b: &mut Backings, key: u64) -> Result<&mut Minimaps, i32> {
 /// lists the frame's minimaps at each publish, so the publish after the last one went still removes its layer.
 pub fn count(b: &mut Backings, key: u64) -> usize {
     b.frame_mut(key).map_or(0, |f| f.minimaps.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn one(n: u32) -> Option<Sprite> {
+        Some((n, 1, Arc::from([n])))
+    }
+
+    fn key(i: usize) -> SpriteKey {
+        (format!("l{i}").into(), 0, 1050, 100, 0)
+    }
+
+    /// The cache holds at most SPRITES_MAX; when full, the least recently used eighth goes and a sprite used since
+    /// stays.
+    #[test]
+    fn the_sprite_cache_is_bounded_and_drops_the_least_recently_used() {
+        let mut c = SpriteCache::default();
+        for i in 0..SPRITES_MAX {
+            c.get_or_render(key(i), || one(i as u32));
+        }
+        assert_eq!(c.len(), SPRITES_MAX);
+        // key 0 used again: the most recent
+        assert_eq!(c.get_or_render(key(0), || panic!("held")).unwrap().0, 0);
+        c.get_or_render(key(SPRITES_MAX), || one(1));
+        assert_eq!(c.len(), SPRITES_MAX - SPRITES_MAX / 8 + 1);
+        assert!(c.contains(&key(0)), "used since: kept");
+        assert!(
+            !c.contains(&key(1)) && !c.contains(&key(SPRITES_MAX / 8)),
+            "the oldest went"
+        );
+        assert!(c.contains(&key(SPRITES_MAX / 8 + 1)));
+        for i in 0..10 * SPRITES_MAX {
+            c.get_or_render(key(SPRITES_MAX + 1 + i), || one(2));
+            assert!(c.len() <= SPRITES_MAX);
+        }
+    }
 }

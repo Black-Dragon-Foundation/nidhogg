@@ -722,19 +722,31 @@ text's left edge), `:open' (shown; otherwise the layer is kept with
 nothing revealed), `:nesting' (each fold range of the line model a
 faint band behind its bars, inset by depth), and the colours `:fill' (the surface), `:text' (the
 bars) and `:band' (over the lines the window shows), each a face, whose
-foreground is used, a colour name or (FACE-OR-COLOUR . OPACITY).  The
-vector is [FLAGS WIDTH SCALE FILL-RGB FILL-OPACITY TEXT-RGB TEXT-OPACITY
-BAND-RGB BAND-OPACITY], FLAGS 1 for `:open', 2 for `:left', 4 for
-reduced motion (`glitnir-reduced-motion-p') and 8 for `:nesting', RGB -1
-for none."
+foreground is used, a colour name or (FACE-OR-COLOUR . OPACITY).
+`:labels' draws names over it: t, the definitions of `:file' (the hub's
+labels layer in Sjá, keyed by that name) and the MARK sections the line
+model finds (`nidhogg-lines-set-section-regexp'); `marks-only', the MARK
+sections alone.  Their colours: `:label' (a definition), `:sub' (a
+nested one), `:accent' (the one under the pointer), `:mark' (a MARK
+section, in capitals with a hairline above); `:label-face' is the face
+whose font they are drawn in.  The vector is [FLAGS WIDTH SCALE FILL-RGB
+FILL-OPACITY TEXT-RGB TEXT-OPACITY BAND-RGB BAND-OPACITY LABELS FILE
+LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE], FLAGS 1 for `:open', 2
+for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
+`:nesting', LABELS 0 (none), 1 (t) or 2 (`marks-only'), RGB -1 for none."
   (let ((c (lambda (k) (glitnir--ruler-colour (plist-get spec k) frame))))
-    (let ((fill (funcall c :fill)) (text (funcall c :text)) (band (funcall c :band)))
+    (let ((fill (funcall c :fill)) (text (funcall c :text)) (band (funcall c :band))
+          (labels (pcase (plist-get spec :labels) ('nil 0) ('marks-only 2) (_ 1)))
+          (rgb (lambda (k) (or (car (funcall c k)) -1))))
       (vector (logior (if (plist-get spec :open) 1 0) (if (plist-get spec :left) 2 0)
                       (if (glitnir--reduced-motion-p) 4 0) (if (plist-get spec :nesting) 8 0))
               (or (plist-get spec :width) 0) (or (plist-get spec :scale) 2)
               (if fill (car fill) -1) (if fill (cdr fill) 0)
               (if text (car text) -1) (if text (cdr text) 0)
-              (if band (car band) -1) (if band (cdr band) 0)))))
+              (if band (car band) -1) (if band (cdr band) 0)
+              labels (and (= labels 1) (plist-get spec :file))
+              (funcall rgb :label) (funcall rgb :sub) (funcall rgb :accent) (funcall rgb :mark)
+              (plist-get spec :label-face)))))
 
 (defun glitnir--recheck-minimap (window)
   "Resolve WINDOW's minimap when its `glitnir-minimap' or the theme changed.

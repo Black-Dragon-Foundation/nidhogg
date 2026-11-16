@@ -942,6 +942,8 @@ int32_t nhg_edges_count (NhgDisplay *d, uint64_t frame);
 #define NHG_MINIMAP_LEFT  2   /* on the text's left edge */
 #define NHG_MINIMAP_REDUCED_MOTION 4   /* the pointer's open and close are final in their first frame */
 #define NHG_MINIMAP_NESTING 8   /* each fold range of the model a faint band behind its bars, by depth */
+#define NHG_MINIMAP_LABELS_ALL 1     /* labels: the hub's definitions of FILE and the MARK sections */
+#define NHG_MINIMAP_LABELS_MARKS 2   /* labels: the MARK sections alone */
 
 /* The minimap of Emacs window SEQ: CLIP its text area (device pixels with the native area's origin); KEY its buffer
    text's line model; START and END the window's start and end, BEGV and ZV the accessible part's (positions); FLAGS
@@ -949,7 +951,10 @@ int32_t nhg_edges_count (NhgDisplay *d, uint64_t frame);
    surface's, the bars' and the shown band's 0xRRGGBB (-1: none) at their opacities (0 to 1); STRIP the window's scroll
    bar strip (the overview ruler; empty for none), where the pointer resting 150 ms opens the minimap.  The glue owns
    the pointer over the minimap: it takes motion and clicks there (Emacs gets a leave), and opens, closes and reveals
-   it on its own timers and the frame clock.  */
+   it on its own timers and the frame clock.  LABELS (NHG_MINIMAP_LABELS_*, 0: none) draws names over it: FILE's
+   definitions (FILE_LEN bytes of UTF-8, the key of the hub's labels in Sjá; null: none) and the line model's MARK
+   sections, rendered by the label renderer in face LABEL_FACE of frame HOST, in LABEL_RGB (a definition), SUB_RGB (a
+   nested one), ACCENT_RGB (the one under the pointer) and MARK_RGB (a MARK section, with a hairline above).  */
 typedef struct
 {
   uint64_t seq;
@@ -966,7 +971,23 @@ typedef struct
   int32_t band_rgb;
   float band_opacity;
   NhgRect strip;
+  uint32_t labels;
+  int32_t label_face;
+  void *host;
+  const uint8_t *file;
+  size_t file_len;
+  int32_t label_rgb, sub_rgb, accent_rgb, mark_rgb;
 } NhgMinimap;
+
+/* The label renderer: TEXT (LEN bytes of UTF-8) in face FACE of frame HOST at PX100 / 100 device pixels, in 0xRRGGBB
+   RGB, drawn into BUF (premultiplied ARGB32, CAP_W x CAP_H, rows of CAP_W pixels, cleared), the text's top at the top;
+   the box it used into *W and *H.  Returns 0 when it drew.  */
+typedef int32_t (*NhgLabelRender) (void *host, int32_t face, const uint8_t *text, size_t len, uint32_t px100,
+                                   uint32_t rgb, uint32_t *buf, int32_t cap_w, int32_t cap_h, int32_t *w, int32_t *h);
+
+/* Set the label renderer (NULL: none).  Each frame keeps the sprites it rendered (at most 2048, the least recently used
+   going first) until it goes.  */
+void nhg_minimap_set_label_render (NhgLabelRender f);
 
 /* FRAME (WINDOW its tree's shell window) is about to be published with the N minimaps at LIST: each window with one
    gets its minimap layer, above its blocks and edges, the others lose theirs.  Returns how many windows have minimap

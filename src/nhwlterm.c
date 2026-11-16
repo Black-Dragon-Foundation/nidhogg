@@ -1079,10 +1079,34 @@ static ptrdiff_t nhwl_nedges, nhwl_edges_cap;
 /* The minimaps nhg_minimap_sync takes, kept between publishes.  */
 static NhgMinimap *nhwl_minimaps;
 static ptrdiff_t nhwl_nminimaps, nhwl_minimaps_cap;
+/* Their files' names, copied (a face lookup may move a Lisp string's
+   data): each record's FILE is an offset into this until
+   nhwl_minimap_files_fix makes it a pointer, just before the sync.  */
+static char *nhwl_minimap_names;
+static ptrdiff_t nhwl_minimap_names_len, nhwl_minimap_names_cap;
+
+#ifdef NHWL_WAYLAND
+extern int32_t nhwl_minimap_label_render (void *, int32_t, const uint8_t *,
+					  size_t, uint32_t, uint32_t,
+					  uint32_t *, int32_t, int32_t,
+					  int32_t *, int32_t *);
+#endif
+
+/* Make each listed minimap's FILE offset a pointer into the copied names.  */
+static void
+nhwl_minimap_files_fix (void)
+{
+  for (ptrdiff_t i = 0; i < nhwl_nminimaps; i++)
+    if (nhwl_minimaps[i].file_len)
+      nhwl_minimaps[i].file
+	= (const uint8_t *) nhwl_minimap_names
+	  + (uintptr_t) nhwl_minimaps[i].file;
+}
 
 /* List leaf window W's minimap V (the window parameter glitnir--minimap,
    [FLAGS WIDTH SCALE FILL-RGB FILL-OPACITY TEXT-RGB TEXT-OPACITY
-   BAND-RGB BAND-OPACITY]) over its text area CLIP, when its buffer's
+   BAND-RGB BAND-OPACITY LABELS FILE LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB
+   LABEL-FACE]) over its text area CLIP, when its buffer's
    text has a line model; the glue reads the rows from the model.  R is
    its ruler (glitnir--ruler): the pointer resting on that strip opens
    the minimap.  */
@@ -1111,6 +1135,44 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
   if (nhwl_nminimaps == nhwl_minimaps_cap)
     nhwl_minimaps = xpalloc (nhwl_minimaps, &nhwl_minimaps_cap, 1, -1,
 			     sizeof *nhwl_minimaps);
+  /* The labels: the face first (a lookup may realize it), then the
+     file's name copied.  */
+  struct frame *f = XFRAME (w->frame);
+  uint32_t labels = 0;
+  int32_t face = 0;
+  uintptr_t file = 0;
+  size_t file_len = 0;
+  if (ASIZE (v) >= 16 && nhwl_block_int (v, 9, 0) > 0)
+    {
+      static bool render_set;
+      if (!render_set)
+	{
+#ifdef NHWL_WAYLAND
+	  nhg_minimap_set_label_render (nhwl_minimap_label_render);
+#endif
+	  render_set = true;
+	}
+      labels = nhwl_block_int (v, 9, 0);
+      face = (SYMBOLP (AREF (v, 15)) && !NILP (AREF (v, 15))
+	      ? lookup_named_face (NULL, f, AREF (v, 15), false) : -1);
+      if (face < 0)
+	face = DEFAULT_FACE_ID;
+      Lisp_Object name = AREF (v, 10);
+      if (STRINGP (name) && SBYTES (name) > 0)
+	{
+	  Lisp_Object u = ENCODE_UTF_8 (name);
+	  file_len = SBYTES (u);
+	  if (nhwl_minimap_names_cap - nhwl_minimap_names_len
+	      < (ptrdiff_t) file_len)
+	    nhwl_minimap_names = xpalloc (nhwl_minimap_names,
+					  &nhwl_minimap_names_cap,
+					  file_len, -1, 1);
+	  memcpy (nhwl_minimap_names + nhwl_minimap_names_len, SDATA (u),
+		  file_len);
+	  file = nhwl_minimap_names_len;
+	  nhwl_minimap_names_len += file_len;
+	}
+    }
 #define NHWL_MINIMAP_OPACITY(i) \
   (NUMBERP (AREF (v, i)) ? (float) XFLOATINT (AREF (v, i)) : 1.0f)
   nhwl_minimaps[nhwl_nminimaps++] = (NhgMinimap) {
@@ -1131,6 +1193,15 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
     .band_rgb = nhwl_block_int (v, 7, -1),
     .band_opacity = NHWL_MINIMAP_OPACITY (8),
     .strip = strip,
+    .labels = labels,
+    .label_face = face,
+    .host = f,
+    .file = (const uint8_t *) file,
+    .file_len = file_len,
+    .label_rgb = labels ? nhwl_block_int (v, 11, -1) : -1,
+    .sub_rgb = labels ? nhwl_block_int (v, 12, -1) : -1,
+    .accent_rgb = labels ? nhwl_block_int (v, 13, -1) : -1,
+    .mark_rgb = labels ? nhwl_block_int (v, 14, -1) : -1,
   };
 #undef NHWL_MINIMAP_OPACITY
 #endif
@@ -1408,6 +1479,7 @@ nhwl_blocks_sync (struct frame *f)
 							    out->glitnir_id))) > 0))
     {
       nhwl_nblocks = nhwl_nedges = nhwl_nminimaps = 0;
+      nhwl_minimap_names_len = 0;
       nhwl_blocks_add (FRAME_ROOT_WINDOW (f));
       nhwl_glue_rc (dpyinfo,
 		    NHG (nhg_blocks_sync (dpyinfo->glue, out->window,
@@ -1419,6 +1491,7 @@ nhwl_blocks_sync (struct frame *f)
 					 out->glitnir_id, nhwl_edges,
 					 nhwl_nedges)));
       /* After the edges: the minimaps cover the text's edge, above all.  */
+      nhwl_minimap_files_fix ();
       nhwl_glue_rc (dpyinfo,
 		    NHG (nhg_minimap_sync (dpyinfo->glue, out->window,
 					   out->glitnir_id, nhwl_minimaps,

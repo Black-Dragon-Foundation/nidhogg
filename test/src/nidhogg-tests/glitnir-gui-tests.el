@@ -10,6 +10,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'nidhogg-views)
 
 (defun glitnir-gui--skip-unless-tree (&optional by)
   "Skip the running row unless the shell is the Wayland one.
@@ -1807,5 +1808,73 @@ uncovered)."
                                        (setq first snap))))
                                  3))
         (should (equal (glitnir-gui--pixel first inner) '(#x20 #x30 #x40)))))))
+
+(defun glitnir-gui--count-where (snap rect pred)
+  "How many pixels of RECT (X Y W H) in SNAP satisfy PRED, called with R, G and B."
+  (pcase-let ((`(,x ,y ,w ,h) rect) (n 0))
+    (cl-loop for yy from (max 0 y) below (+ y h) do
+             (cl-loop for xx from (max 0 x) below (+ x w) do
+                      (when (apply pred (glitnir-gui--pixel snap (list xx yy))) (cl-incf n))))
+    n))
+
+(ert-deftest glitnir-gui/the-minimap-labels-the-definitions-and-the-mark-sections ()
+  "An open minimap with `:labels' draws the hub's definitions of its `:file' (Sjá's labels layer) at their lines, a
+nested one in `:sub', and the line model's MARK sections in `:mark', in capitals; with `marks-only' the definitions
+go, and without `:labels' nothing of them is drawn."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-lines-set-section-regexp))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-minimap-labels*" 300)) (w (selected-window))
+        (file "/glitnir-gui/labels.el"))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (dolist (l '((40 . ";;;; Section one") (120 . "// MARK: other part")))
+              (goto-char (point-min))
+              (forward-line (car l))
+              (delete-region (point) (pos-eol))
+              (insert (cdr l))))
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (nidhogg-lines-enable buf t)
+          (nidhogg-lines-set-section-regexp buf "^(?:;;;;|//\\s*MARK:)\\s*(.+)$")
+          (nidhogg-lines-enable buf t)
+          (should (equal (mapcar #'cdr (nidhogg-lines-sections buf)) '("Section one" "other part")))
+          (nidhogg-view-push
+           (json-serialize
+            `((event . "view-model")
+              (data . ((minimap . ((file . ,file) (layer . "labels") (version . 1)
+                                   (items . [[11 0 "function" "alpha"] [81 1 "method" "beta"]]))))))))
+          (pcase-let* ((s (frame-scale-factor))
+                       (row (floor (+ 0.5 (* 2 s))))
+                       (box (floor (+ 0.5 (* 13 s))))
+                       (mm (glitnir-gui--minimap-rect w 120))
+                       (at (lambda (line) (list (nth 0 mm) (+ (nth 1 mm) (* line row)) (nth 2 mm) box)))
+                       (red (lambda (r g b) (and (> r 180) (< g 80) (< b 80))))
+                       (green (lambda (r g b) (and (< r 80) (> g 180) (< b 80))))
+                       (yellow (lambda (r g b) (and (> r 180) (> g 180) (< b 80))))
+                       (spec (lambda (labels)
+                               `(:width 120 :open t :fill ("#203040" . 1) :text ("#203040" . 1)
+                                        :labels ,labels :file ,file :label ("#ff0000" . 1) :sub ("#00ff00" . 1)
+                                        :accent ("#0000ff" . 1) :mark ("#ffff00" . 1) :label-face default))))
+            (set-window-parameter w 'glitnir-minimap (funcall spec t))
+            (let ((snap (glitnir-gui--painted)))
+              (glitnir-gui--shot "minimap-labels")
+              (should (> (glitnir-gui--count-where snap (funcall at 10) red) 3))
+              (should (> (glitnir-gui--count-where snap (funcall at 80) green) 3))
+              (should (> (glitnir-gui--count-where snap (funcall at 40) yellow) 3))
+              (should (> (glitnir-gui--count-where snap (funcall at 120) yellow) 3))
+              ;; between them, only the surface
+              (should (= 0 (glitnir-gui--count-where snap (funcall at 60) (lambda (r g _) (or (> r 180) (> g 180)))))))
+            (set-window-parameter w 'glitnir-minimap (funcall spec 'marks-only))
+            (let ((snap (glitnir-gui--painted)))
+              (should (= 0 (glitnir-gui--count-where snap (funcall at 10) red)))
+              (should (> (glitnir-gui--count-where snap (funcall at 40) yellow) 3)))
+            (set-window-parameter w 'glitnir-minimap (funcall spec nil))
+            (let ((snap (glitnir-gui--painted)))
+              (should (= 0 (glitnir-gui--count-where snap (funcall at 40) yellow))))))
+      (set-window-parameter w 'glitnir-minimap nil)
+      (nidhogg-view-minimap 'forget file)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
 
 ;;; glitnir-gui-tests.el ends here

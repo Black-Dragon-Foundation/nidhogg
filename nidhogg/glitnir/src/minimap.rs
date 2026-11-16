@@ -30,6 +30,8 @@ pub struct Minimap {
     pub bands: Arc<[Band]>,
     /// Rectangles drawn under the tiles, over the surface (nesting shades), in order.
     pub shades: Arc<[Band]>,
+    /// The labels, over the tiles and under the bands ([`place_labels`] chose them).
+    pub labels: Arc<[LabelAt]>,
 }
 
 /// One rasterised tile ([`raster`]) placed in the minimap.
@@ -61,6 +63,52 @@ impl Minimap {
         };
         Rect::new(x, self.rect.y, w, self.rect.h)
     }
+}
+
+/// A label drawn over the minimap (design M1): a host-rasterised sprite of a name, over a backing that hides the bars
+/// under it.  Root device px; pixels premultiplied ARGB, `w` × `h`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelAt {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub px: Arc<[u32]>,
+    /// Drawn under the sprite over its box (the minimap's surface: the bars under a label make way); 0: none.
+    pub back_argb: u32,
+}
+
+/// A label that may be drawn: its top (device px, the row of its line), its height, its depth (0 outermost) and
+/// whether it is a MARK section (placed before every definition).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Candidate {
+    pub y: i32,
+    pub h: u32,
+    pub depth: u32,
+    pub mark: bool,
+}
+
+/// The candidates drawn, as indices into `cands` in their order: none overlaps another (a `gap` px apart), each lies
+/// within `top`..`bottom`, and where two would overlap the shallower stays (a MARK section before any definition; at
+/// the same depth the one above).
+pub fn place_labels(cands: &[Candidate], top: i32, bottom: i32, gap: i32) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..cands.len())
+        .filter(|&i| cands[i].y >= top && cands[i].y + cands[i].h as i32 <= bottom)
+        .collect();
+    order.sort_by_key(|&i| (!cands[i].mark, cands[i].depth, cands[i].y, i));
+    let mut taken: Vec<(i32, i32)> = Vec::new();
+    let mut out = Vec::new();
+    for i in order {
+        let (a, b) = (cands[i].y, cands[i].y + cands[i].h as i32);
+        let at = taken.partition_point(|&(_, e)| e + gap <= a);
+        if taken.get(at).is_some_and(|&(s, _)| s < b + gap) {
+            continue;
+        }
+        taken.insert(at, (a, b));
+        out.push(i);
+    }
+    out.sort_unstable();
+    out
 }
 
 /// The display classes a line's bar is drawn in (the line model's classes; 0 is plain text).
@@ -181,6 +229,50 @@ mod tests {
         // a long line stops at the tile's edge
         assert_eq!(at(&px, 19, 6), 0xff_80_80_80);
         assert_eq!(at(&px, 1, 7), 0);
+    }
+
+    fn cand(y: i32, depth: u32, mark: bool) -> Candidate {
+        Candidate {
+            y,
+            h: 13,
+            depth,
+            mark,
+        }
+    }
+
+    #[test]
+    fn labels_never_overlap_and_a_deeper_one_yields() {
+        // a method 4 px under its class: the class stays; the next class far enough below stays too
+        let c = [cand(0, 0, false), cand(4, 1, false), cand(40, 0, false)];
+        assert_eq!(place_labels(&c, 0, 100, 1), [0, 2]);
+        // the deeper one first in the file: it still yields to the shallower one below that it would overlap
+        let c = [cand(0, 2, false), cand(10, 0, false), cand(30, 2, false)];
+        assert_eq!(place_labels(&c, 0, 100, 1), [1, 2]);
+        // a MARK section before a definition of any depth
+        let c = [cand(0, 0, false), cand(6, 3, true)];
+        assert_eq!(place_labels(&c, 0, 100, 1), [1]);
+        // the gap: 13 tall at 0 and at 14 touch with a gap of 1; at 13 they do not keep it
+        assert_eq!(
+            place_labels(&[cand(0, 0, false), cand(14, 0, false)], 0, 100, 1),
+            [0, 1]
+        );
+        assert_eq!(
+            place_labels(&[cand(0, 0, false), cand(13, 0, false)], 0, 100, 1),
+            [0]
+        );
+        // only inside top..bottom
+        assert_eq!(
+            place_labels(
+                &[cand(-2, 0, false), cand(90, 0, false), cand(40, 0, false)],
+                0,
+                100,
+                1
+            ),
+            [2]
+        );
+        // many at one depth, every 5 px: every third, from the top
+        let c: Vec<_> = (0..9).map(|i| cand(i * 5, 1, false)).collect();
+        assert_eq!(place_labels(&c, 0, 100, 1), [0, 3, 6]);
     }
 
     #[test]

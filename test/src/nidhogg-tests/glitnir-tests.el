@@ -752,7 +752,7 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; t
                                     '(:width 120 :open t :left t :fill ("#102030" . 0.5) :text "#ffffff"))
               (glitnir--recheck-frame-cards w)
               (should (equal (window-parameter w 'glitnir--minimap)
-                             (vector 3 120 2 #x102030 0.5 #xffffff 1 -1 0)))
+                             (vector 3 120 2 #x102030 0.5 #xffffff 1 -1 0 0 nil -1 -1 -1 -1 nil)))
               (should (eq (frame-parameter nil 'glitnir--blocks) t))
               (glitnir--recheck-frame-cards w)
               (setq glitnir--card-generation (1+ glitnir--card-generation))
@@ -761,7 +761,17 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; t
               (set-window-parameter w 'glitnir-minimap '(:width 80 :scale 3 :band ("#808080" . 0.25)))
               (glitnir--recheck-frame-cards w)
               (should (= sets 2))
-              (should (equal (window-parameter w 'glitnir--minimap) (vector 0 80 3 -1 0 -1 0 #x808080 0.25)))
+              (should (equal (window-parameter w 'glitnir--minimap) (vector 0 80 3 -1 0 -1 0 #x808080 0.25 0 nil -1 -1 -1 -1 nil)))
+              ;; the labels: t names the file, `marks-only' does not; the colours and the face
+              (set-window-parameter w 'glitnir-minimap
+                                    '(:width 80 :labels t :file "/a/b.el" :label "#010203" :sub "#040506"
+                                             :accent "#070809" :mark "#0a0b0c" :label-face bold))
+              (glitnir--recheck-frame-cards w)
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 9)
+                             (vector 1 "/a/b.el" #x010203 #x040506 #x070809 #x0a0b0c 'bold)))
+              (set-window-parameter w 'glitnir-minimap '(:width 80 :labels marks-only :file "/a/b.el"))
+              (glitnir--recheck-frame-cards w)
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 9 11) (vector 2 nil)))
               (set-window-parameter w 'glitnir-minimap nil)
               (glitnir--recheck-frame-cards w)
               (should-not (window-parameter w 'glitnir--minimap))
