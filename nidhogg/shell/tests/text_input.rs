@@ -230,6 +230,23 @@ mod text_input {
         assert!(a < b);
     }
 
+    /// A line around point with NULs in it (a `.elc` file: `;ELC\x1f\0\0\0`) panicked in the protocol's string
+    /// marshalling and killed the daemon: what is sent is the text between the NULs around the cursor.
+    #[test]
+    fn surrounding_text_never_holds_a_nul() {
+        let (rec, mut shell, surface) = focused();
+        shell
+            .text_input_surrounding(surface, ";ELC\x1f\0\0\0abc\0def", 9, 9)
+            .unwrap();
+        let log = rec.wait_log("text_input.set_surrounding_text", 1);
+        assert!(log.contains(r#""text":"abc""#), "{log}");
+        assert_eq!(
+            truncate_surrounding(";ELC\x1f\0\0\0abc\0def", 9, 2),
+            ("abc".to_owned(), 1, 0)
+        );
+        assert_eq!(truncate_surrounding("\0", 0, 0), (String::new(), 0, 0));
+    }
+
     #[test]
     fn surrounding_text_truncated_on_a_char_boundary() {
         let (rec, mut shell, surface) = focused();

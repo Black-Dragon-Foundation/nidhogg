@@ -3380,6 +3380,17 @@ nhwl_focus_lost (struct frame *r)
    text (the shell cuts the whole to 4000).  */
 #define NHWL_IM_SPAN 2000
 
+/* Whether C may be in the surrounding text: the line ends at a newline,
+   and the protocol's string is UTF-8 with no NUL (a `.elc' file's
+   ";ELC\037\0\0\0" killed the daemon), so a raw byte, a surrogate or a
+   character past Unicode ends it too.  */
+static bool
+nhwl_im_char_p (int c)
+{
+  return (c != 0 && c != '\n' && c <= MAX_UNICODE_CHAR
+	  && !char_surrogate_p (c));
+}
+
 /* Tell the input method where point is in F's selected window (the
    cursor rectangle, logical pixels in the surface of F's top-level, which
    has the keyboard) and what surrounds it (the current line).  The shell
@@ -3425,18 +3436,24 @@ nhwl_im_update (struct frame *f)
 
     if (BVAR (b, enable_multibyte_characters))
       {
-	while (s > BUF_BEGV_BYTE (b) && pt_b - s < NHWL_IM_SPAN
-	       && *BUF_BYTE_ADDRESS (b, s - 1) != '\n')
-	  s--;
-	while (e < BUF_ZV_BYTE (b) && e - pt_b < NHWL_IM_SPAN
-	       && *BUF_BYTE_ADDRESS (b, e) != '\n')
-	  e++;
-	/* Both ends on character boundaries.  */
-	while (s < pt_b && !CHAR_HEAD_P (*BUF_BYTE_ADDRESS (b, s)))
-	  s++;
-	while (e > pt_b && e < BUF_ZV_BYTE (b)
-	       && !CHAR_HEAD_P (*BUF_BYTE_ADDRESS (b, e)))
-	  e--;
+	/* Whole characters, out to the first one on each side that
+	   nhwl_im_char_p refuses.  */
+	while (s > BUF_BEGV_BYTE (b))
+	  {
+	    ptrdiff_t p = s - buf_prev_char_len (b, s);
+	    if (pt_b - p > NHWL_IM_SPAN
+		|| !nhwl_im_char_p (BUF_FETCH_MULTIBYTE_CHAR (b, p)))
+	      break;
+	    s = p;
+	  }
+	while (e < BUF_ZV_BYTE (b))
+	  {
+	    ptrdiff_t q = e + buf_next_char_len (b, e);
+	    if (q - pt_b > NHWL_IM_SPAN
+		|| !nhwl_im_char_p (BUF_FETCH_MULTIBYTE_CHAR (b, e)))
+	      break;
+	    e = q;
+	  }
 	for (ptrdiff_t i = s; i < e; i++)
 	  text[n++] = *BUF_BYTE_ADDRESS (b, i);
       }

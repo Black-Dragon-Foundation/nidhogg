@@ -65,8 +65,14 @@ pub struct TextInput {
 }
 
 /// `text` cut to at most `SURROUNDING_MAX` bytes around `cursor` on character boundaries, with `cursor` and `anchor`
-/// moved into the cut text.  `cursor` and `anchor` are byte offsets into `text`.
+/// moved into the cut text.  `cursor` and `anchor` are byte offsets into `text`.  The protocol's string cannot hold a
+/// NUL (sending one panics in the marshalling): the text is cut first to the NULs on either side of the cursor, and an
+/// anchor beyond them moves to the nearer end.
 pub fn truncate_surrounding(text: &str, cursor: usize, anchor: usize) -> (String, i32, i32) {
+    let lo = text[..cursor].rfind('\0').map_or(0, |i| i + 1);
+    let hi = text[cursor..].find('\0').map_or(text.len(), |i| cursor + i);
+    let anchor = anchor.clamp(lo, hi);
+    let (text, cursor, anchor) = (&text[lo..hi], cursor - lo, anchor - lo);
     let mut start = 0;
     let mut end = text.len();
     if end > SURROUNDING_MAX {
