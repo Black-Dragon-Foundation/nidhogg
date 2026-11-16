@@ -9,6 +9,7 @@
 //! kept and replayed when it is installed.  Everything else runs on the host's main thread.
 
 pub mod abi;
+pub mod derived;
 pub mod index;
 pub mod sections;
 
@@ -58,8 +59,8 @@ struct Pending {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Stale;
 
-/// What the build thread hands back: the lines and the MARK sections found in them.
-type Built = (LineIndex, Vec<Section>);
+/// What the build thread hands back: the lines, the MARK sections and the headings found in them.
+type Built = (LineIndex, Vec<Section>, Vec<Section>);
 
 pub struct Model {
     multibyte: bool,
@@ -69,6 +70,16 @@ pub struct Model {
     /// The MARK sections' expression, and the sections found with it (kept with the lines: built and edited with them).
     section_re: Option<Regex>,
     sections: Vec<Section>,
+    /// The headings' expression (its first group the heading's marks, their length its level) and the headings found.
+    heading_re: Option<Regex>,
+    headings: Vec<Section>,
+    /// Whether the model finds indentation ranges itself.
+    indent_folds: bool,
+    /// The most fold ranges kept, over all sources.
+    fold_max: usize,
+    /// Bumped by every change of the lines (not of the hidden ones); the found ranges are of `derived_at`'s lines.
+    text_gen: u64,
+    derived_at: u64,
     stale: bool,
     marks: Vec<Mark>,
     folds: Vec<Fold>,
@@ -91,6 +102,12 @@ impl Model {
             building: None,
             section_re: None,
             sections: Vec::new(),
+            heading_re: None,
+            headings: Vec::new(),
+            indent_folds: false,
+            fold_max: 20000,
+            text_gen: 0,
+            derived_at: u64::MAX,
             stale: false,
             marks: Vec::new(),
             folds: Vec::new(),
@@ -107,18 +124,22 @@ impl Model {
     /// Read the text again (lines only: marks, folds and the trail are positions and stay).
     pub fn rebuild(&mut self, parts: &[&[u8]], background: bool) {
         self.generation += 1;
+        self.text_gen += 1;
         self.stale = false;
         self.hidden_lines = None;
         if background {
             let text: Vec<u8> = parts.concat();
-            let (mb, tw, re) = (self.multibyte, self.tab_width, self.section_re.clone());
+            let (mb, tw) = (self.multibyte, self.tab_width);
+            let (re, hre) = (self.section_re.clone(), self.heading_re.clone());
             let h = std::thread::spawn(move || {
                 let idx = LineIndex::new(index::parse(&[&text], mb, tw, true));
                 let found = re.map_or_else(Vec::new, |re| sections::scan(&re, &text, 1, mb));
-                (idx, found)
+                let heads = hre.map_or_else(Vec::new, |re| sections::scan(&re, &text, 1, mb));
+                (idx, found, heads)
             });
             self.idx = None;
             self.sections.clear();
+            self.headings.clear();
             self.building = Some((h, Vec::new()));
         } else {
             self.building = None;
@@ -128,10 +149,13 @@ impl Model {
                 self.tab_width,
                 true,
             )));
-            self.sections = match &self.section_re {
-                Some(re) => sections::scan(re, &parts.concat(), 1, self.multibyte),
+            let text = parts.concat();
+            let scan = |re: &Option<Regex>| match re {
+                Some(re) => sections::scan(re, &text, 1, self.multibyte),
                 None => Vec::new(),
             };
+            self.sections = scan(&self.section_re);
+            self.headings = scan(&self.heading_re);
         }
     }
 
@@ -160,10 +184,12 @@ impl Model {
         }
         let (h, log) = self.building.take().expect("building");
         self.generation += 1;
+        self.text_gen += 1;
         match h.join() {
-            Ok((idx, found)) => {
+            Ok((idx, found, heads)) => {
                 self.idx = Some(idx);
                 self.sections = found;
+                self.headings = heads;
                 for p in log {
                     if self
                         .edit_lines(p.start, p.old_end, p.new_end, &[&p.seg])
@@ -200,6 +226,7 @@ impl Model {
     ) -> Result<(), Stale> {
         self.edits += 1;
         self.generation += 1;
+        self.text_gen += 1;
         let shift = |p: u64| -> u64 {
             if p <= start {
                 p
@@ -272,15 +299,14 @@ impl Model {
         }
         let ls = idx.start_of(l0) + 1;
         idx.replace(l0, l1 - l0 + 1, new);
-        if let Some(re) = &self.section_re {
-            sections::edit(
-                &mut self.sections,
-                re,
-                ls,
-                old_chars,
-                &seg.concat(),
-                self.multibyte,
-            );
+        let text = seg.concat();
+        for (re, list) in [
+            (&self.section_re, &mut self.sections),
+            (&self.heading_re, &mut self.headings),
+        ] {
+            if let Some(re) = re {
+                sections::edit(list, re, ls, old_chars, &text, self.multibyte);
+            }
         }
         Ok(())
     }
@@ -296,6 +322,52 @@ impl Model {
         self.sections.clear();
         self.generation += 1;
         Ok(())
+    }
+
+    /// Which fold ranges the model finds itself: by indentation (INDENT), and by headings (HEADING-RE, Rust regex
+    /// syntax: its first group is the heading's marks, their length the level; `None`: none).  The headings are found
+    /// again when the lines are next built, which the caller asks for.  An expression that does not compile changes
+    /// nothing.
+    pub fn set_derived_folds(
+        &mut self,
+        indent: bool,
+        heading_re: Option<&str>,
+    ) -> Result<(), String> {
+        let re = match heading_re {
+            Some(r) => Some(Regex::new(r).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        self.indent_folds = indent;
+        self.heading_re = re;
+        self.headings.clear();
+        self.derived_at = u64::MAX;
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// The indentation and heading ranges again, when the lines changed since they were found.
+    fn derive(&mut self) {
+        self.poll(false);
+        if self.derived_at == self.text_gen {
+            return;
+        }
+        let Some(idx) = self.idx.as_ref() else {
+            return;
+        };
+        let ind = if self.indent_folds {
+            derived::indent(idx)
+        } else {
+            Vec::new()
+        };
+        let heads = if self.heading_re.is_some() {
+            derived::headings(idx, &self.headings)
+        } else {
+            Vec::new()
+        };
+        self.derived_at = self.text_gen;
+        let max = self.fold_max;
+        self.set_folds(derived::SOURCE_INDENT, &ind, max);
+        self.set_folds(derived::SOURCE_HEADINGS, &heads, max);
     }
 
     /// The MARK sections whose line starts at BEG or after and before END, in order (none while the lines are built).
@@ -356,6 +428,7 @@ impl Model {
     /// Replace SOURCE's folds with FOLDS, keeping at most MAX folds in all (the smallest dropped first); depths are
     /// set by nesting.
     pub fn set_folds(&mut self, source: u8, folds: &[Fold], max: usize) {
+        self.fold_max = max;
         self.folds.retain(|f| f.source != source);
         self.folds.extend(
             folds
@@ -379,8 +452,9 @@ impl Model {
         }
     }
 
-    /// The folds overlapping [BEG, END), in order.
-    pub fn folds(&self, beg: u64, end: u64) -> impl Iterator<Item = &Fold> {
+    /// The folds overlapping [BEG, END), in order (the model's own ranges found again first, when the lines changed).
+    pub fn folds(&mut self, beg: u64, end: u64) -> impl Iterator<Item = &Fold> {
+        self.derive();
         self.folds
             .iter()
             .filter(move |f| f.end > beg && f.beg < end)
@@ -388,6 +462,7 @@ impl Model {
 
     /// The fold to toggle at POS: the largest one that starts on POS's line, else the innermost one holding POS.
     pub fn fold_at(&mut self, pos: u64) -> Option<Fold> {
+        self.derive();
         let line = self.line_of(pos);
         if let Some(l) = line {
             let mut best: Option<Fold> = None;

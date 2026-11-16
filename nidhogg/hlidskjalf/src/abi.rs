@@ -478,6 +478,36 @@ pub unsafe extern "C" fn hlid_set_sections(key: u64, re: *const u8, n: usize) ->
     })
 }
 
+/// The fold ranges KEY's model finds itself: by indentation when INDENT is non-zero, and by headings with the N bytes
+/// at RE (UTF-8, Rust regex syntax, its first group the heading's marks), none for a null RE.  HLID_E_ARG when RE does
+/// not compile (nothing changes).  The headings are found at the next build, which the caller asks for.
+///
+/// # Safety
+/// RE must be readable for N bytes unless null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_set_derived_folds(
+    key: u64,
+    indent: i32,
+    re: *const u8,
+    n: usize,
+) -> i32 {
+    let text = if re.is_null() {
+        None
+    } else {
+        // SAFETY: the caller promises N readable bytes.
+        match std::str::from_utf8(unsafe { std::slice::from_raw_parts(re, n) }) {
+            Ok(t) => Some(t.to_owned()),
+            Err(_) => return HLID_E_ARG,
+        }
+    };
+    with(key, |m| {
+        match m.set_derived_folds(indent != 0, text.as_deref()) {
+            Ok(()) => HLID_OK,
+            Err(_) => HLID_E_ARG,
+        }
+    })
+}
+
 /// KEY's Ith MARK section whose line starts in BEG..END: its line's start into *POS, its name into *NAME (UTF-8, valid
 /// until KEY's model next changes) and *LEN.  HLID_NOTHING past the last; the model's state while it is built.
 ///

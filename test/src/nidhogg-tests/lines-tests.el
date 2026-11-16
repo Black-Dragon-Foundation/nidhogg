@@ -299,4 +299,29 @@ shifts them with an edit above and finds one typed; BEG limits them.  An express
     (should-not (nidhogg-lines-sections))
     (nidhogg-lines-disable)))
 
+(ert-deftest lines/fold-sources-indent-and-headings ()
+  "The model's own fold ranges: by indentation (source 4, kind 0), from a line to the last deeper one; by headings
+\(source 2, kind 8), to the line before the next heading of the level or above, found again after an edit.  A heading
+expression that does not compile signals `invalid-regexp'; nil sources drop the ranges."
+  (with-temp-buffer
+    (insert "a\n  b\n  c\nd\n")
+    (nidhogg-lines-enable nil t)
+    (should-not (nidhogg-lines-folds nil))
+    (nidhogg-lines-set-fold-sources nil t nil)
+    (should (equal (nidhogg-lines-folds nil) '((1 10 0 0 4))))
+    (should (equal (nidhogg-lines-fold-at nil 3) '(1 10 0 0 4)))
+    (nidhogg-lines-set-fold-sources nil nil nil)
+    (should-not (nidhogg-lines-folds nil))
+    (erase-buffer)
+    (insert "# A\ntext\n## B\nmore\n# C\nlast\n")
+    (nidhogg-lines-set-fold-sources nil nil "^(#+)\\s")
+    (should (equal (nidhogg-lines-folds nil) '((1 19 8 0 2) (10 19 8 1 2) (20 28 8 0 2))))
+    (goto-char (point-max))
+    (insert "## D\nz\n")
+    (should (equal (nidhogg-lines-folds nil 20)
+                   '((20 35 8 0 2) (29 35 8 1 2))))
+    (should-error (nidhogg-lines-set-fold-sources nil nil "(") :type 'invalid-regexp)
+    (should (= (length (nidhogg-lines-folds nil)) 4))
+    (nidhogg-lines-disable)))
+
 ;;; lines-tests.el ends here

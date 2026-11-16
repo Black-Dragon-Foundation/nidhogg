@@ -69,6 +69,10 @@ int32_t hlid_describe (uint64_t key, hlid_stats *out);
 int32_t hlid_set_sections (uint64_t key, const uint8_t *re, size_t n);
 int32_t hlid_section (uint64_t key, uint64_t beg, uint64_t end, size_t i,
 		      uint64_t *pos, const uint8_t **name, size_t *len);
+/* The fold ranges the model finds itself: by indentation (INDENT non-zero)
+   and by headings (RE, its first group the marks; null: none).  */
+int32_t hlid_set_derived_folds (uint64_t key, int32_t indent,
+				const uint8_t *re, size_t n);
 
 #ifdef __cplusplus
 }

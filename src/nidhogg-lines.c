@@ -558,6 +558,42 @@ when REGEXP does not compile; the expression before it stays.  */)
   return Qnil;
 }
 
+DEFUN ("nidhogg-lines-set-fold-sources", Fnidhogg_lines_set_fold_sources,
+       Snidhogg_lines_set_fold_sources, 3, 3, 0,
+       doc: /* Which fold ranges BUFFER's line model finds itself.
+INDENT non-nil: by indentation, from a line to the last following line
+indented deeper (source 4, kind 0).  HEADING-REGEXP, a string in Rust's
+regex syntax or nil for none: by headings, each line it matches running
+to the line before the next heading of its level or above (source 2,
+kind 8); its first group is the heading's marks, their length the level
+\(Markdown: "^(#+)\\s").  Each range runs from its first line's start to
+its last line's end, so that line stays shown when it is folded.  The
+ranges come with `nidhogg-lines-folds' beside the owner's, found again
+after each change.  The model's lines are built again to find the
+headings.  BUFFER's text must have a model (`nidhogg-lines-enable').
+Signals `invalid-regexp' when HEADING-REGEXP does not compile; nothing
+changes then.  */)
+  (Lisp_Object buffer, Lisp_Object indent, Lisp_Object heading_regexp)
+{
+  struct buffer *b = nh_lines_buffer (buffer);
+  struct nh_lines_text *t = nh_lines_find (b->text);
+  if (!t)
+    error ("No line model for this buffer (nidhogg-lines-enable)");
+  Lisp_Object re = Qnil;
+  if (!NILP (heading_regexp))
+    {
+      CHECK_STRING (heading_regexp);
+      re = ENCODE_UTF_8 (heading_regexp);
+    }
+  if (hlid_set_derived_folds (nh_lines_key (b->text), !NILP (indent),
+			      NILP (re) ? NULL : SDATA (re),
+			      NILP (re) ? 0 : SBYTES (re)) != HLID_OK)
+    xsignal1 (Qinvalid_regexp, heading_regexp);
+  if (!NILP (re))
+    nh_lines_build (b, t, true);
+  return Qnil;
+}
+
 DEFUN ("nidhogg-lines-sections", Fnidhogg_lines_sections,
        Snidhogg_lines_sections, 0, 3, 0,
        doc: /* The MARK sections of BUFFER's text, as (POS . NAME) in order.
@@ -635,6 +671,7 @@ nil builds every model at once, on the main thread.  */);
   defsubr (&Snidhogg_lines_trail);
   defsubr (&Snidhogg_lines_set_section_regexp);
   defsubr (&Snidhogg_lines_sections);
+  defsubr (&Snidhogg_lines_set_fold_sources);
   defsubr (&Snidhogg_lines_describe);
   Fprovide (intern_c_string ("nidhogg-lines"), Qnil);
 }

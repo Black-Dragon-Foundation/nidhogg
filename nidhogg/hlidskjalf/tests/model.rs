@@ -248,3 +248,73 @@ fn the_rows_leave_out_the_hidden_lines_and_the_generation_counts_changes() {
     p.m.rebuild(&[&p.text], false);
     assert!(p.m.generation() > g);
 }
+
+fn ranges(m: &mut Model) -> Vec<(u64, u64, u8, u8)> {
+    m.folds(0, u64::MAX)
+        .map(|f| (f.beg, f.end, f.depth, f.source))
+        .collect()
+}
+
+#[test]
+fn indentation_ranges_follow_the_lines() {
+    let mut p = Pair::new("fn a() {\n  x\n\n  y\n}\nfn b() {\n  z\n}\n", false);
+    assert!(ranges(&mut p.m).is_empty(), "none until asked for");
+    p.m.set_derived_folds(true, None).unwrap();
+    // each from its first line's start to the last deeper line's end (the blank line inside attached), its newline out
+    assert_eq!(ranges(&mut p.m), vec![(1, 18, 0, 4), (21, 33, 0, 4)]);
+    assert_eq!(p.m.fold_at(25).map(|f| f.beg), Some(21));
+    // a deeper line typed into fn b widens its range; fn a's stays
+    p.edit(33, 0, "\n    w");
+    assert_eq!(
+        ranges(&mut p.m),
+        vec![(1, 18, 0, 4), (21, 39, 0, 4), (30, 39, 1, 4)]
+    );
+    // the owner's ranges stay beside them
+    p.m.set_folds(
+        5,
+        &[Fold {
+            beg: 1,
+            end: 10,
+            kind: 0,
+            depth: 0,
+            source: 0,
+        }],
+        100,
+    );
+    assert_eq!(ranges(&mut p.m).len(), 4);
+    p.m.set_derived_folds(false, None).unwrap();
+    assert_eq!(ranges(&mut p.m), vec![(1, 10, 0, 5)]);
+    p.check();
+}
+
+#[test]
+fn heading_ranges_end_before_the_next_heading_of_their_level() {
+    for background in [false, true] {
+        let text = "# A\ntext\n## B\nmore\n# C\nlast\n";
+        let mut p = Pair::new(text, false);
+        p.m.set_derived_folds(false, Some(r"^(#+)\s")).unwrap();
+        // the headings are found when the lines are built again, as the host does after setting the expression
+        p.m.rebuild(&[text.as_bytes()], background);
+        p.m.poll(true);
+        assert_eq!(
+            ranges(&mut p.m),
+            vec![(1, 19, 0, 2), (10, 19, 1, 2), (20, 28, 0, 2)],
+            "background {background}"
+        );
+        assert!(p.m.folds(0, u64::MAX).all(|f| f.kind == 8));
+        // a line typed under A moves every range after it
+        p.edit(5, 0, "x\n");
+        assert_eq!(
+            ranges(&mut p.m),
+            vec![(1, 21, 0, 2), (12, 21, 1, 2), (22, 30, 0, 2)]
+        );
+        // B becomes a top heading: A ends before it
+        p.edit(12, 1, "");
+        assert_eq!(
+            ranges(&mut p.m),
+            vec![(1, 11, 0, 2), (12, 20, 0, 2), (21, 29, 0, 2)]
+        );
+        assert!(p.m.set_derived_folds(false, Some("(")).is_err());
+        p.check();
+    }
+}
