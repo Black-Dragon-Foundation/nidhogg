@@ -310,6 +310,12 @@ enum event_kind
      or `replaced', ID the session's id (a string) or nil.  Lisp's
      special-event-map handles it.  */
   , NHWL_SESSION_EVENT
+  /* A window's minimap was clicked, dragged or rested on (the glue's
+     NHG_ACT_MINIMAP).  .arg is (KIND WINDOW POS): KIND `click', `drag'
+     or `dwell', POS the window start that centres the row (click and
+     drag) or the row's start (dwell).  Lisp's special-event-map
+     handles it.  */
+  , NHWL_MINIMAP_EVENT
   /* A key was released, while `nidhogg-key-events' is non-nil.  .arg
      is (KIND . CODE), the kind and code of the keystroke event its
      press gave; .modifiers and .frame_or_window are the release's.

@@ -193,6 +193,11 @@ impl ShellBackend for WaylandShell {
         self.shared.wake.raw()
     }
 
+    fn set_timer(&mut self, at_ns: Option<u64>) -> ShellResult {
+        self.timer.set(&self.shared, at_ns);
+        Ok(())
+    }
+
     fn caps(&self) -> NhShellCaps {
         let mut caps = self.main.globals.caps();
         caps.ssd = self.main.ssd;

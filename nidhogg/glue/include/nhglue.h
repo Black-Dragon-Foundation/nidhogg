@@ -933,6 +933,50 @@ int32_t nhg_edges_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const Nh
 /* How many of FRAME's windows have an edge layer (while it is not 0, C lists the frame's edges at each publish).  */
 int32_t nhg_edges_count (NhgDisplay *d, uint64_t frame);
 
+/* ---- Minimaps ------------------------------------------------------------------------------------------------------
+   A window's buffer drawn as bars over the outer edge of its text (the window parameter glitnir-minimap, resolved by
+   glitnir.el into glitnir--minimap), from the text's line model (nidhogg-lines.c): no reflow, the text keeps its
+   width.  The glue reads the rows from the model and sizes them from the frame's scale.  */
+
+#define NHG_MINIMAP_OPEN  1   /* shown: the whole width revealed */
+#define NHG_MINIMAP_LEFT  2   /* on the text's left edge */
+#define NHG_MINIMAP_REDUCED_MOTION 4   /* the pointer's open and close are final in their first frame */
+#define NHG_MINIMAP_NESTING 8   /* each fold range of the model a faint band behind its bars, by depth */
+
+/* The minimap of Emacs window SEQ: CLIP its text area (device pixels with the native area's origin); KEY its buffer
+   text's line model; START and END the window's start and end, BEGV and ZV the accessible part's (positions); FLAGS
+   NHG_MINIMAP_*; WIDTH in logical pixels, SCALE rows per line (a line's height in logical pixels, 1 to 3); the
+   surface's, the bars' and the shown band's 0xRRGGBB (-1: none) at their opacities (0 to 1); STRIP the window's scroll
+   bar strip (the overview ruler; empty for none), where the pointer resting 150 ms opens the minimap.  The glue owns
+   the pointer over the minimap: it takes motion and clicks there (Emacs gets a leave), and opens, closes and reveals
+   it on its own timers and the frame clock.  */
+typedef struct
+{
+  uint64_t seq;
+  NhgRect clip;
+  uint64_t key;
+  uint64_t start, end, begv, zv;
+  uint32_t flags;
+  uint32_t width;
+  uint32_t scale;
+  int32_t fill_rgb;
+  float fill_opacity;
+  int32_t text_rgb;
+  float text_opacity;
+  int32_t band_rgb;
+  float band_opacity;
+  NhgRect strip;
+} NhgMinimap;
+
+/* FRAME (WINDOW its tree's shell window) is about to be published with the N minimaps at LIST: each window with one
+   gets its minimap layer, above its blocks and edges, the others lose theirs.  Returns how many windows have minimap
+   layers.  */
+int32_t nhg_minimap_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const NhgMinimap *list, size_t n);
+
+/* How many of FRAME's windows have a minimap layer (while it is not 0, C lists the frame's minimaps at each
+   publish).  */
+int32_t nhg_minimap_count (NhgDisplay *d, uint64_t frame);
+
 /* Layout legs.  Emacs window W_SEQ of FRAME (WINDOW its shell window, a top-level's) has the layout leg vector V, N
    floats as glitnir--leg-vector gave them (lisp/glitnir.el's glitnir--leg-slots; N 0 for none).  A new capture number
    asks the presenter for a picture of the window's text area before the packets published after this call, and makes
@@ -1065,6 +1109,14 @@ typedef struct { int32_t x, y, id; } NhgTouchPoint;
    scale from the main screen's top-left, as nhg_window_place takes it; H its title bar's height (device pixels, 0:
    none).  C stores them as the frame's position and frame-geometry's title bar.  */
 #define NHG_ACT_MOVED         61
+/* A window's minimap: CODE an NHG_MINIMAP_* below.  NHG_MINIMAP_PUBLISH: publish WINDOW's tree (no redisplay: a
+   minimap's reveal or state changed).  The others: a click, a drag step or a dwell at buffer position DX in the Emacs
+   window whose sequence_number is DY; C hands them to Lisp as a `glitnir-minimap' event.  */
+#define NHG_ACT_MINIMAP       62
+#define NHG_MINIMAP_PUBLISH   0
+#define NHG_MINIMAP_CLICK     1   /* DX: the window start that centres the row clicked */
+#define NHG_MINIMAP_DRAG      2   /* DX: the same for the row dragged to */
+#define NHG_MINIMAP_DWELL     3   /* DX: the start of the row the pointer rests on */
 #define NHG_SETTLE_REPORT     1   /* every shown frame presented again, or 2 s passed: run `reconnected' */
 #define NHG_SETTLE_MONITORS   2   /* the monitor list differs from before the loss (ids aside) */
 #define NHG_SETTLE_FOCUS_OUT  4   /* no keyboard enter 1 s after the report: *WINDOW loses the focus */

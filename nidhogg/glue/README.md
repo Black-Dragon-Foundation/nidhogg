@@ -301,6 +301,31 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   layers of its own (macOS) gets each window's edges as one image at its text area instead (`edges::images_at`,
   `glitnir::compose::edge_overlay`), last in the window's card list; the shell stacks the list's layers in its order,
   so the edges show above the blocks they cross.
+- **Minimaps** (`src/minimap.rs`): a window's buffer drawn as bars over the outer edge of its text, no reflow (the
+  window parameter `glitnir-minimap`, a plist of width, rows per line, side, open and colours, which `glitnir.el`
+  resolves into `glitnir--minimap`). In the same pass as the blocks, C gives `nhg_minimap_sync` an `NhgMinimap` per
+  window whose buffer text has a line model (`nidhogg-lines.c`): the text area, the model's key, the window's start
+  and end (its matrix's first and last rows, as the ruler's thumb), BEGV and ZV, flags, sizes and colours, while the
+  frame's `glitnir--blocks` flag is set or `nhg_minimap_count` is not 0. The glue reads the rows from the model in
+  the same process (`hlidskjalf::abi::with_model`): one row per visible line of the accessible part, a bar from the
+  line's indent to its end. Each window gets a WINDOW layer, id `sequence_number | MINIMAP_TAG`, at the minimap's
+  rectangle and above the edges, holding a `glitnir::minimap::Minimap`: the surface, tiles of 256 rows kept while
+  the model's generation, the first row, the sizes and the colour stay, and the band over the rows the window
+  shows. A file taller than the minimap scrolls it in proportion, the band at the window's fraction. Every other
+  window on the same text adds an outlined band (design M8). With `NHG_MINIMAP_NESTING` each fold range of the
+  model's first four depths is a faint band (4.5 % of the bars' opacity) behind the bars, inset 4 logical px a depth.
+  Closed, the layer stays with nothing revealed. A shell with cards on layers of its own (macOS) gets no minimap from
+  here.
+- **The minimap's pointer** (`minimap::pointer`, `timer`, `frame_ready`): the glue keeps the deadlines and asks the
+  shell for a wake-up at the nearest (`ShellBackend::set_timer`, a `Timer` event). The pointer resting 150 ms on the
+  window's ruler strip (`NhgMinimap::strip`) opens the minimap, revealed from its outer edge over 120 ms on frame
+  callbacks (cubic ease-out; final at once with `NHG_MINIMAP_REDUCED_MOTION`); away from both, it closes 600 ms
+  later. Over the revealed minimap the glue swallows motion and buttons and sends Emacs one `LEAVE`, so no
+  `mouse-face` or `help-echo` fires under it. A left press is a click (and starts a drag), each row change while
+  dragging a drag step, and 300 ms at rest on a row a dwell: `NHG_ACT_MINIMAP` with code `NHG_MINIMAP_CLICK`,
+  `_DRAG` or `_DWELL`, `dx` the position (the window start that centres the row; the row's start for a dwell) and
+  `dy` the window's sequence number, which C stores as a `glitnir-minimap` event. A reveal step is
+  `NHG_MINIMAP_PUBLISH`: C publishes the frame again, with no redisplay.
 - **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose
   last full-window scroll is 2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
   box demotes first. Demotion is `set_output (…, 0)` and the layer's removal, in that publish: Glitnir damages the

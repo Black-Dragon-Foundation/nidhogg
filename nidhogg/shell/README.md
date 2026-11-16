@@ -60,6 +60,7 @@ scale: `scale120` = 120 x (Xft DPI / 96), and server-side decorations always (`s
 | `show_menu` | no window menu: no-op | `_GTK_SHOW_WINDOW_MENU`, or no-op | fits |
 | `ack_configure` (serial, flags: `ACK_CONTENT` for an ack that changes what the window shows; sent with the tree's next commit) | no configure handshake: no-op (`CONFIGURE` events come from `windowDidResize:`) | answers `_NET_WM_SYNC_REQUEST` with that serial, or no-op | fits |
 | `set_cursor` | `NSCursor` set | cursor font via `ChangeWindowAttributes` | fits |
+| `set_timer` (one deadline on `CLOCK_MONOTONIC`, a `Timer` event when due; Wayland: a thread of its own that posts it and signals the wake fd) | not yet: `Unsupported` (the glue's minimap pointer is Linux only until Naglfar) | not yet: `Unsupported` | needs change |
 | `window_activate` | `activateIgnoringOtherApps:` (the token is ignored) | `_NET_ACTIVE_WINDOW` (the token is the startup id) | fits |
 | `window_scale` | `backingScaleFactor` x 120 (120 or 240) | 120 x Xft DPI ratio | fits |
 | `window_ssd` | always true (the system draws the title bar) | true | fits |

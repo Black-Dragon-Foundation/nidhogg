@@ -1539,4 +1539,251 @@ Emacs) the same change draws the window again from its start.  An `invisible' ov
       (set-face-attribute 'line-number-current-line frame :weight weight)
       (kill-buffer buf))))
 
+;; The minimap (glitnir-minimap): bars from the line model over the text's outer edge.
+
+(defun glitnir-gui--shot (name)
+  "Write the selected frame's picture to NAME-S.png (S the scale) under GLITNIR_GUI_OUT, when that is set."
+  (when-let* ((dir (getenv "GLITNIR_GUI_OUT")))
+    (let ((coding-system-for-write 'binary))
+      (write-region (glitnir-snapshot nil) nil
+                    (expand-file-name (format "%s-%s.png" name (frame-scale-factor)) dir) nil 'silent))))
+
+(defun glitnir-gui--minimap-rect (w width)
+  "The device-pixel rectangle (X Y W H) a minimap WIDTH logical pixels wide covers at window W's text's right edge."
+  (pcase-let ((`(,_ ,ty ,tx1 ,ty1) (window-inside-pixel-edges w))
+              (mw (round (* width (frame-scale-factor)))))
+    (list (- tx1 mw) ty mw (- ty1 ty))))
+
+(defun glitnir-gui--count-in (snap rect rgb)
+  "How many pixels of RECT (X Y W H) in SNAP are RGB, every other row and column."
+  (pcase-let ((`(,x ,y ,w ,h) rect) (n 0))
+    (cl-loop for yy from y below (+ y h) by 2 do
+             (cl-loop for xx from x below (+ x w) by 2 do
+                      (when (equal (glitnir-gui--pixel snap (list xx yy)) rgb) (cl-incf n))))
+    n))
+
+(ert-deftest glitnir-gui/the-minimap-draws-the-lines-over-the-text-without-reflow ()
+  "An open minimap draws the buffer's lines as bars (the line model's indents and ends) on its surface over the text's
+right edge: the text keeps its width and every text pixel outside the minimap stays as it was.  Closed, nothing of it
+shows."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-lines-enable))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-minimap*" 300)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (nidhogg-lines-enable buf t)
+          (pcase-let* ((before (glitnir-gui--painted))
+                       (body (window-body-width w t))
+                       (mm (glitnir-gui--minimap-rect w 120))
+                       (`(,tx ,ty ,_ ,_) (window-inside-pixel-edges w))
+                       (text (list tx ty (- (nth 0 mm) tx) (nth 3 mm))))
+            (set-window-parameter w 'glitnir-minimap
+                                  '(:width 120 :open t :fill ("#203040" . 1) :text ("#ff00ff" . 1)))
+            (let ((after (glitnir-gui--painted)))
+              (glitnir-gui--shot "minimap-open")
+              (should (= (window-body-width w t) body))
+              (should (= 0 (glitnir-gui--differ before after text)))
+              ;; the bars, the surface between them, and nothing of the text's own colours left in the minimap
+              (should (> (glitnir-gui--count-in after mm '(255 0 255)) 100))
+              (should (> (glitnir-gui--count-in after mm '(#x20 #x30 #x40)) 100))
+              ;; a line's bar starts at its indent: line 0 ("    0 aaa…") is blank for its first 4 columns
+              (let ((y (+ (nth 1 mm) (glitnir-gui--logical 1))))
+                (should-not (equal (glitnir-gui--pixel after (list (+ (nth 0 mm) 1) y)) '(255 0 255)))
+                (should (equal (glitnir-gui--pixel after (list (+ (nth 0 mm) (* 4 (max 1 (round (frame-scale-factor)))) 2) y))
+                               '(255 0 255)))))
+            (set-window-parameter w 'glitnir-minimap '(:width 120 :fill ("#203040" . 1) :text ("#ff00ff" . 1)))
+            (should (= 0 (glitnir-gui--differ before (glitnir-gui--painted) (list tx ty (+ (nth 2 text) (nth 2 mm)) (nth 3 mm)))))))
+      (set-window-parameter w 'glitnir-minimap nil)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/the-minimap-band-follows-a-scroll ()
+  "The band over the lines the window shows moves with a scroll, with no Lisp of the minimap's in between: the same
+parameter, only the window's start changes."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-lines-enable))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-minimap-band*" 300)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (nidhogg-lines-enable buf t)
+          (set-window-parameter w 'glitnir-minimap
+                                '(:width 120 :open t :fill ("#203040" . 1) :text ("#203040" . 1)
+                                         :band ("#00ff00" . 1)))
+          (pcase-let* ((mm (glitnir-gui--minimap-rect w 120))
+                       (band-top (lambda (snap)
+                                   (cl-loop for y from (nth 1 mm) below (+ (nth 1 mm) (nth 3 mm))
+                                            when (equal (glitnir-gui--pixel snap (list (+ (nth 0 mm) 20) y))
+                                                        '(0 255 0))
+                                            return (- y (nth 1 mm)))))
+                       (top (funcall band-top (glitnir-gui--painted))))
+            (should (equal top 0))
+            ;; point goes along, or redisplay brings the start back to it
+            (let ((pos (with-current-buffer buf (save-excursion (goto-char 1) (forward-line 100) (point)))))
+              (set-window-point w pos)
+              (set-window-start w pos))
+            (let ((snap (glitnir-gui--painted)))
+              (glitnir-gui--shot "minimap-band-scrolled")
+              (should (> (funcall band-top snap) 0)))))
+      (set-window-parameter w 'glitnir-minimap nil)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
+;; The pointer over the minimap: gui.sh's virtual pointer (sway, NHWL_GUI_VPOINTER), aimed in frame pixels through a
+;; mapping read off two points over the text.
+
+(defun glitnir-gui--vp-start ()
+  "Start the virtual pointer and wait for it; skip when gui.sh gave none."
+  ;; (`skip-unless' exists only inside an `ert-deftest')
+  (unless (getenv "NHWL_GUI_VPOINTER")
+    (ert-skip "no virtual pointer (gui.sh --recorder on sway)"))
+  (let* ((buf (generate-new-buffer " *glitnir-vp*"))
+         (p (make-process :name "glitnir-vp" :buffer buf :noquery t :connection-type 'pipe
+                          :command (list (getenv "NHWL_GUI_VPOINTER") "--virtual-pointer"))))
+    (should (gui-runner-wait (lambda () (with-current-buffer buf (string-search "READY" (buffer-string)))) 5))
+    p))
+
+(defun glitnir-gui--vp-move (vp lx ly)
+  "Move VP to LX, LY of a 1000 x 1000 layout; the frame pixel Emacs then has for the pointer, (X . Y), or nil."
+  (let ((old (cdr (mouse-pixel-position))))
+    ;; one pixel aside first: a move to where the pointer is sends no motion
+    (process-send-string vp (format "move %d %d 1000 1000\nmove %d %d 1000 1000\n" (1+ lx) ly lx ly))
+    (gui-runner-wait (lambda ()
+                       (gui-runner-read-all)
+                       (let ((xy (cdr (mouse-pixel-position))))
+                         (and (car xy) (not (equal xy old)) xy)))
+                     3)))
+
+(defun glitnir-gui--vp-calibrate (vp)
+  "The map from frame pixels to VP's layout, (AX AY SX SY): two points over the text read back."
+  (let ((a (glitnir-gui--vp-move vp 300 300)) (b (glitnir-gui--vp-move vp 500 500)))
+    (should (and a b))
+    (list (- 300 (/ (car a) (/ (float (- (car b) (car a))) 200)))
+          (- 300 (/ (cdr a) (/ (float (- (cdr b) (cdr a))) 200)))
+          (/ (float (- (car b) (car a))) 200) (/ (float (- (cdr b) (cdr a))) 200))))
+
+(defun glitnir-gui--vp-to (vp map x y)
+  "Move VP to frame pixel X, Y through MAP (`glitnir-gui--vp-calibrate'), then let the session run a moment."
+  (pcase-let ((`(,ax ,ay ,sx ,sy) map))
+    (process-send-string vp (format "move %d %d 1000 1000\n" (round (+ ax (/ x sx))) (round (+ ay (/ y sy))))))
+  (gui-runner-observe 0.05))
+
+(defmacro glitnir-gui--with-hover-minimap (spec &rest body)
+  "Run BODY with VP a virtual pointer, MAP its mapping, MM the minimap's rectangle, X1 the ruler strip's right edge,
+MID the text's middle row, over a 300-line buffer with a line model, a ruler and minimap SPEC."
+  (declare (indent 1))
+  `(let ((buf (glitnir-gui--text-buffer "*glitnir-minimap-hover*" 300)) (w (selected-window)) (vp nil))
+     (glitnir-gui--skip-unless-tree)
+     (skip-unless (fboundp 'nidhogg-lines-enable))
+     (unwind-protect
+         (progn
+           (set-window-buffer w buf)
+           (set-window-start w 1)
+           (set-window-fringes w nil 16)
+           (nidhogg-lines-enable buf t)
+           (set-window-parameter w 'glitnir-ruler '(:width 12 :right 2 :height 4 :band ("#0000ff" . 1)))
+           (set-window-parameter w 'glitnir-minimap ,spec)
+           (redisplay t)
+           (setq vp (glitnir-gui--vp-start))
+           (pcase-let* ((map (glitnir-gui--vp-calibrate vp))
+                        (mm (glitnir-gui--minimap-rect w 120))
+                        (`(,_ ,_ ,right ,_) (window-pixel-edges w))
+                        (`(,_ ,ty ,_ ,ty1) (window-inside-pixel-edges w))
+                        (x1 (- right (window-right-divider-width w) (window-scroll-bar-width w) 2))
+                        (mid (/ (+ ty ty1) 2)))
+             (ignore map mm x1 mid)
+             ,@body))
+       (when vp (delete-process vp))
+       (set-window-parameter w 'glitnir-minimap nil)
+       (set-window-parameter w 'glitnir-ruler nil)
+       (set-window-fringes w nil nil)
+       (nidhogg-lines-disable buf)
+       (kill-buffer buf))))
+
+(defun glitnir-gui--bars-p (mm)
+  "Whether the minimap's bars (#ff00ff) show in MM."
+  (> (glitnir-gui--count-in (glitnir-gui--painted) mm '(255 0 255)) 100))
+
+(ert-deftest glitnir-gui/the-pointer-on-the-strip-opens-the-minimap-and-leaving-closes-it ()
+  "The pointer resting on the ruler strip opens the minimap (no Lisp: the glue's timer and a publish); over the
+minimap it stays open; back over the text it closes, not before half a second (600 ms)."
+  (glitnir-gui--with-hover-minimap '(:width 120 :fill ("#203040" . 1) :text ("#ff00ff" . 1))
+    (should-not (glitnir-gui--bars-p mm))
+    (glitnir-gui--vp-to vp map (- x1 6) mid)
+    ;; (the glue's timer comes as an event: the wait reads them, as the command loop does)
+    (should (gui-runner-wait (lambda () (gui-runner-read-all) (glitnir-gui--bars-p mm)) 3))
+    (glitnir-gui--shot "minimap-hover-open")
+    (glitnir-gui--vp-to vp map (+ (nth 0 mm) 60) mid)
+    (gui-runner-observe 1.0)
+    (should (glitnir-gui--bars-p mm))
+    (let ((t0 (float-time)))
+      (glitnir-gui--vp-to vp map (+ (nth 0 (window-inside-pixel-edges w)) 100) mid)
+      (unless (gui-runner-wait (lambda () (gui-runner-read-all) (not (glitnir-gui--bars-p mm))) 3)
+        (ert-fail (list :pointer (mouse-pixel-position) :minimap mm :x1 x1
+                        :text (window-inside-pixel-edges w) :scale (frame-scale-factor))))
+      (should (>= (- (float-time) t0) 0.5)))))
+
+(ert-deftest glitnir-gui/no-mouse-face-or-help-echo-fires-under-the-minimap ()
+  "Over the open minimap Emacs sees no motion (the glue sends it a leave): a `mouse-face' on the text under it does
+not light up beside the minimap, and its `help-echo' is never asked."
+  (glitnir-gui--with-hover-minimap '(:width 120 :open t :fill ("#203040" . 1) :text ("#ff00ff" . 1))
+    (let ((asked nil) (ov (with-current-buffer buf (make-overlay (point-min) (point-max)))))
+      (overlay-put ov 'mouse-face '(:background "#00ffff"))
+      (overlay-put ov 'help-echo (lambda (&rest _) (setq asked t) "echo"))
+      (glitnir-gui--vp-to vp map (+ (nth 0 mm) 60) mid)
+      (setq asked nil)
+      (gui-runner-observe 1.0 #'gui-runner-read-all)
+      (let ((snap (glitnir-gui--painted)))
+        (should-not asked)
+        (should (= 0 (glitnir-gui--count-in snap (list (nth 0 (window-inside-pixel-edges w)) (nth 1 mm)
+                                                       (- (nth 0 mm) (nth 0 (window-inside-pixel-edges w)))
+                                                       (nth 3 mm))
+                                            '(0 255 255))))))))
+
+(ert-deftest glitnir-gui/a-click-on-the-minimap-scrolls-the-window-there ()
+  "A click on the minimap's lower part scrolls the window so the row clicked is in its middle, through the
+`glitnir-minimap' event (the window at the top: the minimap's rows are not scrolled, row = y / row px)."
+  (glitnir-gui--with-hover-minimap '(:width 120 :open t :fill ("#203040" . 1) :text ("#ff00ff" . 1))
+    (let* ((seen nil)
+           (shown (with-current-buffer buf
+                    (- (line-number-at-pos (window-end w t)) (line-number-at-pos (window-start w)))))
+           ;; the glue's rounding, half away from zero (`round' is half to even: 2.5 is 2, the glue's 3)
+           (row-px (floor (+ 0.5 (* 2 (frame-scale-factor)))))
+           ;; 0.8 of the rows drawn (the 300 lines are shorter than the minimap)
+           (dy (round (* 0.8 (min (nth 3 mm) (* 300 row-px)))))
+           (row (/ dy row-px)))
+      (let ((glitnir-minimap-functions (list (lambda (kind &rest _) (push kind seen)))))
+        (glitnir-gui--vp-to vp map (+ (nth 0 mm) 60) (+ (nth 1 mm) dy))
+        (process-send-string vp "press\nrelease\n")
+        (let ((evs nil))
+          (unless (gui-runner-wait (lambda () (gui-runner-read-all (lambda (e) (push e evs))) (memq 'click seen)) 3)
+            ;; what came instead, for the failure's message
+            (ert-fail (list :seen seen :events (reverse evs) :pointer (mouse-pixel-position) :minimap mm
+                            :param (window-parameter w 'glitnir--minimap)))))
+        (redisplay t)
+        ;; the start centres the row: ROW less half the lines shown, within a line or two
+        (let ((line (1- (with-current-buffer buf (line-number-at-pos (window-start w))))))
+          (should (<= (abs (- line (- row (/ shown 2)))) 2)))))))
+
+(ert-deftest glitnir-gui/with-reduced-motion-the-minimap-opens-in-its-first-frame ()
+  "With reduced motion the pointer's open is final in its first frame: the first picture with any of the minimap's
+surface has it over the whole width (a reveal grows from the outer edge, so a partial one leaves the inner edge
+uncovered)."
+  (let ((glitnir-reduced-motion t))
+    (glitnir-gui--with-hover-minimap '(:width 120 :fill ("#203040" . 1) :text ("#203040" . 1))
+      (let ((inner (list (+ (nth 0 mm) 1) (+ (nth 1 mm) 40)))
+            (outer (list (+ (nth 0 mm) (nth 2 mm) -2) (+ (nth 1 mm) 40)))
+            (first nil))
+        (glitnir-gui--vp-to vp map (- x1 6) mid)
+        (should (gui-runner-wait (lambda ()
+                                   (gui-runner-read-all)
+                                   (let ((snap (glitnir-snapshot nil 'raw)))
+                                     (when (equal (glitnir-gui--pixel snap outer) '(#x20 #x30 #x40))
+                                       (setq first snap))))
+                                 3))
+        (should (equal (glitnir-gui--pixel first inner) '(#x20 #x30 #x40)))))))
+
 ;;; glitnir-gui-tests.el ends here

@@ -601,6 +601,14 @@ pub trait ShellBackend {
     /// The presenter's own timing since open (Rust only): which frames it committed late.
     fn presenter_timing(&self) -> ShellResult<PresenterTiming>;
 
+    /// Post a `Timer` record at `CLOCK_MONOTONIC` nanoseconds `at_ns` (`None`: never), replacing the deadline set
+    /// before: the host's own deadlines (the glue's minimap timers) end its wait as an event does.  `Unsupported` for
+    /// a backend without one.
+    fn set_timer(&mut self, at_ns: Option<u64>) -> ShellResult {
+        let _ = at_ns;
+        Err(ShellError::Unsupported)
+    }
+
     /// A platform call by name with one text argument (`nhmac--call`): what Lisp asks of a platform that has no
     /// shared call for it.  `Arg` for a name the backend does not know; `Unsupported` for a backend with none.
     fn app_call(&mut self, kind: &str, arg: &str) -> ShellResult {

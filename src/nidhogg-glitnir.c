@@ -676,6 +676,7 @@ The number of the reason in `try_window_id' (xdisp.c), for tests.  */);
   DEFSYM (Qglitnir__blocks, "glitnir--blocks");
   DEFSYM (Qglitnir__ruler, "glitnir--ruler");
   DEFSYM (Qglitnir__edges, "glitnir--edges");
+  DEFSYM (Qglitnir__minimap, "glitnir--minimap");
 
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();

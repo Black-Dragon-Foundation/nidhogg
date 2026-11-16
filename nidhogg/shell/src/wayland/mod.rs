@@ -39,6 +39,7 @@ pub mod serial;
 pub mod session;
 pub mod shm;
 pub mod text_input;
+pub mod timer;
 pub mod toplevel;
 pub mod touch;
 
@@ -155,6 +156,8 @@ pub struct WaylandShell {
     reconnect: Option<reconnect::Reconnecting>,
     /// The main queue is left unread (`hold_main`, for tests).
     held: bool,
+    /// The host's timer (`set_timer`).
+    timer: timer::HostTimer,
 }
 
 impl MainState {
@@ -287,6 +290,7 @@ impl WaylandShell {
             socket_dup,
             reconnect: None,
             held: false,
+            timer: timer::HostTimer::default(),
         };
         // dispatches the setup's main-queue events and registers the waker
         shell.dispatch_main().map_err(|_| ShellError::Unsupported)?;

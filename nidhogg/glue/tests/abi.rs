@@ -1595,6 +1595,7 @@ PROTO (nhg_session_remove, int32_t (NhgDisplay *, uint64_t));";
             ("NHG_ACT_DRAG_DONE", NHG_ACT_DRAG_DONE.into()),
             ("NHG_ACT_MENU", NHG_ACT_MENU.into()),
             ("NHG_ACT_MOVED", NHG_ACT_MOVED.into()),
+            ("NHG_ACT_MINIMAP", NHG_ACT_MINIMAP.into()),
             ("NHG_DRAG_ALLOW_CURRENT", NHG_DRAG_ALLOW_CURRENT.into()),
             ("NHG_DRAG_RETURN_FRAME", NHG_DRAG_RETURN_FRAME.into()),
             ("NHG_DRAG_RETURN_NOW", NHG_DRAG_RETURN_NOW.into()),
@@ -1786,6 +1787,69 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const E, usize) -> i32 =
             nhg_edges_sync;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_edges_count;
+        let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
+        let got = probe(decls, &exprs);
+        assert_eq!(got.len(), rows.len());
+        for ((expr, rust), c) in rows.iter().zip(got) {
+            assert_eq!(*rust, c, "{expr}: Rust {rust}, C {c}");
+        }
+    }
+
+    /// The minimaps' part of the header: the flags, the record's layout and the entry points.
+    #[test]
+    fn minimap_header_matches() {
+        use nhglue::ffi::{nhg_minimap_count, nhg_minimap_sync};
+        use nhglue::minimap::*;
+        type M = NhgMinimap;
+        let rows: &[(&str, i64)] = &[
+            ("NHG_MINIMAP_OPEN", NHG_MINIMAP_OPEN.into()),
+            ("NHG_MINIMAP_LEFT", NHG_MINIMAP_LEFT.into()),
+            (
+                "NHG_MINIMAP_REDUCED_MOTION",
+                NHG_MINIMAP_REDUCED_MOTION.into(),
+            ),
+            ("NHG_MINIMAP_NESTING", NHG_MINIMAP_NESTING.into()),
+            ("NHG_MINIMAP_PUBLISH", NHG_MINIMAP_PUBLISH.into()),
+            ("NHG_MINIMAP_CLICK", NHG_MINIMAP_CLICK.into()),
+            ("NHG_MINIMAP_DRAG", NHG_MINIMAP_DRAG.into()),
+            ("NHG_MINIMAP_DWELL", NHG_MINIMAP_DWELL.into()),
+            ("sizeof (M)", size_of::<M>() as i64),
+            ("_Alignof (M)", align_of::<M>() as i64),
+            ("offsetof (M, seq)", offset_of!(M, seq) as i64),
+            ("offsetof (M, clip)", offset_of!(M, clip) as i64),
+            ("offsetof (M, key)", offset_of!(M, key) as i64),
+            ("offsetof (M, start)", offset_of!(M, start) as i64),
+            ("offsetof (M, end)", offset_of!(M, end) as i64),
+            ("offsetof (M, begv)", offset_of!(M, begv) as i64),
+            ("offsetof (M, zv)", offset_of!(M, zv) as i64),
+            ("offsetof (M, flags)", offset_of!(M, flags) as i64),
+            ("offsetof (M, width)", offset_of!(M, width) as i64),
+            ("offsetof (M, scale)", offset_of!(M, scale) as i64),
+            ("offsetof (M, fill_rgb)", offset_of!(M, fill_rgb) as i64),
+            (
+                "offsetof (M, fill_opacity)",
+                offset_of!(M, fill_opacity) as i64,
+            ),
+            ("offsetof (M, text_rgb)", offset_of!(M, text_rgb) as i64),
+            (
+                "offsetof (M, text_opacity)",
+                offset_of!(M, text_opacity) as i64,
+            ),
+            ("offsetof (M, band_rgb)", offset_of!(M, band_rgb) as i64),
+            (
+                "offsetof (M, band_opacity)",
+                offset_of!(M, band_opacity) as i64,
+            ),
+            ("offsetof (M, strip)", offset_of!(M, strip) as i64),
+        ];
+        let decls = "\
+#define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
+typedef NhgMinimap M;
+PROTO (nhg_minimap_sync, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgMinimap *, size_t));
+PROTO (nhg_minimap_count, int32_t (NhgDisplay *, uint64_t));";
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const M, usize) -> i32 =
+            nhg_minimap_sync;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_minimap_count;
         let exprs: Vec<&str> = rows.iter().map(|(e, _)| *e).collect();
         let got = probe(decls, &exprs);
         assert_eq!(got.len(), rows.len());

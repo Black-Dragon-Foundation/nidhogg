@@ -59,6 +59,7 @@ pub mod layers;
 pub mod blocks;
 pub mod cards;
 pub mod edges;
+pub mod minimap;
 
 // layout legs
 pub mod legs;

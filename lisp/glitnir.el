@@ -702,6 +702,83 @@ never had edges gets no parameter of them."
     (when (window-parameter window 'glitnir--edges)
       (setq glitnir--blocks-any t))))
 
+;; Minimap: a window parameter `glitnir-minimap' draws the window's buffer
+;; as bars over the outer edge of its text (no reflow), from the buffer
+;; text's line model (`nidhogg-lines-enable'; without one nothing is
+;; drawn).  Resolved into `glitnir--minimap' only when it, or the theme,
+;; changed; the glue reads the rows from the model when the frame
+;; publishes, so a scroll or an edit costs no Lisp.  The pointer over it
+;; is the glue's: resting 150 ms on the window's ruler strip opens it
+;; (revealed over 120 ms, at once with reduced motion), leaving it closes
+;; it 600 ms later, and Emacs sees no motion or click under it.  A click
+;; or a drag step scrolls the window there, and a rest of 300 ms on a row
+;; is a dwell, through the special event `glitnir-minimap'.
+
+(defun glitnir--minimap-vector (spec frame)
+  "Return minimap SPEC as the vector C reads, for FRAME.
+SPEC is a plist: `:width' (logical pixels), `:scale' (rows per line, a
+line's height in logical pixels, 1 to 3; default 2), `:left' (on the
+text's left edge), `:open' (shown; otherwise the layer is kept with
+nothing revealed), `:nesting' (each fold range of the line model a
+faint band behind its bars, inset by depth), and the colours `:fill' (the surface), `:text' (the
+bars) and `:band' (over the lines the window shows), each a face, whose
+foreground is used, a colour name or (FACE-OR-COLOUR . OPACITY).  The
+vector is [FLAGS WIDTH SCALE FILL-RGB FILL-OPACITY TEXT-RGB TEXT-OPACITY
+BAND-RGB BAND-OPACITY], FLAGS 1 for `:open', 2 for `:left', 4 for
+reduced motion (`glitnir-reduced-motion-p') and 8 for `:nesting', RGB -1
+for none."
+  (let ((c (lambda (k) (glitnir--ruler-colour (plist-get spec k) frame))))
+    (let ((fill (funcall c :fill)) (text (funcall c :text)) (band (funcall c :band)))
+      (vector (logior (if (plist-get spec :open) 1 0) (if (plist-get spec :left) 2 0)
+                      (if (glitnir--reduced-motion-p) 4 0) (if (plist-get spec :nesting) 8 0))
+              (or (plist-get spec :width) 0) (or (plist-get spec :scale) 2)
+              (if fill (car fill) -1) (if fill (cdr fill) 0)
+              (if text (car text) -1) (if text (cdr text) 0)
+              (if band (car band) -1) (if band (cdr band) 0)))))
+
+(defun glitnir--recheck-minimap (window)
+  "Resolve WINDOW's minimap when its `glitnir-minimap' or the theme changed.
+The vector goes into the window parameter `glitnir--minimap', which C
+reads when the frame publishes; it sets the frame's flag that blocks
+set, so C lists the frame."
+  (let ((spec (window-parameter window 'glitnir-minimap))
+        (key (window-parameter window 'glitnir--minimap-key)))
+    (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
+                (and (null spec) (null key)))
+      (set-window-parameter window 'glitnir--minimap-key (and spec (cons spec glitnir--card-generation)))
+      (let ((v (and spec (glitnir--minimap-vector spec (window-frame window)))))
+        (unless (equal v (window-parameter window 'glitnir--minimap))
+          (set-window-parameter window 'glitnir--minimap v)
+          (force-window-update window))))
+    (when (window-parameter window 'glitnir--minimap)
+      (setq glitnir--blocks-any t))))
+
+(defvar glitnir-minimap-functions nil
+  "Functions called with KIND, WINDOW and POS for each minimap event.
+KIND is `click' or `drag' (WINDOW was scrolled to start at POS, the
+start that centres the row) or `dwell' (the pointer rests on the row
+starting at POS, for a peek).")
+
+(defun glitnir-minimap-event (event)
+  "Handle EVENT, a `glitnir-minimap' event: scroll its window to a click or a
+drag step, point on the row under the pointer, then run
+`glitnir-minimap-functions'."
+  (interactive "e")
+  (pcase-let ((`(,kind ,window ,pos) (cadr event)))
+    (when (window-live-p window)
+      (when (memq kind '(click drag))
+        ;; point goes to the row the pointer is on, the window's middle: a point left above the new start would
+        ;; scroll the window back to it at the next redisplay
+        (set-window-start window pos)
+        (set-window-point window (with-current-buffer (window-buffer window)
+                                   (save-excursion
+                                     (goto-char pos)
+                                     (forward-line (/ (window-body-height window) 2))
+                                     (point)))))
+      (run-hook-with-args 'glitnir-minimap-functions kind window pos))))
+
+(define-key special-event-map [glitnir-minimap] #'glitnir-minimap-event)
+
 (defun glitnir-ruler-fraction (posn)
   "The fraction, 0 to 1, of the whole the y of POSN stands for, a click on a window's overview ruler.
 Of the buffer's characters, or, with a `:span', of the view's rows; nil
@@ -746,6 +823,7 @@ This runs on every redisplay, so it walks the tree rather than building a window
         (glitnir--recheck-blocks window)
         (glitnir--recheck-ruler window)
         (glitnir--recheck-edges window)
+        (glitnir--recheck-minimap window)
         (when (window-parameter window 'glitnir--card) (setq any t)))
       (setq window (window-next-sibling window)))
     any))

@@ -87,6 +87,8 @@ pub enum ShellEvent {
     /// A top-level window's frame moved, its title bar changed height, or its scale changed: where it is now (macOS;
     /// Wayland clients have no position).
     Moved(MovedEv),
+    /// The host's timer is due (`ShellBackend::set_timer`).
+    Timer,
 }
 
 /// A record's kind without its payload, for filters (`ShellEvent::kind`).
@@ -130,6 +132,7 @@ pub enum Kind {
     Reconnected,
     Menu,
     Moved,
+    Timer,
 }
 
 impl ShellEvent {
@@ -173,6 +176,7 @@ impl ShellEvent {
             ShellEvent::Reconnected => Kind::Reconnected,
             ShellEvent::Menu(_) => Kind::Menu,
             ShellEvent::Moved(_) => Kind::Moved,
+            ShellEvent::Timer => Kind::Timer,
         }
     }
 }

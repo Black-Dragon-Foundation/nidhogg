@@ -615,12 +615,16 @@ fn fill_over(k: &Kernels, t: &mut TargetView, q: Rect, colour: u32) {
     k.solid_over(&mut t.at(q), colour, &mask, q.w as usize, q.h as usize);
 }
 
-/// Minimap M within CLIP (its shown part, root px): the surface, the tiles over it, then the bands with their outlines.
+/// Minimap M within CLIP (its shown part, root px): the surface, its shades, the tiles over them, then the bands with
+/// their outlines.
 fn draw_minimap(k: &Kernels, t: &mut TargetView, m: &crate::minimap::Minimap, clip: Rect) {
     if clip.is_empty() {
         return;
     }
     fill_over(k, t, clip, m.fill_argb);
+    for b in m.shades.iter() {
+        fill_over(k, t, b.rect.intersect(&clip), b.fill_argb);
+    }
     let w = m.rect.w.max(0) as usize;
     for tile in m.tiles.iter() {
         let at = Rect::new(m.rect.x, tile.y, m.rect.w, tile.h as i32);
@@ -3837,7 +3841,7 @@ mod tests {
         }
 
         /// A minimap over window WIN (ALL), 40 px wide at the right edge, revealed REVEAL px: a grey surface, one tile
-        /// of 4 rows of 2 px (bars of 10, 0, 30 and 50 columns), and a filled, outlined band over rows 1 and 2.
+        /// of 4 rows of 2 px (bars of 10, 0, 30 and 50 columns), an outlined band over rows 1 and 2, and a shade.
         fn minimap(reveal: u32) -> crate::minimap::Minimap {
             use crate::minimap::{Band, Minimap, Row, TileAt, TileSpec, raster};
             let band = Band {
@@ -3868,6 +3872,13 @@ mod tests {
                 }]
                 .into(),
                 bands: [band].into(),
+                // a nesting shade below the tile, inset 4 px
+                shades: [Band {
+                    rect: Rect::new(84, 60, 36, 10),
+                    fill_argb: 0xff_40_40_40,
+                    line_argb: 0,
+                }]
+                .into(),
             }
         }
 
@@ -3892,6 +3903,8 @@ mod tests {
                 0xff_20_20_20,
                 "below the tile, the surface"
             );
+            assert_eq!(out.at(100, 65), 0xff_40_40_40, "a shade");
+            assert_eq!(out.at(82, 65), 0xff_20_20_20, "left of its inset");
             // half revealed: only the outer 20 px show
             let (mut s, mut f) = (Scene::default(), Frames::new());
             s.upsert(&desc(ROOT, 0, 1, ALL, 1.0, true)).unwrap();

@@ -109,7 +109,12 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
         ShellEvent::Scale(s) => configure::scale(state, &ev, &s),
         ShellEvent::Close => window_action(state, &ev, NHG_ACT_DELETE),
         // the present step runs on every FRAME_READY, drawn or not (the shell owes the commit)
-        ShellEvent::FrameReady => window_action(state, &ev, NHG_ACT_READY),
+        ShellEvent::FrameReady => {
+            window_action(state, &ev, NHG_ACT_READY);
+            crate::minimap::frame_ready(state, ev.window, ev.time_ns);
+        }
+        // the host's timer: the minimaps' deadlines
+        ShellEvent::Timer => crate::minimap::timer(state, ev.time_ns),
         ShellEvent::FrameDone(_) => {}
         ShellEvent::Selection(s) => selection(state, &ev, &s),
         ShellEvent::Scroll(s) => scroll::scroll(state, &ev, &s, input),
@@ -129,7 +134,8 @@ pub fn next(state: &mut Display, input: NhgNextIn) -> Result<i32, GlueError> {
         | ShellEvent::PointerMotion(_)
         | ShellEvent::PointerLeave(_)
         | ShellEvent::Button(_) => {
-            if !csd::pointer(state, &ev) {
+            // a minimap over the text takes the pointer first: the text under it sees none of it
+            if !crate::minimap::pointer(state, &ev) && !csd::pointer(state, &ev) {
                 pointer::event(state, &ev)
             }
         }

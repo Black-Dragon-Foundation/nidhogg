@@ -736,6 +736,60 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; e
           (clrhash glitnir--blocks-seen)
           (set-frame-parameter nil 'glitnir--blocks nil))))))
 
+(ert-deftest glitnir-minimap-resolves-only-on-change ()
+  "A window's `glitnir-minimap' is resolved into `glitnir--minimap' once per change of the spec or the theme's
+generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; the minimap gone, both go."
+  (let ((w (selected-window)) (sets 0)
+        (set-window-parameter (symbol-function 'set-window-parameter)))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'set-window-parameter)
+                 (lambda (win p v)
+                   (when (eq p 'glitnir--minimap) (setq sets (1+ sets)))
+                   (funcall set-window-parameter win p v))))
+        (unwind-protect
+            (progn
+              (set-window-parameter w 'glitnir-minimap
+                                    '(:width 120 :open t :left t :fill ("#102030" . 0.5) :text "#ffffff"))
+              (glitnir--recheck-frame-cards w)
+              (should (equal (window-parameter w 'glitnir--minimap)
+                             (vector 3 120 2 #x102030 0.5 #xffffff 1 -1 0)))
+              (should (eq (frame-parameter nil 'glitnir--blocks) t))
+              (glitnir--recheck-frame-cards w)
+              (setq glitnir--card-generation (1+ glitnir--card-generation))
+              (glitnir--recheck-frame-cards w)
+              (should (= sets 1))
+              (set-window-parameter w 'glitnir-minimap '(:width 80 :scale 3 :band ("#808080" . 0.25)))
+              (glitnir--recheck-frame-cards w)
+              (should (= sets 2))
+              (should (equal (window-parameter w 'glitnir--minimap) (vector 0 80 3 -1 0 -1 0 #x808080 0.25)))
+              (set-window-parameter w 'glitnir-minimap nil)
+              (glitnir--recheck-frame-cards w)
+              (should-not (window-parameter w 'glitnir--minimap))
+              (should-not (frame-parameter nil 'glitnir--blocks)))
+          (dolist (k '(glitnir-minimap glitnir--minimap glitnir--minimap-key))
+            (set-window-parameter w k nil))
+          (clrhash glitnir--blocks-seen)
+          (set-frame-parameter nil 'glitnir--blocks nil))))))
+
+(ert-deftest glitnir-minimap-event-scrolls-and-tells ()
+  "A `glitnir-minimap' click or drag step scrolls its window to start at POS; every kind runs
+`glitnir-minimap-functions' with KIND, WINDOW and POS; the special event map has it."
+  (should (eq (lookup-key special-event-map [glitnir-minimap]) #'glitnir-minimap-event))
+  (let ((w (selected-window)) (old (window-buffer)) seen)
+    (with-temp-buffer
+      (dotimes (i 200) (insert (format "line %d\n" i)))
+      (unwind-protect
+          (let ((glitnir-minimap-functions (list (lambda (&rest a) (push a seen)))))
+            (set-window-buffer w (current-buffer))
+            (glitnir-minimap-event (list 'glitnir-minimap (list 'click w 500)))
+            (should (= (window-start w) 500))
+            ;; point on the row under the pointer: half the window's lines below the start
+            (should (= (count-lines 500 (window-point w)) (/ (window-body-height w) 2)))
+            (glitnir-minimap-event (list 'glitnir-minimap (list 'dwell w 100)))
+            (should (= (window-start w) 500))
+            (should (equal seen (list (list 'dwell w 100) (list 'click w 500)))))
+        (set-window-buffer w old)))))
+
 (ert-deftest glitnir-ruler-resolves-only-on-change ()
   "A window's `glitnir-ruler' is resolved into `glitnir--ruler' once per change of the spec or the theme's
 generation, never per redisplay, and sets the frame's `glitnir--blocks' flag, so C lists the frame."

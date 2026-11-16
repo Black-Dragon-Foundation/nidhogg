@@ -2057,6 +2057,36 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Frame `frame` (shell window `window`, its tree's root's) is about to be published with the `n` minimaps at
+    /// `list` (`minimap.rs`): each window with one gets its minimap layer, the others lose theirs.  Returns how many
+    /// windows have minimap layers.
+    ///
+    /// # Safety
+    /// `d` is null or a live display; `list` holds `n` readable records, or is null when `n` is 0.
+    fn nhg_minimap_sync(d: *mut NhgDisplay, window: u64, frame: u64, list: *const crate::minimap::NhgMinimap, n: usize) -> i32 |state| {
+        let l = match (n, list.is_null()) {
+            (0, _) => &[][..],
+            (_, true) => return Err(GlueError::Arg),
+            // SAFETY: non-null, with `n` readable records (the caller's promise).
+            _ => unsafe { std::slice::from_raw_parts(list, n) },
+        };
+        let left = crate::minimap::sync(state, window, frame, l)?;
+        Ok(i32::try_from(left).unwrap_or(i32::MAX))
+    }
+}
+
+nhg_export! {
+    /// How many of the frame's Emacs windows have a minimap layer (0 for a frame without a backing).
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_minimap_count(d: *mut NhgDisplay, frame: u64) -> i32 |state| {
+        let n = crate::minimap::count(&mut state.backings, frame);
+        Ok(i32::try_from(n).unwrap_or(i32::MAX))
+    }
+}
+
+nhg_export! {
     /// How many of the frame's Emacs windows are their own outputs, plus how many have a card layer (0 for a frame
     /// without a backing).
     ///

@@ -49,6 +49,7 @@
 #                       "image: REF (local|built)"); GLITNIR_GUI_IMAGE or a localhost/glitnir-gui-deps image wins
 #   --wayland-debug F   Emacs's stderr (WAYLAND_DEBUG=client protocol trace and the test output) goes to F
 #   --env K=V           an extra environment variable for Nidhogg (repeatable)
+#   GLITNIR_GUI_OUT     a directory the rows write files to (screenshots, counts); with --container it is mounted
 #   --force-csd         client-side decorations: GTK_CSD=1 for pgtk, NIDHOGG_SHELL_FORCE_CSD=1 for the shell, and
 #                       GLITNIR_GUI_CSD=1 for the runner.  The shell then draws its own title bar on sway; GTK 3
 #                       ignores GTK_CSD there (it asks sway's KDE server-decoration global for server mode)
@@ -483,6 +484,9 @@ if [ -n "$container" ]; then
   for ra in ${rargs[@]+"${rargs[@]}"}; do args+=(--recorder-arg "$ra"); done
   out=
   mounts=(-v "$checkout:/src:ro,z" -v "$prefix:$inprefix:ro,z")
+  if [ -n "${GLITNIR_GUI_OUT:-}" ]; then
+    mkdir -p "$GLITNIR_GUI_OUT" && mounts+=(-v "$GLITNIR_GUI_OUT:/gui-out:Z") && args+=(--env GLITNIR_GUI_OUT=/gui-out)
+  fi
   [ "$userec" = 0 ] || mounts+=(-v "$recorder:/opt/nh-recorder:ro,z")
   # KWin composites only on a render device (6.8 has no QPainter scene): without one it manages windows and shows none.
   # It gets /dev/udmabuf alone, never /dev/dri: with udmabuf and no DRM device KWin 6.8 renders on its software device

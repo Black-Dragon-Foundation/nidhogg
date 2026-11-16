@@ -26,8 +26,10 @@ pub struct Minimap {
     pub fill_argb: u32,
     /// The tiles, each at its top (root px), `rect.w` wide.
     pub tiles: Arc<[TileAt]>,
-    /// Viewports, nesting shades and other rectangles, drawn over the tiles in order.
+    /// Viewports and other rectangles, drawn over the tiles in order.
     pub bands: Arc<[Band]>,
+    /// Rectangles drawn under the tiles, over the surface (nesting shades), in order.
+    pub shades: Arc<[Band]>,
 }
 
 /// One rasterised tile ([`raster`]) placed in the minimap.

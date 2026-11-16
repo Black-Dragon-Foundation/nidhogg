@@ -962,6 +962,34 @@ nhwl_ruler_frac (struct buffer *b, ptrdiff_t begv, ptrdiff_t span,
   return (double) (clip_to_bounds (begv, pos, begv + span) - begv) / span;
 }
 
+/* The part of leaf window W's buffer B shown: the current matrix's
+   first and last text rows (the window's end is not kept valid between
+   redisplays), from *START to *END.  True when a row ends the
+   accessible text.  */
+static bool
+nhwl_shown (struct window *w, struct buffer *b, ptrdiff_t *start,
+	    ptrdiff_t *end)
+{
+  *start = *end = marker_position (w->start);
+  struct glyph_matrix *m = w->current_matrix;
+  if (m)
+    {
+      struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
+      for (struct glyph_row *row = MATRIX_FIRST_TEXT_ROW (m);
+	   row < bottom && row->enabled_p; row++)
+	{
+	  if (row == MATRIX_FIRST_TEXT_ROW (m))
+	    *start = MATRIX_ROW_START_CHARPOS (row);
+	  *end = MATRIX_ROW_END_CHARPOS (row);
+	  /* A row that reaches ZV ends the text too: in a window fitted to
+	     its lines the final newline's empty line has no row.  */
+	  if (row->ends_at_zv_p || *end >= BUF_ZV (b))
+	    return true;
+	}
+    }
+  return false;
+}
+
 static void
 nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 {
@@ -997,29 +1025,8 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 		* height))
 
   Lisp_Object op = AREF (v, 4);
-  /* The part shown: the current matrix's first and last text rows (the
-     window's end is not kept valid between redisplays).  */
-  ptrdiff_t start = marker_position (w->start), end = start;
-  bool at_zv = false;
-  struct glyph_matrix *m = w->current_matrix;
-  if (m)
-    {
-      struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
-      for (struct glyph_row *row = MATRIX_FIRST_TEXT_ROW (m);
-	   row < bottom && row->enabled_p; row++)
-	{
-	  if (row == MATRIX_FIRST_TEXT_ROW (m))
-	    start = MATRIX_ROW_START_CHARPOS (row);
-	  end = MATRIX_ROW_END_CHARPOS (row);
-	  /* A row that reaches ZV ends the text too: in a window fitted to
-	     its lines the final newline's empty line has no row.  */
-	  if (row->ends_at_zv_p || end >= BUF_ZV (b))
-	    {
-	      at_zv = true;
-	      break;
-	    }
-	}
-    }
+  ptrdiff_t start, end;
+  bool at_zv = nhwl_shown (w, b, &start, &end);
   /* All of it shows: the first row starts the accessible text, a row
      ends it, and a view's window holds every row.  */
   if ((flags & NHWL_RULER_HIDE_SHORT)
@@ -1068,6 +1075,66 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
 /* The edges nhg_edges_sync takes, kept between publishes.  */
 static NhgEdge *nhwl_edges;
 static ptrdiff_t nhwl_nedges, nhwl_edges_cap;
+
+/* The minimaps nhg_minimap_sync takes, kept between publishes.  */
+static NhgMinimap *nhwl_minimaps;
+static ptrdiff_t nhwl_nminimaps, nhwl_minimaps_cap;
+
+/* List leaf window W's minimap V (the window parameter glitnir--minimap,
+   [FLAGS WIDTH SCALE FILL-RGB FILL-OPACITY TEXT-RGB TEXT-OPACITY
+   BAND-RGB BAND-OPACITY]) over its text area CLIP, when its buffer's
+   text has a line model; the glue reads the rows from the model.  R is
+   its ruler (glitnir--ruler): the pointer resting on that strip opens
+   the minimap.  */
+static void
+nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
+		  NhgRect clip)
+{
+#ifdef HAVE_NIDHOGG_HISTORY
+  if (!VECTORP (v) || ASIZE (v) < 9 || !nh_lines_ntracked)
+    return;
+  struct buffer *b = XBUFFER (w->contents);
+  uint64_t key = nh_lines_model (b);
+  if (!key)
+    return;
+  ptrdiff_t start, end;
+  nhwl_shown (w, b, &start, &end);
+  NhgRect strip = { 0, 0, 0, 0 };
+  if (VECTORP (r) && ASIZE (r) >= 2 && nhwl_block_int (r, 0, 0) > 0)
+    {
+      int width = nhwl_block_int (r, 0, 0);
+      int x1 = (WINDOW_RIGHT_EDGE_X (w) - WINDOW_RIGHT_DIVIDER_WIDTH (w)
+		- WINDOW_RIGHT_SCROLL_BAR_AREA_WIDTH (w)
+		- nhwl_block_int (r, 1, 0));
+      strip = (NhgRect) { x1 - width, clip.y, width, clip.h };
+    }
+  if (nhwl_nminimaps == nhwl_minimaps_cap)
+    nhwl_minimaps = xpalloc (nhwl_minimaps, &nhwl_minimaps_cap, 1, -1,
+			     sizeof *nhwl_minimaps);
+#define NHWL_MINIMAP_OPACITY(i) \
+  (NUMBERP (AREF (v, i)) ? (float) XFLOATINT (AREF (v, i)) : 1.0f)
+  nhwl_minimaps[nhwl_nminimaps++] = (NhgMinimap) {
+    .seq = w->sequence_number,
+    .clip = clip,
+    .key = key,
+    .start = start,
+    .end = max (start, end),
+    .begv = BUF_BEGV (b),
+    .zv = BUF_ZV (b),
+    .flags = nhwl_block_int (v, 0, 0),
+    .width = max (0, nhwl_block_int (v, 1, 0)),
+    .scale = max (1, nhwl_block_int (v, 2, 2)),
+    .fill_rgb = nhwl_block_int (v, 3, -1),
+    .fill_opacity = NHWL_MINIMAP_OPACITY (4),
+    .text_rgb = nhwl_block_int (v, 5, -1),
+    .text_opacity = NHWL_MINIMAP_OPACITY (6),
+    .band_rgb = nhwl_block_int (v, 7, -1),
+    .band_opacity = NHWL_MINIMAP_OPACITY (8),
+    .strip = strip,
+  };
+#undef NHWL_MINIMAP_OPACITY
+#endif
+}
 
 /* Where position POS of leaf window W's buffer is drawn, plus DX and
    DY: the left of its glyph and the top of its row in W's current
@@ -1203,6 +1270,54 @@ nhwl_edges_add (struct window *w, Lisp_Object v, NhgRect clip)
     }
 }
 
+/* The leaf window under WINDOW and its next siblings whose sequence
+   number is SEQ, or nil.  */
+static Lisp_Object
+nhwl_window_of_seq (Lisp_Object window, EMACS_INT seq)
+{
+  for (; !NILP (window); window = XWINDOW (window)->next)
+    {
+      struct window *w = XWINDOW (window);
+      if (WINDOWP (w->contents))
+	{
+	  Lisp_Object in = nhwl_window_of_seq (w->contents, seq);
+	  if (!NILP (in))
+	    return in;
+	}
+      else if (w->sequence_number == seq)
+	return window;
+    }
+  return Qnil;
+}
+
+/* The glue's NHG_ACT_MINIMAP A for frame F: publish F's tree (a minimap's
+   reveal or state changed: no redisplay), or hand Lisp the click, drag
+   step or dwell as a `glitnir-minimap' event.  */
+static int
+nhwl_minimap_action (struct frame *f, const NhgAction *a,
+		     struct input_event *hold_quit)
+{
+  if (a->code == NHG_MINIMAP_PUBLISH)
+    {
+      nhwl_publish (f);
+      return 0;
+    }
+  Lisp_Object window = nhwl_window_of_seq (FRAME_ROOT_WINDOW (f),
+					   (EMACS_INT) a->dy);
+  if (NILP (window))
+    return 0;
+  Lisp_Object kind = (a->code == NHG_MINIMAP_CLICK ? Qnhwl_minimap_click
+		      : a->code == NHG_MINIMAP_DRAG ? Qnhwl_minimap_drag
+		      : Qnhwl_minimap_dwell);
+  struct input_event ie;
+  EVENT_INIT (ie);
+  ie.kind = NHWL_MINIMAP_EVENT;
+  ie.arg = list3 (kind, window, make_fixnum ((EMACS_INT) a->dx));
+  XSETFRAME (ie.frame_or_window, f);
+  kbd_buffer_store_event_hold (&ie, hold_quit);
+  return 1;
+}
+
 /* List the blocks of WINDOW's leaf windows and its next siblings' (the
    window parameter glitnir--blocks, a vector of block vectors), their
    overview rulers (glitnir--ruler) and their edges (glitnir--edges).  */
@@ -1221,7 +1336,8 @@ nhwl_blocks_add (Lisp_Object window)
       Lisp_Object v = Fwindow_parameter (window, Qglitnir__blocks);
       Lisp_Object r = Fwindow_parameter (window, Qglitnir__ruler);
       Lisp_Object e = Fwindow_parameter (window, Qglitnir__edges);
-      if ((!VECTORP (v) && !VECTORP (r) && !VECTORP (e))
+      Lisp_Object mm = Fwindow_parameter (window, Qglitnir__minimap);
+      if ((!VECTORP (v) && !VECTORP (r) && !VECTORP (e) && !VECTORP (mm))
 	  || !BUFFERP (w->contents))
 	continue;
       int x, y, width, height;
@@ -1232,6 +1348,7 @@ nhwl_blocks_add (Lisp_Object window)
 	  nhwl_block_add (w, AREF (v, i), clip);
       nhwl_ruler_add (w, r, y, height);
       nhwl_edges_add (w, e, clip);
+      nhwl_minimap_add (w, mm, r, clip);
     }
 }
 
@@ -1286,9 +1403,11 @@ nhwl_blocks_sync (struct frame *f)
 	  || nhwl_glue_rc (dpyinfo, NHG (nhg_blocks_count (dpyinfo->glue,
 							   out->glitnir_id))) > 0
 	  || nhwl_glue_rc (dpyinfo, NHG (nhg_edges_count (dpyinfo->glue,
-							  out->glitnir_id))) > 0))
+							  out->glitnir_id))) > 0
+	  || nhwl_glue_rc (dpyinfo, NHG (nhg_minimap_count (dpyinfo->glue,
+							    out->glitnir_id))) > 0))
     {
-      nhwl_nblocks = nhwl_nedges = 0;
+      nhwl_nblocks = nhwl_nedges = nhwl_nminimaps = 0;
       nhwl_blocks_add (FRAME_ROOT_WINDOW (f));
       nhwl_glue_rc (dpyinfo,
 		    NHG (nhg_blocks_sync (dpyinfo->glue, out->window,
@@ -1299,6 +1418,11 @@ nhwl_blocks_sync (struct frame *f)
 		    NHG (nhg_edges_sync (dpyinfo->glue, out->window,
 					 out->glitnir_id, nhwl_edges,
 					 nhwl_nedges)));
+      /* After the edges: the minimaps cover the text's edge, above all.  */
+      nhwl_glue_rc (dpyinfo,
+		    NHG (nhg_minimap_sync (dpyinfo->glue, out->window,
+					   out->glitnir_id, nhwl_minimaps,
+					   nhwl_nminimaps)));
     }
   FOR_EACH_FRAME (tail, frame)
     if (nhwl_child_of (XFRAME (frame), f))
@@ -4354,6 +4478,9 @@ nhwl_apply (struct nhwl_display_info *dpyinfo, const NhgAction *a,
     case NHG_ACT_TITLE_BAR:
       nhwl_title_bar_action (f, a);
       break;
+
+    case NHG_ACT_MINIMAP:
+      return nhwl_minimap_action (f, a, hold_quit);
 
     case NHG_ACT_DELETE:
       /* A tip's popup goes at once; its frame when the tip's timer, the

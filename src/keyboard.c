@@ -4439,6 +4439,7 @@ kbd_buffer_get_event (KBOARD **kbp,
 #ifdef HAVE_NHWL
       case NHWL_DELETE_SURROUNDING_EVENT:
       case NHWL_SESSION_EVENT:
+      case NHWL_MINIMAP_EVENT:
       case NHWL_KEY_RELEASE_EVENT:
 #endif
       case PREEDIT_TEXT_EVENT:
@@ -7497,6 +7498,8 @@ make_lispy_event (struct input_event *event)
       return list2 (Qnhwl_delete_surrounding, event->arg);
     case NHWL_SESSION_EVENT:
       return list2 (Qnhwl_session, event->arg);
+    case NHWL_MINIMAP_EVENT:
+      return list2 (Qglitnir_minimap, event->arg);
     case NHWL_KEY_RELEASE_EVENT:
       {
 	/* The press's keystroke, with the release's modifiers.  */
@@ -13911,6 +13914,7 @@ This is effective only in `noninteractive' sessions.  */);
 #ifdef HAVE_NHWL
   DEFSYM (Qnhwl_delete_surrounding, "nhwl-delete-surrounding");
   DEFSYM (Qnhwl_session, "nhwl-session");
+  DEFSYM (Qglitnir_minimap, "glitnir-minimap");
   DEFSYM (Qkey_release, "key-release");
   DEFSYM (Qnidhogg_key_repeat, "nidhogg-key-repeat");
 #endif

@@ -41,6 +41,8 @@ pub const BLOCK_TAG: u64 = 1 << 61;
 pub const STRIP_TAG: u64 = 1 << 60;
 /// A window's edge layer id is the window's `sequence_number` with this bit set (`edges.rs`).
 pub const EDGE_TAG: u64 = 1 << 59;
+/// A window's minimap layer id is the window's `sequence_number` with this bit set (`minimap.rs`).
+pub const MINIMAP_TAG: u64 = 1 << 58;
 
 /// The last key given (C's `static last_id`: one counter for every display, as Glitnir's ids are global).
 static LAST_ID: AtomicU64 = AtomicU64::new(0);
@@ -156,6 +158,8 @@ pub struct Frame {
     pub(crate) blocks: crate::blocks::Blocks,
     /// The frame's windows with edges (`edges.rs`).
     pub(crate) edges: crate::edges::Edges,
+    /// The frame's windows with a minimap (`minimap.rs`).
+    pub(crate) minimaps: crate::minimap::Minimaps,
     /// The frame's windows with a capture or a layout leg (`legs.rs`).
     pub(crate) legs: crate::legs::Legs,
     /// The rows the visible bell inverted, until they are put back (`bell.rs`).

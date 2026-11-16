@@ -3604,6 +3604,9 @@ syms_of_nhwlfns (void)
   DEFSYM (Qcreated, "created");
   DEFSYM (Qnhwl_session_restored, "restored");
   DEFSYM (Qnhwl_session_replaced, "replaced");
+  DEFSYM (Qnhwl_minimap_click, "click");
+  DEFSYM (Qnhwl_minimap_drag, "drag");
+  DEFSYM (Qnhwl_minimap_dwell, "dwell");
   defsubr (&Snhwl__session_open);
   defsubr (&Snhwl__session_remove);
 
