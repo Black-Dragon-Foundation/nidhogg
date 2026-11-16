@@ -300,8 +300,79 @@ fn popups_map_parent_first(thread: bool) {
     assert!(repositions(&rec, p).is_empty(), "its parent did not change");
 }
 
+/// Wide bars turned narrow at random rows while the compositor keeps `hold` replaced buffers (so the pool's buffers
+/// come back at ages two and three, as on GNOME's mutter): after every frame the output shows the backing.  `flags`:
+/// the surface's (`NHSHELL_SF_ALPHA_HOST`, a translucent popup's path).  A user at 1.25 saw old glyphs beside new
+/// ones in the palette and a stale selection bar in the Explorer.
+fn reused_buffers_show_the_backing(hold: u32, flags: u32) {
+    let rec = Recorder::start_clock("sway", "manual");
+    let mut shell = threaded(&rec);
+    let mut b = Backing::new(200, 100);
+    b.flags |= flags;
+    let id = window(&mut shell, &rec, &mut b);
+    rec.control_ok(&format!(r#"{{"cmd":"mode","hold_buffers":{hold}}}"#));
+    let mut lcg = Lcg(7);
+    for i in 0..40u32 {
+        present(&rec);
+        until(&mut shell, "the frame callback", |s| !waiting(s, id));
+        let y = lcg.next(10) as i32 * 10;
+        b.fill(Rect::new(0, y, 200, 10), BG);
+        b.fill(
+            Rect::new(0, y, if i % 2 == 0 { 190 } else { 15 }, 10),
+            0xff00_0000 | (i * 7919),
+        );
+        let seq = next_seq(&rec);
+        publish(&mut shell, id, &[(&b, id)], 0);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while buffer_commits(&rec, seq, id) == 0 {
+            while shell.next_event().unwrap().is_some() {}
+            // the pool's three buffers all held (the front and `hold` replaced ones): the compositor lets go late,
+            // and the frame waits for that release, by design (`take_slot`)
+            if shell.present_pacer(id).is_some_and(|p| p.1) {
+                rec.control_ok(r#"{"cmd":"release"}"#);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "frame {i} (hold {hold}) never committed: pacer (waiting, starved, presented, discarded) {:?}; log {}",
+                shell.present_pacer(id),
+                rec.control(&format!(r#"{{"cmd":"log","since":{seq}}}"#))
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !shows(&rec, &b) {
+            let snap = rec.snapshot();
+            let bad: Vec<(i32, i32)> = (0..b.h)
+                .flat_map(|y| (0..b.w).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    Recorder::snapshot_pixel(&snap, x as usize, y as usize) != b.pixel(x, y)
+                })
+                .collect();
+            let (x, y) = bad[0];
+            panic!(
+                "frame {i} (hold {hold}): {} pixels differ, first at {x},{y}: shown {:#x}, drawn {:#x}; commit: {}",
+                bad.len(),
+                Recorder::snapshot_pixel(&snap, x as usize, y as usize),
+                b.pixel(x, y),
+                commits(&rec, seq, id).join(" ")
+            );
+        }
+    }
+}
+
 mod presenter {
     use super::*;
+
+    #[test]
+    fn reused_buffers_at_ages_two_and_three_show_the_backing() {
+        reused_buffers_show_the_backing(1, 0);
+        reused_buffers_show_the_backing(2, 0);
+    }
+
+    #[test]
+    fn reused_buffers_of_a_translucent_surface_show_the_backing() {
+        reused_buffers_show_the_backing(1, NHSHELL_SF_ALPHA_HOST);
+        reused_buffers_show_the_backing(2, NHSHELL_SF_ALPHA_HOST);
+    }
 
     #[test]
     fn popups_map_parent_first_on_the_thread() {
