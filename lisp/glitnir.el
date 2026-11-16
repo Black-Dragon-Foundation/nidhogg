@@ -84,13 +84,19 @@ A theme's colour shows at once; one set outside a theme (with
   :version "31.1"
   :group 'frames)
 
+(defun glitnir--face-frame (face frame)
+  "FRAME when it has FACE, else t (the faces for new frames).
+A child frame's chrome is resolved before the frame gets its faces;
+asked then, FRAME would signal \"Invalid face\"."
+  (if (gethash face (frame--face-hash-table frame)) frame t))
+
 (defun glitnir--shadow-color (frame)
   "FRAME's shadow colour as (R G B), 0-255.
 A frame still being made has no faces yet: the colour for new frames
 then."
   (let* ((name (face-foreground
                 'child-frame-shadow
-                (if (gethash 'child-frame-shadow (frame--face-hash-table frame)) frame t)
+                (glitnir--face-frame 'child-frame-shadow frame)
                 t))
          (v (and (stringp name) (color-values name frame))))
     (if v (mapcar (lambda (c) (/ c 257)) v) (list 0 0 0))))
@@ -357,7 +363,10 @@ background.  Signal `wrong-type-argument' for another shape."
     (signal 'wrong-type-argument (list 'glitnir-card-group spec)))
   (cons (or (gethash (car spec) glitnir--card-groups)
             (puthash (car spec) (1+ (hash-table-count glitnir--card-groups)) glitnir--card-groups))
-        (or (glitnir--color-rgb (if (facep (cdr spec)) (face-background (cdr spec) frame t) (cdr spec)) frame)
+        (or (glitnir--color-rgb (if (facep (cdr spec))
+                                    (face-background (cdr spec) (glitnir--face-frame (cdr spec) frame) t)
+                                  (cdr spec))
+                                frame)
             (glitnir--color-rgb (frame-parameter frame 'background-color) frame)
             0)))
 
@@ -370,7 +379,7 @@ COLOR is a face, whose foreground is used, or a colour name; OPACITY is
                (numberp (cdr spec)))
     (signal 'wrong-type-argument (list 'glitnir-ring spec)))
   (let ((rgb (glitnir--color-rgb (if (facep (car spec))
-                                     (face-foreground (car spec) frame t)
+                                     (face-foreground (car spec) (glitnir--face-frame (car spec) frame) t)
                                    (car spec))
                                  frame)))
     (and rgb (cons rgb (min 1 (max 0 (cdr spec)))))))

@@ -77,6 +77,22 @@
           (should (= (plist-get s :opacity) 0.5))
           (should (= (length (plist-get s :color)) 3)))))))
 
+;; nhwl_child_params_changed resolves a new child frame's chrome before
+;; `face-set-after-frame-default' gives it its faces: a ring in a face's
+;; colour asked the frame for that face and signalled "Invalid face", and
+;; the frame went without chrome.
+(ert-deftest glitnir/ring-face-before-the-frame-has-it ()
+  (let* ((f (selected-frame))
+         (h (frame--face-hash-table f))
+         (was (gethash 'child-frame-shadow h)))
+    (remhash 'child-frame-shadow h)
+    (unwind-protect
+        (glitnir-test--as-child '((corner-radius . 8) (ring . (child-frame-shadow . 0.45)))
+          (let ((ring (plist-get (glitnir--resolve f) :ring)))
+            (should (equal (car ring)
+                           (glitnir--color-rgb (face-foreground 'child-frame-shadow t t) f)))))
+      (puthash 'child-frame-shadow was h))))
+
 (ert-deftest glitnir/frame-parameter-wins ()
   (let ((child-frame-chrome '((corner-radius . 8) (shadow . (:blur 16)))))
     (glitnir-test--as-child '((corner-radius . 3) (shadow . (:blur 4)))
