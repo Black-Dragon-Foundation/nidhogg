@@ -30,6 +30,7 @@
 
 (require 'ert)
 (require 'nhwl-menu)
+(require 'cl-lib)
 
 (defun nhwl-menu-test--labels (items)
   "The labels of ITEMS."
@@ -244,6 +245,75 @@ as the position, or for coordinates the event that ran the command."
   (let ((last-nonmenu-event ?x))
     (should-not (nhwl-menu--down-p '((0 0) nil)))
     (should-not (nhwl-menu--down-p t))))
+
+;;; A row of menus (a menu bar)
+
+(ert-deftest nhwl-menu/left-and-right-move-along-a-row-of-menus ()
+  "With `nhwl-menu-switch-function', Left and Right at the top level go to the
+menu beside it; Right on a submenu row still opens it, Left in a submenu still
+closes it, and Right on an item of a submenu goes on to the next menu.  Without
+the function they do what they always did."
+  (let* ((map (nhwl-menu-test--two-levels))
+         (rows (nhwl-menu--make-rows (nhwl-menu--title map)
+                                     (nhwl-menu--items map)))
+         (buffer (nhwl-menu--buffer 92 rows)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((nhwl-menu-switch-function (lambda (how) (list 'went how))))
+            (nhwl-menu--select-row 2)   ; Top, an item
+            (should (equal (nhwl-menu--handle 'right 0 nil) '(switch went right)))
+            (should (equal (nhwl-menu--handle 'left 0 nil) '(switch went left)))
+            (should (equal (nhwl-menu--handle 'right 1 3) '(switch went right)))
+            (should (eq (nhwl-menu--handle 'left 1 3) 'close))
+            (nhwl-menu--select-row 3)   ; More, a submenu
+            (should (eq (car (nhwl-menu--handle 'right 0 nil)) 'open)))
+          ;; a function that declines leaves the menu as it is
+          (let ((nhwl-menu-switch-function #'ignore))
+            (nhwl-menu--select-row 2)
+            (should-not (nhwl-menu--handle 'left 0 nil))
+            (should-not (nhwl-menu--handle 'right 0 nil)))
+          (let ((nhwl-menu-switch-function nil))
+            (nhwl-menu--select-row 2)
+            (should-not (nhwl-menu--handle 'left 0 nil))
+            (should-not (nhwl-menu--handle 'right 0 nil))))
+      (kill-buffer buffer))))
+
+(ert-deftest nhwl-menu/the-pointer-over-another-title-moves-to-its-menu ()
+  "A pointer motion outside the menus is offered to `nhwl-menu-switch-function'
+as (X Y FRAME), frame-relative: a non-nil answer switches, nil keeps the menu."
+  (let* ((map (nhwl-menu-test--two-levels))
+         (rows (nhwl-menu--make-rows (nhwl-menu--title map)
+                                     (nhwl-menu--items map)))
+         (buffer (nhwl-menu--buffer 93 rows))
+         (frame (selected-frame))
+         (seen nil)
+         (motion (list 'mouse-movement (list frame nil '(40 . 3) 0))))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let ((nhwl-menu-switch-function
+                 (lambda (how) (setq seen how) (and (consp how) (> (car how) 30) 'edit))))
+            (should (equal (nhwl-menu--handle motion 0 nil) '(switch . edit)))
+            (should (equal seen (list 40 3 frame)))
+            (should-not (nhwl-menu--handle
+                         (list 'mouse-movement (list frame nil '(10 . 3) 0)) 0 nil)))
+          (let ((nhwl-menu-switch-function nil))
+            (should-not (nhwl-menu--handle motion 0 nil))))
+      (kill-buffer buffer))))
+
+(ert-deftest nhwl-menu/a-switch-closes-the-menu-and-says-where ()
+  "A level that switches ends the whole menu: `nhwl-menu-popup' returns nil and
+sets `nhwl-menu-switched' to the function's answer; any other end clears it."
+  (let ((map (nhwl-menu-test--two-levels))
+        (outcome '(switch . right))
+        (nhwl-menu-switched 'stale))
+    (cl-letf (((symbol-function 'nhwl-menu--anchor) (lambda (_) (list (selected-frame) nil nil)))
+              ((symbol-function 'nhwl-menu--run) (lambda (&rest _) outcome))
+              ((symbol-function 'nhwl-menu--hide) #'ignore))
+      (should-not (nhwl-menu-popup '((0 0) nil) map))
+      (should (eq nhwl-menu-switched 'right))
+      (setq outcome 'cancel)
+      (should-not (nhwl-menu-popup '((0 0) nil) map))
+      (should-not nhwl-menu-switched))))
 
 (provide 'nhwl-menu-tests)
 

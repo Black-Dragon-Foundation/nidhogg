@@ -41,6 +41,12 @@
 ;; release or a touch tap chooses it, the wheel scrolls a menu taller
 ;; than the output, and a dialog (`x-popup-dialog' on this shell is a
 ;; menu) is centred on its frame.
+;;
+;; A menu that is one of a row (a menu bar drawn by Lisp) binds
+;; `nhwl-menu-switch-function': Left and Right at the end of their
+;; reach, and the pointer moving over the row, ask it whether to go to
+;; another menu of the row.  Then the whole menu closes, `x-popup-menu'
+;; returns nil and `nhwl-menu-switched' says where to go.
 
 ;;; Code:
 
@@ -53,6 +59,19 @@
   "Seconds the pointer rests on a submenu row before its menu opens."
   :type 'number
   :group 'nhwl-menu)
+
+(defvar nhwl-menu-switch-function nil
+  "Nil, or a function that makes the menu one of a row of menus.
+It is called with `left' or `right' (the key pressed at the end of the
+menu's reach: Left at the top level, Right on a row that opens nothing)
+or with (X Y FRAME), a pointer motion outside the menus, frame-relative.
+A non-nil answer closes the menu: `nhwl-menu-popup' returns nil and sets
+`nhwl-menu-switched' to the answer.  The caller binds it around
+`x-popup-menu'.")
+
+(defvar nhwl-menu-switched nil
+  "What `nhwl-menu-switch-function' answered when it ended the last menu.
+Nil when the last menu ended otherwise.")
 
 (defface nhwl-menu
   '((t :inherit menu))
@@ -679,6 +698,26 @@ drag, that is where the button was released."
                 (and (>= y 0) (< row (length nhwl-menu--rows)) row)
                 window))))))
 
+(defun nhwl-menu--switch (how)
+  "`(switch . ANSWER)' when `nhwl-menu-switch-function' takes HOW, else nil."
+  (let ((answer (and nhwl-menu-switch-function
+                     (funcall nhwl-menu-switch-function how))))
+    (and answer (cons 'switch answer))))
+
+(defun nhwl-menu--outside (event)
+  "The (X Y FRAME) of the pointer motion EVENT, frame-relative, or nil."
+  ;; read by hand: the posn of a motion over the tab bar has the frame
+  ;; where a window would be, which `posnp' refuses
+  (let* ((posn (ignore-errors (event-end event)))
+         (where (car-safe posn))
+         (xy (and (consp posn) (nth 2 posn))))
+    (when (and (consp xy) (numberp (car xy)))
+      (cond ((framep where) (list (car xy) (cdr xy) where))
+            ((window-live-p where)
+             (let ((edges (window-pixel-edges where)))
+               (list (+ (car xy) (nth 0 edges)) (+ (cdr xy) (nth 1 edges))
+                     (window-frame where))))))))
+
 (defun nhwl-menu--mouse (event kind depth parent-row)
   "Act on the pointer or touch EVENT of KIND in the menu level DEPTH.
 PARENT-ROW is the row of the level above that opened this one, or nil.
@@ -692,7 +731,11 @@ Return what `nhwl-menu--handle' does."
     (when (memq kind '(click drag))
       (setq nhwl-menu--pressed nil))
     (cond
-     ((null at) nil)
+     ;; the pointer over the row of menus this one belongs to
+     ((null at)
+      (and (eq kind 'move)
+           (let ((where (nhwl-menu--outside event)))
+             (and where (nhwl-menu--switch where)))))
      ;; an event for a shallower level is that level's to handle, except
      ;; over the row this level opened from
      ((< (car at) depth)
@@ -732,7 +775,8 @@ Return what `nhwl-menu--handle' does."
   "Act on EVENT in the current menu buffer, level DEPTH.
 PARENT-ROW is the row of the level above that opened this one, or nil.
 Return nil to go on, `cancel' (everything), `close' (this level),
-`(choose . ROW)', `(open . ROW)' (the submenu of a row), or
+`(choose . ROW)', `(open . ROW)' (the submenu of a row), `(switch .
+ANSWER)' (another menu of the row, `nhwl-menu-switch-function'), or
 `(retry . EVENT)' (EVENT is for a level above)."
   (cond
    ((eq (car-safe event) 'delete-frame) (nhwl-menu--dismissed event))
@@ -756,9 +800,12 @@ Return nil to go on, `cancel' (everything), `close' (this level),
    ((eq event 'end) (nhwl-menu--move nil -1) nil)
    ((memq event '(return kp-enter ?\r ?\s)) (nhwl-menu--activate))
    ((eq event 'right)
-    (let ((outcome (nhwl-menu--activate)))
-      (and (eq (car-safe outcome) 'open) outcome)))
-   ((eq event 'left) (and (> depth 0) 'close))
+    (let ((row (and nhwl-menu--index (aref nhwl-menu--rows nhwl-menu--index))))
+      (if (and row (eq (nhwl-menu--kind row) 'submenu))
+          (let ((outcome (nhwl-menu--activate)))
+            (and (eq (car-safe outcome) 'open) outcome))
+        (nhwl-menu--switch 'right))))
+   ((eq event 'left) (if (> depth 0) 'close (nhwl-menu--switch 'left)))
    ((memq event '(escape ?\e)) (if (> depth 0) 'close 'cancel))
    ((eq event ?\C-g) 'cancel)
    ((and (characterp event) (> event 32)) (nhwl-menu--jump event) nil)))
@@ -786,7 +833,7 @@ Return what `nhwl-menu--run' returns, or nil if the submenu is empty."
   "Show ROWS as menu level DEPTH, a popup of PARENT at ANCHOR.
 PARENT-ROW is the row of the level above that opened this one, or nil.
 Return `cancel', `close', `(choose ROW...)' (the rows chosen from this
-level down), or `(retry . EVENT)'."
+level down), `(switch . ANSWER)' or `(retry . EVENT)'."
   (let ((buffer (nhwl-menu--buffer depth rows))
         (map (nhwl-menu--event-map))
         (pending nil)
@@ -817,7 +864,8 @@ level down), or `(retry . EVENT)'."
           (let ((sub (nhwl-menu--open depth (cdr outcome))))
             (cond ((eq (car-safe sub) 'choose)
                    (setq result (cons 'choose (cons (cdr outcome) (cdr sub)))))
-                  ((eq sub 'cancel) (setq result 'cancel))
+                  ((or (eq sub 'cancel) (eq (car-safe sub) 'switch))
+                   (setq result sub))
                   ((eq (car-safe sub) 'retry) (push (cdr sub) pending)))))
          ((eq (car-safe outcome) 'choose)
           (setq result (list 'choose (cdr outcome))))
@@ -848,6 +896,7 @@ and a cancelled menu nil."
         (frame (selected-frame))
         (nhwl-menu--pressed (nhwl-menu--down-p position))
         (result nil))
+    (setq nhwl-menu-switched nil)
     (when (> (length rows) 0)
       (let ((anchor (nhwl-menu--anchor position)))
         (unwind-protect
@@ -860,6 +909,8 @@ and a cancelled menu nil."
             (message nil))
           (when (and (frame-live-p frame) (not (eq frame (selected-frame))))
             (select-frame frame 'norecord)))))
+    (when (eq (car-safe result) 'switch)
+      (setq nhwl-menu-switched (cdr result)))
     (nhwl-menu--return menu (and (eq (car-safe result) 'choose)
                                  (cdr result)))))
 
