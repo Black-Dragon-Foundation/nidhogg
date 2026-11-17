@@ -1330,14 +1330,14 @@ row_equal_p (struct glyph_row *a, struct glyph_row *b, bool mouse_face_p)
 	  || a->ascent != b->ascent
 	  || a->phys_ascent != b->phys_ascent
 	  || a->phys_height != b->phys_height
-	  || a->visible_height != b->visible_height
-#ifdef HAVE_NHWL
-	  /* A `row' block's fill changed: its default-background glyphs
-	     draw in it (update_window computes the desired rows').  */
-	  || a->glitnir_fill != b->glitnir_fill
-#endif
-	  )
+	  || a->visible_height != b->visible_height)
 	return 0;
+#ifdef HAVE_NHWL
+      /* A `row' block's fill changed: its default-background glyphs
+	 draw in it (update_window computes the desired rows').  */
+      if (a->glitnir_fill != b->glitnir_fill)
+	return 0;
+#endif
     }
 
   return 1;
