@@ -41,6 +41,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "nidhogg-history.h"
 
 #include <hlidskjalf.h>
+#include <glitnir.h>
 
 struct nh_lines_text
 {
@@ -457,6 +458,27 @@ as text.  Returns nil.  */)
   return unbind_to (count, Qnil);
 }
 
+DEFUN ("nidhogg-lines-take-hub-folds", Fnidhogg_lines_take_hub_folds,
+       Snidhogg_lines_take_hub_folds, 2, 2, 0,
+       doc: /* Take the hub's fold ranges of FILE into BUFFER's line model.
+FILE is the name the hub keys the file's minimap layers by (its true
+name); its `folds' layer, which the hub sends while a connection watches
+the file (`minimap/watch'), becomes the model's hub fold source (1),
+once per layer version.  Returns t when the model holds the ranges of
+the layer's latest version, nil when there is no such layer yet, the
+buffer's tree-sitter parser folds it (source 0), or the lines are being
+built.  */)
+  (Lisp_Object buffer, Lisp_Object file)
+{
+  CHECK_STRING (file);
+  uint64_t key = nh_lines_model (nh_lines_buffer (buffer));
+  if (!key)
+    return Qnil;
+  Lisp_Object u = ENCODE_UTF_8 (file);
+  return (glitnir_minimap_take_folds (key, SDATA (u), SBYTES (u)) == 1
+	  ? Qt : Qnil);
+}
+
 DEFUN ("nidhogg-lines-classes", Fnidhogg_lines_classes,
        Snidhogg_lines_classes, 2, 2, 0,
        doc: /* The class runs of 0-based LINE in BUFFER's text, as (COL LEN CLASS).
@@ -834,6 +856,7 @@ nil builds every model at once, on the main thread.  */);
   defsubr (&Snidhogg_lines_disable);
   defsubr (&Snidhogg_lines_line);
   defsubr (&Snidhogg_lines_classes);
+  defsubr (&Snidhogg_lines_take_hub_folds);
   defsubr (&Snidhogg_lines_take_faces);
   defsubr (&Snidhogg_lines_line_start);
   defsubr (&Snidhogg_lines_fraction);

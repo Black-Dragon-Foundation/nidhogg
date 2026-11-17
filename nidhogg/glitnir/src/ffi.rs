@@ -53,6 +53,7 @@ pub const EXPORTS: &[&str] = &[
     "glitnir_layer_set_output",
     "glitnir_layer_upsert",
     "glitnir_mask_to_device",
+    "glitnir_minimap_take_folds",
     "glitnir_root_drop",
     "glitnir_root_new",
     "glitnir_scroll",

@@ -1262,11 +1262,15 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
   fontification colours them again. Runs refused while the lines were built make the next parse run the query over
   the whole tree. `glitnir-minimap`'s `:classes` gives each class a colour; a tab-indented line's runs and bar are in
   columns.
+- **Hub folds** (source 1, a buffer with no parser of its own): the hub's `folds` layer of a file (Sjá's minimap layers,
+  sent while a connection watches the file) becomes the model's source-1 ranges, whole lines, once per layer version:
+  where Glitnir draws the window's minimap, and on demand with `(nidhogg-lines-take-hub-folds BUFFER FILE)` (t once the
+  model holds the latest version's ranges). A buffer its tree-sitter parser folds (source 0) keeps those.
 - Lisp: `(nidhogg-lines-enable &optional BUFFER WAIT)`, `nidhogg-lines-disable`; `nidhogg-lines-line`,
   `nidhogg-lines-line-start`, `nidhogg-lines-fraction`; marks by kind (0–63): `nidhogg-lines-set-marks`,
   `nidhogg-lines-next-mark`, `nidhogg-lines-counts`; folds by source: `nidhogg-lines-set-folds`, `nidhogg-lines-folds`,
   `nidhogg-lines-fold-at`; `nidhogg-lines-set-hidden`; `nidhogg-lines-trail-note`, `nidhogg-lines-trail`;
-  `nidhogg-lines-classes` (a line's runs), `nidhogg-lines-take-faces`; `nidhogg-treesit-refold` (the fold and
+  `nidhogg-lines-classes` (a line's runs), `nidhogg-lines-take-faces`; `nidhogg-lines-take-hub-folds`; `nidhogg-treesit-refold` (the fold and
   highlight queries over a parser's whole tree);
   `nidhogg-lines-describe` → `(:lines :chars :chunks :marks :folds :hidden :bytes :edits :state :rebuilds)`. The feature
   is `nidhogg-lines`.

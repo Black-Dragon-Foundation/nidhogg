@@ -5,7 +5,9 @@
 //! are premultiplied ARGB in Cairo's order, transparent where nothing is drawn, so the host composes a tile over the
 //! window's text without resampling it.
 
+use crate::ffi::{GLITNIR_E_ARG, ffi_guard};
 use crate::geom::Rect;
+use hlidskjalf::abi::with_model;
 use std::sync::Arc;
 
 /// Minimap rows in one tile.
@@ -193,6 +195,76 @@ pub fn raster(spec: &TileSpec, rows: &[Row]) -> Vec<u32> {
         }
     }
     px
+}
+
+/// The line model's source of the hub's fold ranges (design §7.4: 0 the editor's parser, 1 the hub).
+pub const SOURCE_HUB: u8 = 1;
+
+/// The fold kinds by name, at their numbers in the line model (the hub's `folds` layer names them).
+const FOLD_KINDS: [&str; 9] = [
+    "block", "function", "class", "comment", "import", "test", "region", "cell", "heading",
+];
+
+/// The hub's fold ranges of FILE (Sjá's `folds` layer: a buffer with no parser of its own) into model KEY as its hub
+/// source, once per layer version, unless its own parser folds it.  True when the model holds the ranges of the
+/// layer's latest version (taken now or before); false when Sjá has no such layer, the parser folds the buffer, or the
+/// lines are being built (a later call takes it).
+pub fn take_hub_folds(key: u64, file: &str) -> bool {
+    static TAKEN: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+    let Some((version, lines)) = sja::minimap::with_layer(file, "folds", |v, d| match d {
+        sja::minimap::Data::Folds(x) => Some((
+            v,
+            x.iter()
+                .filter_map(|(a, b, k)| {
+                    Some((*a, *b, FOLD_KINDS.iter().position(|n| *n == &**k)? as u8))
+                })
+                .collect::<Vec<_>>(),
+        )),
+        _ => None,
+    })
+    .flatten() else {
+        return false;
+    };
+    let mut taken = TAKEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // a buffer its own parser folds (source 0) keeps those: the hub's would be the same ranges again
+    if with_model(key, |m| m.has_folds_of(0)) != Some(false) {
+        return false;
+    }
+    if taken.iter().any(|&(k, v)| k == key && v == version) {
+        return true;
+    }
+    if with_model(key, |m| m.set_fold_lines(SOURCE_HUB, &lines)) != Some(true) {
+        return false;
+    }
+    taken.retain(|&(k, _)| k != key);
+    // a model per text shown: the oldest go first past a bound no session reaches
+    if taken.len() >= 1024 {
+        taken.remove(0);
+    }
+    taken.push((key, version));
+    true
+}
+
+/// [`take_hub_folds`] for the host: FILE is LEN bytes of UTF-8.  1 when the model holds the hub's folds of FILE, 0
+/// when not, `GLITNIR_E_ARG` for a null or non-UTF-8 FILE.
+///
+/// # Safety
+/// FILE must be readable for LEN bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_minimap_take_folds(key: u64, file: *const u8, len: usize) -> i32 {
+    ffi_guard(|| {
+        if file.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        // SAFETY: the caller promises LEN readable bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(file, len) };
+        match std::str::from_utf8(bytes) {
+            Ok(f) => i32::from(take_hub_folds(key, f)),
+            Err(_) => GLITNIR_E_ARG,
+        }
+    })
 }
 
 #[cfg(test)]

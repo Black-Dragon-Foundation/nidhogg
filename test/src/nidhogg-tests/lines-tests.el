@@ -34,6 +34,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'nidhogg-views nil t)      ; the hub's folds: Sjá's minimap layers pushed as hub lines
 
 (defvar nidhogg-lines-sync-limit)
 
@@ -533,5 +534,47 @@ to the class runs of its lines."
           (lines-tests--elisp-classes)
           (nidhogg-lines-disable))
       (kill-buffer b))))
+
+;; Design section 7.4: a buffer with no parser of its own folds by the
+;; hub's ranges, taken from Sjá on demand.
+(ert-deftest lines/the-hubs-folds-are-taken-on-demand ()
+  "`nidhogg-lines-take-hub-folds' copies Sjá's `folds' layer of a file
+into the line model's hub source (1) as whole lines: nil before the
+layer comes, t once taken (and again with no change), a newer version
+replacing the ranges; a buffer whose parser folds it keeps those."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-view-push)))
+  (let ((file "/t/lines-hub.txt")
+        (push (lambda (v items)
+                (nidhogg-view-push
+                 (format "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"%s\",\"layer\":\"folds\",\"version\":%d,\"items\":%s}}}"
+                         "/t/lines-hub.txt" v items)))))
+    (unwind-protect
+        (with-temp-buffer
+          (insert "a {\n  b\n}\nc {\n  d\n}\n")
+          (nidhogg-lines-enable nil t)
+          (nidhogg-lines-set-fold-sources nil nil nil)
+          (should-not (nidhogg-lines-take-hub-folds nil file))
+          (funcall push 5 "[[1,3,\"function\"]]")
+          (should (nidhogg-lines-take-hub-folds nil file))
+          (should (equal (mapcar (lambda (f) (list (nidhogg-lines-line nil (car f))
+                                                   (nidhogg-lines-line nil (cadr f)) (nth 2 f) (nth 4 f)))
+                                 (nidhogg-lines-folds nil))
+                         '((0 2 1 1))))
+          (should (nidhogg-lines-take-hub-folds nil file))
+          (funcall push 6 "[[4,6,\"class\"]]")
+          (should (nidhogg-lines-take-hub-folds nil file))
+          (should (equal (mapcar (lambda (f) (list (nidhogg-lines-line nil (car f)) (nth 2 f)))
+                                 (nidhogg-lines-folds nil))
+                         '((3 2))))
+          ;; folded by its own parser (source 0): the hub's newer layer is
+          ;; not taken
+          (nidhogg-lines-set-folds nil 0 '((1 10 1)) 100)
+          (funcall push 7 "[[1,6,\"block\"]]")
+          (should-not (nidhogg-lines-take-hub-folds nil file))
+          (should (equal (mapcar (lambda (f) (list (nidhogg-lines-line nil (car f)) (nth 4 f)))
+                                 (nidhogg-lines-folds nil))
+                         '((0 0) (3 1))))
+          (nidhogg-lines-disable))
+      (nidhogg-view-minimap 'forget file))))
 
 ;;; lines-tests.el ends here
