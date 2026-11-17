@@ -3,3 +3,4 @@ d2972cad96e2f34c4208ebedac384661e200e7c3commit misfiled: same; removed by the re
 99e311dbba322f60a8a28bd7bd8f0a09799e3981commit misfiled: Naglfar-created Lisp (nhmac-win.el) edited under a test: subject; the release rebuild re-subjects it as naglfar: and removes this line
 eeabb9fb1ed655e3d7f30b6f8afaf2f6a84c2b55commit misfiled: a HAVE_NHWL change (default fringes) under an nhwl: subject; the release rebuild re-subjects it as shell: and removes this line
 66be84fe706dccafceb09fa3d1793bdfd0e40755commit misfiled: a HAVE_NHMAC change (the present deadline's wake) without the naglfar: subject; the release rebuild re-subjects it as naglfar: and removes this line
+b4a3d3a998e021e19e8cace7a36849762f81387acommit misfiled: Glitnir-created Lisp (nidhogg-views.el, the rowspans doc) edited under a sja: subject; the release rebuild re-subjects it as glitnir: and removes this line
