@@ -1060,6 +1060,21 @@ impl Store {
         out
     }
 
+    /// Node `id`'s whole rows in the drawn rows, by property `prop`: for each drawn row holding it, (from, to)
+    /// characters from the region's start, the row's first character to past its newline, in buffer order.
+    pub fn row_spans(&mut self, prop: &str, id: &str) -> Vec<(usize, usize)> {
+        let (js, starts) = {
+            let ix = self.index(prop);
+            (
+                ix.ids.get(id).cloned().unwrap_or_default(),
+                ix.starts.clone(),
+            )
+        };
+        js.into_iter()
+            .map(|j| (starts[j], starts[j] + self.drawn[j].chars))
+            .collect()
+    }
+
     /// The dim runs of the drawn rows: consecutive rows whose every node (by `prop`) `dim` says is dim, as (from, to)
     /// characters from the region's start; and the dim nodes of the other rows, in order.
     pub fn dim_runs(&self, prop: &str, mut dim: impl FnMut(&str) -> bool) -> DimRuns {
