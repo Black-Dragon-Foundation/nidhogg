@@ -406,8 +406,10 @@ item, and a cancelled menu (PATH nil) nil."
   "The `:ascent' percentage that centres the menu's text in a row HEIGHT pixels tall.
 Nil when the row is no taller than the text, or the font is not known."
   (let* ((info (ignore-errors (font-info (face-font 'nhwl-menu))))
-         (a (and info (aref info 4)))
-         (d (and info (aref info 5))))
+         ;; [OPENED-NAME FULL-NAME SIZE HEIGHT BASELINE-OFFSET
+         ;; RELATIVE-COMPOSE DEFAULT-ASCENT MAX-WIDTH ASCENT DESCENT ...]
+         (a (and info (aref info 8)))
+         (d (and info (aref info 9))))
     (when (and (natnump a) (natnump d) (> height (+ a d)))
       (min 100 (ceiling (* 100.0 (+ a (/ (- height a d) 2))) height)))))
 
