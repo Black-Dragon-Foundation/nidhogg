@@ -467,6 +467,14 @@ int32_t glitnir_history_clear (uint64_t key);
 /* How many rings hold a change or a resync mark, into *OUT.  */
 int32_t glitnir_history_pending (uint64_t *out);
 
+/* The hub's fold ranges of FILE (LEN bytes of UTF-8: Sjá's `folds' layer
+   of that file) into line model KEY as its hub source (1), once per layer
+   version, unless the buffer's parser folds it.  1 when the model holds
+   them, 0 when not (no layer, parser folds, lines being built),
+   GLITNIR_E_ARG for a bad FILE.  */
+int32_t glitnir_minimap_take_folds (uint64_t key, const uint8_t *file,
+				    size_t len);
+
 #ifdef __cplusplus
 }
 #endif
