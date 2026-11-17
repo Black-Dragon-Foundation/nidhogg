@@ -506,6 +506,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_NIDHOGG_WORKERS
 #include "nidhogg-workers.h"
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+#include "nidhogg-history.h"
+#endif
 
 #ifndef FRAME_OUTPUT_DATA
 #define FRAME_OUTPUT_DATA(f) (NULL)
@@ -4787,6 +4790,12 @@ handle_fontified_prop (struct it *it)
       else if (BUFFER_LIVE_P (obuf))
       	set_buffer_internal_1 (obuf);
 
+#ifdef HAVE_NIDHOGG_HISTORY
+      /* The line model's classes of the text that became fontified, for
+	 the minimap (design section 7.2).  */
+      if (obuf == current_buffer)
+	nh_lines_take_faces (current_buffer, XFIXNUM (pos));
+#endif
       /* The fontification code may have added/removed text.
 	 It could do even a lot worse, but let's at least protect against
 	 the most obvious case where only the text past `pos' gets changed',

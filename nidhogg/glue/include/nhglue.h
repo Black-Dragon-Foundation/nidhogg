@@ -977,6 +977,9 @@ typedef struct
   const uint8_t *file;
   size_t file_len;
   int32_t label_rgb, sub_rgb, accent_rgb, mark_rgb;
+  /* Each display class's bar 0xRRGGBB (-1: TEXT_RGB's), at TEXT_OPACITY: the line model's class runs (1 keyword ...
+     15 special; 0 is text).  */
+  int32_t class_rgb[16];
 } NhgMinimap;
 
 /* The label renderer: TEXT (LEN bytes of UTF-8) in face FACE of frame HOST at PX100 / 100 device pixels, in 0xRRGGBB

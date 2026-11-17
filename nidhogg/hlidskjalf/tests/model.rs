@@ -1,6 +1,6 @@
 //! The model against a plain text: every edit the host's change hook would send, checked line by line.
 
-use hlidskjalf::{BLANK, Fold, Mark, Model};
+use hlidskjalf::{BLANK, Fold, Mark, Model, Run, Span};
 
 /// A text and its model, edited together as the host does.
 struct Pair {
@@ -426,4 +426,80 @@ fn heading_ranges_end_before_the_next_heading_of_their_level() {
         assert!(p.m.set_derived_folds(false, Some("(")).is_err());
         p.check();
     }
+}
+
+/// Line L's runs in use, as (col, len, class).
+fn runs(p: &mut Pair, l: u64) -> Vec<(u16, u8, u8)> {
+    p.m.index()
+        .expect("built")
+        .line(l)
+        .runs
+        .iter()
+        .filter(|r| r.len > 0)
+        .map(|&Run { col, len, class }| (col, len, class))
+        .collect()
+}
+
+#[test]
+fn class_spans_become_runs_on_their_lines() {
+    // "fn a() {" / "    s = \"x" / "y\";" / "}": positions from 1
+    let mut p = Pair::new("fn a() {\n    s = \"x\ny\";\n}\n", false);
+    let span = |beg, end, class| Span { beg, end, class };
+    assert!(p.m.replace_classes(
+        1,
+        26,
+        &[
+            // a block over everything (class 9) under the rest: shorter spans paint over it
+            span(1, 26, 9),
+            span(1, 3, 1),   // fn
+            span(4, 5, 2),   // a
+            span(14, 15, 7), // s, then text (0) over it
+            span(14, 15, 0),
+            span(18, 23, 4), // the string, over two lines
+        ]
+    ));
+    // line 0: fn, then the block, a, the block (its newline left out)
+    assert_eq!(
+        runs(&mut p, 0),
+        vec![(0, 2, 1), (2, 1, 9), (3, 1, 2), (4, 4, 9)]
+    );
+    // line 1: the block, `s` (the text span over it paints nothing), the block, the string from column 8
+    assert_eq!(
+        runs(&mut p, 1),
+        vec![(0, 4, 9), (4, 1, 7), (5, 3, 9), (8, 2, 4)]
+    );
+    assert_eq!(runs(&mut p, 2), vec![(0, 2, 4), (2, 1, 9)]);
+    assert_eq!(runs(&mut p, 3), vec![(0, 1, 9)]);
+    // a range replaces the runs of the lines it touches only
+    assert!(p.m.replace_classes(14, 15, &[span(14, 15, 3)]));
+    assert_eq!(runs(&mut p, 1), vec![(4, 1, 3)]);
+    assert_eq!(runs(&mut p, 0).len(), 4);
+    // an edit that rewrites a line clears its runs; the others keep theirs
+    p.edit(1, 2, "pub fn");
+    assert!(runs(&mut p, 0).is_empty());
+    assert_eq!(runs(&mut p, 1), vec![(4, 1, 3)]);
+    // at most six runs a line, the leftmost
+    let mut q = Pair::new(&"a ".repeat(20), false);
+    let many: Vec<Span> = (0..10)
+        .map(|i| span(1 + 2 * i, 2 + 2 * i, 1 + i as u8))
+        .collect();
+    assert!(q.m.replace_classes(1, 40, &many));
+    assert_eq!(
+        runs(&mut q, 0),
+        (0..6u8)
+            .map(|i| (u16::from(2 * i), 1, 1 + i))
+            .collect::<Vec<_>>()
+    );
+    // while the lines are built: nothing changes, false
+    let mut b = Pair::new(&big_text(200_000), true);
+    assert!(b.m.building());
+    assert!(!b.m.replace_classes(1, 3, &many));
+    b.m.poll(true);
+    assert!(
+        b.m.take_classes_missed(),
+        "the producer runs again once they are built"
+    );
+    assert!(!b.m.take_classes_missed());
+    assert!(!p.m.take_classes_missed());
+    p.check();
 }

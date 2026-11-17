@@ -1106,7 +1106,7 @@ nhwl_minimap_files_fix (void)
 /* List leaf window W's minimap V (the window parameter glitnir--minimap,
    [FLAGS WIDTH SCALE FILL-RGB FILL-OPACITY TEXT-RGB TEXT-OPACITY
    BAND-RGB BAND-OPACITY LABELS FILE LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB
-   LABEL-FACE]) over its text area CLIP, when its buffer's
+   LABEL-FACE CLASS-RGB]) over its text area CLIP, when its buffer's
    text has a line model; the glue reads the rows from the model.  R is
    its ruler (glitnir--ruler): the pointer resting on that strip opens
    the minimap.  */
@@ -1206,6 +1206,12 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
     .mark_rgb = labels ? nhwl_block_int (v, 14, -1) : -1,
   };
 #undef NHWL_MINIMAP_OPACITY
+  /* CLASS-RGB: each display class's colour (nil or -1: the bars').  */
+  Lisp_Object classes = ASIZE (v) > 16 ? AREF (v, 16) : Qnil;
+  NhgMinimap *m = &nhwl_minimaps[nhwl_nminimaps - 1];
+  for (int c = 0; c < 16; c++)
+    m->class_rgb[c] = (VECTORP (classes) && c < ASIZE (classes)
+		       ? nhwl_block_int (classes, c, -1) : -1);
 #endif
 }
 

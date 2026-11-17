@@ -277,6 +277,47 @@ mod minimap {
         hlid_drop(key);
     }
 
+    /// A line's class runs are drawn over its bar in their class's colour, a class with none in the bars' colour, and
+    /// a tab-indented line's runs shifted to its indent's columns.
+    #[test]
+    fn class_runs_draw_in_their_classes_colours() {
+        use glitnir::hlidskjalf::Span;
+        let key = 0x6d6d_0008;
+        let t = b"x = 1\n\tif\n".to_vec();
+        // SAFETY: T is readable for its length; the second part is empty.
+        let rc = unsafe { hlid_build(key, 0, 4, t.as_ptr(), t.len(), std::ptr::null(), 0, 0) };
+        assert_eq!(rc, 0);
+        // `x` a variable (7, no colour of its own), `1` a constant (6), `if` (after a tab: columns 4–5) a keyword (1)
+        let span = |beg, end, class| Span { beg, end, class };
+        assert!(
+            with_model(key, |m| m.replace_classes(
+                1,
+                11,
+                &[span(1, 2, 7), span(5, 6, 6), span(8, 10, 1)]
+            ))
+            .unwrap()
+        );
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let mut e = entry(key, 1, 11, 11, NHG_MINIMAP_OPEN);
+        e.class_rgb[1] = 0xff_0000;
+        e.class_rgb[6] = 0x00_ff00;
+        sync_at(&mut b, f, &[e]).unwrap();
+        let m = placed(&commit(f).1, minimap_id(SEQ))
+            .unwrap()
+            .minimap
+            .unwrap();
+        let px = &m.tiles[0].px;
+        // rows of 2 px, 100 px wide
+        let at = |x: usize, y: usize| px[y * 100 + x];
+        let row0: Vec<u32> = (0..6).map(|x| at(x, 0)).collect();
+        let (white, green, red) = (0xffff_ffff, 0xff00_ff00, 0xffff_0000);
+        assert_eq!(row0, [white, white, white, white, green, 0]);
+        let row1: Vec<u32> = (0..7).map(|x| at(x, 2)).collect();
+        assert_eq!(row1, [0, 0, 0, 0, red, red, 0]);
+        hlid_drop(key);
+    }
+
     /// A tile is kept while the model does not change and drawn again after an edit; a window whose model has no
     /// lines has no layer.
     #[test]

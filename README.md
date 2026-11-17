@@ -1253,10 +1253,21 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
   whole lines (a node within one line is none; of nodes starting on one line the largest stays); no Lisp list is made.
   Ranges outside a narrowing stay until a parse covers them; nodes sent while the lines are still built move with the
   edits and are widened once they are in.
+- **Classes** (the minimap's colours): each line keeps up to 6 runs `(col, len, class)`, class 1 keyword … 15 special
+  (0 is text). A tree-sitter buffer's `nidhogg-treesit-highlight-query` (a compiled query or a list of them) runs at
+  the same publish over the changed ranges, widened to whole lines; a capture's class comes from its leading name
+  (`keyword.return` is a keyword) or an Emacs face name (`font-lock-string-face`). Other buffers take the classes of
+  their `face` text properties where redisplay fontifies (after `fontification-functions`, within 4096 characters),
+  or through `nidhogg-lines-take-faces`. An edit clears the runs of the lines it rewrites until the next parse or
+  fontification colours them again. Runs refused while the lines were built make the next parse run the query over
+  the whole tree. `glitnir-minimap`'s `:classes` gives each class a colour; a tab-indented line's runs and bar are in
+  columns.
 - Lisp: `(nidhogg-lines-enable &optional BUFFER WAIT)`, `nidhogg-lines-disable`; `nidhogg-lines-line`,
   `nidhogg-lines-line-start`, `nidhogg-lines-fraction`; marks by kind (0–63): `nidhogg-lines-set-marks`,
   `nidhogg-lines-next-mark`, `nidhogg-lines-counts`; folds by source: `nidhogg-lines-set-folds`, `nidhogg-lines-folds`,
   `nidhogg-lines-fold-at`; `nidhogg-lines-set-hidden`; `nidhogg-lines-trail-note`, `nidhogg-lines-trail`;
+  `nidhogg-lines-classes` (a line's runs), `nidhogg-lines-take-faces`; `nidhogg-treesit-refold` (the fold and
+  highlight queries over a parser's whole tree);
   `nidhogg-lines-describe` → `(:lines :chars :chunks :marks :folds :hidden :bytes :edits :state :rebuilds)`. The feature
   is `nidhogg-lines`.
 - Tests: `test/src/nidhogg-tests/lines-tests.el` (det; in `check-subset.txt`): every change site keeps the lines with
