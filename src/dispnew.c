@@ -4490,8 +4490,8 @@ update_window (struct window *w)
     for (struct glyph_row *r = row; r < end; r++)
       if (r->enabled_p && !r->mode_line_p)
 	r->glitnir_fill = glitnir_row_fill (w, r);
-#endif
 
+#endif
   /* Take note of the tab line, if there is one.  We will
      update it below, after updating all of the window's lines.  */
   if (row->mode_line_p && row->tab_line_p)
