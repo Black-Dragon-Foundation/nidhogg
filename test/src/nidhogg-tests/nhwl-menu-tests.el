@@ -391,6 +391,18 @@ rows of 30 px a pointer at Y 45 is on row 1."
         (should-not (nth 1 (nhwl-menu--locate
                             (list 'mouse-movement (list window row1 '(10 . -3) 0 nil row1 nil nil nil '(0 . 0))))))))))
 
+(ert-deftest nhwl-menu/text-centred-in-a-taller-row ()
+  "The row's `:ascent' centres the font's line (its ASCENT and DESCENT,
+`font-info' slots 8 and 9) in a taller row: a 13 + 4 pixel line in a
+31 pixel row has its baseline 7 + 13 pixels down, an ascent of 65 %."
+  (cl-letf (((symbol-function 'face-font) (lambda (&rest _) "font"))
+            ((symbol-function 'font-info)
+             ;; [OPENED-NAME FULL-NAME SIZE HEIGHT BASELINE-OFFSET
+             ;; RELATIVE-COMPOSE DEFAULT-ASCENT MAX-WIDTH ASCENT DESCENT ...]
+             (lambda (&rest _) (vector "font" "font" 13 17 0 0 0 9 13 4 4 7 nil nil))))
+    (should (= (nhwl-menu--ascent 31) 65))
+    (should-not (nhwl-menu--ascent 17))))
+
 (provide 'nhwl-menu-tests)
 
 ;;; nhwl-menu-tests.el ends here
