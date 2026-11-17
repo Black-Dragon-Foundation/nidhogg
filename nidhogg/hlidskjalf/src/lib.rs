@@ -16,9 +16,12 @@ pub mod sections;
 use std::collections::VecDeque;
 use std::thread::JoinHandle;
 
-pub use index::{BLANK, Line, LineIndex};
+pub use index::{BLANK, Line, LineIndex, RUNS, Run};
 use regex_lite::Regex;
 pub use sections::Section;
+
+/// The characters of a line that class runs cover (a minimap row is narrower).
+pub const CLASS_COLUMNS: u64 = 512;
 
 /// A mark: an owner's position (with an optional end, for a run of lines) in a lane, of a class and kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +34,15 @@ pub struct Mark {
     pub class: u8,
     pub prio: u8,
     pub kind: u8,
+}
+
+/// A span of a display class from a class producer (a highlights query's capture): BEG and END positions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct Span {
+    pub beg: u64,
+    pub end: u64,
+    pub class: u8,
 }
 
 /// A fold range: BEG and END positions, its KIND, DEPTH (set by the model: 0 outermost) and SOURCE.
@@ -79,6 +91,8 @@ pub struct Model {
     fold_max: usize,
     /// The sources whose folds are nodes not yet widened to whole lines (sent while the lines were built).
     raw_folds: Vec<u8>,
+    /// Class runs were refused while the lines were built: the producer runs over the whole text again.
+    classes_missed: bool,
     /// Bumped by every change of the lines (not of the hidden ones); the found ranges are of `derived_at`'s lines.
     text_gen: u64,
     derived_at: u64,
@@ -109,6 +123,7 @@ impl Model {
             indent_folds: false,
             fold_max: 20000,
             raw_folds: Vec::new(),
+            classes_missed: false,
             text_gen: 0,
             derived_at: u64::MAX,
             stale: false,
@@ -483,6 +498,88 @@ impl Model {
             }
         }
         self.set_one_a_line(source, all);
+    }
+
+    /// Replace the class runs of the lines touching BEG..END (positions) with SPANS, cut to those lines (design §7.2).  A span over several lines gives a run on each.  Shorter spans
+    /// are painted over longer ones, and of two alike the later over the earlier (a highlights query's order); class
+    /// 0 (text) paints nothing.  A line keeps its first [`RUNS`] runs, within its first [`CLASS_COLUMNS`]
+    /// characters.  False, and nothing changed, while the lines are built ([`Model::take_classes_missed`] then
+    /// answers true once they are).
+    pub fn replace_classes(&mut self, beg: u64, end: u64, spans: &[Span]) -> bool {
+        self.poll(false);
+        let Some(idx) = self.idx.as_mut() else {
+            self.classes_missed = true;
+            return false;
+        };
+        let (b, e) = (beg.max(1) - 1, end.max(beg).max(1) - 1);
+        let (first, last) = (idx.line_at(b), idx.line_at(e));
+        let lo = idx.start_of(first);
+        let hi = idx.start_of(last + 1);
+        let mut order: Vec<&Span> = spans
+            .iter()
+            .filter(|s| {
+                s.class != 0 && s.end > s.beg && s.end - 1 > lo && s.beg.saturating_sub(1) < hi
+            })
+            .collect();
+        order.sort_by_key(|s| std::cmp::Reverse(s.end - s.beg));
+        let n = (last - first + 1) as usize;
+        let mut paint: Vec<Vec<u8>> = vec![Vec::new(); n];
+        for &&Span {
+            beg: sb,
+            end: se,
+            class,
+        } in &order
+        {
+            let (sb, se) = (sb.saturating_sub(1).max(lo), (se - 1).min(hi));
+            let mut l = idx.line_at(sb);
+            while l <= last && idx.start_of(l) < se {
+                let start = idx.start_of(l);
+                let width = (u64::from(idx.line(l).len).saturating_sub(1)).min(CLASS_COLUMNS);
+                let a = sb.saturating_sub(start).min(width) as usize;
+                let z = (se - start).min(width) as usize;
+                let row = &mut paint[(l - first) as usize];
+                if row.len() < z {
+                    row.resize(z, 0);
+                }
+                row[a..z].fill(class);
+                l += 1;
+            }
+        }
+        for (i, row) in paint.iter().enumerate() {
+            let mut runs = [Run::default(); RUNS];
+            let mut k = 0;
+            let mut c = 0;
+            while c < row.len() && k < RUNS {
+                let class = row[c];
+                let mut z = c + 1;
+                while z < row.len() && row[z] == class && z - c < usize::from(u8::MAX) {
+                    z += 1;
+                }
+                if class != 0 {
+                    runs[k] = Run {
+                        col: c as u16,
+                        len: (z - c) as u8,
+                        class,
+                    };
+                    k += 1;
+                }
+                c = z;
+            }
+            idx.set_runs(first + i as u64, runs);
+        }
+        self.generation += 1;
+        true
+    }
+
+    /// Whether class runs were refused while the lines were built and the lines are there now; the answer clears it
+    /// (the producer then runs over the whole text).
+    pub fn take_classes_missed(&mut self) -> bool {
+        self.poll(false);
+        let missed = self.classes_missed && self.idx.is_some();
+        if missed {
+            self.classes_missed = false;
+        }
+        missed
     }
 
     /// Whether SOURCE has any fold.

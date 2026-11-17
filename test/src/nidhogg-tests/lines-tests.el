@@ -431,4 +431,107 @@ over the whole tree."
         (should (equal (funcall kinds) '((0 5) (5 1) (10 2)))))
       (nidhogg-lines-disable))))
 
+;; Design section 7.2: the highlight query's captures as the lines' class runs.
+(ert-deftest lines/tree-sitter-highlight-classes ()
+  "A highlight query's captures become the class runs of their lines: the
+class by the capture's leading name (or an Emacs face name), a shorter
+capture over a longer one and a later over an earlier (also across a
+list of queries), an unknown name nothing; a refold runs a query set after the parse, and a reparse
+replaces the runs of the lines it changed."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-lines-classes)
+                    (lines-tests--grammars)))
+  (let ((treesit-extra-load-path (list (lines-tests--grammars))))
+    (with-temp-buffer
+      (insert "int a (void)\n{\n  return 1; /* x */\n}\n")
+      (nidhogg-lines-enable nil t)
+      (let ((p (treesit-parser-create 'c)))
+        (treesit-parser-root-node p)
+        (setq-local nidhogg-treesit-highlight-query
+                    (treesit-query-compile
+                     'c "(primitive_type) @type.builtin
+                         (return_statement \"return\" @keyword.return)
+                         (number_literal) @font-lock-number-face
+                         (comment) @comment
+                         (identifier) @variable
+                         ((identifier) @function (#eq? @function \"a\"))
+                         (parameter_list) @no.such.class"))
+        (should-not (nidhogg-lines-classes nil 0))
+        (nidhogg-treesit-refold p)
+        ;; int: type (3), a: function (2) over variable, void: type; the
+        ;; parameter list's unknown name draws nothing
+        (should (equal (nidhogg-lines-classes nil 0) '((0 3 3) (4 1 2) (7 4 3))))
+        (should-not (nidhogg-lines-classes nil 1))
+        ;; return: keyword (1), 1: constant (6), the comment (5)
+        (should (equal (nidhogg-lines-classes nil 2) '((2 6 1) (9 1 6) (12 7 5))))
+        ;; a reparse recolours the line it changed
+        (goto-char (point-min))
+        (search-forward "1;")
+        (replace-match "22;")
+        (treesit-parser-root-node p)
+        (should (equal (nidhogg-lines-classes nil 2) '((2 6 1) (9 2 6) (13 7 5))))
+        ;; an edit of the same size within a token: the parse's changed
+        ;; ranges hold it, and the line (its runs cleared by the edit) is
+        ;; coloured again
+        (goto-char (point-min))
+        (search-forward "22;")
+        (replace-match "33;")
+        (treesit-parser-root-node p)
+        (should (equal (nidhogg-lines-classes nil 2) '((2 6 1) (9 2 6) (13 7 5))))
+        (should (equal (nidhogg-lines-classes nil 0) '((0 3 3) (4 1 2) (7 4 3))))
+        ;; a list of queries (a mode's font-lock rules): a later one's
+        ;; capture over the same text wins
+        (setq-local nidhogg-treesit-highlight-query
+                    (list (treesit-query-compile 'c "(primitive_type) @type")
+                          (treesit-query-compile 'c "(primitive_type) @keyword")))
+        (nidhogg-treesit-refold p)
+        (should (equal (nidhogg-lines-classes nil 0) '((0 3 1) (7 4 1))))
+        (should-not (nidhogg-lines-classes nil 2)))
+      (nidhogg-lines-disable))))
+
+;; Design section 7.2: buffers without a highlight query take their
+;; classes from the faces fontification gives them.
+(defconst lines-tests--elisp ";; note\n(defun f () \"s\")\n")
+
+(defun lines-tests--elisp-classes ()
+  "Check the current buffer's classes for `lines-tests--elisp': the
+comment one run (delimiter and body), `defun' a keyword, `f' a function,
+the docstring a comment (`font-lock-doc-face')."
+  (should (equal (nidhogg-lines-classes nil 0) '((0 7 5))))
+  (should (equal (nidhogg-lines-classes nil 1) '((1 5 1) (7 1 2) (12 3 5)))))
+
+(ert-deftest lines/faces-become-classes ()
+  "Fontified text's faces become the class runs of its lines, by the
+faces' names, through `nidhogg-lines-take-faces' (text fontified outside
+redisplay)."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-lines-take-faces)))
+  (with-temp-buffer
+    (insert lines-tests--elisp)
+    (emacs-lisp-mode)
+    (nidhogg-lines-enable nil t)
+    (font-lock-ensure)
+    (should-not (nidhogg-lines-classes nil 1))
+    (nidhogg-lines-take-faces nil)
+    (lines-tests--elisp-classes)
+    (nidhogg-lines-disable)))
+
+(ert-deftest lines/redisplay-fontifies-classes ()
+  "Redisplay, fontifying a shown buffer, gives the fontified text's faces
+to the class runs of its lines."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-lines-take-faces)
+                    (display-graphic-p)))
+  (let ((b (generate-new-buffer "lines-faces")))
+    (unwind-protect
+        (with-current-buffer b
+          (insert lines-tests--elisp)
+          (emacs-lisp-mode)
+          (font-lock-mode 1)
+          (nidhogg-lines-enable nil t)
+          (should-not (nidhogg-lines-classes nil 1))
+          (save-window-excursion
+            (set-window-buffer (selected-window) b)
+            (redisplay t))
+          (lines-tests--elisp-classes)
+          (nidhogg-lines-disable))
+      (kill-buffer b))))
+
 ;;; lines-tests.el ends here

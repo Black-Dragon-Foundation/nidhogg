@@ -136,6 +136,16 @@ pub struct Row {
     pub end: u32,
     /// The bar's class (below [`CLASSES`]; another is drawn as plain text).
     pub class: u8,
+    /// Runs of other classes drawn over the bar, within it (`to` 0: none).
+    pub runs: [RowRun; hlidskjalf::RUNS],
+}
+
+/// A run of a class over a row's bar: columns FROM to TO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RowRun {
+    pub from: u32,
+    pub to: u32,
+    pub class: u8,
 }
 
 impl TileSpec {
@@ -160,13 +170,26 @@ pub fn raster(spec: &TileSpec, rows: &[Row]) -> Vec<u32> {
         if x1 <= x0 {
             continue;
         }
-        let c = spec.argb[if (r.class as usize) < CLASSES {
-            r.class as usize
-        } else {
-            0
-        }];
+        let argb = |class: u8| {
+            spec.argb[if (class as usize) < CLASSES {
+                class as usize
+            } else {
+                0
+            }]
+        };
+        let c = argb(r.class);
         for y in i * rp..(i + 1) * rp {
             px[y * w + x0..y * w + x1].fill(c);
+        }
+        for run in r.runs.iter().filter(|run| run.to > run.from) {
+            let a = (run.from as usize).saturating_mul(cp).clamp(x0, x1);
+            let b = (run.to as usize).saturating_mul(cp).clamp(x0, x1);
+            if b > a {
+                let c = argb(run.class);
+                for y in i * rp..(i + 1) * rp {
+                    px[y * w + a..y * w + b].fill(c);
+                }
+            }
         }
     }
     px
@@ -198,17 +221,20 @@ mod tests {
                 indent: 0,
                 end: 5,
                 class: 0,
+                ..Default::default()
             },
             Row {
                 indent: 4,
                 end: 9,
                 class: 3,
+                ..Default::default()
             },
             Row::default(),
             Row {
                 indent: 2,
                 end: 99,
                 class: 0,
+                ..Default::default()
             },
         ];
         let px = raster(&spec(), &rows);
@@ -288,6 +314,7 @@ mod tests {
                 indent: 1,
                 end: 3,
                 class: 200,
+                ..Default::default()
             }],
         );
         assert_eq!(px.len(), 20 * 3);
@@ -300,10 +327,48 @@ mod tests {
             Row {
                 indent: 0,
                 end: 1,
-                class: 0
+                class: 0,
+                ..Default::default()
             };
             TILE_ROWS + 9
         ];
         assert_eq!(raster(&spec(), &many).len(), 20 * 2 * TILE_ROWS);
+    }
+
+    #[test]
+    fn class_runs_are_drawn_over_the_bar_within_it() {
+        let mut runs = [RowRun::default(); hlidskjalf::RUNS];
+        // class 3 over columns 4–6, one starting before the bar and one running past it cut to it
+        runs[0] = RowRun {
+            from: 4,
+            to: 6,
+            class: 3,
+        };
+        runs[1] = RowRun {
+            from: 0,
+            to: 3,
+            class: 3,
+        };
+        runs[2] = RowRun {
+            from: 8,
+            to: 50,
+            class: 3,
+        };
+        let px = raster(
+            &spec(),
+            &[Row {
+                indent: 2,
+                end: 10,
+                class: 0,
+                runs,
+            }],
+        );
+        let blue = 0xff_00_00_ff;
+        let grey = 0xff_80_80_80;
+        let row: Vec<u32> = (0..12).map(|x| at(&px, x, 1)).collect();
+        assert_eq!(
+            row,
+            [0, 0, blue, grey, blue, blue, grey, grey, blue, blue, 0, 0]
+        );
     }
 }

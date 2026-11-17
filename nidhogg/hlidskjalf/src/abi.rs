@@ -4,7 +4,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{LazyLock, Mutex};
 
-use crate::{Fold, Mark, Model, Stale};
+use crate::{Fold, Mark, Model, RUNS, Run, Span, Stale};
 
 pub const HLID_OK: i32 = 0;
 pub const HLID_E_PANIC: i32 = -1;
@@ -185,6 +185,31 @@ pub unsafe extern "C" fn hlid_line_of(key: u64, pos: u64, out: *mut u64) -> i32 
     })
 }
 
+/// 0-based LINE's class runs in use into OUT (room for [`RUNS`]), their number into *N.
+///
+/// # Safety
+/// OUT must be writable for [`RUNS`] runs and N writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_line_runs(key: u64, line: u64, out: *mut Run, n: *mut usize) -> i32 {
+    if out.is_null() || n.is_null() {
+        return HLID_E_ARG;
+    }
+    with(key, |m| match m.index() {
+        Some(idx) if line < idx.lines() => {
+            let runs = idx.line(line).runs;
+            let k = runs.iter().take_while(|r| r.len > 0).count().min(RUNS);
+            // SAFETY: checked non-null; the caller promises room for RUNS runs and a writable N.
+            unsafe {
+                std::ptr::copy_nonoverlapping(runs.as_ptr(), out, k);
+                *n = k;
+            }
+            HLID_OK
+        }
+        Some(_) => HLID_E_ARG,
+        None => state(m),
+    })
+}
+
 /// The position 0-based LINE starts at into *OUT.
 ///
 /// # Safety
@@ -347,6 +372,47 @@ pub unsafe extern "C" fn hlid_replace_folds(
         m.replace_folds(source as u8, beg, end, fs);
         HLID_OK
     })
+}
+
+/// Replace the class runs of the lines touching BEG..END with the N spans at SPANS ([`Model::replace_classes`]);
+/// `HLID_BUILDING`, and nothing changed, while the lines are built.
+///
+/// # Safety
+/// SPANS must be readable for N spans unless N is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_replace_classes(
+    key: u64,
+    beg: u64,
+    end: u64,
+    spans: *const Span,
+    n: usize,
+) -> i32 {
+    if spans.is_null() && n > 0 {
+        return HLID_E_ARG;
+    }
+    // SAFETY: checked; the caller promises N readable spans.
+    let ss = if n == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(spans, n) }
+    };
+    with(key, |m| {
+        if m.replace_classes(beg, end, ss) {
+            HLID_OK
+        } else {
+            HLID_BUILDING
+        }
+    })
+}
+
+/// 1 when class runs were refused while the lines were built and they are built now (the host then runs its
+/// producer over the whole text), else 0 ([`Model::take_classes_missed`]); no model answers 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn hlid_classes_missed(key: u64) -> i32 {
+    match with(key, |m| i32::from(m.take_classes_missed())) {
+        1 => 1,
+        _ => 0,
+    }
 }
 
 /// The folds overlapping [BEG, END) into OUT (at most CAP), their number into *N (all of them, even past CAP).

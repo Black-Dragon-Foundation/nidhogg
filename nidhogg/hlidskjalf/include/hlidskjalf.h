@@ -34,6 +34,20 @@ typedef struct
 
 typedef struct
 {
+  uint64_t beg, end;
+  uint8_t class_;
+} hlid_span;
+
+typedef struct
+{
+  uint16_t col;			/* characters from the line's start */
+  uint8_t len, class_;		/* LEN 0: no run */
+} hlid_run;
+
+#define HLID_RUNS 6
+
+typedef struct
+{
   uint64_t lines, chars, chunks, marks, folds, hidden, heap_bytes, edits;
   int32_t state;		/* 0 ready, 1 building, 2 stale */
 } hlid_stats;
@@ -59,6 +73,10 @@ int32_t hlid_set_folds (uint64_t key, uint32_t source, const hlid_fold *folds,
 			size_t n, uint64_t max);
 int32_t hlid_replace_folds (uint64_t key, uint32_t source, uint64_t beg,
 			    uint64_t end, const hlid_fold *folds, size_t n);
+int32_t hlid_replace_classes (uint64_t key, uint64_t beg, uint64_t end,
+			      const hlid_span *spans, size_t n);
+int32_t hlid_classes_missed (uint64_t key);
+int32_t hlid_line_runs (uint64_t key, uint64_t line, hlid_run *out, size_t *n);
 int32_t hlid_folds (uint64_t key, uint64_t beg, uint64_t end, hlid_fold *out,
 		    size_t cap, size_t *n);
 int32_t hlid_fold_at (uint64_t key, uint64_t pos, hlid_fold *out);

@@ -4,12 +4,28 @@
 //! Fenwick tree; nothing after it moves.  Chunks are split past `CHUNK_MAX` lines and merged below `CHUNK_MIN`, and
 //! only a change in the number of chunks rebuilds the tree.
 
-/// A line: its length in characters (its newline included) and its indent in columns (`BLANK` when it holds only
-/// spaces and tabs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A line: its length in characters (its newline included), its indent in columns (`BLANK` when it holds only
+/// spaces and tabs), the characters of that indent, and up to [`RUNS`] runs of a display class (design §7.2: none
+/// until a class producer sends them; an edit that rewrites the line clears them).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Line {
     pub len: u32,
     pub indent: u16,
+    pub lead: u16,
+    pub runs: [Run; RUNS],
+}
+
+/// The most class runs a line keeps.
+pub const RUNS: usize = 6;
+
+/// A run of a display class: from character COL of its line (the indent's characters counted), LEN characters (0:
+/// no run).  The runs in use come first, in column order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct Run {
+    pub col: u16,
+    pub len: u8,
+    pub class: u8,
 }
 
 /// The indent of a blank line.
@@ -115,6 +131,7 @@ impl LineIndex {
             lines.push(Line {
                 len: 0,
                 indent: BLANK,
+                ..Default::default()
             });
         }
         let chunks = chunked(lines);
@@ -181,6 +198,15 @@ impl LineIndex {
             .sum::<u64>()
     }
 
+    /// Set line LINE's class runs (nothing past the last line).
+    pub fn set_runs(&mut self, line: u64, runs: [Run; RUNS]) {
+        if line >= self.lines() {
+            return;
+        }
+        let (ci, _, l) = self.fen.find(line, true);
+        self.chunks[ci].lines[(line - l) as usize].runs = runs;
+    }
+
     pub fn line(&self, line: u64) -> Line {
         let (ci, _, l) = self.fen.find(line.min(self.lines() - 1), true);
         self.chunks[ci].lines[(line.min(self.lines() - 1) - l) as usize]
@@ -215,6 +241,7 @@ impl LineIndex {
             lines.push(Line {
                 len: 0,
                 indent: BLANK,
+                ..Default::default()
             });
         }
         let new_chunks = if lines.len() <= CHUNK_MAX {
@@ -255,6 +282,7 @@ pub fn parse(parts: &[&[u8]], multibyte: bool, tab_width: u16, to_end: bool) -> 
     let tw = u32::from(tab_width.max(1));
     let mut out = Vec::new();
     let (mut len, mut col, mut lead, mut last_nl) = (0u32, 0u32, true, false);
+    let mut lc = 0u32;
     for part in parts {
         for &b in *part {
             last_nl = false;
@@ -269,14 +297,19 @@ pub fn parse(parts: &[&[u8]], multibyte: bool, tab_width: u16, to_end: bool) -> 
                     } else {
                         col.min(u32::from(BLANK) - 1) as u16
                     },
+                    lead: lc.min(u32::from(u16::MAX)) as u16,
+                    ..Default::default()
                 });
-                (len, col, lead, last_nl) = (0, 0, true, true);
+                (len, col, lead, last_nl, lc) = (0, 0, true, true, 0);
             } else if lead {
                 match b {
                     b' ' => col += 1,
                     b'\t' => col = (col / tw + 1) * tw,
                     b'\r' | b'\x0c' => {}
                     _ => lead = false,
+                }
+                if lead {
+                    lc += 1;
                 }
             }
         }
@@ -289,6 +322,8 @@ pub fn parse(parts: &[&[u8]], multibyte: bool, tab_width: u16, to_end: bool) -> 
             } else {
                 col.min(u32::from(BLANK) - 1) as u16
             },
+            lead: lc.min(u32::from(u16::MAX)) as u16,
+            ..Default::default()
         });
     }
     out
@@ -303,6 +338,7 @@ mod tests {
             .map(|i| Line {
                 len: (i % 7 + 1) as u32,
                 indent: 0,
+                ..Default::default()
             })
             .collect()
     }
@@ -313,35 +349,61 @@ mod tests {
         assert_eq!(
             l,
             vec![
-                Line { len: 4, indent: 2 },
-                Line { len: 4, indent: 8 },
+                Line {
+                    len: 4,
+                    indent: 2,
+                    lead: 2,
+                    ..Default::default()
+                },
+                Line {
+                    len: 4,
+                    indent: 8,
+                    lead: 1,
+                    ..Default::default()
+                },
                 Line {
                     len: 1,
-                    indent: BLANK
+                    indent: BLANK,
+                    ..Default::default()
                 },
                 Line {
                     len: 2,
-                    indent: BLANK
+                    indent: BLANK,
+                    lead: 2,
+                    ..Default::default()
                 },
             ]
         );
         assert_eq!(
             parse(&[b"x\n"], false, 8, false),
-            vec![Line { len: 2, indent: 0 }]
+            vec![Line {
+                len: 2,
+                indent: 0,
+                ..Default::default()
+            }]
         );
         let blank = Line {
             len: 0,
             indent: BLANK,
+            ..Default::default()
         };
         assert_eq!(
             parse(&[b"x\n"], false, 8, true),
-            vec![Line { len: 2, indent: 0 }, blank]
+            vec![
+                Line {
+                    len: 2,
+                    indent: 0,
+                    ..Default::default()
+                },
+                blank
+            ]
         );
         assert_eq!(
             parse(&[], true, 8, false),
             vec![Line {
                 len: 0,
-                indent: BLANK
+                indent: BLANK,
+                ..Default::default()
             }]
         );
     }
