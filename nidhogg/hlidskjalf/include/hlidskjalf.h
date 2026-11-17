@@ -57,6 +57,8 @@ int32_t hlid_next_mark (uint64_t key, uint64_t pos, uint64_t kinds,
 int32_t hlid_counts (uint64_t key, uint64_t beg, uint64_t end, uint32_t *out);
 int32_t hlid_set_folds (uint64_t key, uint32_t source, const hlid_fold *folds,
 			size_t n, uint64_t max);
+int32_t hlid_replace_folds (uint64_t key, uint32_t source, uint64_t beg,
+			    uint64_t end, const hlid_fold *folds, size_t n);
 int32_t hlid_folds (uint64_t key, uint64_t beg, uint64_t end, hlid_fold *out,
 		    size_t cap, size_t *n);
 int32_t hlid_fold_at (uint64_t key, uint64_t pos, hlid_fold *out);

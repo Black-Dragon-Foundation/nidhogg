@@ -4,6 +4,7 @@ mod minimap {
     use glitnir::committed::Committed;
     use glitnir::damage::commit_snapshot;
     use glitnir::geom::Rect;
+    use glitnir::hlidskjalf::Fold;
     use glitnir::hlidskjalf::abi::{hlid_build, hlid_drop, with_model};
     use glitnir::scene::Placed;
     use nhglue::backing::MINIMAP_TAG;
@@ -527,6 +528,67 @@ mod minimap {
             *h = cap_h;
         }
         0
+    }
+
+    /// The hub's fold ranges (Sjá's `folds` layer of the window's file, design §7.4) become the model's source 1 at the
+    /// publish, once per layer version; a model its own parser folds (source 0) keeps those alone.
+    #[test]
+    fn the_hubs_folds_reach_the_model_of_a_buffer_with_no_parser() {
+        let key = 0x6d6d_0011;
+        let text = "a {\n  b\n}\nc {\n  d\n}\n";
+        let t = text.as_bytes();
+        // SAFETY: T is readable for its length.
+        let rc = unsafe { hlid_build(key, 0, 8, t.as_ptr(), t.len(), std::ptr::null(), 0, 0) };
+        assert_eq!(rc, 0);
+        let file = "/t/hub-folds-test.xcs";
+        let push = |version: u32, items: &str| {
+            let line = format!(
+                r#"{{"event":"view-model","data":{{"minimap":{{"file":"{file}","layer":"folds","version":{version},"items":{items}}}}}}}"#
+            );
+            glitnir::sja::minimap::push(glitnir::sja::minimap::read_line(&line).unwrap().unwrap());
+        };
+        let folds = || {
+            with_model(key, |m| {
+                m.folds(0, u64::MAX)
+                    .map(|f| (f.beg, f.end, f.kind, f.source))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap()
+        };
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let e = NhgMinimap {
+            file: file.as_ptr(),
+            file_len: file.len(),
+            ..entry(key, 1, 7, t.len() as u64 + 1, NHG_MINIMAP_OPEN)
+        };
+        push(1, r#"[[1,3,"class"],[4,6,"test"]]"#);
+        sync_at(&mut b, f, std::slice::from_ref(&e)).unwrap();
+        assert_eq!(folds(), [(1, 10, 2, 1), (11, 20, 5, 1)]);
+        // a newer version replaces them; the same one again is not taken twice (a range set meanwhile stays)
+        push(2, r#"[[4,6,"function"]]"#);
+        sync_at(&mut b, f, std::slice::from_ref(&e)).unwrap();
+        assert_eq!(folds(), [(11, 20, 1, 1)]);
+        with_model(key, |m| m.set_fold_lines(1, &[(1, 3, 0)]));
+        sync_at(&mut b, f, std::slice::from_ref(&e)).unwrap();
+        assert_eq!(folds(), [(1, 10, 0, 1)]);
+        // the buffer's own parser folds it: a newer hub layer changes nothing
+        with_model(key, |m| {
+            m.set_folds(
+                0,
+                &[Fold {
+                    beg: 11,
+                    end: 20,
+                    kind: 1,
+                    depth: 0,
+                    source: 0,
+                }],
+                100,
+            )
+        });
+        push(3, r#"[[1,6,"block"]]"#);
+        sync_at(&mut b, f, std::slice::from_ref(&e)).unwrap();
+        assert_eq!(folds(), [(1, 10, 0, 1), (11, 20, 1, 0)]);
     }
 
     const MARK_RE: &str = r"^\s*//\s*MARK:\s*(?P<name>.+)$";

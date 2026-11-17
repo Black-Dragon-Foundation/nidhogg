@@ -1141,6 +1141,56 @@ pub fn now_ns() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
+/// The line model's source of the hub's fold ranges (design §7.4: 0 the editor's parser, 1 the hub).
+const SOURCE_HUB: u8 = 1;
+
+/// The fold kinds by name, at their numbers in the line model (the hub's `folds` layer names them).
+const FOLD_KINDS: [&str; 9] = [
+    "block", "function", "class", "comment", "import", "test", "region", "cell", "heading",
+];
+
+/// The hub's fold ranges of FILE (Sjá's `folds` layer: a buffer with no parser of its own) into model KEY as its hub
+/// source, once per layer version, unless its own parser folds it; a layer that comes while the lines are built is
+/// taken at a later publish.
+fn take_hub_folds(key: u64, file: Option<&str>) {
+    static TAKEN: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+    let Some(file) = file else {
+        return;
+    };
+    let Some((version, lines)) = glitnir::sja::minimap::with_layer(file, "folds", |v, d| match d {
+        glitnir::sja::minimap::Data::Folds(x) => Some((
+            v,
+            x.iter()
+                .filter_map(|(a, b, k)| {
+                    Some((*a, *b, FOLD_KINDS.iter().position(|n| *n == &**k)? as u8))
+                })
+                .collect::<Vec<_>>(),
+        )),
+        _ => None,
+    })
+    .flatten() else {
+        return;
+    };
+    let mut taken = TAKEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if taken.iter().any(|&(k, v)| k == key && v == version) {
+        return;
+    }
+    // a buffer its own parser folds (source 0) keeps those: the hub's would be the same ranges again
+    if with_model(key, |m| {
+        !m.has_folds_of(0) && m.set_fold_lines(SOURCE_HUB, &lines)
+    }) == Some(true)
+    {
+        taken.retain(|&(k, _)| k != key);
+        // a model per text shown: the oldest go first past a bound no session reaches
+        if taken.len() >= 1024 {
+            taken.remove(0);
+        }
+        taken.push((key, version));
+    }
+}
+
 /// The frame's minimaps planned by [`plan`]: each window's by its `sequence_number`, the scale (×120) and the origin.
 type Planned = (BTreeMap<u64, Minimap>, u32, (i32, i32));
 
@@ -1155,6 +1205,7 @@ fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Opt
     let mm = &mut f.minimaps;
     let mut planned: BTreeMap<u64, Minimap> = BTreeMap::new();
     for e in list {
+        take_hub_folds(e.key, e.file_name());
         let win = mm.windows.entry(e.seq).or_default();
         if let Some(m) = minimap(e, s120, origin, win, now, &mut mm.sprites) {
             planned.insert(e.seq, m);

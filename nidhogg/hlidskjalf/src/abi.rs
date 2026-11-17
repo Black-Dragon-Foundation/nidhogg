@@ -320,6 +320,35 @@ pub unsafe extern "C" fn hlid_set_folds(
     })
 }
 
+/// Replace SOURCE's folds that touch BEG..END with the N nodes at FOLDS, widened to whole lines
+/// ([`Model::replace_folds`]).
+///
+/// # Safety
+/// FOLDS must be readable for N folds unless N is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_replace_folds(
+    key: u64,
+    source: u32,
+    beg: u64,
+    end: u64,
+    folds: *const Fold,
+    n: usize,
+) -> i32 {
+    if folds.is_null() && n > 0 {
+        return HLID_E_ARG;
+    }
+    // SAFETY: checked; the caller promises N readable folds.
+    let fs = if n == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(folds, n) }
+    };
+    with(key, |m| {
+        m.replace_folds(source as u8, beg, end, fs);
+        HLID_OK
+    })
+}
+
 /// The folds overlapping [BEG, END) into OUT (at most CAP), their number into *N (all of them, even past CAP).
 ///
 /// # Safety
