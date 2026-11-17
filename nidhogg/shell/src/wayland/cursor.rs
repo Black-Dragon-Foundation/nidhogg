@@ -44,10 +44,17 @@ impl WaylandShell {
             .unwrap_or_else(|e| e.into_inner())
             .get(SerialKind::MouseEnter)
             .as_raw();
-        // Redisplay sets the frame's shape again and again with no input; the pointer shows it already.
-        if self.main.cursor.sent != Some((serial, shape)) {
+        // Redisplay sets the frame's shape again and again with no input; the pointer shows it already.  The
+        // window's integer scale is part of the key: the theme cursor is drawn again at a new scale's size.
+        let scale = self
+            .main
+            .scales
+            .get(&id)
+            .map_or(120, |s| s.scale120())
+            .div_ceil(120);
+        if self.main.cursor.sent != Some((serial, shape, scale)) {
             self.apply_cursor(id, shape)?;
-            self.main.cursor.sent = Some((serial, shape));
+            self.main.cursor.sent = Some((serial, shape, scale));
         }
         self.main.cursor.last = Some((id, shape));
         Ok(())

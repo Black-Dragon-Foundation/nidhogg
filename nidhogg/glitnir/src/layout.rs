@@ -185,9 +185,26 @@ fn differs(
     })
 }
 
+/// `rects` without their overlaps: the same pixels, each in one rectangle (a frame composes each rectangle it
+/// damages, so an overlap is composed again).
+pub fn disjoint(rects: Vec<Rect>) -> Vec<Rect> {
+    let mut kept: Vec<Rect> = Vec::with_capacity(rects.len());
+    for r in rects {
+        let mut pieces = vec![r];
+        for k in &kept {
+            if pieces.is_empty() {
+                break;
+            }
+            pieces = pieces.into_iter().flat_map(|p| subtract(p, *k)).collect();
+        }
+        kept.extend(pieces);
+    }
+    kept
+}
+
 /// What a leg's frames damage: the tiles of `leg.rect` whose pixels differ between the capture `old` (`rect`'s pixels)
 /// and the new front `new` (`stride` pixels a row, root coordinates), joined along each row of tiles, and each item's
-/// bounds from start to end.
+/// bounds from start to end, without overlaps ([`disjoint`]).
 pub fn active_tiles(leg: &LayoutLeg, old: &[u32], new: &[u32], stride: usize) -> Vec<Rect> {
     let r = leg.rect;
     let mut out = Vec::new();
@@ -211,7 +228,7 @@ pub fn active_tiles(leg: &LayoutLeg, old: &[u32], new: &[u32], stride: usize) ->
             out.push(b);
         }
     }
-    out
+    disjoint(out)
 }
 
 /// The pixels a frame of [`active_tiles`] composes.
@@ -485,5 +502,50 @@ mod tests {
         assert_eq!(tick_px(&tiles), 64 * 64 + 10 * 110);
         let rest = subtract(Rect::new(0, 0, 10, 10), Rect::new(2, 2, 4, 4));
         assert_eq!(rest.iter().map(Rect::area).sum::<u64>(), 84);
+    }
+
+    #[test]
+    fn active_tiles_compose_each_pixel_once() {
+        // pattern D: pure.  A relayout moves many items: their bounds overlap each other and the changed tiles, and
+        // a frame composed every rectangle of the list, the overlaps again and again (the Work map's leg composed
+        // 5.9M px a frame).  The rectangles cover what changed and what moves, and no pixel twice.
+        let mut l = leg(vec![
+            mv(1, Rect::new(0, 0, 10, 10), Rect::new(64, 0, 10, 10)),
+            mv(2, Rect::new(20, 20, 40, 40), Rect::new(30, 30, 40, 40)),
+            mv(3, Rect::new(100, 80, 30, 30), Rect::new(150, 90, 30, 30)),
+            mv(4, Rect::new(110, 90, 30, 30), Rect::new(160, 95, 30, 30)),
+        ]);
+        l.rect = Rect::new(0, 0, 200, 130);
+        let stride = 200;
+        let old = vec![OLD; 200 * 130];
+        let mut new = old.clone();
+        new[5 * stride + 5] = NEW;
+        new[5 * stride + 70] = NEW;
+        let tiles = active_tiles(&l, &old, &new, stride);
+        let mut cover = vec![0u32; 200 * 130];
+        for t in &tiles {
+            for y in t.y..t.y + t.h {
+                for x in t.x..t.x + t.w {
+                    cover[y as usize * stride + x as usize] += 1;
+                }
+            }
+        }
+        let want = [
+            Rect::new(0, 0, 128, 64),
+            Rect::new(20, 20, 50, 50),
+            Rect::new(100, 80, 80, 40),
+            Rect::new(110, 90, 80, 35),
+        ];
+        for y in 0..130 {
+            for x in 0..200 {
+                let n = cover[y as usize * stride + x as usize];
+                assert!(n <= 1, "({x}, {y}) composed {n} times");
+                assert_eq!(n == 1, want.iter().any(|r| r.contains(x, y)), "({x}, {y})");
+            }
+        }
+        assert_eq!(
+            tick_px(&tiles),
+            cover.iter().map(|&n| u64::from(n)).sum::<u64>()
+        );
     }
 }
