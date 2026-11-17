@@ -42,6 +42,15 @@
 ;; than the output, and a dialog (`x-popup-dialog' on this shell is a
 ;; menu) is centred on its frame.
 ;;
+;; The keys follow the APG menu pattern: Down and Up wrap, Home and End,
+;; Right and Enter open a submenu with its first item selected, Escape
+;; closes one level and Tab all of them; letters search the labels as one
+;; prefix (`nhwl-menu-type-ahead-timeout').  A motion over the menu above
+;; that heads for an open submenu is held (`nhwl-menu-submenu-tolerance')
+;; rather than taken by the row it crosses.  The options of the group
+;; `nhwl-menu' size it: a least width, the rows' height and padding, the
+;; tallest it gets before it scrolls, and its frames' parameters.
+;;
 ;; A menu that is one of a row (a menu bar drawn by Lisp) binds
 ;; `nhwl-menu-switch-function': Left and Right at the end of their
 ;; reach, and the pointer moving over the row, ask it whether to go to
@@ -57,6 +66,51 @@
 
 (defcustom nhwl-menu-submenu-delay 0.2
   "Seconds the pointer rests on a submenu row before its menu opens."
+  :type 'number
+  :group 'nhwl-menu)
+
+(defcustom nhwl-menu-min-width 0
+  "The least width of a menu, in logical pixels.
+A narrower menu is widened: the key column moves to the right edge."
+  :type 'natnum
+  :group 'nhwl-menu)
+
+(defcustom nhwl-menu-row-height nil
+  "The height of a menu's rows (not its separators), in logical pixels.
+Nil for one line of text.  The text is centred in a taller row."
+  :type '(choice (const :tag "One line" nil) natnum)
+  :group 'nhwl-menu)
+
+(defcustom nhwl-menu-row-padding '(0 . 0)
+  "The space before and after each row's text, (LEFT . RIGHT) in logical pixels.
+Zero leaves one space character."
+  :type '(cons natnum natnum)
+  :group 'nhwl-menu)
+
+(defcustom nhwl-menu-max-height-fraction 0.75
+  "The tallest a menu gets, as a fraction of its top-level frame's height.
+A taller menu scrolls, and keeps the selected row in view."
+  :type 'number
+  :group 'nhwl-menu)
+
+(defcustom nhwl-menu-frame-parameters nil
+  "Frame parameters given to each menu frame when it is shown, an alist.
+The place for what the compositor reads from a popup, such as a corner
+radius or a shadow."
+  :type '(alist :key-type symbol :value-type sexp)
+  :group 'nhwl-menu)
+
+(defcustom nhwl-menu-submenu-tolerance 0.3
+  "Seconds an open submenu waits for the pointer heading to it.
+While the pointer moves inside the triangle from where it last was to
+the submenu's near edge, its row stays selected over the rows it
+crosses; it rests longer than this, and the row under it is selected."
+  :type 'number
+  :group 'nhwl-menu)
+
+(defcustom nhwl-menu-type-ahead-timeout 0.5
+  "Seconds within which typed letters search the labels as one prefix.
+Space with such a prefix pending types a space instead of choosing."
   :type 'number
   :group 'nhwl-menu)
 
@@ -289,6 +343,16 @@ item, and a cancelled menu (PATH nil) nil."
 (defvar-local nhwl-menu--touch nil
   "The touch point that began on this menu, (ID . ROW), or nil.")
 
+(defvar-local nhwl-menu--typed nil
+  "The type-ahead prefix of this menu and when it was last typed to, (STRING . TIME).")
+
+(defvar-local nhwl-menu--pointer nil
+  "Where the pointer last moved over this menu, (X . Y) in its frame's pixels.")
+
+(defvar-local nhwl-menu--held nil
+  "A motion over the menu above, held while the pointer heads for this one.
+\(EVENT . DEADLINE): at DEADLINE (`float-time') EVENT goes to that menu.")
+
 (defvar nhwl-menu--pressed nil
   "Non-nil while the menu waits for the release of the press that opened it.")
 
@@ -312,45 +376,80 @@ item, and a cancelled menu (PATH nil) nil."
           ((eq button 'toggle) (if (nhwl-menu--selected item) "[x]" "[ ]"))
           (t (if (nhwl-menu--selected item) "(•)" "( )")))))
 
+(defun nhwl-menu--px (logical)
+  "LOGICAL pixels as pixels of the selected frame."
+  (round (* logical (frame-scale-factor))))
+
+(defun nhwl-menu--width (string)
+  "The pixel width of STRING in the current menu buffer's faces."
+  (string-pixel-width string (current-buffer)))
+
+(defun nhwl-menu--pad (logical)
+  "The pixels of a row's padding of LOGICAL pixels: one space for 0."
+  (if (> logical 0) (nhwl-menu--px logical) (nhwl-menu--width " ")))
+
+(defun nhwl-menu--ascent (height)
+  "The `:ascent' percentage that centres the menu's text in a row HEIGHT pixels tall.
+Nil when the row is no taller than the text, or the font is not known."
+  (let* ((info (ignore-errors (font-info (face-font 'nhwl-menu))))
+         (a (and info (aref info 4)))
+         (d (and info (aref info 5))))
+    (when (and (natnump a) (natnump d) (> height (+ a d)))
+      (min 100 (ceiling (* 100.0 (+ a (/ (- height a d) 2))) height)))))
+
+(defun nhwl-menu--stretch (spec)
+  "A space displayed as the stretch (space . SPEC)."
+  (propertize " " 'display (cons 'space spec)))
+
 (defun nhwl-menu--insert (rows)
-  "Insert ROWS, one line each and no final newline, into the buffer."
-  (let ((marks nil) (subs nil) (label-w 0) (key-w 0) (width 0) (first t))
+  "Insert ROWS, one line each and no final newline, into the buffer.
+The columns are placed in pixels (`nhwl-menu-row-padding'), the rows are
+`nhwl-menu-min-width' wide at least, the key column ends at the right,
+and an item row is `nhwl-menu-row-height' tall."
+  (let* ((marks nil) (subs nil) (label-w 0) (key-w 0) (first t)
+         (pad-l (nhwl-menu--pad (car nhwl-menu-row-padding)))
+         (pad-r (nhwl-menu--pad (cdr nhwl-menu-row-padding)))
+         (height (and nhwl-menu-row-height (nhwl-menu--px nhwl-menu-row-height)))
+         (ascent (and height (nhwl-menu--ascent height)))
+         (lead `(:width (,pad-l) ,@(and ascent `(:height (,height) :ascent ,ascent))))
+         (key (lambda (row) (propertize (or (nhwl-menu--keys row) "") 'face 'nhwl-menu-key)))
+         (label (lambda (row) (propertize (nhwl-menu--label row)
+                                          'face (unless (nhwl-menu--enabled row) 'nhwl-menu-disabled)))))
     (mapc (lambda (row)
             (unless (eq (nhwl-menu--kind row) 'separator)
-              (setq label-w (max label-w (string-width (nhwl-menu--label row)))
-                    key-w (max key-w (string-width (or (nhwl-menu--keys row)
-                                                       ""))))
+              (setq label-w (max label-w (nhwl-menu--width (funcall label row)))
+                    key-w (max key-w (nhwl-menu--width (funcall key row))))
               (when (nhwl-menu--button row) (setq marks t))
               (when (eq (nhwl-menu--kind row) 'submenu) (setq subs t))))
           rows)
-    (setq width (+ 2 (if marks 4 0) label-w
-                   (if (> key-w 0) (+ 2 key-w) 0) (if subs 2 0)))
-    (mapc
-     (lambda (row)
-       (unless first (insert "\n"))
-       (setq first nil)
-       (if (eq (nhwl-menu--kind row) 'separator)
-           (insert (propertize
-                    (make-string width (if (equal (nhwl-menu--label row)
-                                                  "--double-line")
-                                           ?═ ?─))
-                    'face 'nhwl-menu-disabled))
-         (let ((label (nhwl-menu--label row))
-               (keys (or (nhwl-menu--keys row) "")))
-           (insert
-            " "
-            (if marks (concat (nhwl-menu--mark row) " ") "")
-            (propertize label 'face (unless (nhwl-menu--enabled row)
-                                      'nhwl-menu-disabled))
-            (make-string (- label-w (string-width label)) ?\s)
-            (if (> key-w 0)
-                (concat "  "
-                        (make-string (- key-w (string-width keys)) ?\s)
-                        (propertize keys 'face 'nhwl-menu-key))
-              "")
-            (if subs (if (eq (nhwl-menu--kind row) 'submenu) " ›" "  ") "")
-            " "))))
-     rows)))
+    (let* ((mark-w (if marks (nhwl-menu--width "[x] ") 0))
+           (arrow-w (if subs (nhwl-menu--width " ›") 0))
+           (gap (if (> key-w 0) (nhwl-menu--width "  ") 0))
+           (natural (+ pad-l mark-w label-w gap key-w arrow-w pad-r))
+           (width (max natural (nhwl-menu--px nhwl-menu-min-width)))
+           (keys-end (- width pad-r arrow-w)))
+      (mapc
+       (lambda (row)
+         (unless first (insert "\n"))
+         (setq first nil)
+         (if (eq (nhwl-menu--kind row) 'separator)
+             (let ((line (if (equal (nhwl-menu--label row) "--double-line") "═" "─")))
+               (insert (propertize (make-string (/ width (max 1 (nhwl-menu--width line))) (aref line 0))
+                                   'face 'nhwl-menu-disabled)
+                       (nhwl-menu--stretch `(:align-to (,width)))))
+           (let ((keys (funcall key row)))
+             (insert
+              (nhwl-menu--stretch lead)
+              (if marks (concat (nhwl-menu--mark row) (nhwl-menu--stretch `(:align-to (,(+ pad-l mark-w))))) "")
+              (funcall label row)
+              (if (> (length keys) 0)
+                  (concat (nhwl-menu--stretch `(:align-to (,(- keys-end (nhwl-menu--width keys))))) keys)
+                "")
+              (if (eq (nhwl-menu--kind row) 'submenu)
+                  (concat (nhwl-menu--stretch `(:align-to (,keys-end))) " ›")
+                "")
+              (nhwl-menu--stretch `(:align-to (,width)))))))
+       rows))))
 
 (defun nhwl-menu--buffer (depth rows)
   "The buffer ` *nhwl-menu-DEPTH*' showing ROWS, nothing selected."
@@ -367,6 +466,10 @@ item, and a cancelled menu (PATH nil) nil."
       (setq-local cursor-in-non-selected-windows nil)
       (setq-local truncate-lines t)
       (setq-local show-trailing-whitespace nil)
+      ;; a menu taller than its frame scrolls by as little as keeps the
+      ;; selected row in view
+      (setq-local scroll-conservatively 101)
+      (setq-local scroll-margin 0)
       (setq-local face-remapping-alist '((default nhwl-menu)))
       (nhwl-menu--insert rows)
       (setq buffer-read-only t)
@@ -399,7 +502,10 @@ The row's help, if it has any, goes to the echo area."
         (goto-char (point-min))
         (forward-line index)
         (move-overlay nhwl-menu--overlay (line-beginning-position)
-                      (line-end-position)))
+                      (line-end-position))
+        ;; the window's point on the row: redisplay keeps it in view
+        (let ((window (get-buffer-window (current-buffer) t)))
+          (when window (set-window-point window (point)))))
     (move-overlay nhwl-menu--overlay 1 1)))
 
 (defun nhwl-menu--next (from step test)
@@ -420,15 +526,23 @@ nil to start before the first row (STEP 1) or after the last (-1)."
   (let ((i (nhwl-menu--next from step #'nhwl-menu--selectable-p)))
     (when i (nhwl-menu--select-row i))))
 
-(defun nhwl-menu--jump (char)
-  "Select the next selectable row whose label starts with CHAR."
-  (let* ((c (downcase char))
+(defun nhwl-menu--typing-p ()
+  "Non-nil while a type-ahead prefix is pending."
+  (and nhwl-menu--typed
+       (< (- (float-time) (cdr nhwl-menu--typed)) nhwl-menu-type-ahead-timeout)))
+
+(defun nhwl-menu--type (char)
+  "Add CHAR to the type-ahead prefix and select the next row it starts.
+A new prefix searches after the selected row, a longer one from it."
+  (let* ((more (nhwl-menu--typing-p))
+         (prefix (concat (if more (car nhwl-menu--typed) "") (string char)))
+         (from (if (and more nhwl-menu--index) (1- nhwl-menu--index) nhwl-menu--index))
          (i (nhwl-menu--next
-             nhwl-menu--index 1
+             from 1
              (lambda (row)
                (and (nhwl-menu--selectable-p row)
-                    (> (length (nhwl-menu--label row)) 0)
-                    (eq (downcase (aref (nhwl-menu--label row) 0)) c))))))
+                    (string-prefix-p prefix (nhwl-menu--label row) t))))))
+    (setq nhwl-menu--typed (cons prefix (float-time)))
     (when i (nhwl-menu--select-row i))))
 
 (defun nhwl-menu--activate ()
@@ -437,6 +551,13 @@ nil to start before the first row (STEP 1) or after the last (-1)."
   (let ((row (and nhwl-menu--index (aref nhwl-menu--rows nhwl-menu--index))))
     (when (and row (nhwl-menu--selectable-p row))
       (cons (if (eq (nhwl-menu--kind row) 'submenu) 'open 'choose) row))))
+
+(defun nhwl-menu--activate-by-key ()
+  "The outcome for the selected row, chosen by a key.
+As `nhwl-menu--activate', but a submenu is `(open-first . ROW)': it opens
+with its first item selected."
+  (let ((outcome (nhwl-menu--activate)))
+    (if (eq (car-safe outcome) 'open) (cons 'open-first (cdr outcome)) outcome)))
 
 (defun nhwl-menu--hover (row)
   "Select ROW (nil for none) under the pointer.
@@ -452,7 +573,7 @@ A submenu row opens its menu after `nhwl-menu-submenu-delay'."
 (defun nhwl-menu--scroll (window delta)
   "Scroll the menu in WINDOW by DELTA rows, within its rows."
   (with-current-buffer (window-buffer window)
-    (let* ((visible (max 1 (window-body-height window)))
+    (let* ((visible (max 1 (count-lines (window-start window) (window-end window t))))
            (last (max 0 (- (length nhwl-menu--rows) visible)))
            (start (max 0 (min last (+ (count-lines 1 (window-start window))
                                       delta)))))
@@ -501,12 +622,15 @@ With CENTER the frame is centred on the point of ANCHOR."
       (set-window-start window 1)
       (set-window-fringes window 0 0)
       (set-window-margins window 0 0))
+    (modify-frame-parameters frame nhwl-menu-frame-parameters)
     (fit-frame-to-buffer frame)
     ;; a new size is the frame's at the next redisplay: take it now, for
     ;; the limit and the centre
     (redisplay t)
-    (let ((limit (- (display-pixel-height frame) 20))
-          (height (frame-pixel-height frame)))
+    (let* ((top (let ((f parent)) (while (frame-parent f) (setq f (frame-parent f))) f))
+           (limit (min (- (display-pixel-height frame) 20)
+                       (floor (* nhwl-menu-max-height-fraction (frame-pixel-height top)))))
+           (height (frame-pixel-height frame)))
       (when (> height limit)
         (set-frame-size frame (frame-pixel-width frame) limit t)
         (setq height limit))
@@ -689,14 +813,53 @@ drag, that is where the button was released."
          (window (and (posnp posn) (posn-window posn)))
          (entry (and (window-live-p window)
                      (rassq (window-frame window) nhwl-menu--frames)))
-         (y (and entry (cdr-safe (posn-x-y posn)))))
+         (y (and entry (cdr-safe (posn-x-y posn))))
+         (pos (and entry (posn-point posn))))
     (when (numberp y)
       (with-current-buffer (window-buffer window)
-        (let ((row (+ (count-lines 1 (window-start window))
-                      (floor y (frame-char-height (window-frame window))))))
+        ;; the line of the position under the pointer: rows may be taller
+        ;; than a character
+        (let ((row (and (integerp pos) (>= y 0) (1- (line-number-at-pos pos t)))))
           (list (car entry)
-                (and (>= y 0) (< row (length nhwl-menu--rows)) row)
+                (and row (< row (length nhwl-menu--rows)) row)
                 window))))))
+
+(defun nhwl-menu--frame-xy (event window)
+  "The pixel (X . Y) of the pointer EVENT in the frame of WINDOW, or nil."
+  (let ((xy (posn-x-y (event-end event))))
+    (when (numberp (car-safe xy))
+      (let ((edges (window-pixel-edges window)))
+        (cons (+ (car xy) (nth 0 edges)) (+ (cdr xy) (nth 1 edges)))))))
+
+(defun nhwl-menu--note-pointer (event window)
+  "Note where the pointer EVENT over WINDOW, a menu's, is, in that menu's buffer."
+  (let ((xy (nhwl-menu--frame-xy event window)))
+    (with-current-buffer (window-buffer window)
+      (setq nhwl-menu--pointer xy))))
+
+(defun nhwl-menu--inside-p (p a b c)
+  "Non-nil if the point P lies in the triangle A B C, all (X . Y)."
+  (let ((side (lambda (p q r) (- (* (- (car p) (car r)) (- (cdr q) (cdr r)))
+                                 (* (- (car q) (car r)) (- (cdr p) (cdr r)))))))
+    (let ((d1 (funcall side p a b)) (d2 (funcall side p b c)) (d3 (funcall side p c a)))
+      (not (and (or (< d1 0) (< d2 0) (< d3 0)) (or (> d1 0) (> d2 0) (> d3 0)))))))
+
+(defun nhwl-menu--aiming-p (event window depth)
+  "Non-nil when the motion EVENT over WINDOW, the menu above level DEPTH, heads for it.
+That is when it lies in the triangle from where the pointer last was over
+WINDOW's menu to the near edge of level DEPTH's frame.  Notes where it is."
+  (let* ((p (nhwl-menu--frame-xy event window))
+         (a (buffer-local-value 'nhwl-menu--pointer (window-buffer window)))
+         (sub (cdr (assq depth nhwl-menu--frames)))
+         (at (and (frame-live-p sub) (frame-position sub)))
+         (inside
+          (and p a at
+               (let* ((x (if (>= (car at) (car a)) (car at) (+ (car at) (frame-pixel-width sub))))
+                      (top (cdr at))
+                      (bottom (+ top (frame-pixel-height sub))))
+                 (nhwl-menu--inside-p p a (cons x top) (cons x bottom))))))
+    (nhwl-menu--note-pointer event window)
+    inside))
 
 (defun nhwl-menu--switch (how)
   "`(switch . ANSWER)' when `nhwl-menu-switch-function' takes HOW, else nil."
@@ -730,6 +893,9 @@ Return what `nhwl-menu--handle' does."
          (held (and (eq kind 'click) nhwl-menu--pressed)))
     (when (memq kind '(click drag))
       (setq nhwl-menu--pressed nil))
+    ;; the pointer anywhere but over the menu above lets go of a held motion
+    (unless (and at (< (car at) depth))
+      (setq nhwl-menu--held nil))
     (cond
      ;; the pointer over the row of menus this one belongs to
      ((null at)
@@ -737,17 +903,29 @@ Return what `nhwl-menu--handle' does."
            (let ((where (nhwl-menu--outside event)))
              (and where (nhwl-menu--switch where)))))
      ;; an event for a shallower level is that level's to handle, except
-     ;; over the row this level opened from
+     ;; over the row this level opened from, and a motion heading for this
+     ;; level, held for `nhwl-menu-submenu-tolerance'
      ((< (car at) depth)
-      (unless (and (= (car at) (1- depth)) (eql row parent-row))
-        (cons 'retry event)))
+      (cond ((and (= (car at) (1- depth)) (eql row parent-row))
+             (when (eq kind 'move) (nhwl-menu--note-pointer event window))
+             (setq nhwl-menu--held nil)
+             nil)
+            ((and (eq kind 'move) (= (car at) (1- depth))
+                  (nhwl-menu--aiming-p event window depth))
+             (setq nhwl-menu--held (cons event (+ (float-time) nhwl-menu-submenu-tolerance)))
+             nil)
+            (t (setq nhwl-menu--held nil)
+               (cons 'retry event))))
      ((> (car at) depth) nil)
      ((eq kind 'wheel)
       (nhwl-menu--scroll window (if (string-match-p "up\\'"
                                                     (symbol-name (car event)))
                                     -3 3))
       nil)
-     ((eq kind 'move) (nhwl-menu--hover row) nil)
+     ((eq kind 'move)
+      (nhwl-menu--note-pointer event window)
+      (nhwl-menu--hover row)
+      nil)
      ((memq kind '(down touch-begin))
       (nhwl-menu--hover row)
       (when (eq kind 'touch-begin)
@@ -798,53 +976,64 @@ ANSWER)' (another menu of the row, `nhwl-menu-switch-function'), or
     (nhwl-menu--move nhwl-menu--index -1) nil)
    ((eq event 'home) (nhwl-menu--move nil 1) nil)
    ((eq event 'end) (nhwl-menu--move nil -1) nil)
-   ((memq event '(return kp-enter ?\r ?\s)) (nhwl-menu--activate))
+   ;; Space with a type-ahead prefix pending types a space
+   ((and (eq event ?\s) (nhwl-menu--typing-p)) (nhwl-menu--type event) nil)
+   ((memq event '(return kp-enter ?\r ?\s)) (nhwl-menu--activate-by-key))
    ((eq event 'right)
     (let ((row (and nhwl-menu--index (aref nhwl-menu--rows nhwl-menu--index))))
       (if (and row (eq (nhwl-menu--kind row) 'submenu))
-          (let ((outcome (nhwl-menu--activate)))
-            (and (eq (car-safe outcome) 'open) outcome))
+          (let ((outcome (nhwl-menu--activate-by-key)))
+            (and (eq (car-safe outcome) 'open-first) outcome))
         (nhwl-menu--switch 'right))))
    ((eq event 'left) (if (> depth 0) 'close (nhwl-menu--switch 'left)))
    ((memq event '(escape ?\e)) (if (> depth 0) 'close 'cancel))
-   ((eq event ?\C-g) 'cancel)
-   ((and (characterp event) (> event 32)) (nhwl-menu--jump event) nil)))
+   ((memq event '(tab ?\t ?\C-g)) 'cancel)
+   ((and (characterp event) (> event 32)) (nhwl-menu--type event) nil)))
 
-(defun nhwl-menu--open (depth row)
+(defun nhwl-menu--open (depth row &optional first)
   "Run the submenu of ROW, selected in menu level DEPTH.
-Return what `nhwl-menu--run' returns, or nil if the submenu is empty."
+With FIRST its first item is selected.  Return what `nhwl-menu--run'
+returns, or nil if the submenu is empty."
   (let* ((frame (cdr (assq depth nhwl-menu--frames)))
          (window (frame-root-window frame))
          (index (buffer-local-value 'nhwl-menu--index (window-buffer window)))
          (rows (nhwl-menu--make-rows
                 nil (nhwl-menu--keymap-items (cdr (nhwl-menu--value row)))))
          ;; the popup sits at the right of the row, its top at the row's
-         (anchor (list (frame-pixel-width frame)
-                       (* (- index (count-lines 1 (window-start window)))
-                          (frame-char-height frame))
+         (top (with-current-buffer (window-buffer window)
+                (save-excursion
+                  (goto-char (point-min))
+                  (forward-line index)
+                  (cdr (posn-x-y (posn-at-point (point) window))))))
+         (anchor (list (frame-pixel-width frame) (or top 0)
                        0 0 :grab t :gravity 'bottom-right
                        :adjust (list 'flip-x 'slide-y))))
     (when (> (length rows) 0)
       (unwind-protect
-          (nhwl-menu--run (1+ depth) frame anchor rows index)
+          (nhwl-menu--run (1+ depth) frame anchor rows index nil first)
         (nhwl-menu--hide (1+ depth))))))
 
-(defun nhwl-menu--run (depth parent anchor rows parent-row &optional center)
+(defun nhwl-menu--run (depth parent anchor rows parent-row &optional center first)
   "Show ROWS as menu level DEPTH, a popup of PARENT at ANCHOR.
 PARENT-ROW is the row of the level above that opened this one, or nil.
-Return `cancel', `close', `(choose ROW...)' (the rows chosen from this
-level down), `(switch . ANSWER)' or `(retry . EVENT)'."
+With FIRST the first item is selected.  Return `cancel', `close',
+`(choose ROW...)' (the rows chosen from this level down), `(switch .
+ANSWER)' or `(retry . EVENT)'."
   (let ((buffer (nhwl-menu--buffer depth rows))
         (map (nhwl-menu--event-map))
         (pending nil)
         (result nil))
     (nhwl-menu--frame depth parent anchor buffer center)
+    (when first
+      (with-current-buffer buffer (nhwl-menu--move nil 1)))
     (while (not result)
       (let* ((due (buffer-local-value 'nhwl-menu--due buffer))
+             (held (buffer-local-value 'nhwl-menu--held buffer))
+             (next (if (and due held) (min due (cdr held)) (or due (cdr held))))
              (event (or (pop pending)
                         (nhwl-menu--read
-                         map (if due
-                                 (max 0.01 (min 0.25 (- due (float-time))))
+                         map (if next
+                                 (max 0.01 (min 0.25 (- next (float-time))))
                                0.25))))
              (outcome
               (cond
@@ -855,13 +1044,17 @@ level down), `(switch . ANSWER)' or `(retry . EVENT)'."
                 'cancel)
                (event (with-current-buffer buffer
                         (nhwl-menu--handle event depth parent-row)))
+               ;; the pointer rested over the menu above: that menu has it
+               ((and held (>= (float-time) (cdr held)))
+                (with-current-buffer buffer (setq nhwl-menu--held nil))
+                (cons 'retry (car held)))
                ((and due (>= (float-time) due))
                 (with-current-buffer buffer
                   (setq nhwl-menu--due nil)
                   (nhwl-menu--activate))))))
         (cond
-         ((eq (car-safe outcome) 'open)
-          (let ((sub (nhwl-menu--open depth (cdr outcome))))
+         ((memq (car-safe outcome) '(open open-first))
+          (let ((sub (nhwl-menu--open depth (cdr outcome) (eq (car outcome) 'open-first))))
             (cond ((eq (car-safe sub) 'choose)
                    (setq result (cons 'choose (cons (cdr outcome) (cdr sub)))))
                   ((or (eq sub 'cancel) (eq (car-safe sub) 'switch))
