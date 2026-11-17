@@ -1935,4 +1935,188 @@ go, and without `:labels' nothing of them is drawn."
       (nidhogg-lines-disable buf)
       (kill-buffer buf))))
 
+;;; The shell's menus (nhwl-menu.el): the metrics a theme gives them and the submenu's tolerance
+
+(defvar nhwl-menu--frames)
+(defvar nhwl-menu-min-width)
+(defvar nhwl-menu-row-height)
+(defvar nhwl-menu-max-height-fraction)
+(defvar nhwl-menu-submenu-tolerance)
+(defvar nhwl-menu-submenu-delay)
+
+(defun glitnir-gui--menu-steps (menu steps)
+  "Open MENU with `x-popup-menu' at 40, 40 of the selected frame and run STEPS while it is open; their values.
+STEPS is a list of (DELAY . FUNCTION): each FUNCTION is called from a timer DELAY seconds after the one before it (the
+menu's loop runs timers while it reads), and its value, or (error . DATA) when it signals, is kept.  Push the keys
+that close the menu last; a C-g closes it a second after the last step in any case."
+  (let ((results nil) (timers nil) (at 0))
+    (dolist (step steps)
+      (setq at (+ at (car step)))
+      (let ((fn (cdr step)))
+        (push (run-at-time at nil (lambda () (push (condition-case e (funcall fn) (error (cons 'error e))) results)))
+              timers)))
+    (push (run-at-time (+ at 1) nil (lambda () (push ?\C-g unread-command-events))) timers)
+    (unwind-protect (x-popup-menu (list '(40 40) (selected-frame)) menu)
+      (mapc #'cancel-timer timers))
+    (nreverse results)))
+
+(defun glitnir-gui--menu-frame (depth)
+  "The menu frame of DEPTH while it is shown, else nil."
+  (let ((f (cdr (assq depth nhwl-menu--frames))))
+    (and (frame-live-p f) (frame-visible-p f) f)))
+
+(defun glitnir-gui--menu-row-height (depth row)
+  "The pixel height of ROW (from 0) in the menu frame of DEPTH."
+  (let ((w (frame-root-window (glitnir-gui--menu-frame depth))))
+    (redisplay t)
+    (with-current-buffer (window-buffer w)
+      (save-excursion
+        (goto-char (point-min)) (forward-line row)
+        (cdr (window-text-pixel-size w (point) (pos-eol)))))))
+
+(defun glitnir-gui--menu-motion (depth row x)
+  "A pointer motion over the menu of DEPTH, X pixels in and a few pixels below the top of ROW (from 0)."
+  (let* ((w (frame-root-window (glitnir-gui--menu-frame depth)))
+         (y (with-current-buffer (window-buffer w)
+              (save-excursion (goto-char (point-min)) (forward-line row)
+                              (cdr (posn-x-y (posn-at-point (point) w)))))))
+    (list 'mouse-movement (posn-at-x-y x (+ y 3) w))))
+
+(ert-deftest nhwl-menu/min-width-is-honoured ()
+  "A menu of three-letter items with `nhwl-menu-min-width' 220 is at least 220 logical pixels wide."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let* ((nhwl-menu-min-width 220)
+         (got (glitnir-gui--menu-steps
+               '("M" ("P" ("Cut" . 1) ("Pas" . 2)))
+               (list (cons 0.5 (lambda () (redisplay t)
+                                 (let ((f (glitnir-gui--menu-frame 0)))
+                                   (prog1 (list (frame-pixel-width f) (* 220 (frame-scale-factor f)))
+                                     (push ?\C-g unread-command-events)))))))))
+    (should (consp (car got)))
+    (should (>= (nth 0 (car got)) (floor (nth 1 (car got)))))))
+
+(ert-deftest nhwl-menu/rows-are-the-row-height ()
+  "With `nhwl-menu-row-height' 30 every item row is 30 logical pixels tall."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let* ((nhwl-menu-row-height 30)
+         (got (glitnir-gui--menu-steps
+               '("M" ("P" ("One" . 1) ("Two" . 2) ("Three" . 3)))
+               (list (cons 0.5 (lambda ()
+                                 (let ((f (glitnir-gui--menu-frame 0)))
+                                   ;; rows: the title, the separator, the three items
+                                   (prog1 (list (round (* 30 (frame-scale-factor f)))
+                                                (mapcar (lambda (r) (glitnir-gui--menu-row-height 0 r)) '(2 3 4)))
+                                     (push ?\C-g unread-command-events)))))))))
+    (should (consp (car got)))
+    (should (equal (nth 1 (car got)) (make-list 3 (nth 0 (car got)))))))
+
+(defvar nhwl-menu-separator-height)
+
+(ert-deftest nhwl-menu/frame-is-the-rows-size ()
+  "The menu frame is its rows' size to the pixel, also when that is no whole number of the frame's characters (a
+least width of 223, rows 27 tall): no strip past the rows' right end or below the last row."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let* ((nhwl-menu-min-width 223)
+         (nhwl-menu-row-height 27)
+         (got (glitnir-gui--menu-steps
+               '("M" ("P" ("Cut" . 1) ("Paste" . 2)))
+               (list (cons 0.5 (lambda ()
+                                 (redisplay t)
+                                 (let ((w (frame-root-window (glitnir-gui--menu-frame 0))))
+                                   (prog1 (with-current-buffer (window-buffer w)
+                                            (list (cons (window-body-width w t) (window-body-height w t))
+                                                  (cons (save-excursion
+                                                          (goto-char (point-min)) (forward-line 2)
+                                                          (car (window-text-pixel-size w (point) (pos-eol))))
+                                                        (cdr (window-text-pixel-size w (point-min) (point-max))))))
+                                     (push ?\C-g unread-command-events)))))))))
+    (should (consp (car got)))
+    (should (equal (nth 0 (car got)) (nth 1 (car got))))))
+
+(ert-deftest nhwl-menu/separator-is-a-thin-rule ()
+  "With `nhwl-menu-separator-height' 9 a separator row is 9 logical pixels tall, not a text line."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let* ((nhwl-menu-separator-height 9)
+         (nhwl-menu-row-height 30)
+         (got (glitnir-gui--menu-steps
+               '("M" ("P" ("One" . 1) "--" ("Two" . 2)))
+               (list (cons 0.5 (lambda ()
+                                 (let ((f (glitnir-gui--menu-frame 0)))
+                                   ;; rows: the title, the title's separator, One, the separator, Two
+                                   (prog1 (list (round (* 9 (frame-scale-factor f)))
+                                                (glitnir-gui--menu-row-height 0 3))
+                                     (push ?\C-g unread-command-events)))))))))
+    (should (consp (car got)))
+    (should (equal (nth 1 (car got)) (nth 0 (car got))))))
+
+(ert-deftest nhwl-menu/tall-menu-scrolls-at-75-percent ()
+  "A menu of 100 items is at most 0.75 of its frame's height; End selects the last item and keeps it in view."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let* ((nhwl-menu-max-height-fraction 0.75)
+         (items (mapcar (lambda (i) (cons (format "Item %d" i) i)) (number-sequence 1 100)))
+         (got (glitnir-gui--menu-steps
+               (list "M" (cons "P" items))
+               (list (cons 0.5 (lambda ()
+                                 (redisplay t)
+                                 (let ((f (glitnir-gui--menu-frame 0)))
+                                   (prog1 (list (frame-pixel-height f) (* 0.75 (frame-pixel-height (frame-parent f))))
+                                     (push 'end unread-command-events)))))
+                     (cons 0.5 (lambda ()
+                                 (redisplay t)
+                                 (let* ((w (frame-root-window (glitnir-gui--menu-frame 0)))
+                                        (b (window-buffer w)))
+                                   (prog1 (list (buffer-local-value 'nhwl-menu--index b)
+                                                (pos-visible-in-window-p
+                                                 (with-current-buffer b (save-excursion (goto-char (point-max))
+                                                                                        (pos-bol)))
+                                                 w))
+                                     (push ?\C-g unread-command-events)))))))))
+    (should (consp (nth 0 got)))
+    (should (<= (nth 0 (nth 0 got)) (nth 1 (nth 0 got))))
+    ;; rows: the title, the separator, 100 items
+    (should (equal (nth 1 got) '(101 t)))))
+
+(ert-deftest nhwl-menu-gui/submenu-survives-a-diagonal-move ()
+  "The pointer leaves the open submenu's row towards the submenu, across the row below, within
+`nhwl-menu-submenu-tolerance': the submenu stays and its row stays selected; resting there past the tolerance, the
+row below takes the selection and the submenu closes."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let* ((nhwl-menu-submenu-tolerance 0.3)
+         (nhwl-menu-submenu-delay 0.1)
+         (map (make-sparse-keymap))
+         (sub (make-sparse-keymap))
+         (index (lambda () (buffer-local-value 'nhwl-menu--index
+                                               (window-buffer (frame-root-window (glitnir-gui--menu-frame 0))))))
+         (width (lambda () (window-body-width (frame-root-window (glitnir-gui--menu-frame 0)) t))))
+    (dolist (n '(5 4 3 2 1)) (define-key sub (vector (intern (format "in%d" n))) (list 'menu-item (format "Inner %d" n) 'ignore)))
+    (define-key map [top] '(menu-item "Top" ignore))
+    (define-key map [more] (list 'menu-item "More" sub))
+    (define-key map [other] '(menu-item "Other" ignore))
+    (define-key map [rest] '(menu-item "Rest" ignore))
+    (let ((got (glitnir-gui--menu-steps
+                map
+                (list
+                 ;; rows: Top, More, Other, Rest; the pointer rests on More: its submenu opens
+                 (cons 0.5 (lambda () (push (glitnir-gui--menu-motion 0 1 10) unread-command-events) t))
+                 (cons 0.5 (lambda ()
+                             (prog1 (list (and (glitnir-gui--menu-frame 1) t) (funcall index))
+                               ;; along More to its right end, then down onto Other, towards the submenu
+                               (setq unread-command-events
+                                     (append unread-command-events
+                                             (list (glitnir-gui--menu-motion 0 1 (- (funcall width) 12))
+                                                   (glitnir-gui--menu-motion 0 2 (- (funcall width) 4))))))))
+                 (cons 0.1 (lambda () (list (and (glitnir-gui--menu-frame 1) t) (funcall index))))
+                 (cons 0.6 (lambda ()
+                             (prog1 (list (and (glitnir-gui--menu-frame 1) t) (funcall index))
+                               (push ?\C-g unread-command-events))))))))
+      (should (equal (nth 1 got) '(t 1)))     ; the submenu open on More
+      (should (equal (nth 2 got) '(t 1)))     ; still open, More still selected, within the tolerance
+      (should (equal (nth 3 got) '(nil 2)))))) ; after it, Other
+
 ;;; glitnir-gui-tests.el ends here

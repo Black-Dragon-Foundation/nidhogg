@@ -23,8 +23,10 @@
 ;;; Commentary:
 
 ;; Batch tests of the model in lisp/term/nhwl-menu.el: how a menu is read
-;; into items and what it returns.  The frames and the loop need a shell
-;; and are covered by the GUI rows (nhwl-gui-w2-tests.el).
+;; into items and what it returns, the keys and the pointer's row.  The
+;; frames and the loop need a shell and are covered by the GUI rows
+;; (nhwl-gui-w2-tests.el; the metrics and the submenu's tolerance in the
+;; `nhwl-menu' rows of glitnir-gui-tests.el).
 
 ;;; Code:
 
@@ -266,7 +268,7 @@ the function they do what they always did."
             (should (equal (nhwl-menu--handle 'right 1 3) '(switch went right)))
             (should (eq (nhwl-menu--handle 'left 1 3) 'close))
             (nhwl-menu--select-row 3)   ; More, a submenu
-            (should (eq (car (nhwl-menu--handle 'right 0 nil)) 'open)))
+            (should (eq (car (nhwl-menu--handle 'right 0 nil)) 'open-first)))
           ;; a function that declines leaves the menu as it is
           (let ((nhwl-menu-switch-function #'ignore))
             (nhwl-menu--select-row 2)
@@ -314,6 +316,80 @@ sets `nhwl-menu-switched' to the function's answer; any other end clears it."
       (setq outcome 'cancel)
       (should-not (nhwl-menu-popup '((0 0) nil) map))
       (should-not nhwl-menu-switched))))
+
+;;; Keys (the APG menu pattern), type-ahead and the pointer's row
+
+(defmacro nhwl-menu-test--with-rows (depth rows &rest body)
+  "Run BODY in the menu buffer of DEPTH showing ROWS (item vectors), then kill it."
+  (declare (indent 2))
+  (let ((buffer (make-symbol "buffer")))
+    `(let ((,buffer (nhwl-menu--buffer ,depth ,rows)))
+       (unwind-protect (with-current-buffer ,buffer ,@body)
+         (kill-buffer ,buffer)))))
+
+(defun nhwl-menu-test--plain (&rest labels)
+  "Rows of enabled items labelled LABELS."
+  (vconcat (mapcar (lambda (l) (vector l nil t t nil nil nil 'item (intern l))) labels)))
+
+(ert-deftest nhwl-menu/home-end-and-escape-one-level ()
+  "Down and Up wrap; Home and End go to the first and last items; Right and Enter on a submenu row open it with its
+first item selected; Escape closes one level (all of them at the top), Tab closes every level."
+  (nhwl-menu-test--with-rows 94 (nhwl-menu--make-rows (nhwl-menu--title (nhwl-menu-test--two-levels))
+                                                      (nhwl-menu--items (nhwl-menu-test--two-levels)))
+    ;; rows: title, separator, Top, More
+    (should-not (nhwl-menu--handle 'end 0 nil))
+    (should (eql nhwl-menu--index 3))
+    (should-not (nhwl-menu--handle 'down 0 nil))
+    (should (eql nhwl-menu--index 2))           ; wrapped past the title and the separator
+    (should-not (nhwl-menu--handle 'up 0 nil))
+    (should (eql nhwl-menu--index 3))           ; wrapped back
+    (should-not (nhwl-menu--handle 'home 0 nil))
+    (should (eql nhwl-menu--index 2))
+    (nhwl-menu--select-row 3)
+    (should (eq (car (nhwl-menu--handle 'right 0 nil)) 'open-first))
+    (should (eq (car (nhwl-menu--handle 'return 0 nil)) 'open-first))
+    (should (eq (nhwl-menu--handle 'escape 1 3) 'close))
+    (should (eq (nhwl-menu--handle 'escape 0 nil) 'cancel))
+    (should (eq (nhwl-menu--handle 'tab 1 3) 'cancel))
+    (should (eq (nhwl-menu--handle ?\t 2 0) 'cancel))))
+
+(ert-deftest nhwl-menu/type-ahead-finds-a-prefix ()
+  "Letters typed within `nhwl-menu-type-ahead-timeout' search the labels' prefix as one string: \"sa\" is Save As,
+not Select.  A Space with a pending prefix types a space; after the timeout a letter starts a new prefix."
+  (let ((nhwl-menu-type-ahead-timeout 0.5))
+    (nhwl-menu-test--with-rows 95 (nhwl-menu-test--plain "Open" "Select" "Save" "Save As" "Quit")
+      (should-not (nhwl-menu--handle ?s 0 nil))
+      (should (equal (nhwl-menu--label (aref nhwl-menu--rows nhwl-menu--index)) "Select"))
+      (should-not (nhwl-menu--handle ?a 0 nil))
+      (should (equal (nhwl-menu--label (aref nhwl-menu--rows nhwl-menu--index)) "Save"))
+      (should-not (nhwl-menu--handle ?v 0 nil))
+      (should-not (nhwl-menu--handle ?e 0 nil))
+      ;; Space with a prefix pending types it, it does not activate
+      (should-not (nhwl-menu--handle ?\s 0 nil))
+      (should-not (nhwl-menu--handle ?a 0 nil))
+      (should (equal (nhwl-menu--label (aref nhwl-menu--rows nhwl-menu--index)) "Save As"))
+      ;; the prefix runs out: a letter starts again, a Space activates
+      (setcdr nhwl-menu--typed (- (float-time) 1))
+      (should-not (nhwl-menu--handle ?q 0 nil))
+      (should (equal (nhwl-menu--label (aref nhwl-menu--rows nhwl-menu--index)) "Quit"))
+      (setcdr nhwl-menu--typed (- (float-time) 1))
+      (should (eq (car (nhwl-menu--handle ?\s 0 nil)) 'choose)))))
+
+(ert-deftest nhwl-menu/pointer-row-from-the-text ()
+  "The row under the pointer is the line of the event's buffer position, not its Y over the character height: with
+rows of 30 px a pointer at Y 45 is on row 1."
+  (nhwl-menu-test--with-rows 96 (nhwl-menu-test--plain "One" "Two" "Three" "Four")
+    (let* ((buffer (current-buffer))
+           (window (selected-window))
+           (nhwl-menu--frames (list (cons 0 (window-frame window))))
+           (row1 (save-excursion (goto-char (point-min)) (forward-line 1) (point)))
+           (posn (list window row1 '(10 . 45) 0 nil row1 nil nil nil '(0 . 0))))
+      (save-window-excursion
+        (set-window-buffer window buffer)
+        (should (equal (nhwl-menu--locate (list 'mouse-movement posn)) (list 0 1 window)))
+        ;; above the window: no row
+        (should-not (nth 1 (nhwl-menu--locate
+                            (list 'mouse-movement (list window row1 '(10 . -3) 0 nil row1 nil nil nil '(0 . 0))))))))))
 
 (provide 'nhwl-menu-tests)
 
