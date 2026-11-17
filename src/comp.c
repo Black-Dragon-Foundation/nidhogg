@@ -5534,9 +5534,23 @@ LATE-LOAD has to be non-nil when loading for deferred compilation.  */)
 	comp_u->handle = dynlib_open_for_eln (SSDATA (encoded_filename));
       else
 	{
+#ifdef HAVE_NIDHOGG_FIXES
+	  /* Open a private copy: the file stays where it is.  Renamed
+	     aside, a file of an eln-cache shared by two Emacs processes
+	     was missing for the other one, whose own rename or load then
+	     failed.  A copy, not a hard link: the dynamic loader knows a
+	     file it loaded by its inode and would hand back the old
+	     handle.  The copy goes once it is open; a copy that cannot be
+	     removed is left behind, never an error for the load.  */
+	  Fcopy_file (filename, tmp_filename, Qt, Qnil, Qnil, Qnil);
+	  Lisp_Object encoded_tmp = ENCODE_FILE (tmp_filename);
+	  comp_u->handle = dynlib_open_for_eln (SSDATA (encoded_tmp));
+	  unlink (SSDATA (encoded_tmp));
+#else
 	  Frename_file (filename, tmp_filename, Qt);
 	  comp_u->handle = dynlib_open_for_eln (SSDATA (ENCODE_FILE (tmp_filename)));
 	  Frename_file (tmp_filename, filename, Qnil);
+#endif
 	}
     }
   else
