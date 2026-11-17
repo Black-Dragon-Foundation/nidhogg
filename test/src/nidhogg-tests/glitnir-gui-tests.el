@@ -2012,6 +2012,47 @@ that close the menu last; a C-g closes it a second after the last step in any ca
     (should (consp (car got)))
     (should (equal (nth 1 (car got)) (make-list 3 (nth 0 (car got)))))))
 
+(defvar nhwl-menu-separator-height)
+
+(ert-deftest nhwl-menu/frame-is-the-rows-size ()
+  "The menu frame is its rows' size to the pixel, also when that is no whole number of the frame's characters (a
+least width of 223, rows 27 tall): no strip past the rows' right end or below the last row."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let* ((nhwl-menu-min-width 223)
+         (nhwl-menu-row-height 27)
+         (got (glitnir-gui--menu-steps
+               '("M" ("P" ("Cut" . 1) ("Paste" . 2)))
+               (list (cons 0.5 (lambda ()
+                                 (redisplay t)
+                                 (let ((w (frame-root-window (glitnir-gui--menu-frame 0))))
+                                   (prog1 (with-current-buffer (window-buffer w)
+                                            (list (cons (window-body-width w t) (window-body-height w t))
+                                                  (cons (save-excursion
+                                                          (goto-char (point-min)) (forward-line 2)
+                                                          (car (window-text-pixel-size w (point) (pos-eol))))
+                                                        (cdr (window-text-pixel-size w (point-min) (point-max))))))
+                                     (push ?\C-g unread-command-events)))))))))
+    (should (consp (car got)))
+    (should (equal (nth 0 (car got)) (nth 1 (car got))))))
+
+(ert-deftest nhwl-menu/separator-is-a-thin-rule ()
+  "With `nhwl-menu-separator-height' 9 a separator row is 9 logical pixels tall, not a text line."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let* ((nhwl-menu-separator-height 9)
+         (nhwl-menu-row-height 30)
+         (got (glitnir-gui--menu-steps
+               '("M" ("P" ("One" . 1) "--" ("Two" . 2)))
+               (list (cons 0.5 (lambda ()
+                                 (let ((f (glitnir-gui--menu-frame 0)))
+                                   ;; rows: the title, the title's separator, One, the separator, Two
+                                   (prog1 (list (round (* 9 (frame-scale-factor f)))
+                                                (glitnir-gui--menu-row-height 0 3))
+                                     (push ?\C-g unread-command-events)))))))))
+    (should (consp (car got)))
+    (should (equal (nth 1 (car got)) (nth 0 (car got))))))
+
 (ert-deftest nhwl-menu/tall-menu-scrolls-at-75-percent ()
   "A menu of 100 items is at most 0.75 of its frame's height; End selects the last item and keeps it in view."
   (skip-unless (featurep 'nidhogg-wayland))

@@ -81,6 +81,14 @@ Nil for one line of text.  The text is centred in a taller row."
   :type '(choice (const :tag "One line" nil) natnum)
   :group 'nhwl-menu)
 
+(defcustom nhwl-menu-separator-height nil
+  "The height of a separator row, in logical pixels.
+Nil for one line of text with a line drawn across it.  A number draws a
+thin rule (face `nhwl-menu-separator') across the middle of a row that
+tall, inset from either end by half its height."
+  :type '(choice (const :tag "One line" nil) natnum)
+  :group 'nhwl-menu)
+
 (defcustom nhwl-menu-row-padding '(0 . 0)
   "The space before and after each row's text, (LEFT . RIGHT) in logical pixels.
 Zero leaves one space character."
@@ -140,6 +148,12 @@ Nil when the last menu ended otherwise.")
 (defface nhwl-menu-disabled
   '((t :inherit shadow))
   "Face of disabled items, titles and separators."
+  :group 'nhwl-menu)
+
+(defface nhwl-menu-separator
+  '((t :inherit nhwl-menu-disabled :strike-through t))
+  "Face of the rule drawn by a separator when `nhwl-menu-separator-height' is set.
+Its strike-through is the rule."
   :group 'nhwl-menu)
 
 (defface nhwl-menu-key
@@ -406,7 +420,7 @@ Nil when the row is no taller than the text, or the font is not known."
 The columns are placed in pixels (`nhwl-menu-row-padding'), the rows are
 `nhwl-menu-min-width' wide at least, the key column ends at the right,
 and an item row is `nhwl-menu-row-height' tall."
-  (let* ((marks nil) (subs nil) (label-w 0) (key-w 0) (first t)
+  (let* ((marks nil) (subs nil) (label-w 0) (key-w 0) (first t) (tiny nil)
          (pad-l (nhwl-menu--pad (car nhwl-menu-row-padding)))
          (pad-r (nhwl-menu--pad (cdr nhwl-menu-row-padding)))
          (height (and nhwl-menu-row-height (nhwl-menu--px nhwl-menu-row-height)))
@@ -430,13 +444,25 @@ and an item row is `nhwl-menu-row-height' tall."
            (keys-end (- width pad-r arrow-w)))
       (mapc
        (lambda (row)
-         (unless first (insert "\n"))
-         (setq first nil)
-         (if (eq (nhwl-menu--kind row) 'separator)
-             (let ((line (if (equal (nhwl-menu--label row) "--double-line") "═" "─")))
-               (insert (propertize (make-string (/ width (max 1 (nhwl-menu--width line))) (aref line 0))
-                                   'face 'nhwl-menu-disabled)
-                       (nhwl-menu--stretch `(:align-to (,width)))))
+         (unless first (insert (if tiny (propertize "\n" 'face '(:height 1)) "\n")))
+         (setq first nil tiny nil)
+         (cond
+          ((and (eq (nhwl-menu--kind row) 'separator) nhwl-menu-separator-height)
+           ;; a rule across the middle of a short row; its newline in a
+           ;; tiny face, so that the row is no taller than the rule's
+           (let* ((h (nhwl-menu--px nhwl-menu-separator-height))
+                  (inset (/ h 2)))
+             (insert (nhwl-menu--stretch `(:width (,inset) :height (,h)))
+                     (propertize (nhwl-menu--stretch `(:align-to (,(- width inset)) :height (,h)))
+                                 'face 'nhwl-menu-separator)
+                     (nhwl-menu--stretch `(:align-to (,width) :height (,h))))
+             (setq tiny t)))
+          ((eq (nhwl-menu--kind row) 'separator)
+           (let ((line (if (equal (nhwl-menu--label row) "--double-line") "═" "─")))
+             (insert (propertize (make-string (/ width (max 1 (nhwl-menu--width line))) (aref line 0))
+                                 'face 'nhwl-menu-disabled)
+                     (nhwl-menu--stretch `(:align-to (,width))))))
+          (t
            (let ((keys (funcall key row)))
              (insert
               (nhwl-menu--stretch lead)
@@ -448,7 +474,7 @@ and an item row is `nhwl-menu-row-height' tall."
               (if (eq (nhwl-menu--kind row) 'submenu)
                   (concat (nhwl-menu--stretch `(:align-to (,keys-end))) " ›")
                 "")
-              (nhwl-menu--stretch `(:align-to (,width)))))))
+              (nhwl-menu--stretch `(:align-to (,width))))))))
        rows))))
 
 (defun nhwl-menu--buffer (depth rows)
@@ -623,7 +649,9 @@ With CENTER the frame is centred on the point of ANCHOR."
       (set-window-fringes window 0 0)
       (set-window-margins window 0 0))
     (modify-frame-parameters frame nhwl-menu-frame-parameters)
-    (fit-frame-to-buffer frame)
+    ;; to the pixel: rounded to the frame's characters, a menu in a
+    ;; proportional font gets a strip past its rows
+    (let ((frame-resize-pixelwise t)) (fit-frame-to-buffer frame))
     ;; a new size is the frame's at the next redisplay: take it now, for
     ;; the limit and the centre
     (redisplay t)

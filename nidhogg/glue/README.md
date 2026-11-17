@@ -227,7 +227,8 @@ The frame is the root of its own tree (its pacer and acks are its own).
 
 - **The Lisp menu:** its options (group `nhwl-menu`; the defaults keep the plain look) give a theme its metrics: a
   least width (`nhwl-menu-min-width`, the key column at the right edge), the rows' height and padding in logical pixels
-  (the columns placed in pixels, so a proportional font lines up), the tallest it gets before it scrolls
+  (the columns placed in pixels, so a proportional font lines up, and the frame sized to the rows to the pixel), a
+  separator's height (`nhwl-menu-separator-height`: a thin rule in face `nhwl-menu-separator`), the tallest it gets before it scrolls
   (`nhwl-menu-max-height-fraction`, 0.75 of the top-level frame) and parameters for each menu frame
   (`nhwl-menu-frame-parameters`, what the compositor reads from a popup).  The keys follow the APG menu pattern (Down
   and Up wrap, Home, End, Right and Enter open a submenu on its first item, Escape closes one level, Tab all of them);
