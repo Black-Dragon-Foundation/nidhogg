@@ -40,11 +40,11 @@ for upstreaming.
 - Every commit on `emacs-31.1..nidhogg-31` has a subject starting `nidhogg: `.
 - Files only Nidhogg owns live under `nidhogg/`, `.github/` and `README.md`, so rebases do not conflict.
 - C patches sit behind `--with-nidhogg-<feature>` configure flags. The identity patch is unconditional.
-- Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`, `shell`, `history`, `keys`; the stack order is watchdog, then workers, then glitnir, and the check is
+- Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`, `shell`, `history`, `keys`, `fixes`; the stack order is watchdog, then workers, then glitnir, and the check is
   order-independent; `FLAG_GROUPS`,
   overridable: name:define:feature) and its own base: `<GROUP>_BASE` (overridable, e.g. `GLITNIR_BASE`) is the parent of
   the oldest such commit on HEAD; a group with none is skipped. The groups may stack in either order. With the defines
-  of every group that has commits in `base..HEAD` undefined (`HAVE_GLITNIR`, `HAVE_NIDHOGG_WATCHDOG`, `HAVE_NIDHOGG_WORKERS`, `HAVE_NIDHOGG_HISTORY`, `HAVE_NIDHOGG_KEYS`, …), every C file under
+  of every group that has commits in `base..HEAD` undefined (`HAVE_GLITNIR`, `HAVE_NIDHOGG_WATCHDOG`, `HAVE_NIDHOGG_WORKERS`, `HAVE_NIDHOGG_HISTORY`, `HAVE_NIDHOGG_KEYS`, `HAVE_NIDHOGG_FIXES`, …), every C file under
   `src/` the group touched must equal its base version (`unifdef -U…`); a changed `lisp/` file is new or `lisp/loadup.el`
   with one `(featurep 'FEATURE)` line per group; a commit in the range touching `src/` that belongs to no group goes
   below the groups. Needs `unifdef`.
@@ -1383,6 +1383,20 @@ gives a tab or header line row the visible height the window's box holds (`top_l
 
 - Tests: drgnx's `drgnx-ui-look-open-fit/a-squeezed-window-draws-its-header-line-when-it-grows` (the picture against a
   full redraw).
+
+## Fixes to upstream bugs
+
+Bugs of upstream Emacs that touch no Nidhogg feature are fixed in their own flag group, `fixes`.
+
+- Build flag: `--with-nidhogg-fixes` (defines `HAVE_NIDHOGG_FIXES`). `build.sh` passes it on every target, Glitnir or
+  not, unless given `--without-nidhogg-fixes`. Tests: `test/src/nidhogg-tests/fixes-tests.el` (cond; in
+  `check-subset.txt`), one row per fix.
+- **A shared eln-cache keeps its files while they are loaded again** (`src/comp.c`, `native-elisp-load`). Loading
+  an `.eln` this session had loaded before renamed the file aside, opened it and renamed it back, to get a new handle
+  from the dynamic loader. Another Emacs using the same eln-cache (a daemon and a second Emacs, or test sessions
+  sharing one cache) found it missing meanwhile, and its own load failed (`file-missing "Renaming"`). The load now
+  opens a private copy and deletes it once it is open; the shared file never moves. Row:
+  `fixes/two-emacs-reloading-one-eln-never-lose-it` (two processes reload one `.eln` 400 times each).
 
 ## Reporting issues
 

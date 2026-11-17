@@ -133,6 +133,11 @@ AC_ARG_WITH([nidhogg-keys],
   [AS_HELP_STRING([--with-nidhogg-keys],
     [build the define-key redirect, a function that may move any key definition to another keymap])],
   [], [with_nidhogg_keys=no])
+dnl Nidhogg: fixes to upstream bugs that touch no Nidhogg feature (see README.md, "Fixes to upstream bugs").
+AC_ARG_WITH([nidhogg-fixes],
+  [AS_HELP_STRING([--with-nidhogg-fixes],
+    [build Nidhogg's fixes to upstream Emacs bugs])],
+  [], [with_nidhogg_fixes=no])
 dnl Nidhogg: seeded delays at the workers' sync points; test runs only, never a release.
 AC_ARG_WITH([nidhogg-chaos],
   [AS_HELP_STRING([--with-nidhogg-chaos],
@@ -7995,6 +8000,12 @@ case $with_nidhogg_keys in
   yes) AC_DEFINE([HAVE_NIDHOGG_KEYS], [1], [Define to 1 to build the define-key redirect.]) ;;
   no) ;;
   *) AC_MSG_ERROR([--with-nidhogg-keys takes yes or no]) ;;
+esac
+dnl Nidhogg: fixes to upstream bugs.
+case $with_nidhogg_fixes in
+  yes) AC_DEFINE([HAVE_NIDHOGG_FIXES], [1], [Define to 1 to build Nidhogg's fixes to upstream bugs.]) ;;
+  no) ;;
+  *) AC_MSG_ERROR([--with-nidhogg-fixes takes yes or no]) ;;
 esac
 case $with_nidhogg_chaos in
   yes) AC_DEFINE([NH_CHAOS], [1], [Define to 1 for seeded delays at the workers' sync points.]) ;;
