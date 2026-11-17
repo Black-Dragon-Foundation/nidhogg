@@ -1247,6 +1247,12 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
 - **The scroll bar** (the `glitnir-ruler` strip) measures visible lines when the window's text has a model: lines
   hidden with `nidhogg-lines-set-hidden` do not count, so a mark keeps its place when the strip widens into the
   minimap. Without a model it measures characters, as before.
+- **Tree-sitter folds** (source 0): a buffer's `nidhogg-treesit-fold-query` (buffer-local, a compiled query) runs in C
+  at each parse's publish (`treesit_ensure_parsed`'s tail, before the after-change functions), over that parse's
+  changed ranges only. Its `@fold` / `@fold.KIND` nodes replace the source-0 ranges touching each range, widened to
+  whole lines (a node within one line is none; of nodes starting on one line the largest stays); no Lisp list is made.
+  Ranges outside a narrowing stay until a parse covers them; nodes sent while the lines are still built move with the
+  edits and are widened once they are in.
 - Lisp: `(nidhogg-lines-enable &optional BUFFER WAIT)`, `nidhogg-lines-disable`; `nidhogg-lines-line`,
   `nidhogg-lines-line-start`, `nidhogg-lines-fraction`; marks by kind (0–63): `nidhogg-lines-set-marks`,
   `nidhogg-lines-next-mark`, `nidhogg-lines-counts`; folds by source: `nidhogg-lines-set-folds`, `nidhogg-lines-folds`,

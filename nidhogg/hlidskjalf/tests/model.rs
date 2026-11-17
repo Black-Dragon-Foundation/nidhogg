@@ -211,6 +211,34 @@ fn a_background_build_replays_the_edits_made_meanwhile() {
 }
 
 #[test]
+fn a_parsers_ranges_sent_while_the_lines_are_built_are_kept() {
+    let mut p = Pair::new(&big_text(200_000), true);
+    assert!(p.m.building());
+    // a node from line 0's third character to line 1's third, sent before the lines exist…
+    p.m.replace_folds(
+        0,
+        1,
+        u64::MAX,
+        &[Fold {
+            beg: 3,
+            end: 10,
+            kind: 1,
+            depth: 0,
+            source: 0,
+        }],
+    );
+    // …moves with an edit made meanwhile, and is lines 0–1 once they are built
+    p.edit(1, 0, "xy");
+    p.m.poll(true);
+    let got: Vec<(u64, u64, u8)> =
+        p.m.folds(0, u64::MAX)
+            .map(|f| (f.beg, f.end, f.kind))
+            .collect();
+    assert_eq!(got, vec![(1, 17, 1)]);
+    p.check();
+}
+
+#[test]
 fn a_bad_edit_makes_the_model_stale() {
     let mut p = Pair::new("abc\ndef\n", false);
     // the segment says 2 characters where the edit says 3
@@ -253,6 +281,59 @@ fn ranges(m: &mut Model) -> Vec<(u64, u64, u8, u8)> {
     m.folds(0, u64::MAX)
         .map(|f| (f.beg, f.end, f.depth, f.source))
         .collect()
+}
+
+#[test]
+fn a_parsers_ranges_are_replaced_only_where_the_text_changed() {
+    let mut p = Pair::new(
+        "fn a() {\n  x\n}\nfn b() {\n  y\n  z\n}\nfn c() {}\n",
+        false,
+    );
+    // the same lines as the indentation ranges: their positions are what a node's whole lines give
+    p.m.set_derived_folds(true, None).unwrap();
+    let ind = ranges(&mut p.m);
+    let ((a0, a1), (b0, b1)) = ((ind[0].0, ind[0].1), (ind[1].0, ind[1].1));
+    p.m.set_derived_folds(false, None).unwrap();
+    let node = |beg: u64, end: u64, kind: u8| Fold {
+        beg,
+        end,
+        kind,
+        depth: 0,
+        source: 9,
+    };
+    let c = p.m.pos_of(7).unwrap();
+    // a node from mid-line to just after its closing brace covers its whole lines; a node of one line is no range
+    p.m.replace_folds(
+        0,
+        1,
+        u64::MAX,
+        &[
+            node(a0 + 3, a1 + 1, 1),
+            node(b0 + 3, b1 + 1, 1),
+            node(c, c + 9, 1),
+        ],
+    );
+    assert_eq!(ranges(&mut p.m), vec![(a0, a1, 0, 0), (b0, b1, 0, 0)]);
+    // a change inside b: b's range replaced (found again, of another kind), a's left alone, nothing doubled
+    p.m.replace_folds(
+        0,
+        b0 + 10,
+        b0 + 11,
+        &[node(b0, b1, 2), node(b0 + 2, b1 - 1, 2)],
+    );
+    let got: Vec<(u64, u64, u8)> =
+        p.m.folds(0, u64::MAX)
+            .map(|f| (f.beg, f.end, f.kind))
+            .collect();
+    assert_eq!(got, vec![(a0, a1, 1), (b0, b1, 2)]);
+    // the node went: so does its range, and only its
+    p.m.replace_folds(0, b0 + 10, b0 + 11, &[]);
+    assert_eq!(ranges(&mut p.m), vec![(a0, a1, 0, 0)]);
+    // another source's ranges are never touched
+    p.m.set_folds(5, &[node(b0, b1, 0)], 100);
+    p.m.replace_folds(0, 1, u64::MAX, &[]);
+    assert_eq!(ranges(&mut p.m), vec![(b0, b1, 0, 5)]);
+    p.check();
 }
 
 #[test]

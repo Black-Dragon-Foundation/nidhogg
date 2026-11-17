@@ -324,4 +324,79 @@ expression that does not compile signals `invalid-regexp'; nil sources drop the 
     (should (= (length (nidhogg-lines-folds nil)) 4))
     (nidhogg-lines-disable)))
 
+(defvar nidhogg-treesit-fold-query)
+
+(defconst lines-tests--dir (file-name-directory (or load-file-name buffer-file-name "")))
+
+(defun lines-tests--grammars ()
+  "The directory of the test grammars (fixtures/grammars.sh: C and Python), or nil."
+  (let ((dir (or (getenv "NIDHOGG_TEST_GRAMMARS")
+                 (expand-file-name "fixtures/grammars-cache" lines-tests--dir))))
+    (and (file-exists-p (expand-file-name "libtree-sitter-c.so" dir)) dir)))
+
+(defun lines-tests--range (a b)
+  "Lines A..B (0-based) of the current buffer as (BEG END): A's start to B's end."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line a)
+    (let ((beg (point)))
+      (forward-line (- b a))
+      (list beg (line-end-position)))))
+
+(ert-deftest lines/tree-sitter-folds-follow-each-parse ()
+  "The buffer's fold query (`nidhogg-treesit-fold-query') runs at each
+parse's publish over the changed ranges, in C: its nodes are source 0's
+ranges, widened to whole lines, of the `@fold.KIND' capture's kind (plain
+`@fold' is 0, other captures none).  An edit inside one function replaces
+that function's ranges only; narrowing keeps the ranges outside; a query
+of another language is not run."
+  (skip-unless (and (lines-tests--built-p) (boundp 'nidhogg-treesit-fold-query) (lines-tests--grammars)))
+  (let ((treesit-extra-load-path (list (lines-tests--grammars))))
+   (with-temp-buffer
+    (insert "int a (void)\n{\n  return 1;\n}\n\nint b (void)\n{\n  return 2;\n}\n")
+    (nidhogg-lines-enable nil t)
+    (let ((p (treesit-parser-create 'c))
+          (folds (lambda () (mapcar (lambda (f) (list (nth 0 f) (nth 1 f) (nth 2 f) (nth 4 f)))
+                                    (nidhogg-lines-folds nil)))))
+      (setq-local nidhogg-treesit-fold-query
+                  (treesit-query-compile 'c "(function_definition) @fold.function (compound_statement) @fold
+                                             (translation_unit) @scope"))
+      (treesit-parser-root-node p)
+      (should (equal (funcall folds)
+                     `((,@(lines-tests--range 0 3) 1 0) (,@(lines-tests--range 1 3) 0 0)
+                       (,@(lines-tests--range 5 8) 1 0) (,@(lines-tests--range 6 8) 0 0))))
+      ;; a line typed into b: b's ranges grow, a's stay (and are not sent again: a set-folds sent meanwhile stays)
+      (goto-char (point-min))
+      (search-forward "return 2;")
+      (insert "\n  x++;")
+      (treesit-parser-root-node p)
+      (should (equal (funcall folds)
+                     `((,@(lines-tests--range 0 3) 1 0) (,@(lines-tests--range 1 3) 0 0)
+                       (,@(lines-tests--range 5 9) 1 0) (,@(lines-tests--range 6 9) 0 0))))
+      ;; b made one line: its ranges go
+      (let ((b (car (lines-tests--range 5 5))))
+        (delete-region b (point-max))
+        (goto-char b)
+        (insert "int b (void) { return 2; }\n"))
+      (treesit-parser-root-node p)
+      (should (equal (funcall folds)
+                     `((,@(lines-tests--range 0 3) 1 0) (,@(lines-tests--range 1 3) 0 0))))
+      ;; narrowed to b, a new body for b: a's ranges, outside, stay
+      (let ((b (car (lines-tests--range 5 5))))
+        (narrow-to-region b (point-max))
+        (goto-char (point-max))
+        (insert "int c (void)\n{\n}\n")
+        (treesit-parser-root-node p)
+        (widen))
+      (should (equal (funcall folds)
+                     `((,@(lines-tests--range 0 3) 1 0) (,@(lines-tests--range 1 3) 0 0)
+                       (,@(lines-tests--range 6 8) 1 0) (,@(lines-tests--range 7 8) 0 0))))
+      ;; a query of another language: nothing runs (the ranges stay as they were)
+      (setq-local nidhogg-treesit-fold-query (treesit-query-compile 'python "(block) @fold"))
+      (goto-char (point-min))
+      (insert "\n")
+      (treesit-parser-root-node p)
+      (should (= (length (funcall folds)) 4)))
+    (nidhogg-lines-disable))))
+
 ;;; lines-tests.el ends here

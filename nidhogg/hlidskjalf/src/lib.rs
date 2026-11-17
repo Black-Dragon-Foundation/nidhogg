@@ -77,6 +77,8 @@ pub struct Model {
     indent_folds: bool,
     /// The most fold ranges kept, over all sources.
     fold_max: usize,
+    /// The sources whose folds are nodes not yet widened to whole lines (sent while the lines were built).
+    raw_folds: Vec<u8>,
     /// Bumped by every change of the lines (not of the hidden ones); the found ranges are of `derived_at`'s lines.
     text_gen: u64,
     derived_at: u64,
@@ -106,6 +108,7 @@ impl Model {
             headings: Vec::new(),
             indent_folds: false,
             fold_max: 20000,
+            raw_folds: Vec::new(),
             text_gen: 0,
             derived_at: u64::MAX,
             stale: false,
@@ -348,6 +351,9 @@ impl Model {
     /// The indentation and heading ranges again, when the lines changed since they were found.
     fn derive(&mut self) {
         self.poll(false);
+        if !self.raw_folds.is_empty() {
+            self.widen_raw_folds();
+        }
         if self.derived_at == self.text_gen {
             return;
         }
@@ -449,6 +455,62 @@ impl Model {
             }
             f.depth = stack.len().min(255) as u8;
             stack.push(f.end);
+        }
+    }
+
+    /// Replace SOURCE's folds that touch BEG..END (a parse's changed range) with FOLDS, the nodes found there (design
+    /// §7.4): each node widened to its whole lines (its first line's start to its last line's end, the newline out; a
+    /// node ending at a line's start ends on the line before), a node of one line dropped, and of the nodes starting
+    /// on one line only the largest kept.  SOURCE's folds elsewhere stay.  Nodes sent while the lines are built move
+    /// with the edits as they are, and are widened once the lines are in.
+    pub fn replace_folds(&mut self, source: u8, beg: u64, end: u64, folds: &[Fold]) {
+        self.poll(false);
+        let mut all: Vec<Fold> = self
+            .folds
+            .iter()
+            .filter(|f| f.source == source && !(f.beg <= end && f.end >= beg))
+            .copied()
+            .collect();
+        match self.idx.as_ref() {
+            Some(idx) if !self.raw_folds.contains(&source) => {
+                all.extend(folds.iter().filter_map(|f| whole_lines(idx, f, source)))
+            }
+            _ => {
+                all.extend(folds.iter().map(|f| Fold { source, ..*f }));
+                if !self.raw_folds.contains(&source) {
+                    self.raw_folds.push(source);
+                }
+            }
+        }
+        self.set_one_a_line(source, all);
+    }
+
+    /// SOURCE's folds made ALL, of the folds starting on one line only the largest.
+    fn set_one_a_line(&mut self, source: u8, mut all: Vec<Fold>) {
+        all.sort_by_key(|f| (f.beg, std::cmp::Reverse(f.end)));
+        all.dedup_by_key(|f| f.beg);
+        let max = self.fold_max;
+        self.set_folds(source, &all, max);
+    }
+
+    /// The nodes kept while the lines were built, widened now that they are.
+    fn widen_raw_folds(&mut self) {
+        let Some(idx) = self.idx.as_ref() else {
+            return;
+        };
+        let mut done = Vec::new();
+        for &s in &self.raw_folds {
+            let all: Vec<Fold> = self
+                .folds
+                .iter()
+                .filter(|f| f.source == s)
+                .filter_map(|f| whole_lines(idx, f, s))
+                .collect();
+            done.push((s, all));
+        }
+        self.raw_folds.clear();
+        for (s, all) in done {
+            self.set_one_a_line(s, all);
         }
     }
 
@@ -668,4 +730,26 @@ impl Model {
     pub fn hidden_count(&self) -> usize {
         self.hidden.len()
     }
+}
+
+/// Node F widened to its whole lines in IDX as a fold of SOURCE: its first line's start to its last line's end, the
+/// newline left out (a node ending at a line's start ends on the line before); `None` for a node within one line.
+fn whole_lines(idx: &LineIndex, f: &Fold, source: u8) -> Option<Fold> {
+    if f.beg >= f.end {
+        return None;
+    }
+    let last = idx.lines().saturating_sub(1);
+    let a = idx.line_at(f.beg.saturating_sub(1)).min(last);
+    let b = idx.line_at(f.end.saturating_sub(2)).min(last);
+    if b <= a {
+        return None;
+    }
+    let nl = u64::from(b + 1 < idx.lines());
+    Some(Fold {
+        beg: idx.start_of(a) + 1,
+        end: idx.start_of(b) + 1 + u64::from(idx.line(b).len) - nl,
+        kind: f.kind,
+        depth: 0,
+        source,
+    })
 }
