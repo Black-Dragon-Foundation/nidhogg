@@ -47,8 +47,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "window.h"
 
 #ifdef NHWL_WAYLAND
-static void nhwl_fill_rectangle (struct frame *, unsigned long, int, int, int,
-				 int, bool);
 static void nhwl_clip_to_row (struct window *, struct glyph_row *,
 			      enum glyph_row_area, cairo_t *);
 #endif
@@ -154,7 +152,9 @@ nhwl_set_glyph_string_gc (struct glyph_string *s)
   if (s->hl == DRAW_NORMAL_TEXT)
     {
       s->xgcv.foreground = s->face->foreground;
-      s->xgcv.background = s->face->background;
+      /* under a `row' block, its fill where the face shows the window's
+	 default background (glitnir_decor_row_bg) */
+      s->xgcv.background = glitnir_decor_row_bg (s, s->face->background);
       s->stippled_p = s->face->stipple != 0;
     }
   else if (s->hl == DRAW_INVERSE_VIDEO)
@@ -2249,7 +2249,9 @@ nhwl_draw_fringe_bitmap (struct window *w, struct glyph_row *row,
   nhwl_end_cr_clip (f);
 }
 
-static void
+/* Not static: a cleared line's end in a `row' block's fill
+   (nhwl_clear_frame_area).  */
+void
 nhwl_fill_rectangle (struct frame *f, unsigned long color, int x, int y,
 		     int width, int height, bool respect_alpha_background)
 {

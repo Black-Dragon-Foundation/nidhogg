@@ -1153,6 +1153,13 @@ struct glyph_row
   /* Continuation lines width at the start of the row.  */
   int continuation_lines_width;
 
+#ifdef HAVE_NHWL
+  /* Glitnir: the fill of the `row' block over this text row, 0xRRGGBB
+     with bit 24 set, or 0 (glitnir_row_fill): what its glyphs that show
+     the window's default background draw in.  */
+  unsigned int glitnir_fill;
+#endif
+
 #ifdef HAVE_WINDOW_SYSTEM
   /* Non-NULL means the current clipping area.  This is temporarily
      set while exposing a region.  Coordinates are frame-relative.  */

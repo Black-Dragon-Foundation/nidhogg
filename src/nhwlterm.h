@@ -606,6 +606,11 @@ extern unsigned long glitnir_decor_colour_beneath (struct glyph_string *, int);
 extern bool glitnir_decor_fit_band (struct glyph_string *, int *, int *,
 				    unsigned long *);
 extern bool glitnir_decor_row_fit_p (struct frame *, struct glyph_row *);
+extern unsigned long glitnir_decor_row_bg (struct glyph_string *, unsigned long);
+extern unsigned int glitnir_row_fill (struct window *, struct glyph_row *);
+/* nhwldraw.c (Wayland) or nhmacdraw.c (Naglfar).  */
+extern void nhwl_fill_rectangle (struct frame *, unsigned long, int, int,
+				 int, int, bool);
 extern void glitnir_decor_after_glyphs (struct glyph_string *);
 extern void glitnir_decor_record (struct glyph_string *);
 extern void glitnir_decor_clear (struct frame *, int, int, int, int);

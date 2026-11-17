@@ -177,6 +177,10 @@ pub enum BlockKind {
     /// A panel inside a card (the notebook's output under its hairline): its rectangle filled in `fill_argb` with
     /// rounded corners, `ring_argb` a border around it, `top_argb` a hairline along its top between the corners.
     Inner,
+    /// A selection under its rows' glyphs: the rows draw its fill themselves (their default background, by the
+    /// host), so the block is what lies outside its rounded rectangle on its rows, in the colour beneath: the corners
+    /// outside the rounded path, and the rows before the rectangle's left and past its right, across the layer.
+    Row,
 }
 
 /// A block of rows inside a window ([`Scene::set_blocks`]), drawn OVER the frame's pixels: a ring inside its rectangle
@@ -220,6 +224,16 @@ pub struct Block {
 impl Block {
     /// What the block draws within (root px): its rectangle, and around a ring the shadow and the line outside it.
     pub fn bounds(&self) -> Rect {
+        if self.kind == BlockKind::Row {
+            // its rows across the layer, which clips them
+            const REACH: i32 = 1 << 20;
+            return Rect::new(
+                self.rect.x - REACH,
+                self.rect.y,
+                self.rect.w + 2 * REACH,
+                self.rect.h,
+            );
+        }
         let m = if self.kind != BlockKind::Ring {
             0
         } else {

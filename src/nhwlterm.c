@@ -668,6 +668,20 @@ nhwl_block_int (Lisp_Object v, int i, intmax_t dflt)
 	  : FLOATP (x) ? (intmax_t) XFLOAT_DATA (x) : dflt);
 }
 
+/* The colour beneath block V of window W: its BENEATH-RGB, or for a
+   `row' block without one (-1) the window's default background, which
+   a buffer's face remapping changes.  */
+static intmax_t
+nhwl_block_beneath (struct window *w, Lisp_Object v)
+{
+  intmax_t under = nhwl_block_int (v, 8, 0);
+  if (under >= 0)
+    return under;
+  struct frame *f = XFRAME (w->frame);
+  struct face *def = FACE_FROM_ID_OR_NULL (f, lookup_basic_face (w, f, DEFAULT_FACE_ID));
+  return def ? (intmax_t) (def->background & 0xffffff) : 0;
+}
+
 extern Lisp_Object Foverlays_in (Lisp_Object, Lisp_Object);
 
 /* The after-strings of the overlays of W's buffer that end at END (an
@@ -738,6 +752,49 @@ nhwl_block_row_has_string_p (struct glyph_row *row, Lisp_Object str)
   return false;
 }
 
+/* The fill of the `row' block of leaf window W (its parameter
+   glitnir--blocks) over W's text row ROW, a row whose start is in the
+   block's START..END: its FILL-RGB at FILL-OPACITY over its BENEATH-RGB,
+   0xRRGGBB with bit 24 set; else 0 (no such block, a mode or header
+   line, a frame Glitnir does not draw).  The first such block wins.
+   Redisplay keeps it on the row (update_text_area), and the row's glyphs
+   that show W's default background draw in it (glitnir_decor_row_bg,
+   nhwl_clear_end_of_line): the block lies beneath its rows' glyphs.  */
+unsigned int
+glitnir_row_fill (struct window *w, struct glyph_row *row)
+{
+  if (row->mode_line_p || !BUFFERP (w->contents)
+      || !nhwl_glitnir_active_p (XFRAME (w->frame)))
+    return 0;
+  Lisp_Object window;
+  XSETWINDOW (window, w);
+  Lisp_Object v = Fwindow_parameter (window, Qglitnir__blocks);
+  if (!VECTORP (v))
+    return 0;
+  ptrdiff_t rs = MATRIX_ROW_START_CHARPOS (row);
+  for (ptrdiff_t i = 0; i < ASIZE (v); i++)
+    {
+      Lisp_Object b = AREF (v, i);
+      if (!VECTORP (b) || ASIZE (b) < 23 || !EQ (AREF (b, 0), make_fixnum (4)))
+	continue;
+      ptrdiff_t start = nhwl_block_pos (w, AREF (b, 1));
+      ptrdiff_t end = nhwl_block_pos (w, AREF (b, 2));
+      intmax_t rgb = nhwl_block_int (b, 16, -1);
+      if (start < 0 || rs < start || rs >= end || rgb < 0)
+	continue;
+      Lisp_Object op = AREF (b, 17);
+      double a = NUMBERP (op) ? min (max (XFLOATINT (op), 0.0), 1.0) : 1.0;
+      intmax_t under = nhwl_block_beneath (w, b);
+      unsigned int out = 0;
+      for (int sh = 0; sh <= 16; sh += 8)
+	out |= ((unsigned int) lround (a * ((rgb >> sh) & 0xff)
+				       + (1 - a) * ((under >> sh) & 0xff))
+		<< sh);
+      return out | 1u << 24;
+    }
+  return 0;
+}
+
 /* List block V of leaf window W, whose text area is CLIP: the rows of
    W's current matrix holding its text, from its first row's top to its
    last row's bottom, from x0 to x1 of the text area.  V is
@@ -745,7 +802,8 @@ nhwl_block_row_has_string_p (struct glyph_row *row, Lisp_Object str)
    SHADOW-RGB SHADOW-OPACITY HALO-RGB HALO-OPACITY OUTER-RGB OUTER-OPACITY
    FILL-RGB FILL-OPACITY TOP-RGB TOP-OPACITY OVERLAY PAD-TOP PAD-BOTTOM]
    as glitnir--block-vector makes it (KIND 0 a ring, 1 a rule, 2 a bar, 3 an
-   inner panel; START and END positions, END exclusive, or equal: the rows of
+   inner panel, 4 a row: Glitnir paints what lies outside its rounded
+   rectangle, the rows paint its fill (glitnir_row_fill); START and END positions, END exclusive, or equal: the rows of
    the overlay strings displayed at that position, and no text row; OVERLAY an
    overlay, or nil: the block then holds the rows with a glyph of its
    after-string, START and END unread (a block of another kind takes
@@ -851,7 +909,8 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
   int y1 = WINDOW_TO_FRAME_PIXEL_Y (w, last->y) + last->height;
   uint32_t flags = (EQ (AREF (v, 0), make_fixnum (1)) ? NHG_BLOCK_RULE
 		    : EQ (AREF (v, 0), make_fixnum (2)) ? NHG_BLOCK_BAR
-		    : EQ (AREF (v, 0), make_fixnum (3)) ? NHG_BLOCK_INNER : 0);
+		    : EQ (AREF (v, 0), make_fixnum (3)) ? NHG_BLOCK_INNER
+		    : EQ (AREF (v, 0), make_fixnum (4)) ? NHG_BLOCK_ROW : 0);
   if (by_string)
     {
       /* open where the string goes on past the rows shown */
@@ -893,7 +952,7 @@ nhwl_block_add (struct window *w, Lisp_Object v, NhgRect clip)
 		   flags, (int32_t) nhwl_block_int (v, 5, 0),
 		   (int32_t) nhwl_block_int (v, 6, -1),
 		   NUMBERP (op) ? (float) XFLOATINT (op) : 1.0f,
-		   (int32_t) nhwl_block_int (v, 8, 0),
+		   (int32_t) nhwl_block_beneath (w, v),
 		   (int32_t) nhwl_block_int (v, 9, 0),
 		   (int32_t) nhwl_block_int (v, 10, -1),
 		   NUMBERP (sop) ? (float) XFLOATINT (sop) : 0.0f,
@@ -1378,10 +1437,30 @@ nhwl_clear_area (struct frame *f, int x, int y, int width, int height)
 }
 #endif /* NHWL_WAYLAND */
 
+/* While nhwl_clear_end_of_line clears a text row's end: the row's
+   glitnir_fill, which the cleared area shows in place of the
+   background.  */
+static unsigned int nhwl_row_fill;
+
 static void
 nhwl_clear_frame_area (struct frame *f, int x, int y, int width, int height)
 {
-  nhwl_clear_area (f, x, y, width, height);
+  if (nhwl_row_fill)
+    nhwl_fill_rectangle (f, nhwl_row_fill & 0xffffff, x, y, width, height,
+			 true);
+  else
+    nhwl_clear_area (f, x, y, width, height);
+}
+
+/* gui_clear_end_of_line, in the fill of the `row' block over ROW
+   (glitnir_row_fill) when it has one.  */
+static void
+nhwl_clear_end_of_line (struct window *w, struct glyph_row *row,
+			enum glyph_row_area area, int to_x)
+{
+  nhwl_row_fill = area == TEXT_AREA ? row->glitnir_fill : 0;
+  gui_clear_end_of_line (w, row, area, to_x);
+  nhwl_row_fill = 0;
 }
 
 /* Adapted from pgtk_clear_frame.  */
@@ -1645,7 +1724,7 @@ static struct redisplay_interface nhwl_redisplay_interface = {
   gui_produce_glyphs,
   gui_write_glyphs,
   gui_insert_glyphs,
-  gui_clear_end_of_line,
+  nhwl_clear_end_of_line,
   nhwl_scroll_run,
   nhwl_after_update_window_line,
   NULL, /* gui_update_window_begin, */
