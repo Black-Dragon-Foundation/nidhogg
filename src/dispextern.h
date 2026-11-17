@@ -1158,8 +1158,8 @@ struct glyph_row
      with bit 24 set, or 0 (glitnir_row_fill): what its glyphs that show
      the window's default background draw in.  */
   unsigned int glitnir_fill;
-#endif
 
+#endif
 #ifdef HAVE_WINDOW_SYSTEM
   /* Non-NULL means the current clipping area.  This is temporarily
      set while exposing a region.  Coordinates are frame-relative.  */
