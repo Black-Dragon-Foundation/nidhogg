@@ -461,7 +461,7 @@ impl Model {
     /// Replace SOURCE's folds that touch BEG..END (a parse's changed range) with FOLDS, the nodes found there (design
     /// §7.4): each node widened to its whole lines (its first line's start to its last line's end, the newline out; a
     /// node ending at a line's start ends on the line before), a node of one line dropped, and of the nodes starting
-    /// on one line only the largest kept.  SOURCE's folds elsewhere stay.  Nodes sent while the lines are built move
+    /// on one line only the largest kept (on a tie, the higher kind).  SOURCE's folds elsewhere stay.  Nodes sent while the lines are built move
     /// with the edits as they are, and are widened once the lines are in.
     pub fn replace_folds(&mut self, source: u8, beg: u64, end: u64, folds: &[Fold]) {
         self.poll(false);
@@ -485,9 +485,48 @@ impl Model {
         self.set_one_a_line(source, all);
     }
 
-    /// SOURCE's folds made ALL, of the folds starting on one line only the largest.
+    /// Whether SOURCE has any fold.
+    pub fn has_folds_of(&self, source: u8) -> bool {
+        self.folds.iter().any(|f| f.source == source)
+    }
+
+    /// Replace SOURCE's folds with LINES, each (first line, last line, kind) with lines from 1 (the hub's ranges of a
+    /// buffer with no parser of its own, design §7.4): each from its first line's start to its last line's end, the
+    /// newline left out; a range past the text's lines is cut to them, one of a single line dropped, and of those
+    /// starting on one line the largest kept.  False, and nothing changed, while the lines are built.
+    pub fn set_fold_lines(&mut self, source: u8, lines: &[(u32, u32, u8)]) -> bool {
+        self.poll(false);
+        let Some(idx) = self.idx.as_ref() else {
+            return false;
+        };
+        let n = idx.lines();
+        let all: Vec<Fold> = lines
+            .iter()
+            .filter_map(|&(a, b, kind)| {
+                let (a, b) = (
+                    u64::from(a).checked_sub(1)?,
+                    u64::from(b).checked_sub(1)?.min(n.saturating_sub(1)),
+                );
+                (b > a).then(|| {
+                    let nl = u64::from(b + 1 < n);
+                    Fold {
+                        beg: idx.start_of(a) + 1,
+                        end: idx.start_of(b) + 1 + u64::from(idx.line(b).len) - nl,
+                        kind,
+                        depth: 0,
+                        source,
+                    }
+                })
+            })
+            .collect();
+        self.set_one_a_line(source, all);
+        true
+    }
+
+    /// SOURCE's folds made ALL, of the folds starting on one line only the largest (on a tie, the more specific kind:
+    /// the higher number, so `describe(…)`'s call is a test, not its arguments' block).
     fn set_one_a_line(&mut self, source: u8, mut all: Vec<Fold>) {
-        all.sort_by_key(|f| (f.beg, std::cmp::Reverse(f.end)));
+        all.sort_by_key(|f| (f.beg, std::cmp::Reverse(f.end), std::cmp::Reverse(f.kind)));
         all.dedup_by_key(|f| f.beg);
         let max = self.fold_max;
         self.set_folds(source, &all, max);

@@ -399,4 +399,36 @@ of another language is not run."
       (should (= (length (funcall folds)) 4)))
     (nidhogg-lines-disable))))
 
+(ert-deftest lines/tree-sitter-fold-predicates-and-refold ()
+  "A fold query's text predicates hold in C (`#eq?', `#not-eq?', `#any-of?',
+`#match?', `#not-match?'; a pattern with another predicate matches nothing),
+and `nidhogg-treesit-refold' runs a query set after the buffer was parsed
+over the whole tree."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-treesit-refold) (lines-tests--grammars)))
+  (let ((treesit-extra-load-path (list (lines-tests--grammars))))
+    (with-temp-buffer
+      (insert "int test_a (void)\n{\n  return 1;\n}\n\nint b (void)\n{\n  return 2;\n}\n\nint c (void)\n{\n  return 3;\n}\n")
+      (nidhogg-lines-enable nil t)
+      (let ((p (treesit-parser-create 'c))
+            (kinds (lambda () (mapcar (lambda (f) (list (nidhogg-lines-line nil (car f)) (nth 2 f)))
+                                      (nidhogg-lines-folds nil)))))
+        ;; parsed before the query is set: nothing until the refold
+        (treesit-parser-root-node p)
+        (setq-local nidhogg-treesit-fold-query
+                    (treesit-query-compile
+                     'c "((function_definition declarator: (function_declarator declarator: (identifier) @_n)) @fold.test
+                          (#match? @_n \"^test_\"))
+                         ((function_definition declarator: (function_declarator declarator: (identifier) @_n)) @fold.function
+                          (#eq? @_n \"b\"))
+                         ((function_definition declarator: (function_declarator declarator: (identifier) @_n)) @fold.class
+                          (#any-of? @_n \"x\" \"c\"))
+                         ((function_definition declarator: (function_declarator declarator: (identifier) @_n)) @fold.import
+                          (#not-match? @_n \"^[bc]\") (#not-eq? @_n \"test_a\"))
+                         ((function_definition) @fold.comment (#unknown? @fold.comment))"))
+        (should-not (nidhogg-lines-folds nil))
+        (nidhogg-treesit-refold p)
+        ;; test_a a test, b a function, c a class; the not- and unknown patterns match none
+        (should (equal (funcall kinds) '((0 5) (5 1) (10 2)))))
+      (nidhogg-lines-disable))))
+
 ;;; lines-tests.el ends here

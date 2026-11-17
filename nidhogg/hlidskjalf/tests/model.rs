@@ -211,6 +211,28 @@ fn a_background_build_replays_the_edits_made_meanwhile() {
 }
 
 #[test]
+fn the_hubs_ranges_come_as_lines() {
+    // no newline at the end: a range past the text is cut to its last line, not to one past its end
+    let mut p = Pair::new("a {\n  b\n}\nc {\n  d\n}", false);
+    // lines from 1: 1–3 and 4–6 (a block, then a function), one past the text cut to it, one of a single line none,
+    // and of two starting on line 4 the larger
+    assert!(p.m.set_fold_lines(1, &[(1, 3, 0), (4, 5, 0), (4, 99, 1), (2, 2, 0), (0, 3, 0)]));
+    let got: Vec<(u64, u64, u8, u8)> =
+        p.m.folds(0, u64::MAX)
+            .map(|f| (f.beg, f.end, f.kind, f.source))
+            .collect();
+    // the text ends at 20, after the last line's `}`
+    assert_eq!(got, vec![(1, 10, 0, 1), (11, 20, 1, 1)]);
+    assert!(p.m.has_folds_of(1));
+    assert!(!p.m.has_folds_of(0));
+    // while the lines are built: nothing changes, false
+    let mut b = Pair::new(&big_text(200_000), true);
+    assert!(b.m.building());
+    assert!(!b.m.set_fold_lines(1, &[(1, 3, 0)]));
+    p.check();
+}
+
+#[test]
 fn a_parsers_ranges_sent_while_the_lines_are_built_are_kept() {
     let mut p = Pair::new(&big_text(200_000), true);
     assert!(p.m.building());
@@ -329,6 +351,12 @@ fn a_parsers_ranges_are_replaced_only_where_the_text_changed() {
     // the node went: so does its range, and only its
     p.m.replace_folds(0, b0 + 10, b0 + 11, &[]);
     assert_eq!(ranges(&mut p.m), vec![(a0, a1, 0, 0)]);
+    // two nodes of one range: the more specific kind stays, whichever came first
+    p.m.replace_folds(0, b0, b1, &[node(b0, b1, 5), node(b0, b1, 0)]);
+    p.m.replace_folds(0, a0, a1, &[node(a0, a1, 0), node(a0, a1, 5)]);
+    let kinds: Vec<u8> = p.m.folds(0, u64::MAX).map(|f| f.kind).collect();
+    assert_eq!(kinds, vec![5, 5]);
+    p.m.replace_folds(0, b0, b1, &[]);
     // another source's ranges are never touched
     p.m.set_folds(5, &[node(b0, b1, 0)], 100);
     p.m.replace_folds(0, 1, u64::MAX, &[]);
