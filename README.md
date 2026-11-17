@@ -156,7 +156,10 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   background. With the flag, `nidhogg-echo-prompt` is `prompt` while C shows a prompt in the echo area (`read-char`,
   `read-event`, `read-char-exclusive`, `read-key-sequence`, and the `interactive` codes that read with them), `keys`
   while the keys typed so far echo, and nil for `message`: a `set-message-function` that sends messages elsewhere keeps
-  prompts where the user looks. With the flag, `lisp/nidhogg-frame.el` makes the first frame with its minibuffer in a
+  prompts where the user looks. With the flag, a message of megabytes (a huge error, a pasted log) shows at once: the
+  echo area sizes its window by laying out only what the window's maximum height holds, and a last line longer than
+  that shows from its start, not its end (stock Emacs laid out all of it, without checking for quit, so a 5 MB message
+  froze the frame). The message itself is kept whole. With the flag, `lisp/nidhogg-frame.el` makes the first frame with its minibuffer in a
   child frame when early-init.el asks for one (`(minibuffer . child-frame)` under the window system's entry of
   `window-system-default-frame-alist`): stock Emacs makes it with a minibuffer of its own and, after init, deletes it
   and makes it again once it is visible. The minibuffer frame C makes for the first frame to borrow from while it is

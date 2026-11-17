@@ -68,6 +68,20 @@ named in the skip."
   (skip-unless (daemonp))
   (should (>= (plist-get (glitnir-stats) :count) 1)))
 
+(ert-deftest glitnir-gui/a-message-of-megabytes-shows-at-once ()
+  "A `message' of megabytes (a huge error, a pasted log) is shown at once.  Before, the echo area measured all of it
+to size the mini-window, and the bidi bracket scan in that layout never checked for quit: a 5 MB condition printed by
+ERT froze the session for good (2026-11-17), C-g and SIGUSR2 did nothing.  The echo area lays out only what its
+window can show; the message itself is kept whole."
+  (dolist (text (list (concat "(" (apply #'concat (make-list 500000 "(ab cd) ")) ")")   ; one line, all brackets
+                      (mapconcat #'identity (make-list 200000 "a line of a pasted log (x)") "\n")))
+    (let ((t0 (float-time)))
+      (message "%s" text)
+      (redisplay t)
+      (should (< (- (float-time) t0) 1.0))
+      (should (equal (current-message) text))))
+  (message nil))
+
 (ert-deftest glitnir-gui/enable-nil-is-inactive ()
   (should (glitnir-active-p))
   (let ((glitnir-enable nil))

@@ -13413,7 +13413,16 @@ resize_mini_window (struct window *w, bool exact_p)
 
       /* Find out the height of the text in the window.  */
       last_height = 0;
+#ifdef HAVE_GLITNIR
+      /* Lay out only what the window can show: past MAX_HEIGHT the
+	 window is MAX_HEIGHT high whatever follows.  A message of
+	 megabytes laid out whole here (and its bidi bracket scan) never
+	 checked for quit, so a huge error froze the frame.  */
+      move_it_to (&it, ZV, -1, max_height + unit, -1, MOVE_TO_POS | MOVE_TO_Y);
+      bool glitnir_cut = IT_CHARPOS (it) < ZV;
+#else
       move_it_to (&it, ZV, -1, -1, -1, MOVE_TO_POS);
+#endif
       /* If move_it_to moved to the next visible line after EOB,
 	 account for the height of the last full line.  */
       if (it.max_ascent == 0 && it.max_descent == 0)
@@ -13436,6 +13445,10 @@ resize_mini_window (struct window *w, bool exact_p)
       /* Remove final line spacing in the mini-window */
       if (!it.extra_line_spacing_above)
         height -= min (it.extra_line_spacing, it.max_extra_line_spacing);
+#ifdef HAVE_GLITNIR
+      if (glitnir_cut)
+	height = max (height, max_height + unit);
+#endif
 
       /* Compute a suitable window start.  */
       if (height > max_height)
@@ -13443,6 +13456,35 @@ resize_mini_window (struct window *w, bool exact_p)
 	  height = (max_height / unit) * unit;
 	  if (redisplay_adhoc_scroll_in_resize_mini_windows)
 	    {
+#ifdef HAVE_GLITNIR
+	      /* The start that shows the end is found by laying out
+		 back from ZV, and a start inside a line is laid out
+		 from that line's start each time the window is drawn:
+		 for a last line megabytes long, both walked all of it.
+		 Such a line shows from its start, a real line start;
+		 otherwise the search back stays inside the text the
+		 window's lines can hold (four times it, for wide and
+		 composed characters).  */
+	      specpdl_ref glitnir_count = SPECPDL_INDEX ();
+	      ptrdiff_t glitnir_room
+		= max ((ptrdiff_t) (max_height / unit + 2)
+		       * (window_body_width (w, WINDOW_BODY_IN_CANONICAL_CHARS) + 1)
+		       * 4, 4096);
+	      ptrdiff_t glitnir_bol_byte;
+	      ptrdiff_t glitnir_bol = find_newline_no_quit (ZV, ZV_BYTE, -1, &glitnir_bol_byte);
+	      if (ZV - glitnir_bol > glitnir_room)
+		{
+		  SET_TEXT_POS (start, glitnir_bol, glitnir_bol_byte);
+		  w->start_at_line_beg = true;
+		  SET_MARKER_FROM_TEXT_POS (w->start, start);
+		  goto glitnir_started;
+		}
+	      if (ZV - BEGV > glitnir_room)
+		{
+		  record_unwind_protect (unwind_narrowed_begv, Fpoint_min ());
+		  SET_BUF_BEGV (current_buffer, ZV - glitnir_room);
+		}
+#endif
 	      init_iterator (&it, w, ZV, ZV_BYTE, NULL, DEFAULT_FACE_ID);
 	      move_it_vertically_backward (&it, height - unit);
               /* The following move is usually a no-op when the stuff
@@ -13456,10 +13498,16 @@ resize_mini_window (struct window *w, bool exact_p)
                  such as user prompt, will be hidden from view.  */
               move_it_by_lines (&it, 0);
               start = it.current.pos;
+#ifdef HAVE_GLITNIR
+	      unbind_to (glitnir_count, Qnil);
+#endif
               /* Prevent redisplay_window from recentering, and thus from
                  overriding the window-start point we computed here.  */
               w->start_at_line_beg = false;
               SET_MARKER_FROM_TEXT_POS (w->start, start);
+#ifdef HAVE_GLITNIR
+	    glitnir_started:;
+#endif
             }
 	}
       else
