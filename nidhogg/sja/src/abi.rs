@@ -627,6 +627,18 @@ fn rows_small(h: u32, what: &str, a: Option<i64>, b: Option<String>) -> Result<A
                         .collect(),
                 )
             }
+            "rowspans" => {
+                // B is "PROP\tID": the node's whole rows [FROM TO ...], each from its first character past its newline
+                let Some((prop, id)) = b.as_deref().and_then(|x| x.split_once('\t')) else {
+                    return Ans::Nil;
+                };
+                Ans::Vector(
+                    s.row_spans(prop, id)
+                        .into_iter()
+                        .flat_map(|(x, y)| [int_of(x), int_of(y)])
+                        .collect(),
+                )
+            }
             "drawn" => Ans::Int(i64::from(
                 a.and_then(|id| u64::try_from(id).ok())
                     .is_some_and(|id| s.drawn(id)),

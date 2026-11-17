@@ -930,6 +930,10 @@ fn draw_block(
         },
     );
     let outer = clip.intersect(&Rect::new(bounds.x, top_y, bounds.w, bottom_y - top_y));
+    if b.kind == crate::scene::BlockKind::Row {
+        draw_row(k, t, b, clip);
+        return;
+    }
     let clip = clip.intersect(&rect);
     let w = b.ring_px.min(1 << 12) as i32;
     let ring_kind = b.kind == crate::scene::BlockKind::Ring;
@@ -1032,6 +1036,62 @@ fn draw_block(
     let ring = CardRing::around(inner, r - wu, wu, b.ring_argb);
     let mut dst = t.at(clip);
     ring.draw(k, &mut dst, clip);
+}
+
+/// Row block B within CLIP (the layer's, root px): on its rows, the colour beneath before its rectangle's left and
+/// past its right, and in its corners outside the rounded path; none at an open side.  The rows inside are the host's,
+/// which draws their default background in the block's fill.
+fn draw_row(k: &Kernels, t: &mut TargetView, b: &crate::scene::Block, clip: Rect) {
+    let rect = b.rect;
+    let band = clip.intersect(&Rect::new(clip.x, rect.y, clip.w, rect.h));
+    if band.is_empty() {
+        return;
+    }
+    let right = rect.x + rect.w;
+    let before = Rect::new(band.x, band.y, rect.x - band.x, band.h);
+    let past = Rect::new(right, band.y, band.x + band.w - right, band.h);
+    solid_rect(k, t, before.intersect(&band), b.beneath_argb);
+    solid_rect(k, t, past.intersect(&band), b.beneath_argb);
+    if b.radius_px == 0 {
+        return;
+    }
+    // an open side lies past the rectangle (by the radius): its corners fall outside it
+    let (top, bottom) = (
+        if b.open_top { b.radius_px as i32 } else { 0 },
+        if b.open_bottom { b.radius_px as i32 } else { 0 },
+    );
+    let ext = Rect::new(rect.x, rect.y - top, rect.w, rect.h + top + bottom);
+    if ext.w <= 0 || ext.h <= 0 {
+        return;
+    }
+    let r = clamp_radius(ext.w as usize, ext.h as usize, b.radius_px);
+    if r == 0 {
+        return;
+    }
+    let clip = clip.intersect(&rect);
+    let ri = r as i32;
+    let outside = outside_coverage(r);
+    let (n, ru) = (2 * r as usize, r as usize);
+    let squares = [
+        Rect::new(ext.x, ext.y, ri, ri),
+        Rect::new(ext.x + ext.w - ri, ext.y, ri, ri),
+        Rect::new(ext.x, ext.y + ext.h - ri, ri, ri),
+        Rect::new(ext.x + ext.w - ri, ext.y + ext.h - ri, ri, ri),
+    ];
+    for (i, sq) in squares.iter().enumerate() {
+        let q = sq.intersect(&clip);
+        if q.is_empty() {
+            continue;
+        }
+        let mask = quadrant(&outside, n, ((i % 2) * ru, (i / 2) * ru), *sq, q);
+        k.solid_over(
+            &mut t.at(q),
+            b.beneath_argb,
+            &mask,
+            q.w as usize,
+            q.h as usize,
+        );
+    }
 }
 
 /// Block B's shadow within CLIP: the blurred rounded rectangle CARD (radius R) moved down by its offset, outside CARD's

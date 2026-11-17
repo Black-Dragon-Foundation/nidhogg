@@ -197,6 +197,50 @@ window can show; the message itself is kept whole."
       (set-window-parameter w 'glitnir-blocks nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/a-row-block-lies-beneath-the-runs ()
+  "A `row' block over a row with a boxed chip: the block's fill where the row shows the window's default
+background (from x0, past the text's end), the chip keeps its own colour inside it, the corner outside the rounded
+path and the inset before x0 show the colour beneath.  Moved to the next row, the first row is drawn again without it."
+  (glitnir-gui--skip-unless-tree)
+  (let* ((buf (get-buffer-create "*glitnir-row*")) (w (selected-window))
+         (chip '(:background "#00ff00" :foreground "#00ff00" :box (:line-width 1 :color "#00ff00")))
+         chip-at)
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert "      name ")
+      (setq chip-at (point))
+      (insert (propertize "CHIPCHIP" 'face chip) " tail\nother row\nlast\n"))
+    (unwind-protect
+        (let* ((line (lambda (n) (with-current-buffer buf
+                                   (save-excursion (goto-char 1) (forward-line n) (point-marker)))))
+               (block (lambda (from)
+                        `((row ,(funcall line from) ,(funcall line (1+ from))
+                               :x0 4 :x1 400 :radius 8 :fill ("#0000ff" . 1) :beneath "#ff0000")))))
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (glitnir-gui--painted)
+          (glitnir-gui--drawn (set-window-parameter w 'glitnir-blocks (funcall block 0)))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (cx (car (posn-x-y (posn-at-point chip-at w))))
+                       (at (lambda (dx dy) (glitnir-gui--pixel snap (list (+ x dx) (+ y dy))))))
+            (should (equal (funcall at 12 (/ lh 2)) '(0 0 255)))          ; the row's start: the fill
+            (should (equal (funcall at 390 (/ lh 2)) '(0 0 255)))         ; past the text's end: the fill
+            (should (equal (funcall at (+ cx 4) (/ lh 2)) '(0 255 0)))    ; inside the chip: its own colour
+            (should (equal (funcall at 4 0) '(255 0 0)))                  ; the corner: beneath
+            (should (equal (funcall at 1 (/ lh 2)) '(255 0 0)))           ; before x0: beneath
+            (should-not (equal (funcall at 12 (+ lh (/ lh 2))) '(0 0 255)))) ; the next row: not in it
+          (glitnir-gui--drawn (set-window-parameter w 'glitnir-blocks (funcall block 1)))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,x ,y . ,_) (window-inside-pixel-edges w))
+                       (lh (with-current-buffer buf (line-pixel-height)))
+                       (at (lambda (dx dy) (glitnir-gui--pixel snap (list (+ x dx) (+ y dy))))))
+            (should-not (equal (funcall at 390 (/ lh 2)) '(0 0 255)))
+            (should (equal (funcall at 390 (+ lh (/ lh 2))) '(0 0 255)))))
+      (set-window-parameter w 'glitnir-blocks nil)
+      (kill-buffer buf))))
+
 (ert-deftest glitnir-gui/a-block-holds-the-after-string-rows-at-its-end ()
   "Rows of nothing but an overlay string at a block's END (a notebook cell's output, an after-string there) are inside
 the block; the next block, starting at that END, begins at its own text."

@@ -193,6 +193,10 @@ WHAT is
   \"PROP\tID\": [FROM TO FACES ...] in region positions, cut where the
   runs change, FACES a vector of the runs' faces (names or style ids)
   or nil;
+- `rowspans': node ID's whole rows by property PROP, B being
+  \"PROP\tID\": [FROM TO ...] in region positions, one pair per drawn
+  row holding it, from the row's first character to past its newline
+  (a selection's `row' block, `glitnir-blocks');
 - `dimruns': for class A (an index) by property B, (RUNS LONE): RUNS
   [FROM TO ...] the consecutive drawn rows whose every node has class A,
   LONE a vector of the class's nodes in the other rows;

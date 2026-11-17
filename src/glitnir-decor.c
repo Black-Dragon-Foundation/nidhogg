@@ -111,8 +111,34 @@ face_bg (struct frame *f, struct glyph *g, unsigned long *out)
   return true;
 }
 
+/* BG, a background glyph string S draws, in the fill of the `row' block
+   over S's row (glitnir_row_fill) when BG is the window's default
+   background: the block lies beneath the glyphs, and a run with a
+   background of its own (a chip, a button) keeps it.  */
+unsigned long
+glitnir_decor_row_bg (struct glyph_string *s, unsigned long bg)
+{
+  if (!s->row || !s->row->glitnir_fill || s->area != TEXT_AREA
+      || s->hl == DRAW_CURSOR)
+    return bg;
+  int id = lookup_basic_face (s->w, s->f, DEFAULT_FACE_ID);
+  struct face *def = FACE_FROM_ID_OR_NULL (s->f, id);
+  return def && bg == def->background ? s->row->glitnir_fill & 0xffffff : bg;
+}
+
+static unsigned long colour_beneath (struct glyph_string *, int);
+
+/* The colour beside glyph string S on SIDE, what a rounded box's corners
+   show outside its arcs: under a `row' block, its fill where that is
+   the window's default (glitnir_decor_row_bg).  */
 unsigned long
 glitnir_decor_colour_beneath (struct glyph_string *s, int side)
+{
+  return glitnir_decor_row_bg (s, colour_beneath (s, side));
+}
+
+static unsigned long
+colour_beneath (struct glyph_string *s, int side)
 {
   struct frame *f = s->f;
   struct glyph_row *row = s->row;
@@ -199,6 +225,7 @@ glitnir_decor_fit_band (struct glyph_string *s, int *top, int *bottom,
       struct face *def = FACE_FROM_ID_OR_NULL (s->f, id);
       *beneath = def ? def->background : s->face->background;
     }
+  *beneath = glitnir_decor_row_bg (s, *beneath);
   return true;
 }
 

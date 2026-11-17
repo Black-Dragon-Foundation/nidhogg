@@ -859,6 +859,7 @@ int32_t nhg_layers_count (NhgDisplay *d, uint64_t frame);
 #define NHG_BLOCK_BAR          8   /* the whole rectangle filled in the line's colour, not a ring */
 #define NHG_BLOCK_STRIP       16   /* a bar of the window's strip (the overview ruler): a layer of its own, its clip the strip */
 #define NHG_BLOCK_INNER       32   /* a panel inside a card: the rectangle filled (rounded), an optional border, a hairline along its top */
+#define NHG_BLOCK_ROW         64   /* a selection under its rows' glyphs (which C fills): the corners outside the rounded rectangle and the row past x0..x1 in the colour beneath */
 
 /* One block of Emacs window SEQ: CLIP its text area (window_box (w, TEXT_AREA)) and RECT the block's rows from x0 to
    x1, both device pixels with the native area's origin; FLAGS NHG_BLOCK_*; RADIUS the outer corner radius in device

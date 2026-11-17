@@ -11,6 +11,9 @@
 //!   them again at the new scale.
 //! - **Inner panels:** a block of kind `inner` is a panel inside a card: its rows' rectangle filled (rounded, over the rows),
 //!   an optional border and a hairline along its top; its rows may be those of an after-string at one position.
+//! - **Row blocks:** a block of kind `row` is a selection under its rows' glyphs: C draws its fill as the background
+//!   of the glyphs that show the window's default (`glitnir_row_fill`), so the layer holds only what lies outside its
+//!   rounded rectangle on its rows (the corners and the row past x0..x1), in the colour beneath.
 //! - **What C gives ([`NhgBlock`]):** the rectangle and the text area in device px, the radius in device px, the
 //!   ring's and the beneath colour as 0xRRGGBB, a ring's gap (its inset from the rows' top and bottom, in the colour
 //!   beneath) in device px, a ring's shadow, its line and the outer ring as colours (the shadow a 3 px blur 1 px down, logical px, as
@@ -45,6 +48,9 @@ pub const NHG_BLOCK_BAR: u32 = 8;
 pub const NHG_BLOCK_STRIP: u32 = 16;
 /// [`NhgBlock::flags`]: an inner panel (a fill, a border and a top hairline inside a card), not a ring.
 pub const NHG_BLOCK_INNER: u32 = 32;
+/// [`NhgBlock::flags`]: a row block, a selection under its rows' glyphs: C draws its fill as those glyphs'
+/// background; the block is what lies outside its rounded rectangle on its rows, in the colour beneath.
+pub const NHG_BLOCK_ROW: u32 = 64;
 
 /// One block of one Emacs window as C resolves it at publish.  Layout equals `NhgBlock`.
 #[repr(C)]
@@ -137,7 +143,9 @@ pub fn plan(
         let rgb = |c: i32| u32::try_from(c).ok().map(|c| c & 0xff_ffff);
         let mut block = Block {
             rect,
-            kind: if b.flags & NHG_BLOCK_INNER != 0 {
+            kind: if b.flags & NHG_BLOCK_ROW != 0 {
+                BlockKind::Row
+            } else if b.flags & NHG_BLOCK_INNER != 0 {
                 BlockKind::Inner
             } else if b.flags & NHG_BLOCK_BAR != 0 {
                 BlockKind::Bar

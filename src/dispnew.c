@@ -1332,6 +1332,12 @@ row_equal_p (struct glyph_row *a, struct glyph_row *b, bool mouse_face_p)
 	  || a->phys_height != b->phys_height
 	  || a->visible_height != b->visible_height)
 	return 0;
+#if defined HAVE_GLITNIR && defined HAVE_NHWL
+      /* A `row' block's fill changed: its default-background glyphs
+	 draw in it (update_window computes the desired rows').  */
+      if (a->glitnir_fill != b->glitnir_fill)
+	return 0;
+#endif
     }
 
   return 1;
@@ -4476,6 +4482,16 @@ update_window (struct window *w)
   row = MATRIX_ROW (desired_matrix, 0);
   end = MATRIX_MODE_LINE_ROW (desired_matrix);
 
+#if defined HAVE_GLITNIR && defined HAVE_NHWL
+  /* The fill of the `row' block over each row (nhwlterm.c), before
+     scrolling_window compares the rows: a row whose fill changed is
+     not equal to the one shown, though its glyphs are.  */
+  if (FRAME_NHWL_P (XFRAME (WINDOW_FRAME (w))))
+    for (struct glyph_row *r = row; r < end; r++)
+      if (r->enabled_p && !r->mode_line_p)
+	r->glitnir_fill = glitnir_row_fill (w, r);
+
+#endif
   /* Take note of the tab line, if there is one.  We will
      update it below, after updating all of the window's lines.  */
   if (row->mode_line_p && row->tab_line_p)
@@ -4804,6 +4820,8 @@ update_text_area (struct window *w, struct glyph_row *updated_row, int vpos,
       || (FRAME_NHWL_P (XFRAME (WINDOW_FRAME (w)))
 	  && !row_equal_p (current_row, desired_row, false)
 	  && glitnir_decor_row_fit_p (XFRAME (WINDOW_FRAME (w)), desired_row))
+      || (FRAME_NHWL_P (XFRAME (WINDOW_FRAME (w)))
+	  && current_row->glitnir_fill != desired_row->glitnir_fill)
 #endif
       || current_row->x != desired_row->x)
     {

@@ -488,8 +488,9 @@ with the window when the frame publishes."
 (defun glitnir--block-vector (spec frame)
   "Return block SPEC as the vector C reads, for FRAME.
 SPEC is (KIND START END . PLIST): KIND `ring', `rule', `bar' (the
-rectangle filled in the line's colour, square) or `inner' (a panel
-inside a card, below); START and END markers (or positions) of the
+rectangle filled in the line's colour, square), `inner' (a panel
+inside a card, below) or `row' (a selection under its rows' glyphs,
+below); START and END markers (or positions) of the
 window's buffer, END exclusive, or the same position: then the rows are
 those of the overlay strings displayed there (an after-string) and no
 text row; PLIST
@@ -521,12 +522,19 @@ overlay's rows are inside it, so an add row stands between cards.
 the top and the bottom, its rows the same (the notebook card keeps 8
 logical px between its output panel and its own bottom edge); not at a
 side the window cuts off.  `:beneath', `:gap', `:shadow', `:shadow-ring'
-and `:outer' mean nothing to an inner block.  The vector is [KIND START END X0 X1 RADIUS RING-RGB
+and `:outer' mean nothing to an inner block.  A `row' block lies beneath
+its rows' glyphs: each text row whose start is in START..END draws the
+background of every glyph that shows the window's default background
+in `:fill' (as `:ring', blended over `:beneath'), so text, chips and
+buttons with backgrounds of their own stay as they are; the corners
+outside its rounded path (`:radius') and the row past `:x0' and `:x1'
+show `:beneath' (by default the window's own default background, face
+remapping included: BENEATH-RGB -1).  The vector is [KIND START END X0 X1 RADIUS RING-RGB
 RING-OPACITY BENEATH-RGB GAP SHADOW-RGB SHADOW-OPACITY HALO-RGB
 HALO-OPACITY OUTER-RGB OUTER-OPACITY FILL-RGB FILL-OPACITY TOP-RGB
-TOP-OPACITY OVERLAY PAD-TOP PAD-BOTTOM], KIND 0 a ring, 1 a rule, 2 a bar and 3 an inner panel, an
+TOP-OPACITY OVERLAY PAD-TOP PAD-BOTTOM], KIND 0 a ring, 1 a rule, 2 a bar, 3 an inner panel and 4 a row, an
 RGB -1 for none.  Signal `wrong-type-argument' for another shape."
-  (unless (and (consp spec) (memq (car spec) '(ring rule bar inner)) (consp (cdr spec)) (consp (cddr spec)))
+  (unless (and (consp spec) (memq (car spec) '(ring rule bar inner row)) (consp (cdr spec)) (consp (cddr spec)))
     (signal 'wrong-type-argument (list 'glitnir-block spec)))
   (let* ((plist (nthcdr 3 spec))
          (ring-spec (plist-get plist :ring))
@@ -541,11 +549,12 @@ RGB -1 for none.  Signal `wrong-type-argument' for another shape."
          (fill (funcall line (plist-get plist :fill)))
          (top (funcall line (plist-get plist :top)))
          (beneath (plist-get plist :beneath)))
-    (vector (pcase (car spec) ('rule 1) ('bar 2) ('inner 3) (_ 0)) (nth 1 spec) (nth 2 spec)
+    (vector (pcase (car spec) ('rule 1) ('bar 2) ('inner 3) ('row 4) (_ 0)) (nth 1 spec) (nth 2 spec)
             (or (plist-get plist :x0) 0) (or (plist-get plist :x1) most-positive-fixnum)
             (or (plist-get plist :radius) 0)
             (if ring (car ring) -1) (if ring (cdr ring) 0)
             (or (glitnir--color-rgb (if (facep beneath) (face-background beneath frame t) beneath) frame)
+                (and (eq (car spec) 'row) -1)
                 (glitnir--color-rgb (frame-parameter frame 'background-color) frame)
                 0)
             (or (plist-get plist :gap) 0)
@@ -560,6 +569,22 @@ RGB -1 for none.  Signal `wrong-type-argument' for another shape."
 (defvar glitnir--blocks-any nil
   "Whether a window of the frame has blocks.
 Bound by `glitnir--recheck-frame-cards' around its walk.")
+
+(defun glitnir--redraw-rows (window blocks)
+  "Have redisplay draw again the rows of WINDOW's `row' BLOCKS (vectors).
+Their glyphs carry the fill, so a row block that comes, goes or changes
+redraws its rows, and only those: a dropped overlay over them marks
+them changed, as the region's highlight does."
+  (let ((buf (window-buffer window))
+        (pos (lambda (p buf) (or (integerp p) (and (markerp p) (eq (marker-buffer p) buf))))))
+    (mapc (lambda (b)
+            (let ((from (aref b 1)) (to (aref b 2)))
+              (when (and (eq (aref b 0) 4) (buffer-live-p buf)
+                         (funcall pos from buf) (funcall pos to buf))
+                (with-current-buffer buf
+                  (delete-overlay (make-overlay (max (point-min) (min from to))
+                                                (min (point-max) (max from to))))))))
+          blocks)))
 
 (defun glitnir--recheck-blocks (window)
   "Resolve WINDOW's blocks when its `glitnir-blocks' or the theme changed.
@@ -577,9 +602,12 @@ theme's generation would change it on every theme change."
                             (and spec (cons spec glitnir--card-generation)))
       (let* ((frame (window-frame window))
              (v (and spec (vconcat (mapcar (lambda (b) (glitnir--block-vector b frame)) spec)))))
-        (unless (equal v (window-parameter window 'glitnir--blocks))
-          (set-window-parameter window 'glitnir--blocks v)
-          (force-window-update window))))
+        (let ((old (window-parameter window 'glitnir--blocks)))
+          (unless (equal v old)
+            (set-window-parameter window 'glitnir--blocks v)
+            (glitnir--redraw-rows window old)
+            (glitnir--redraw-rows window v)
+            (force-window-update window)))))
     (when (window-parameter window 'glitnir--blocks)
       (setq glitnir--blocks-any t))))
 
