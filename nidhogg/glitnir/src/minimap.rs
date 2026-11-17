@@ -5,7 +5,9 @@
 //! are premultiplied ARGB in Cairo's order, transparent where nothing is drawn, so the host composes a tile over the
 //! window's text without resampling it.
 
+use crate::ffi::{GLITNIR_E_ARG, ffi_guard};
 use crate::geom::Rect;
+use hlidskjalf::abi::with_model;
 use std::sync::Arc;
 
 /// Minimap rows in one tile.
@@ -136,6 +138,16 @@ pub struct Row {
     pub end: u32,
     /// The bar's class (below [`CLASSES`]; another is drawn as plain text).
     pub class: u8,
+    /// Runs of other classes drawn over the bar, within it (`to` 0: none).
+    pub runs: [RowRun; hlidskjalf::RUNS],
+}
+
+/// A run of a class over a row's bar: columns FROM to TO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RowRun {
+    pub from: u32,
+    pub to: u32,
+    pub class: u8,
 }
 
 impl TileSpec {
@@ -160,16 +172,99 @@ pub fn raster(spec: &TileSpec, rows: &[Row]) -> Vec<u32> {
         if x1 <= x0 {
             continue;
         }
-        let c = spec.argb[if (r.class as usize) < CLASSES {
-            r.class as usize
-        } else {
-            0
-        }];
+        let argb = |class: u8| {
+            spec.argb[if (class as usize) < CLASSES {
+                class as usize
+            } else {
+                0
+            }]
+        };
+        let c = argb(r.class);
         for y in i * rp..(i + 1) * rp {
             px[y * w + x0..y * w + x1].fill(c);
         }
+        for run in r.runs.iter().filter(|run| run.to > run.from) {
+            let a = (run.from as usize).saturating_mul(cp).clamp(x0, x1);
+            let b = (run.to as usize).saturating_mul(cp).clamp(x0, x1);
+            if b > a {
+                let c = argb(run.class);
+                for y in i * rp..(i + 1) * rp {
+                    px[y * w + a..y * w + b].fill(c);
+                }
+            }
+        }
     }
     px
+}
+
+/// The line model's source of the hub's fold ranges (design §7.4: 0 the editor's parser, 1 the hub).
+pub const SOURCE_HUB: u8 = 1;
+
+/// The fold kinds by name, at their numbers in the line model (the hub's `folds` layer names them).
+const FOLD_KINDS: [&str; 9] = [
+    "block", "function", "class", "comment", "import", "test", "region", "cell", "heading",
+];
+
+/// The hub's fold ranges of FILE (Sjá's `folds` layer: a buffer with no parser of its own) into model KEY as its hub
+/// source, once per layer version, unless its own parser folds it.  True when the model holds the ranges of the
+/// layer's latest version (taken now or before); false when Sjá has no such layer, the parser folds the buffer, or the
+/// lines are being built (a later call takes it).
+pub fn take_hub_folds(key: u64, file: &str) -> bool {
+    static TAKEN: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+    let Some((version, lines)) = sja::minimap::with_layer(file, "folds", |v, d| match d {
+        sja::minimap::Data::Folds(x) => Some((
+            v,
+            x.iter()
+                .filter_map(|(a, b, k)| {
+                    Some((*a, *b, FOLD_KINDS.iter().position(|n| *n == &**k)? as u8))
+                })
+                .collect::<Vec<_>>(),
+        )),
+        _ => None,
+    })
+    .flatten() else {
+        return false;
+    };
+    let mut taken = TAKEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // a buffer its own parser folds (source 0) keeps those: the hub's would be the same ranges again
+    if with_model(key, |m| m.has_folds_of(0)) != Some(false) {
+        return false;
+    }
+    if taken.iter().any(|&(k, v)| k == key && v == version) {
+        return true;
+    }
+    if with_model(key, |m| m.set_fold_lines(SOURCE_HUB, &lines)) != Some(true) {
+        return false;
+    }
+    taken.retain(|&(k, _)| k != key);
+    // a model per text shown: the oldest go first past a bound no session reaches
+    if taken.len() >= 1024 {
+        taken.remove(0);
+    }
+    taken.push((key, version));
+    true
+}
+
+/// [`take_hub_folds`] for the host: FILE is LEN bytes of UTF-8.  1 when the model holds the hub's folds of FILE, 0
+/// when not, `GLITNIR_E_ARG` for a null or non-UTF-8 FILE.
+///
+/// # Safety
+/// FILE must be readable for LEN bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn glitnir_minimap_take_folds(key: u64, file: *const u8, len: usize) -> i32 {
+    ffi_guard(|| {
+        if file.is_null() {
+            return GLITNIR_E_ARG;
+        }
+        // SAFETY: the caller promises LEN readable bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(file, len) };
+        match std::str::from_utf8(bytes) {
+            Ok(f) => i32::from(take_hub_folds(key, f)),
+            Err(_) => GLITNIR_E_ARG,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -198,17 +293,20 @@ mod tests {
                 indent: 0,
                 end: 5,
                 class: 0,
+                ..Default::default()
             },
             Row {
                 indent: 4,
                 end: 9,
                 class: 3,
+                ..Default::default()
             },
             Row::default(),
             Row {
                 indent: 2,
                 end: 99,
                 class: 0,
+                ..Default::default()
             },
         ];
         let px = raster(&spec(), &rows);
@@ -288,6 +386,7 @@ mod tests {
                 indent: 1,
                 end: 3,
                 class: 200,
+                ..Default::default()
             }],
         );
         assert_eq!(px.len(), 20 * 3);
@@ -300,10 +399,48 @@ mod tests {
             Row {
                 indent: 0,
                 end: 1,
-                class: 0
+                class: 0,
+                ..Default::default()
             };
             TILE_ROWS + 9
         ];
         assert_eq!(raster(&spec(), &many).len(), 20 * 2 * TILE_ROWS);
+    }
+
+    #[test]
+    fn class_runs_are_drawn_over_the_bar_within_it() {
+        let mut runs = [RowRun::default(); hlidskjalf::RUNS];
+        // class 3 over columns 4–6, one starting before the bar and one running past it cut to it
+        runs[0] = RowRun {
+            from: 4,
+            to: 6,
+            class: 3,
+        };
+        runs[1] = RowRun {
+            from: 0,
+            to: 3,
+            class: 3,
+        };
+        runs[2] = RowRun {
+            from: 8,
+            to: 50,
+            class: 3,
+        };
+        let px = raster(
+            &spec(),
+            &[Row {
+                indent: 2,
+                end: 10,
+                class: 0,
+                runs,
+            }],
+        );
+        let blue = 0xff_00_00_ff;
+        let grey = 0xff_80_80_80;
+        let row: Vec<u32> = (0..12).map(|x| at(&px, x, 1)).collect();
+        assert_eq!(
+            row,
+            [0, 0, blue, grey, blue, blue, grey, grey, blue, blue, 0, 0]
+        );
     }
 }

@@ -742,6 +742,11 @@ never had edges gets no parameter of them."
 ;; or a drag step scrolls the window there, and a rest of 300 ms on a row
 ;; is a dwell, through the special event `glitnir-minimap'.
 
+(defconst glitnir-minimap-classes
+  '(keyword function type string comment constant variable property operator
+    punctuation added removed heading link special)
+  "The line model's display classes 1 to 15, in order (0 is text).")
+
 (defun glitnir--minimap-vector (spec frame)
   "Return minimap SPEC as the vector C reads, for FRAME.
 SPEC is a plist: `:width' (logical pixels), `:scale' (rows per line, a
@@ -751,7 +756,13 @@ nothing revealed), `:nesting' (each fold range of the line model a
 faint band behind its bars, inset by depth), and the colours `:fill' (the surface), `:text' (the
 bars) and `:band' (over the lines the window shows), each a face, whose
 foreground is used, a colour name or (FACE-OR-COLOUR . OPACITY).
-`:labels' draws names over it: t, the definitions of `:file' (the hub's
+`:classes' colours the line model's class runs (the
+buffer's highlight captures, `nidhogg-treesit-highlight-query'): a list
+of (CLASS . COLOUR), CLASS one of `keyword', `function', `type',
+`string', `comment', `constant', `variable', `property', `operator',
+`punctuation', `added', `removed', `heading', `link' and `special',
+COLOUR as `:text' (its opacity is `:text''s); a class not listed draws
+as `:text'.  `:labels' draws names over it: t, the definitions of `:file' (the hub's
 labels layer in Sjá, keyed by that name) and the MARK sections the line
 model finds (`nidhogg-lines-set-section-regexp'); `marks-only', the MARK
 sections alone.  Their colours: `:label' (a definition), `:sub' (a
@@ -759,7 +770,8 @@ nested one), `:accent' (the one under the pointer), `:mark' (a MARK
 section, in capitals with a hairline above); `:label-face' is the face
 whose font they are drawn in.  The vector is [FLAGS WIDTH SCALE FILL-RGB
 FILL-OPACITY TEXT-RGB TEXT-OPACITY BAND-RGB BAND-OPACITY LABELS FILE
-LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE], FLAGS 1 for `:open', 2
+LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE CLASS-RGB], CLASS-RGB a
+vector of 16 RGBs by class number (0, text, unused), FLAGS 1 for `:open', 2
 for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
 `:nesting', LABELS 0 (none), 1 (t) or 2 (`marks-only'), RGB -1 for none."
   (let ((c (lambda (k) (glitnir--ruler-colour (plist-get spec k) frame))))
@@ -774,7 +786,13 @@ for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
               (if band (car band) -1) (if band (cdr band) 0)
               labels (and (= labels 1) (plist-get spec :file))
               (funcall rgb :label) (funcall rgb :sub) (funcall rgb :accent) (funcall rgb :mark)
-              (plist-get spec :label-face)))))
+              (plist-get spec :label-face)
+              (let ((v (make-vector 16 -1)))
+                (pcase-dolist (`(,class . ,colour) (plist-get spec :classes))
+                  (when-let* ((tail (memq class glitnir-minimap-classes))
+                              (c (glitnir--ruler-colour colour frame)))
+                    (aset v (- 16 (length tail)) (car c))))
+                v)))))
 
 (defun glitnir--recheck-minimap (window)
   "Resolve WINDOW's minimap when its `glitnir-minimap' or the theme changed.

@@ -16,9 +16,12 @@ pub mod sections;
 use std::collections::VecDeque;
 use std::thread::JoinHandle;
 
-pub use index::{BLANK, Line, LineIndex};
+pub use index::{BLANK, Line, LineIndex, RUNS, Run};
 use regex_lite::Regex;
 pub use sections::Section;
+
+/// The characters of a line that class runs cover (a minimap row is narrower).
+pub const CLASS_COLUMNS: u64 = 512;
 
 /// A mark: an owner's position (with an optional end, for a run of lines) in a lane, of a class and kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +34,15 @@ pub struct Mark {
     pub class: u8,
     pub prio: u8,
     pub kind: u8,
+}
+
+/// A span of a display class from a class producer (a highlights query's capture): BEG and END positions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct Span {
+    pub beg: u64,
+    pub end: u64,
+    pub class: u8,
 }
 
 /// A fold range: BEG and END positions, its KIND, DEPTH (set by the model: 0 outermost) and SOURCE.
@@ -77,6 +89,10 @@ pub struct Model {
     indent_folds: bool,
     /// The most fold ranges kept, over all sources.
     fold_max: usize,
+    /// The sources whose folds are nodes not yet widened to whole lines (sent while the lines were built).
+    raw_folds: Vec<u8>,
+    /// Class runs were refused while the lines were built: the producer runs over the whole text again.
+    classes_missed: bool,
     /// Bumped by every change of the lines (not of the hidden ones); the found ranges are of `derived_at`'s lines.
     text_gen: u64,
     derived_at: u64,
@@ -106,6 +122,8 @@ impl Model {
             headings: Vec::new(),
             indent_folds: false,
             fold_max: 20000,
+            raw_folds: Vec::new(),
+            classes_missed: false,
             text_gen: 0,
             derived_at: u64::MAX,
             stale: false,
@@ -348,6 +366,9 @@ impl Model {
     /// The indentation and heading ranges again, when the lines changed since they were found.
     fn derive(&mut self) {
         self.poll(false);
+        if !self.raw_folds.is_empty() {
+            self.widen_raw_folds();
+        }
         if self.derived_at == self.text_gen {
             return;
         }
@@ -449,6 +470,183 @@ impl Model {
             }
             f.depth = stack.len().min(255) as u8;
             stack.push(f.end);
+        }
+    }
+
+    /// Replace SOURCE's folds that touch BEG..END (a parse's changed range) with FOLDS, the nodes found there (design
+    /// §7.4): each node widened to its whole lines (its first line's start to its last line's end, the newline out; a
+    /// node ending at a line's start ends on the line before), a node of one line dropped, and of the nodes starting
+    /// on one line only the largest kept (on a tie, the higher kind).  SOURCE's folds elsewhere stay.  Nodes sent while the lines are built move
+    /// with the edits as they are, and are widened once the lines are in.
+    pub fn replace_folds(&mut self, source: u8, beg: u64, end: u64, folds: &[Fold]) {
+        self.poll(false);
+        let mut all: Vec<Fold> = self
+            .folds
+            .iter()
+            .filter(|f| f.source == source && !(f.beg <= end && f.end >= beg))
+            .copied()
+            .collect();
+        match self.idx.as_ref() {
+            Some(idx) if !self.raw_folds.contains(&source) => {
+                all.extend(folds.iter().filter_map(|f| whole_lines(idx, f, source)))
+            }
+            _ => {
+                all.extend(folds.iter().map(|f| Fold { source, ..*f }));
+                if !self.raw_folds.contains(&source) {
+                    self.raw_folds.push(source);
+                }
+            }
+        }
+        self.set_one_a_line(source, all);
+    }
+
+    /// Replace the class runs of the lines touching BEG..END (positions) with SPANS, cut to those lines (design §7.2).  A span over several lines gives a run on each.  Shorter spans
+    /// are painted over longer ones, and of two alike the later over the earlier (a highlights query's order); class
+    /// 0 (text) paints nothing.  A line keeps its first [`RUNS`] runs, within its first [`CLASS_COLUMNS`]
+    /// characters.  False, and nothing changed, while the lines are built ([`Model::take_classes_missed`] then
+    /// answers true once they are).
+    pub fn replace_classes(&mut self, beg: u64, end: u64, spans: &[Span]) -> bool {
+        self.poll(false);
+        let Some(idx) = self.idx.as_mut() else {
+            self.classes_missed = true;
+            return false;
+        };
+        let (b, e) = (beg.max(1) - 1, end.max(beg).max(1) - 1);
+        let (first, last) = (idx.line_at(b), idx.line_at(e));
+        let lo = idx.start_of(first);
+        let hi = idx.start_of(last + 1);
+        let mut order: Vec<&Span> = spans
+            .iter()
+            .filter(|s| {
+                s.class != 0 && s.end > s.beg && s.end - 1 > lo && s.beg.saturating_sub(1) < hi
+            })
+            .collect();
+        order.sort_by_key(|s| std::cmp::Reverse(s.end - s.beg));
+        let n = (last - first + 1) as usize;
+        let mut paint: Vec<Vec<u8>> = vec![Vec::new(); n];
+        for &&Span {
+            beg: sb,
+            end: se,
+            class,
+        } in &order
+        {
+            let (sb, se) = (sb.saturating_sub(1).max(lo), (se - 1).min(hi));
+            let mut l = idx.line_at(sb);
+            while l <= last && idx.start_of(l) < se {
+                let start = idx.start_of(l);
+                let width = (u64::from(idx.line(l).len).saturating_sub(1)).min(CLASS_COLUMNS);
+                let a = sb.saturating_sub(start).min(width) as usize;
+                let z = (se - start).min(width) as usize;
+                let row = &mut paint[(l - first) as usize];
+                if row.len() < z {
+                    row.resize(z, 0);
+                }
+                row[a..z].fill(class);
+                l += 1;
+            }
+        }
+        for (i, row) in paint.iter().enumerate() {
+            let mut runs = [Run::default(); RUNS];
+            let mut k = 0;
+            let mut c = 0;
+            while c < row.len() && k < RUNS {
+                let class = row[c];
+                let mut z = c + 1;
+                while z < row.len() && row[z] == class && z - c < usize::from(u8::MAX) {
+                    z += 1;
+                }
+                if class != 0 {
+                    runs[k] = Run {
+                        col: c as u16,
+                        len: (z - c) as u8,
+                        class,
+                    };
+                    k += 1;
+                }
+                c = z;
+            }
+            idx.set_runs(first + i as u64, runs);
+        }
+        self.generation += 1;
+        true
+    }
+
+    /// Whether class runs were refused while the lines were built and the lines are there now; the answer clears it
+    /// (the producer then runs over the whole text).
+    pub fn take_classes_missed(&mut self) -> bool {
+        self.poll(false);
+        let missed = self.classes_missed && self.idx.is_some();
+        if missed {
+            self.classes_missed = false;
+        }
+        missed
+    }
+
+    /// Whether SOURCE has any fold.
+    pub fn has_folds_of(&self, source: u8) -> bool {
+        self.folds.iter().any(|f| f.source == source)
+    }
+
+    /// Replace SOURCE's folds with LINES, each (first line, last line, kind) with lines from 1 (the hub's ranges of a
+    /// buffer with no parser of its own, design §7.4): each from its first line's start to its last line's end, the
+    /// newline left out; a range past the text's lines is cut to them, one of a single line dropped, and of those
+    /// starting on one line the largest kept.  False, and nothing changed, while the lines are built.
+    pub fn set_fold_lines(&mut self, source: u8, lines: &[(u32, u32, u8)]) -> bool {
+        self.poll(false);
+        let Some(idx) = self.idx.as_ref() else {
+            return false;
+        };
+        let n = idx.lines();
+        let all: Vec<Fold> = lines
+            .iter()
+            .filter_map(|&(a, b, kind)| {
+                let (a, b) = (
+                    u64::from(a).checked_sub(1)?,
+                    u64::from(b).checked_sub(1)?.min(n.saturating_sub(1)),
+                );
+                (b > a).then(|| {
+                    let nl = u64::from(b + 1 < n);
+                    Fold {
+                        beg: idx.start_of(a) + 1,
+                        end: idx.start_of(b) + 1 + u64::from(idx.line(b).len) - nl,
+                        kind,
+                        depth: 0,
+                        source,
+                    }
+                })
+            })
+            .collect();
+        self.set_one_a_line(source, all);
+        true
+    }
+
+    /// SOURCE's folds made ALL, of the folds starting on one line only the largest (on a tie, the more specific kind:
+    /// the higher number, so `describe(…)`'s call is a test, not its arguments' block).
+    fn set_one_a_line(&mut self, source: u8, mut all: Vec<Fold>) {
+        all.sort_by_key(|f| (f.beg, std::cmp::Reverse(f.end), std::cmp::Reverse(f.kind)));
+        all.dedup_by_key(|f| f.beg);
+        let max = self.fold_max;
+        self.set_folds(source, &all, max);
+    }
+
+    /// The nodes kept while the lines were built, widened now that they are.
+    fn widen_raw_folds(&mut self) {
+        let Some(idx) = self.idx.as_ref() else {
+            return;
+        };
+        let mut done = Vec::new();
+        for &s in &self.raw_folds {
+            let all: Vec<Fold> = self
+                .folds
+                .iter()
+                .filter(|f| f.source == s)
+                .filter_map(|f| whole_lines(idx, f, s))
+                .collect();
+            done.push((s, all));
+        }
+        self.raw_folds.clear();
+        for (s, all) in done {
+            self.set_one_a_line(s, all);
         }
     }
 
@@ -668,4 +866,26 @@ impl Model {
     pub fn hidden_count(&self) -> usize {
         self.hidden.len()
     }
+}
+
+/// Node F widened to its whole lines in IDX as a fold of SOURCE: its first line's start to its last line's end, the
+/// newline left out (a node ending at a line's start ends on the line before); `None` for a node within one line.
+fn whole_lines(idx: &LineIndex, f: &Fold, source: u8) -> Option<Fold> {
+    if f.beg >= f.end {
+        return None;
+    }
+    let last = idx.lines().saturating_sub(1);
+    let a = idx.line_at(f.beg.saturating_sub(1)).min(last);
+    let b = idx.line_at(f.end.saturating_sub(2)).min(last);
+    if b <= a {
+        return None;
+    }
+    let nl = u64::from(b + 1 < idx.lines());
+    Some(Fold {
+        beg: idx.start_of(a) + 1,
+        end: idx.start_of(b) + 1 + u64::from(idx.line(b).len) - nl,
+        kind: f.kind,
+        depth: 0,
+        source,
+    })
 }

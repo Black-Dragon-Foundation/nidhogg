@@ -41,6 +41,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "nidhogg-history.h"
 
 #include <hlidskjalf.h>
+#include <glitnir.h>
 
 struct nh_lines_text
 {
@@ -301,6 +302,202 @@ nil while the model's lines are being built.  */)
   uint64_t key = nh_lines_key_of (buffer), l;
   return hlid_line_of (key, nh_lines_pos (pos), &l) == HLID_OK
 	 ? make_uint (l) : Qnil;
+}
+
+/* The display class of highlight capture or face NAME (LEN bytes), by
+   its leading name (`keyword' for `keyword.return'), or by an Emacs face
+   name (`font-lock-keyword-face'): 1 keyword, 2 function, 3 type, 4
+   string, 5 comment, 6 constant, 7 variable, 8 property, 9 operator, 10
+   punctuation, 11 added, 12 removed, 13 heading, 14 link, 15 special; 0
+   (text, nothing drawn over the line) for another.  The line model's
+   class table (design section 7.2).  */
+int
+nh_lines_class_of (const char *name, ptrdiff_t len)
+{
+  static const struct { const char *name; int class; } table[] = {
+    /* the longer names of a prefix first */
+    { "string.special.url", 14 }, { "string.escape", 15 },
+    { "string.regexp", 15 }, { "string.special", 15 },
+    { "markup.heading", 13 }, { "markup.link", 14 }, { "markup.raw", 4 },
+    { "diff.plus", 11 }, { "diff.minus", 12 }, { "diff.delta", 15 },
+    { "keyword", 1 }, { "conditional", 1 }, { "repeat", 1 },
+    { "exception", 1 }, { "include", 1 }, { "preproc", 1 },
+    { "function", 2 }, { "method", 2 },
+    { "type", 3 }, { "constructor", 3 }, { "module", 3 },
+    { "namespace", 3 },
+    { "string", 4 }, { "character", 4 },
+    { "comment", 5 },
+    { "constant", 6 }, { "number", 6 }, { "float", 6 }, { "boolean", 6 },
+    { "variable", 7 }, { "parameter", 7 },
+    { "property", 8 }, { "field", 8 }, { "attribute", 8 },
+    { "operator", 9 }, { "punctuation", 10 },
+    { "label", 15 }, { "tag", 15 }, { "escape", 15 },
+    /* Emacs's faces, `font-lock-' and `-face' taken off */
+    { "builtin", 1 }, { "preprocessor", 1 }, { "negation-char", 1 },
+    { "function-name", 2 }, { "function-call", 2 },
+    { "doc", 5 }, { "comment-delimiter", 5 },
+    { "variable-name", 7 }, { "variable-use", 7 },
+    { "property-name", 8 }, { "property-use", 8 },
+    { "bracket", 10 }, { "delimiter", 10 }, { "misc-punctuation", 10 },
+    { "regexp", 15 }, { "warning", 15 },
+  };
+  if (len > 10 && !memcmp (name, "font-lock-", 10))
+    {
+      name += 10;
+      len -= 10;
+      if (len > 5 && !memcmp (name + len - 5, "-face", 5))
+	len -= 5;
+    }
+  for (size_t i = 0; i < sizeof table / sizeof *table; i++)
+    {
+      ptrdiff_t k = strlen (table[i].name);
+      if (len >= k && !memcmp (name, table[i].name, k)
+	  && (len == k || name[k] == '.'))
+	return table[i].class;
+    }
+  return 0;
+}
+
+/* The class of text property face value FACE: a face's, or the first
+   face's of a list of them; 0 for none, an anonymous face or another.  */
+static int
+nh_lines_face_class (Lisp_Object face)
+{
+  if (CONSP (face))
+    face = XCAR (face);
+  if (!SYMBOLP (face) || NILP (face) || EQ (face, Qt)
+      || SREF (SYMBOL_NAME (face), 0) == ':')
+    return 0;
+  Lisp_Object name = SYMBOL_NAME (face);
+  return nh_lines_class_of (SSDATA (name), SBYTES (name));
+}
+
+/* The face text properties of the current buffer's text from BEG to END,
+   widened to whole lines, as the class runs of their lines in model KEY
+   (design section 7.2: buffers the tree-sitter highlights do not
+   colour).  */
+static void
+nh_lines_faces (uint64_t key, ptrdiff_t beg, ptrdiff_t end)
+{
+  ptrdiff_t bb = CHAR_TO_BYTE (beg), eb = CHAR_TO_BYTE (end);
+  while (bb > BEGV_BYTE && FETCH_BYTE (bb - 1) != '\n')
+    bb--;
+  while (eb < ZV_BYTE && FETCH_BYTE (eb) != '\n')
+    eb++;
+  beg = BYTE_TO_CHAR (bb);
+  end = BYTE_TO_CHAR (eb);
+  hlid_span *v = NULL;
+  ptrdiff_t n = 0, cap = 0;
+  for (ptrdiff_t p = beg; p < end;)
+    {
+      Lisp_Object next = Fnext_single_property_change (make_fixnum (p), Qface,
+						       Qnil, make_fixnum (end));
+      ptrdiff_t q = FIXNUMP (next) ? XFIXNUM (next) : end;
+      int class = nh_lines_face_class (Fget_text_property (make_fixnum (p),
+							    Qface, Qnil));
+      if (class)
+	{
+	  if (n == cap)
+	    v = xpalloc (v, &cap, 1, -1, sizeof *v);
+	  v[n++] = (hlid_span) { .beg = p, .end = q, .class_ = class };
+	}
+      p = max (q, p + 1);
+    }
+  hlid_replace_classes (key, beg, end, v, n);
+  xfree (v);
+}
+
+/* After `fontification-functions' ran at POS in B (current): the faces
+   of the fontified run around POS, within 4096 characters of it, as the
+   class runs of their lines.  Nothing for a buffer without a line model
+   or whose tree-sitter highlights colour it
+   (`nidhogg-treesit-highlight-query').  */
+void
+nh_lines_take_faces (struct buffer *b, ptrdiff_t pos)
+{
+  if (!nh_lines_ntracked || b != current_buffer || pos < BEGV || pos >= ZV)
+    return;
+#if HAVE_TREE_SITTER
+  if (!NILP (Fbuffer_local_value (Qnidhogg_treesit_highlight_query,
+				  Fcurrent_buffer ())))
+    return;
+#endif
+  uint64_t key = nh_lines_model (b);
+  if (!key || NILP (Fget_text_property (make_fixnum (pos), Qfontified, Qnil)))
+    return;
+  Lisp_Object lo = make_fixnum (max (BEGV, pos - 4096));
+  Lisp_Object hi = make_fixnum (min (ZV, pos + 4096));
+  Lisp_Object b0 = Fprevious_single_property_change (make_fixnum (pos + 1),
+						     Qfontified, Qnil, lo);
+  Lisp_Object e0 = Fnext_single_property_change (make_fixnum (pos),
+						 Qfontified, Qnil, hi);
+  nh_lines_faces (key, FIXNUMP (b0) ? XFIXNUM (b0) : XFIXNUM (lo),
+		  FIXNUMP (e0) ? XFIXNUM (e0) : XFIXNUM (hi));
+}
+
+DEFUN ("nidhogg-lines-take-faces", Fnidhogg_lines_take_faces,
+       Snidhogg_lines_take_faces, 0, 3, 0,
+       doc: /* Take the face text properties of BUFFER's text from BEG to END as class runs.
+The lines from BEG to END (default: the accessible part) get the classes
+of their faces, as redisplay gives text it fontifies: for text fontified
+otherwise, such as by `font-lock-ensure'.  A face's class comes from its
+name (`font-lock-keyword-face' is a keyword, and so on); other faces draw
+as text.  Returns nil.  */)
+  (Lisp_Object buffer, Lisp_Object beg, Lisp_Object end)
+{
+  struct buffer *b = nh_lines_buffer (buffer);
+  uint64_t key = nh_lines_model (b);
+  if (!key)
+    return Qnil;
+  specpdl_ref count = SPECPDL_INDEX ();
+  record_unwind_current_buffer ();
+  set_buffer_internal (b);
+  ptrdiff_t from = NILP (beg) ? BEGV : clip_to_bounds (BEGV, fix_position (beg), ZV);
+  ptrdiff_t to = NILP (end) ? ZV : clip_to_bounds (from, fix_position (end), ZV);
+  nh_lines_faces (key, from, to);
+  return unbind_to (count, Qnil);
+}
+
+DEFUN ("nidhogg-lines-take-hub-folds", Fnidhogg_lines_take_hub_folds,
+       Snidhogg_lines_take_hub_folds, 2, 2, 0,
+       doc: /* Take the hub's fold ranges of FILE into BUFFER's line model.
+FILE is the name the hub keys the file's minimap layers by (its true
+name); its `folds' layer, which the hub sends while a connection watches
+the file (`minimap/watch'), becomes the model's hub fold source (1),
+once per layer version.  Returns t when the model holds the ranges of
+the layer's latest version, nil when there is no such layer yet, the
+buffer's tree-sitter parser folds it (source 0), or the lines are being
+built.  */)
+  (Lisp_Object buffer, Lisp_Object file)
+{
+  CHECK_STRING (file);
+  uint64_t key = nh_lines_model (nh_lines_buffer (buffer));
+  if (!key)
+    return Qnil;
+  Lisp_Object u = ENCODE_UTF_8 (file);
+  return (glitnir_minimap_take_folds (key, SDATA (u), SBYTES (u)) == 1
+	  ? Qt : Qnil);
+}
+
+DEFUN ("nidhogg-lines-classes", Fnidhogg_lines_classes,
+       Snidhogg_lines_classes, 2, 2, 0,
+       doc: /* The class runs of 0-based LINE in BUFFER's text, as (COL LEN CLASS).
+COL counts characters from the line's start, CLASS is the display class
+(1 keyword ... 15 special, as `nidhogg-treesit-highlight-query' says).
+nil while the model's lines are being built, or past the last line.  */)
+  (Lisp_Object buffer, Lisp_Object line)
+{
+  uint64_t key = nh_lines_key_of (buffer);
+  CHECK_FIXNAT (line);
+  hlid_run r[HLID_RUNS];
+  size_t n;
+  if (hlid_line_runs (key, XFIXNAT (line), r, &n) != HLID_OK)
+    return Qnil;
+  Lisp_Object l = Qnil;
+  while (n-- > 0)
+    l = Fcons (list3 (make_fixnum (r[n].col), make_fixnum (r[n].len),
+		      make_fixnum (r[n].class_)), l);
+  return l;
 }
 
 DEFUN ("nidhogg-lines-line-start", Fnidhogg_lines_line_start,
@@ -658,6 +855,9 @@ nil builds every model at once, on the main thread.  */);
   defsubr (&Snidhogg_lines_enable);
   defsubr (&Snidhogg_lines_disable);
   defsubr (&Snidhogg_lines_line);
+  defsubr (&Snidhogg_lines_classes);
+  defsubr (&Snidhogg_lines_take_hub_folds);
+  defsubr (&Snidhogg_lines_take_faces);
   defsubr (&Snidhogg_lines_line_start);
   defsubr (&Snidhogg_lines_fraction);
   defsubr (&Snidhogg_lines_set_marks);

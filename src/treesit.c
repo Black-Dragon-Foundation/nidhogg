@@ -28,6 +28,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_NIDHOGG_WORKERS
 #include "nidhogg-workers.h"
 #endif
+#ifdef HAVE_NIDHOGG_HISTORY
+#include "nidhogg-history.h"
+#include <hlidskjalf.h>
+#endif
 
 #if HAVE_TREE_SITTER
 
@@ -1990,6 +1994,9 @@ treesit_call_after_change_functions (Lisp_Object parser, Lisp_Object ranges)
   unbind_to (count, Qnil);
 }
 
+#ifdef HAVE_NIDHOGG_HISTORY
+static void nh_ts_publish_folds (Lisp_Object, Lisp_Object);
+#endif
 /* Parse the buffer.  We don't parse until we have to.  When we have to,
    we call this function to parse and update the tree.  Return the
    affected ranges (a list of (BEG . END)).  If reparse didn't happen
@@ -2079,6 +2086,9 @@ treesit_ensure_parsed (Lisp_Object parser)
   XTS_PARSER (parser)->timestamp++;
 
   Lisp_Object ranges = treesit_get_affected_ranges (tree, new_tree, parser);
+#ifdef HAVE_NIDHOGG_HISTORY
+  nh_ts_publish_folds (parser, ranges);
+#endif
   treesit_call_after_change_functions (parser, ranges);
   ts_tree_delete (tree);
 
@@ -2385,6 +2395,309 @@ void treesit_ensure_query_compiled_signal (Lisp_Object lisp_query)
     xsignal (signal_symbol, signal_data);
 }
 
+#ifdef HAVE_NIDHOGG_HISTORY
+
+/* The fold kind of capture NAME (LEN bytes): `fold' 0, `fold.function'
+   1, `fold.class' 2 ... `fold.heading' 8 (the line model's kinds); -1
+   for another capture.  */
+static int
+nh_ts_fold_kind (const char *name, uint32_t len)
+{
+  static const char *const kinds[]
+    = { "function", "class", "comment", "import", "test", "region",
+	"cell", "heading" };
+  if (len < 4 || memcmp (name, "fold", 4) != 0)
+    return -1;
+  if (len == 4)
+    return 0;
+  if (name[4] != '.')
+    return -1;
+  for (int i = 0; i < 8; i++)
+    if (strlen (kinds[i]) == len - 5 && !memcmp (name + 5, kinds[i], len - 5))
+      return i + 1;
+  return -1;
+}
+
+/* NODE's text in BUF (VBEG its parser's visible start), as a Lisp
+   string.  */
+static Lisp_Object
+nh_ts_node_text (struct buffer *buf, ptrdiff_t vbeg, TSNode node)
+{
+  ptrdiff_t b = ts_node_start_byte (node) + vbeg;
+  ptrdiff_t e = ts_node_end_byte (node) + vbeg;
+  USE_SAFE_ALLOCA;
+  char *t = SAFE_ALLOCA (e - b + 1);
+  for (ptrdiff_t i = b; i < e; i++)
+    t[i - b] = BUF_FETCH_BYTE (buf, i);
+  Lisp_Object str
+    = make_specified_string (t, -1, e - b,
+			     !NILP (BVAR (buf, enable_multibyte_characters)));
+  SAFE_FREE ();
+  return str;
+}
+
+/* Whether match M of query Q holds by its text predicates: `#eq?' and
+   `#not-eq?' (a capture against a string or another capture),
+   `#any-of?' (a capture against strings), `#match?' and `#not-match?'
+   (a capture against a regexp, as Emacs reads it).  A pattern with
+   another predicate never holds: a fold query keeps to these.  */
+static bool
+nh_ts_predicates_hold (TSQuery *q, const TSQueryMatch *m, struct buffer *buf,
+		       ptrdiff_t vbeg)
+{
+  uint32_t n;
+  const TSQueryPredicateStep *st
+    = ts_query_predicates_for_pattern (q, m->pattern_index, &n);
+  uint32_t i = 0;
+  while (i < n)
+    {
+      uint32_t j = i;
+      while (j < n && st[j].type != TSQueryPredicateStepTypeDone)
+	j++;
+      /* steps i..j-1: the name, then the arguments */
+      if (j - i < 3 || st[i].type != TSQueryPredicateStepTypeString
+	  || st[i + 1].type != TSQueryPredicateStepTypeCapture)
+	return false;
+      uint32_t len;
+      const char *name = ts_query_string_value_for_id (q, st[i].value_id,
+							&len);
+      Lisp_Object pred = make_unibyte_string (name, len);
+      Lisp_Object text = Qnil;
+      for (uint16_t c = 0; c < m->capture_count; c++)
+	if (m->captures[c].index == st[i + 1].value_id)
+	  {
+	    text = nh_ts_node_text (buf, vbeg, m->captures[c].node);
+	    break;
+	  }
+      if (NILP (text))
+	return false;
+      bool ok;
+      if (!strcmp (SSDATA (pred), "any-of?"))
+	{
+	  ok = false;
+	  for (uint32_t k = i + 2; k < j && !ok; k++)
+	    {
+	      if (st[k].type != TSQueryPredicateStepTypeString)
+		return false;
+	      const char *v = ts_query_string_value_for_id (q, st[k].value_id,
+							     &len);
+	      ok = (SBYTES (text) == len && !memcmp (SDATA (text), v, len));
+	    }
+	}
+      else if (j - i != 3)
+	return false;
+      else
+	{
+	  Lisp_Object other;
+	  if (st[i + 2].type == TSQueryPredicateStepTypeString)
+	    {
+	      const char *v = ts_query_string_value_for_id (q, st[i + 2].value_id,
+							     &len);
+	      other = make_string (v, len);
+	    }
+	  else
+	    {
+	      other = Qnil;
+	      for (uint16_t c = 0; c < m->capture_count; c++)
+		if (m->captures[c].index == st[i + 2].value_id)
+		  other = nh_ts_node_text (buf, vbeg, m->captures[c].node);
+	      if (NILP (other))
+		return false;
+	    }
+	  if (!strcmp (SSDATA (pred), "eq?"))
+	    ok = !NILP (Fstring_equal (text, other));
+	  else if (!strcmp (SSDATA (pred), "not-eq?"))
+	    ok = NILP (Fstring_equal (text, other));
+	  else if (!strcmp (SSDATA (pred), "match?")
+		   || !strcmp (SSDATA (pred), "not-match?"))
+	    {
+	      if (!STRINGP (other))
+		return false;
+	      bool hit = fast_string_match (other, text) >= 0;
+	      ok = (SSDATA (pred)[0] == 'm') == hit;
+	    }
+	  else
+	    return false;
+	}
+      if (!ok)
+	return false;
+      i = j + 1;
+    }
+  return true;
+}
+
+/* Run QUERIES (a list of compiled queries of PARSER's language, in
+   order) over PARSER's tree in each of RANGES, char ranges of PARSER's
+   buffer, and replace the line model KEY's tree-sitter folds (source 0)
+   there with their `@fold' captures, or (CLASSES) the lines' class runs
+   there with their highlight captures.  */
+static void
+nh_ts_run (Lisp_Object parser, Lisp_Object ranges, Lisp_Object queries,
+	   uint64_t key, bool classes)
+{
+  struct buffer *buf = XBUFFER (XTS_PARSER (parser)->buffer);
+  TSNode root = ts_tree_root_node (XTS_PARSER (parser)->tree);
+  ptrdiff_t vbeg = XTS_PARSER (parser)->visible_beg;
+  hlid_fold *v = NULL;
+  hlid_span *w = NULL;
+  ptrdiff_t cap = 0;
+  for (Lisp_Object l = ranges; CONSP (l); l = XCDR (l))
+    {
+      ptrdiff_t beg = XFIXNUM (XCAR (XCAR (l)));
+      ptrdiff_t end = XFIXNUM (XCDR (XCAR (l)));
+      ptrdiff_t bb = buf_charpos_to_bytepos (buf, beg);
+      ptrdiff_t eb = buf_charpos_to_bytepos (buf, end);
+      if (classes)
+	{
+	  /* whole lines: the model replaces the runs of every line the
+	     range touches, so every capture on them is wanted */
+	  ptrdiff_t lo = max (vbeg, BUF_BEGV_BYTE (buf));
+	  ptrdiff_t hi = min (XTS_PARSER (parser)->visible_end,
+			      BUF_ZV_BYTE (buf));
+	  bb = clip_to_bounds (lo, bb, hi);
+	  eb = clip_to_bounds (bb, eb, hi);
+	  while (bb > lo && BUF_FETCH_BYTE (buf, bb - 1) != '\n')
+	    bb--;
+	  while (eb < hi && BUF_FETCH_BYTE (buf, eb) != '\n')
+	    eb++;
+	  beg = buf_bytepos_to_charpos (buf, bb);
+	  end = buf_bytepos_to_charpos (buf, eb);
+	}
+      ptrdiff_t n = 0;
+      for (Lisp_Object ql = queries; CONSP (ql); ql = XCDR (ql))
+	{
+	  Lisp_Object query = XCAR (ql);
+	  Lisp_Object signal_symbol, signal_data;
+	  TSQuery *q = treesit_ensure_query_compiled (query, &signal_symbol,
+						      &signal_data);
+	  if (!q)
+	    continue;
+	  TSQueryCursor *cursor = treesit_ensure_query_cursor (query);
+	  ts_query_cursor_set_byte_range (cursor, bb - vbeg, eb - vbeg);
+	  ts_query_cursor_exec (cursor, q, root);
+	  TSQueryMatch m;
+	  while (ts_query_cursor_next_match (cursor, &m))
+	    if (nh_ts_predicates_hold (q, &m, buf, vbeg))
+	    for (uint16_t i = 0; i < m.capture_count; i++)
+	      {
+		uint32_t len;
+		const char *name
+		  = ts_query_capture_name_for_id (q, m.captures[i].index, &len);
+		int kind = (classes ? nh_lines_class_of (name, len)
+			    : nh_ts_fold_kind (name, len));
+		if (classes ? kind == 0 : kind < 0)
+		  continue;
+		TSNode node = m.captures[i].node;
+		uint64_t nb = buf_bytepos_to_charpos (buf,
+						      ts_node_start_byte (node)
+						      + vbeg);
+		uint64_t ne = buf_bytepos_to_charpos (buf,
+						      ts_node_end_byte (node)
+						      + vbeg);
+		if (n == cap && classes)
+		  w = xpalloc (w, &cap, 1, -1, sizeof *w);
+		else if (n == cap)
+		  v = xpalloc (v, &cap, 1, -1, sizeof *v);
+		if (classes)
+		  w[n++] = (hlid_span) { .beg = nb, .end = ne, .class_ = kind };
+		else
+		  v[n++] = (hlid_fold) { .beg = nb, .end = ne, .kind = kind };
+	      }
+	  /* Lisp's own captures of this query set their range themselves;
+	     leave the cursor whole all the same.  */
+	  ts_query_cursor_set_byte_range (cursor, 0, UINT32_MAX);
+	}
+      if (classes)
+	hlid_replace_classes (key, beg, end, w, n);
+      else
+	hlid_replace_folds (key, 0, beg, end, v, n);
+    }
+  xfree (v);
+  xfree (w);
+}
+
+/* Buffer BUFFER's queries in buffer-local SYM (a compiled query or a
+   list of them) that are of PARSER's language, as a list in order.  */
+static Lisp_Object
+nh_ts_query_of (Lisp_Object sym, Lisp_Object buffer, Lisp_Object parser)
+{
+  Lisp_Object v = buffer_local_value (sym, buffer), out = Qnil;
+  for (Lisp_Object l = CONSP (v) ? v : list1 (v); CONSP (l); l = XCDR (l))
+    {
+      Lisp_Object q = XCAR (l);
+      if (TS_COMPILED_QUERY_P (q)
+	  && EQ (XTS_COMPILED_QUERY (q)->language,
+		 XTS_PARSER (parser)->language_symbol))
+	out = Fcons (q, out);
+    }
+  return Fnreverse (out);
+}
+
+/* PARSER's root node's char range in its buffer, as a list of one
+   range.  */
+static Lisp_Object
+nh_ts_whole (Lisp_Object parser)
+{
+  struct buffer *buf = XBUFFER (XTS_PARSER (parser)->buffer);
+  ptrdiff_t vbeg = XTS_PARSER (parser)->visible_beg;
+  TSNode root = ts_tree_root_node (XTS_PARSER (parser)->tree);
+  ptrdiff_t beg = buf_bytepos_to_charpos (buf, ts_node_start_byte (root) + vbeg);
+  ptrdiff_t end = buf_bytepos_to_charpos (buf, ts_node_end_byte (root) + vbeg);
+  return list1 (Fcons (make_fixnum (beg), make_fixnum (end)));
+}
+
+/* At PARSER's publish: run its buffer's fold query
+   (`nidhogg-treesit-fold-query') and highlight query
+   (`nidhogg-treesit-highlight-query'), when they are of PARSER's
+   language, over the new tree in each of RANGES, the publish's changed
+   ranges: the captured nodes replace the line model's tree-sitter folds
+   (source 0) and its lines' class runs there (design sections 7.2 and
+   7.4); a range's highlights cover its whole lines.  Classes the model
+   refused while its lines were built run over the whole tree.  Ranges outside the accessible region are not
+   touched: they stay until a parse over them.  */
+static void
+nh_ts_publish_folds (Lisp_Object parser, Lisp_Object ranges)
+{
+  if (!nh_lines_ntracked || NILP (ranges))
+    return;
+  Lisp_Object buffer = XTS_PARSER (parser)->buffer;
+  Lisp_Object folds
+    = nh_ts_query_of (Qnidhogg_treesit_fold_query, buffer, parser);
+  Lisp_Object hl
+    = nh_ts_query_of (Qnidhogg_treesit_highlight_query, buffer, parser);
+  if (NILP (folds) && NILP (hl))
+    return;
+  uint64_t key = nh_lines_model (XBUFFER (buffer));
+  if (!key)
+    return;
+  if (!NILP (folds))
+    nh_ts_run (parser, ranges, folds, key, false);
+  if (!NILP (hl))
+    nh_ts_run (parser, hlid_classes_missed (key) ? nh_ts_whole (parser)
+	       : ranges, hl, key, true);
+}
+
+DEFUN ("nidhogg-treesit-refold", Fnidhogg_treesit_refold,
+       Snidhogg_treesit_refold, 1, 1, 0,
+       doc: /* Run PARSER's buffer's fold and highlight queries over PARSER's whole tree.
+The captures replace the line model's tree-sitter folds and its lines'
+class runs in the parser's accessible region
+(`nidhogg-treesit-fold-query' and `nidhogg-treesit-highlight-query' say
+how), as a parse's publish does over its changed ranges.  For a query
+set after the buffer was parsed, and after the narrowing went.  Returns
+nil.  */)
+  (Lisp_Object parser)
+{
+  treesit_check_parser (parser);
+  treesit_initialize ();
+  treesit_ensure_parsed (parser);
+  if (!XTS_PARSER (parser)->tree)
+    return Qnil;
+  nh_ts_publish_folds (parser, nh_ts_whole (parser));
+  return Qnil;
+}
+
+#endif /* HAVE_NIDHOGG_HISTORY */
 /* Call PRED with NODE, signal an error if PRED caused PARSER to
    re-parse.  Return the funcall result.  If PRED just changes buffer
    but didn't trigger a reparser, we let it go, to be as out-of-the-way
@@ -5444,6 +5757,44 @@ syms_of_treesit (void)
 {
 #if HAVE_TREE_SITTER
   DEFSYM (Qtreesit_parser_p, "treesit-parser-p");
+#ifdef HAVE_NIDHOGG_HISTORY
+  DEFSYM (Qnidhogg_treesit_fold_query, "nidhogg-treesit-fold-query");
+  DEFVAR_LISP ("nidhogg-treesit-fold-query", Vnidhogg_treesit_fold_query,
+	       doc: /* The compiled fold query of this buffer's tree-sitter parser.
+At each parse's publish, when the query is of the parser's language, C
+runs it over the parse's changed ranges and replaces the line model's
+tree-sitter fold ranges (source 0) there with its captured nodes,
+widened to whole lines: `@fold' captures are kind 0, `@fold.function',
+`@fold.class', `@fold.comment', `@fold.import', `@fold.test',
+`@fold.region', `@fold.cell' and `@fold.heading' kinds 1 to 8; other
+captures are ignored.  Predicates: `#eq?', `#not-eq?', `#any-of?',
+`#match?' and `#not-match?' (an Emacs regexp); a pattern with another
+predicate matches nothing.  A node within one line is
+no range, and of the nodes starting on one line the largest is kept.
+Nothing runs for a buffer without a line model (`nidhogg-lines-enable').
+Buffer-local; nil runs nothing.  */);
+  Vnidhogg_treesit_fold_query = Qnil;
+  Fmake_variable_buffer_local (Qnidhogg_treesit_fold_query);
+  DEFSYM (Qnidhogg_treesit_highlight_query,
+	  "nidhogg-treesit-highlight-query");
+  DEFVAR_LISP ("nidhogg-treesit-highlight-query",
+	       Vnidhogg_treesit_highlight_query,
+	       doc: /* The compiled highlight query of this buffer's tree-sitter parser, or a list of them.
+At each parse's publish, C runs those of the parser's language over the parse's changed ranges and replaces the class runs of
+the line model's lines there with their captures (the minimap's colours,
+design section 7.2).  A capture's class comes from its leading name:
+`keyword', `function', `type', `string', `comment', `constant',
+`variable', `property', `operator', `punctuation', `diff.plus',
+`diff.minus', `markup.heading', `markup.link' and a few more (also an
+Emacs face name such as `font-lock-keyword-face'); other captures
+draw nothing.  Of two captures over the same text the shorter wins, and
+of two alike the later (a later query's over an earlier's).  Predicates
+as `nidhogg-treesit-fold-query'.  A line keeps six runs.  Nothing runs for a buffer without a line model
+(`nidhogg-lines-enable').  Buffer-local; nil runs nothing.  */);
+  Vnidhogg_treesit_highlight_query = Qnil;
+  Fmake_variable_buffer_local (Qnidhogg_treesit_highlight_query);
+  defsubr (&Snidhogg_treesit_refold);
+#endif
   DEFSYM (Qtreesit_node_p, "treesit-node-p");
   DEFSYM (Qtreesit_compiled_query_p, "treesit-compiled-query-p");
   DEFSYM (Qtreesit_query_p, "treesit-query-p");

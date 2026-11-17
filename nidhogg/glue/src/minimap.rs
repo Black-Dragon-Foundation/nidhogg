@@ -26,10 +26,10 @@ use crate::cards::premultiplied;
 use crate::display::Display;
 use crate::guard::GlueError;
 use glitnir::geom::Rect;
-use glitnir::hlidskjalf::{BLANK, Line, abi::with_model};
+use glitnir::hlidskjalf::{BLANK, Line, RUNS, abi::with_model};
 use glitnir::minimap::{
-    Band, CLASSES, Candidate, LabelAt, Minimap, Row, TILE_ROWS, TileAt, TileSpec, place_labels,
-    raster,
+    Band, CLASSES, Candidate, LabelAt, Minimap, Row, RowRun, TILE_ROWS, TileAt, TileSpec,
+    place_labels, raster,
 };
 use glitnir::scene::LayerDesc;
 use nhshell::api::CardImage;
@@ -127,6 +127,8 @@ pub struct NhgMinimap {
     pub sub_rgb: i32,
     pub accent_rgb: i32,
     pub mark_rgb: i32,
+    /// Each display class's bar 0xRRGGBB (-1: `text_rgb`'s), at `text_opacity`: the line model's class runs.
+    pub class_rgb: [i32; CLASSES],
 }
 
 impl Default for NhgMinimap {
@@ -158,6 +160,7 @@ impl Default for NhgMinimap {
             sub_rgb: -1,
             accent_rgb: -1,
             mark_rgb: -1,
+            class_rgb: [-1; CLASSES],
         }
     }
 }
@@ -423,17 +426,35 @@ pub fn place(clip: Rect, width_px: i32, left: bool, row_px: u32, rows: &Rows) ->
     Placement { rect, offset, band }
 }
 
-/// The minimap row of model line `l`: a bar from its indent to its end (a blank line none).
+/// The minimap row of model line `l`: a bar from its indent to its end (a blank line none), its class runs over it.
 fn row(l: &Line) -> Row {
     if l.indent == BLANK {
         return Row::default();
     }
     let indent = u32::from(l.indent);
-    // its characters, the newline left out; a tab-indented line's indent may be wider
+    // a run's characters as columns: past the indent's characters, shifted to its columns (a tab is wider)
+    let at = |col: u32| {
+        let lead = u32::from(l.lead);
+        if col >= lead {
+            col - lead + indent
+        } else {
+            col
+        }
+    };
+    let mut runs = [RowRun::default(); RUNS];
+    for (o, r) in runs.iter_mut().zip(l.runs.iter().filter(|r| r.len > 0)) {
+        *o = RowRun {
+            from: at(u32::from(r.col)),
+            to: at(u32::from(r.col)) + u32::from(r.len),
+            class: r.class,
+        };
+    }
+    // its characters, the newline left out, as columns
     Row {
         indent,
-        end: l.len.saturating_sub(1).max(indent + 1),
+        end: at(l.len.saturating_sub(1)).max(indent + 1),
         class: 0,
+        runs,
     }
 }
 
@@ -1026,7 +1047,14 @@ fn minimap(
         width: p.rect.w.max(0) as u32,
         row_px,
         col_px: px(1.0),
-        argb: [colour(e.text_rgb, e.text_opacity); CLASSES],
+        argb: std::array::from_fn(|c| {
+            let rgb = if c > 0 && e.class_rgb[c] >= 0 {
+                e.class_rgb[c]
+            } else {
+                e.text_rgb
+            };
+            colour(rgb, e.text_opacity)
+        }),
     };
     let stamp = Stamp {
         key: e.key,
@@ -1155,6 +1183,9 @@ fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Opt
     let mm = &mut f.minimaps;
     let mut planned: BTreeMap<u64, Minimap> = BTreeMap::new();
     for e in list {
+        if let Some(file) = e.file_name() {
+            glitnir::minimap::take_hub_folds(e.key, file);
+        }
         let win = mm.windows.entry(e.seq).or_default();
         if let Some(m) = minimap(e, s120, origin, win, now, &mut mm.sprites) {
             planned.insert(e.seq, m);

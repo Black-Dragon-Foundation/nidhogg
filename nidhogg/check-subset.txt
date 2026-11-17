@@ -33,6 +33,7 @@ src/nidhogg-tests/varwatch-tests
 src/nidhogg-tests/history-tests
 src/nidhogg-tests/lines-tests
 src/nidhogg-tests/keys-tests
+src/nidhogg-tests/fixes-tests
 src/data-tests
 src/emacs-tests
 src/fns-tests

@@ -3933,6 +3933,7 @@ mod tests {
                 indent: 0,
                 end,
                 class: 0,
+                ..Default::default()
             });
             Minimap {
                 rect: Rect::new(80, 0, 40, 80),

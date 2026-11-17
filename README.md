@@ -40,11 +40,11 @@ for upstreaming.
 - Every commit on `emacs-31.1..nidhogg-31` has a subject starting `nidhogg: `.
 - Files only Nidhogg owns live under `nidhogg/`, `.github/` and `README.md`, so rebases do not conflict.
 - C patches sit behind `--with-nidhogg-<feature>` configure flags. The identity patch is unconditional.
-- Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`, `shell`, `history`, `keys`; the stack order is watchdog, then workers, then glitnir, and the check is
+- Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`, `shell`, `history`, `keys`, `fixes`; the stack order is watchdog, then workers, then glitnir, and the check is
   order-independent; `FLAG_GROUPS`,
   overridable: name:define:feature) and its own base: `<GROUP>_BASE` (overridable, e.g. `GLITNIR_BASE`) is the parent of
   the oldest such commit on HEAD; a group with none is skipped. The groups may stack in either order. With the defines
-  of every group that has commits in `base..HEAD` undefined (`HAVE_GLITNIR`, `HAVE_NIDHOGG_WATCHDOG`, `HAVE_NIDHOGG_WORKERS`, `HAVE_NIDHOGG_HISTORY`, `HAVE_NIDHOGG_KEYS`, …), every C file under
+  of every group that has commits in `base..HEAD` undefined (`HAVE_GLITNIR`, `HAVE_NIDHOGG_WATCHDOG`, `HAVE_NIDHOGG_WORKERS`, `HAVE_NIDHOGG_HISTORY`, `HAVE_NIDHOGG_KEYS`, `HAVE_NIDHOGG_FIXES`, …), every C file under
   `src/` the group touched must equal its base version (`unifdef -U…`); a changed `lisp/` file is new or `lisp/loadup.el`
   with one `(featurep 'FEATURE)` line per group; a commit in the range touching `src/` that belongs to no group goes
   below the groups. Needs `unifdef`.
@@ -1250,10 +1250,31 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
 - **The scroll bar** (the `glitnir-ruler` strip) measures visible lines when the window's text has a model: lines
   hidden with `nidhogg-lines-set-hidden` do not count, so a mark keeps its place when the strip widens into the
   minimap. Without a model it measures characters, as before.
+- **Tree-sitter folds** (source 0): a buffer's `nidhogg-treesit-fold-query` (buffer-local, a compiled query) runs in C
+  at each parse's publish (`treesit_ensure_parsed`'s tail, before the after-change functions), over that parse's
+  changed ranges only. Its `@fold` / `@fold.KIND` nodes replace the source-0 ranges touching each range, widened to
+  whole lines (a node within one line is none; of nodes starting on one line the largest stays); no Lisp list is made.
+  Ranges outside a narrowing stay until a parse covers them; nodes sent while the lines are still built move with the
+  edits and are widened once they are in.
+- **Classes** (the minimap's colours): each line keeps up to 6 runs `(col, len, class)`, class 1 keyword … 15 special
+  (0 is text). A tree-sitter buffer's `nidhogg-treesit-highlight-query` (a compiled query or a list of them) runs at
+  the same publish over the changed ranges, widened to whole lines; a capture's class comes from its leading name
+  (`keyword.return` is a keyword) or an Emacs face name (`font-lock-string-face`). Other buffers take the classes of
+  their `face` text properties where redisplay fontifies (after `fontification-functions`, within 4096 characters),
+  or through `nidhogg-lines-take-faces`. An edit clears the runs of the lines it rewrites until the next parse or
+  fontification colours them again. Runs refused while the lines were built make the next parse run the query over
+  the whole tree. `glitnir-minimap`'s `:classes` gives each class a colour; a tab-indented line's runs and bar are in
+  columns.
+- **Hub folds** (source 1, a buffer with no parser of its own): the hub's `folds` layer of a file (Sjá's minimap layers,
+  sent while a connection watches the file) becomes the model's source-1 ranges, whole lines, once per layer version:
+  where Glitnir draws the window's minimap, and on demand with `(nidhogg-lines-take-hub-folds BUFFER FILE)` (t once the
+  model holds the latest version's ranges). A buffer its tree-sitter parser folds (source 0) keeps those.
 - Lisp: `(nidhogg-lines-enable &optional BUFFER WAIT)`, `nidhogg-lines-disable`; `nidhogg-lines-line`,
   `nidhogg-lines-line-start`, `nidhogg-lines-fraction`; marks by kind (0–63): `nidhogg-lines-set-marks`,
   `nidhogg-lines-next-mark`, `nidhogg-lines-counts`; folds by source: `nidhogg-lines-set-folds`, `nidhogg-lines-folds`,
   `nidhogg-lines-fold-at`; `nidhogg-lines-set-hidden`; `nidhogg-lines-trail-note`, `nidhogg-lines-trail`;
+  `nidhogg-lines-classes` (a line's runs), `nidhogg-lines-take-faces`; `nidhogg-lines-take-hub-folds`; `nidhogg-treesit-refold` (the fold and
+  highlight queries over a parser's whole tree);
   `nidhogg-lines-describe` → `(:lines :chars :chunks :marks :folds :hidden :bytes :edits :state :rebuilds)`. The feature
   is `nidhogg-lines`.
 - Tests: `test/src/nidhogg-tests/lines-tests.el` (det; in `check-subset.txt`): every change site keeps the lines with
@@ -1383,6 +1404,20 @@ gives a tab or header line row the visible height the window's box holds (`top_l
 
 - Tests: drgnx's `drgnx-ui-look-open-fit/a-squeezed-window-draws-its-header-line-when-it-grows` (the picture against a
   full redraw).
+
+## Fixes to upstream bugs
+
+Bugs of upstream Emacs that touch no Nidhogg feature are fixed in their own flag group, `fixes`.
+
+- Build flag: `--with-nidhogg-fixes` (defines `HAVE_NIDHOGG_FIXES`). `build.sh` passes it on every target, Glitnir or
+  not, unless given `--without-nidhogg-fixes`. Tests: `test/src/nidhogg-tests/fixes-tests.el` (cond; in
+  `check-subset.txt`), one row per fix.
+- **A shared eln-cache keeps its files while they are loaded again** (`src/comp.c`, `native-elisp-load`). Loading
+  an `.eln` this session had loaded before renamed the file aside, opened it and renamed it back, to get a new handle
+  from the dynamic loader. Another Emacs using the same eln-cache (a daemon and a second Emacs, or test sessions
+  sharing one cache) found it missing meanwhile, and its own load failed (`file-missing "Renaming"`). The load now
+  opens a private copy and deletes it once it is open; the shared file never moves. Row:
+  `fixes/two-emacs-reloading-one-eln-never-lose-it` (two processes reload one `.eln` 400 times each).
 
 ## Reporting issues
 

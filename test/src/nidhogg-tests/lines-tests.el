@@ -34,6 +34,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'nidhogg-views nil t)      ; the hub's folds: Sjá's minimap layers pushed as hub lines
 
 (defvar nidhogg-lines-sync-limit)
 
@@ -323,5 +324,257 @@ expression that does not compile signals `invalid-regexp'; nil sources drop the 
     (should-error (nidhogg-lines-set-fold-sources nil nil "(") :type 'invalid-regexp)
     (should (= (length (nidhogg-lines-folds nil)) 4))
     (nidhogg-lines-disable)))
+
+(defvar nidhogg-treesit-fold-query)
+
+(defconst lines-tests--dir (file-name-directory (or load-file-name buffer-file-name "")))
+
+(defun lines-tests--grammars ()
+  "The directory of the test grammars (fixtures/grammars.sh: C and Python), or nil."
+  (let ((dir (or (getenv "NIDHOGG_TEST_GRAMMARS")
+                 (expand-file-name "fixtures/grammars-cache" lines-tests--dir))))
+    (and (file-exists-p (expand-file-name "libtree-sitter-c.so" dir)) dir)))
+
+(defun lines-tests--range (a b)
+  "Lines A..B (0-based) of the current buffer as (BEG END): A's start to B's end."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line a)
+    (let ((beg (point)))
+      (forward-line (- b a))
+      (list beg (line-end-position)))))
+
+(ert-deftest lines/tree-sitter-folds-follow-each-parse ()
+  "The buffer's fold query (`nidhogg-treesit-fold-query') runs at each
+parse's publish over the changed ranges, in C: its nodes are source 0's
+ranges, widened to whole lines, of the `@fold.KIND' capture's kind (plain
+`@fold' is 0, other captures none).  An edit inside one function replaces
+that function's ranges only; narrowing keeps the ranges outside; a query
+of another language is not run."
+  (skip-unless (and (lines-tests--built-p) (boundp 'nidhogg-treesit-fold-query) (lines-tests--grammars)))
+  (let ((treesit-extra-load-path (list (lines-tests--grammars))))
+   (with-temp-buffer
+    (insert "int a (void)\n{\n  return 1;\n}\n\nint b (void)\n{\n  return 2;\n}\n")
+    (nidhogg-lines-enable nil t)
+    (let ((p (treesit-parser-create 'c))
+          (folds (lambda () (mapcar (lambda (f) (list (nth 0 f) (nth 1 f) (nth 2 f) (nth 4 f)))
+                                    (nidhogg-lines-folds nil)))))
+      (setq-local nidhogg-treesit-fold-query
+                  (treesit-query-compile 'c "(function_definition) @fold.function (compound_statement) @fold
+                                             (translation_unit) @scope"))
+      (treesit-parser-root-node p)
+      (should (equal (funcall folds)
+                     `((,@(lines-tests--range 0 3) 1 0) (,@(lines-tests--range 1 3) 0 0)
+                       (,@(lines-tests--range 5 8) 1 0) (,@(lines-tests--range 6 8) 0 0))))
+      ;; a line typed into b: b's ranges grow, a's stay (and are not sent again: a set-folds sent meanwhile stays)
+      (goto-char (point-min))
+      (search-forward "return 2;")
+      (insert "\n  x++;")
+      (treesit-parser-root-node p)
+      (should (equal (funcall folds)
+                     `((,@(lines-tests--range 0 3) 1 0) (,@(lines-tests--range 1 3) 0 0)
+                       (,@(lines-tests--range 5 9) 1 0) (,@(lines-tests--range 6 9) 0 0))))
+      ;; b made one line: its ranges go
+      (let ((b (car (lines-tests--range 5 5))))
+        (delete-region b (point-max))
+        (goto-char b)
+        (insert "int b (void) { return 2; }\n"))
+      (treesit-parser-root-node p)
+      (should (equal (funcall folds)
+                     `((,@(lines-tests--range 0 3) 1 0) (,@(lines-tests--range 1 3) 0 0))))
+      ;; narrowed to b, a new body for b: a's ranges, outside, stay
+      (let ((b (car (lines-tests--range 5 5))))
+        (narrow-to-region b (point-max))
+        (goto-char (point-max))
+        (insert "int c (void)\n{\n}\n")
+        (treesit-parser-root-node p)
+        (widen))
+      (should (equal (funcall folds)
+                     `((,@(lines-tests--range 0 3) 1 0) (,@(lines-tests--range 1 3) 0 0)
+                       (,@(lines-tests--range 6 8) 1 0) (,@(lines-tests--range 7 8) 0 0))))
+      ;; a query of another language: nothing runs (the ranges stay as they were)
+      (setq-local nidhogg-treesit-fold-query (treesit-query-compile 'python "(block) @fold"))
+      (goto-char (point-min))
+      (insert "\n")
+      (treesit-parser-root-node p)
+      (should (= (length (funcall folds)) 4)))
+    (nidhogg-lines-disable))))
+
+(ert-deftest lines/tree-sitter-fold-predicates-and-refold ()
+  "A fold query's text predicates hold in C (`#eq?', `#not-eq?', `#any-of?',
+`#match?', `#not-match?'; a pattern with another predicate matches nothing),
+and `nidhogg-treesit-refold' runs a query set after the buffer was parsed
+over the whole tree."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-treesit-refold) (lines-tests--grammars)))
+  (let ((treesit-extra-load-path (list (lines-tests--grammars))))
+    (with-temp-buffer
+      (insert "int test_a (void)\n{\n  return 1;\n}\n\nint b (void)\n{\n  return 2;\n}\n\nint c (void)\n{\n  return 3;\n}\n")
+      (nidhogg-lines-enable nil t)
+      (let ((p (treesit-parser-create 'c))
+            (kinds (lambda () (mapcar (lambda (f) (list (nidhogg-lines-line nil (car f)) (nth 2 f)))
+                                      (nidhogg-lines-folds nil)))))
+        ;; parsed before the query is set: nothing until the refold
+        (treesit-parser-root-node p)
+        (setq-local nidhogg-treesit-fold-query
+                    (treesit-query-compile
+                     'c "((function_definition declarator: (function_declarator declarator: (identifier) @_n)) @fold.test
+                          (#match? @_n \"^test_\"))
+                         ((function_definition declarator: (function_declarator declarator: (identifier) @_n)) @fold.function
+                          (#eq? @_n \"b\"))
+                         ((function_definition declarator: (function_declarator declarator: (identifier) @_n)) @fold.class
+                          (#any-of? @_n \"x\" \"c\"))
+                         ((function_definition declarator: (function_declarator declarator: (identifier) @_n)) @fold.import
+                          (#not-match? @_n \"^[bc]\") (#not-eq? @_n \"test_a\"))
+                         ((function_definition) @fold.comment (#unknown? @fold.comment))"))
+        (should-not (nidhogg-lines-folds nil))
+        (nidhogg-treesit-refold p)
+        ;; test_a a test, b a function, c a class; the not- and unknown patterns match none
+        (should (equal (funcall kinds) '((0 5) (5 1) (10 2)))))
+      (nidhogg-lines-disable))))
+
+;; Design section 7.2: the highlight query's captures as the lines' class runs.
+(ert-deftest lines/tree-sitter-highlight-classes ()
+  "A highlight query's captures become the class runs of their lines: the
+class by the capture's leading name (or an Emacs face name), a shorter
+capture over a longer one and a later over an earlier (also across a
+list of queries), an unknown name nothing; a refold runs a query set after the parse, and a reparse
+replaces the runs of the lines it changed."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-lines-classes)
+                    (lines-tests--grammars)))
+  (let ((treesit-extra-load-path (list (lines-tests--grammars))))
+    (with-temp-buffer
+      (insert "int a (void)\n{\n  return 1; /* x */\n}\n")
+      (nidhogg-lines-enable nil t)
+      (let ((p (treesit-parser-create 'c)))
+        (treesit-parser-root-node p)
+        (setq-local nidhogg-treesit-highlight-query
+                    (treesit-query-compile
+                     'c "(primitive_type) @type.builtin
+                         (return_statement \"return\" @keyword.return)
+                         (number_literal) @font-lock-number-face
+                         (comment) @comment
+                         (identifier) @variable
+                         ((identifier) @function (#eq? @function \"a\"))
+                         (parameter_list) @no.such.class"))
+        (should-not (nidhogg-lines-classes nil 0))
+        (nidhogg-treesit-refold p)
+        ;; int: type (3), a: function (2) over variable, void: type; the
+        ;; parameter list's unknown name draws nothing
+        (should (equal (nidhogg-lines-classes nil 0) '((0 3 3) (4 1 2) (7 4 3))))
+        (should-not (nidhogg-lines-classes nil 1))
+        ;; return: keyword (1), 1: constant (6), the comment (5)
+        (should (equal (nidhogg-lines-classes nil 2) '((2 6 1) (9 1 6) (12 7 5))))
+        ;; a reparse recolours the line it changed
+        (goto-char (point-min))
+        (search-forward "1;")
+        (replace-match "22;")
+        (treesit-parser-root-node p)
+        (should (equal (nidhogg-lines-classes nil 2) '((2 6 1) (9 2 6) (13 7 5))))
+        ;; an edit of the same size within a token: the parse's changed
+        ;; ranges hold it, and the line (its runs cleared by the edit) is
+        ;; coloured again
+        (goto-char (point-min))
+        (search-forward "22;")
+        (replace-match "33;")
+        (treesit-parser-root-node p)
+        (should (equal (nidhogg-lines-classes nil 2) '((2 6 1) (9 2 6) (13 7 5))))
+        (should (equal (nidhogg-lines-classes nil 0) '((0 3 3) (4 1 2) (7 4 3))))
+        ;; a list of queries (a mode's font-lock rules): a later one's
+        ;; capture over the same text wins
+        (setq-local nidhogg-treesit-highlight-query
+                    (list (treesit-query-compile 'c "(primitive_type) @type")
+                          (treesit-query-compile 'c "(primitive_type) @keyword")))
+        (nidhogg-treesit-refold p)
+        (should (equal (nidhogg-lines-classes nil 0) '((0 3 1) (7 4 1))))
+        (should-not (nidhogg-lines-classes nil 2)))
+      (nidhogg-lines-disable))))
+
+;; Design section 7.2: buffers without a highlight query take their
+;; classes from the faces fontification gives them.
+(defconst lines-tests--elisp ";; note\n(defun f () \"s\")\n")
+
+(defun lines-tests--elisp-classes ()
+  "Check the current buffer's classes for `lines-tests--elisp': the
+comment one run (delimiter and body), `defun' a keyword, `f' a function,
+the docstring a comment (`font-lock-doc-face')."
+  (should (equal (nidhogg-lines-classes nil 0) '((0 7 5))))
+  (should (equal (nidhogg-lines-classes nil 1) '((1 5 1) (7 1 2) (12 3 5)))))
+
+(ert-deftest lines/faces-become-classes ()
+  "Fontified text's faces become the class runs of its lines, by the
+faces' names, through `nidhogg-lines-take-faces' (text fontified outside
+redisplay)."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-lines-take-faces)))
+  (with-temp-buffer
+    (insert lines-tests--elisp)
+    (emacs-lisp-mode)
+    (nidhogg-lines-enable nil t)
+    (font-lock-ensure)
+    (should-not (nidhogg-lines-classes nil 1))
+    (nidhogg-lines-take-faces nil)
+    (lines-tests--elisp-classes)
+    (nidhogg-lines-disable)))
+
+(ert-deftest lines/redisplay-fontifies-classes ()
+  "Redisplay, fontifying a shown buffer, gives the fontified text's faces
+to the class runs of its lines."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-lines-take-faces)
+                    (display-graphic-p)))
+  (let ((b (generate-new-buffer "lines-faces")))
+    (unwind-protect
+        (with-current-buffer b
+          (insert lines-tests--elisp)
+          (emacs-lisp-mode)
+          (font-lock-mode 1)
+          (nidhogg-lines-enable nil t)
+          (should-not (nidhogg-lines-classes nil 1))
+          (save-window-excursion
+            (set-window-buffer (selected-window) b)
+            (redisplay t))
+          (lines-tests--elisp-classes)
+          (nidhogg-lines-disable))
+      (kill-buffer b))))
+
+;; Design section 7.4: a buffer with no parser of its own folds by the
+;; hub's ranges, taken from Sjá on demand.
+(ert-deftest lines/the-hubs-folds-are-taken-on-demand ()
+  "`nidhogg-lines-take-hub-folds' copies Sjá's `folds' layer of a file
+into the line model's hub source (1) as whole lines: nil before the
+layer comes, t once taken (and again with no change), a newer version
+replacing the ranges; a buffer whose parser folds it keeps those."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-view-push)))
+  (let ((file "/t/lines-hub.txt")
+        (push (lambda (v items)
+                (nidhogg-view-push
+                 (format "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"%s\",\"layer\":\"folds\",\"version\":%d,\"items\":%s}}}"
+                         "/t/lines-hub.txt" v items)))))
+    (unwind-protect
+        (with-temp-buffer
+          (insert "a {\n  b\n}\nc {\n  d\n}\n")
+          (nidhogg-lines-enable nil t)
+          (nidhogg-lines-set-fold-sources nil nil nil)
+          (should-not (nidhogg-lines-take-hub-folds nil file))
+          (funcall push 5 "[[1,3,\"function\"]]")
+          (should (nidhogg-lines-take-hub-folds nil file))
+          (should (equal (mapcar (lambda (f) (list (nidhogg-lines-line nil (car f))
+                                                   (nidhogg-lines-line nil (cadr f)) (nth 2 f) (nth 4 f)))
+                                 (nidhogg-lines-folds nil))
+                         '((0 2 1 1))))
+          (should (nidhogg-lines-take-hub-folds nil file))
+          (funcall push 6 "[[4,6,\"class\"]]")
+          (should (nidhogg-lines-take-hub-folds nil file))
+          (should (equal (mapcar (lambda (f) (list (nidhogg-lines-line nil (car f)) (nth 2 f)))
+                                 (nidhogg-lines-folds nil))
+                         '((3 2))))
+          ;; folded by its own parser (source 0): the hub's newer layer is
+          ;; not taken
+          (nidhogg-lines-set-folds nil 0 '((1 10 1)) 100)
+          (funcall push 7 "[[1,6,\"block\"]]")
+          (should-not (nidhogg-lines-take-hub-folds nil file))
+          (should (equal (mapcar (lambda (f) (list (nidhogg-lines-line nil (car f)) (nth 4 f)))
+                                 (nidhogg-lines-folds nil))
+                         '((0 0) (3 1))))
+          (nidhogg-lines-disable))
+      (nidhogg-view-minimap 'forget file))))
 
 ;;; lines-tests.el ends here
