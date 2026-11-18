@@ -3261,8 +3261,8 @@ nidhogg_wrap_x (struct it *it, int lnum_px)
 		+ (intmax_t) XFIXNUM (Vnidhogg_wrap_column) * col);
   return x < it->last_visible_x ? x : 0;
 }
-#endif
 
+#endif
 /* Initialize IT for displaying current_buffer in window W, starting
    at character position CHARPOS.  CHARPOS < 0 means that no buffer
    position is specified which is useful when the iterator is assigned
@@ -10520,10 +10520,18 @@ move_it_in_display_line_to (struct it *it,
 	      if (/* Lines are continued.  */
 		  it->line_wrap != TRUNCATE
 		  && (/* And glyph doesn't fit on the line.  */
+#ifdef HAVE_GLITNIR
 		      new_x > IT_WRAP_X (it)
+#else
+		      new_x > it->last_visible_x
+#endif
 		      /* Or it fits exactly and we're on a window
 			 system frame.  */
+#ifdef HAVE_GLITNIR
 		      || (new_x == IT_WRAP_X (it)
+#else
+		      || (new_x == it->last_visible_x
+#endif
 			  && FRAME_WINDOW_P (it->f)
 			  && ((it->bidi_p && it->bidi_it.paragraph_dir == R2L)
 			      ? WINDOW_LEFT_FRINGE_WIDTH (it->w)
@@ -10535,8 +10543,16 @@ move_it_in_display_line_to (struct it *it,
 		      /* Or this is the second glyph to be produced
 			 beyond the confines of the line.  */
 		      || (i != 0
+#ifdef HAVE_GLITNIR
 			  && (x > IT_WRAP_X (it)
+#else
+			  && (x > it->last_visible_x
+#endif
+#ifdef HAVE_GLITNIR
 			      || (x == IT_WRAP_X (it)
+#else
+			      || (x == it->last_visible_x
+#endif
 				  && FRAME_WINDOW_P (it->f)
 				  && ((it->bidi_p
 				       && it->bidi_it.paragraph_dir == R2L)
@@ -10549,7 +10565,11 @@ move_it_in_display_line_to (struct it *it,
 			 the very first glyph doesn't fit on the line,
 			 e.g., a wide image.  */
 		      it->hpos == 0 + (it->lnum_width ? it->lnum_width + 2 : 0)
+#ifdef HAVE_GLITNIR
 		      || (new_x == IT_WRAP_X (it)
+#else
+		      || (new_x == it->last_visible_x
+#endif
 			  && FRAME_WINDOW_P (it->f)))
 		    {
 		      ++it->hpos;
@@ -10689,7 +10709,11 @@ move_it_in_display_line_to (struct it *it,
 		    {
 		      /* If we've found TO_X, go back there, as we now
 			 know the last word fits on this screen line.  */
+#ifdef HAVE_GLITNIR
 		      if ((op & MOVE_TO_X) && new_x == IT_WRAP_X (it)
+#else
+		      if ((op & MOVE_TO_X) && new_x == it->last_visible_x
+#endif
 			  && atx_it.sp >= 0)
 			{
 			  RESTORE_IT (it, &atx_it, atx_data);
@@ -20308,11 +20332,12 @@ try_cursor_movement (Lisp_Object window, struct text_pos startp,
 	  if (must_scroll)
 	    ;
 	  else if (rc != CURSOR_MOVEMENT_SUCCESS
-	      && (MATRIX_ROW_PARTIALLY_VISIBLE_P (w, row)
 #ifdef HAVE_GLITNIR
-		  || glitnir_row_under_strip (w, row)
+	      && (MATRIX_ROW_PARTIALLY_VISIBLE_P (w, row)
+		  || glitnir_row_under_strip (w, row))
+#else
+	      && MATRIX_ROW_PARTIALLY_VISIBLE_P (w, row)
 #endif
-		  )
 	      /* Make sure this isn't a header line nor a tab-line by
 		 any chance, since then MATRIX_ROW_PARTIALLY_VISIBLE_P
 		 might yield true.  */
@@ -20816,8 +20841,8 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
   /* Whether the horizontal strip shows, with the hscroll and the
      widths as they are now: the cursor's row check below reads it.  */
   glitnir_hstrip_window (w, false);
-#endif
 
+#endif
   /* When windows_or_buffers_changed is non-zero, we can't rely
      on the window end being valid, so set it to zero there.  */
   if (windows_or_buffers_changed)
@@ -21845,8 +21870,8 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
   /* The horizontal strip again, with the rows just made measured.  */
   if (!f->fonts_changed)
     glitnir_hstrip_window (w, true);
-#endif
 
+#endif
    if (WINDOW_HAS_VERTICAL_SCROLL_BAR (w) || WINDOW_HAS_HORIZONTAL_SCROLL_BAR (w))
     {
       if (WINDOW_HAS_VERTICAL_SCROLL_BAR (w))
@@ -26607,7 +26632,11 @@ display_line (struct it *it, int cursor_vpos)
       if (/* Not a newline.  */
 	  nglyphs > 0
 	  /* Glyphs produced fit entirely in the line.  */
+#ifdef HAVE_GLITNIR
 	  && (it->current_x < IT_WRAP_X (it)
+#else
+	  && (it->current_x < it->last_visible_x
+#endif
 	      /* Or a line or wrap prefix is in effect, and not
 		 truncating the glyph produced immediately after it
 		 would cause an infinite cycle.  */
@@ -26661,9 +26690,17 @@ display_line (struct it *it, int cursor_vpos)
 	      if (/* Lines are continued.  */
 		  it->line_wrap != TRUNCATE
 		  && (/* Glyph doesn't fit on the line.  */
+#ifdef HAVE_GLITNIR
 		      new_x > IT_WRAP_X (it)
+#else
+		      new_x > it->last_visible_x
+#endif
 		      /* Or it fits exactly on a window system frame.  */
+#ifdef HAVE_GLITNIR
 		      || (new_x == IT_WRAP_X (it)
+#else
+		      || (new_x == it->last_visible_x
+#endif
 			  && FRAME_WINDOW_P (it->f)
 			  && (row->reversed_p
 			      ? WINDOW_LEFT_FRINGE_WIDTH (it->w)
@@ -26675,8 +26712,16 @@ display_line (struct it *it, int cursor_vpos)
 		      /* Or this is the second glyph to be produced
 			 beyond the confines of the line.  */
 		      || (i != 0
+#ifdef HAVE_GLITNIR
 			  && (x > IT_WRAP_X (it)
+#else
+			  && (x > it->last_visible_x
+#endif
+#ifdef HAVE_GLITNIR
 			      || (x == IT_WRAP_X (it)
+#else
+			      || (x == it->last_visible_x
+#endif
 				  && FRAME_WINDOW_P (it->f)
 				  && (row->reversed_p
 				      ? WINDOW_LEFT_FRINGE_WIDTH (it->w)
@@ -26685,7 +26730,11 @@ display_line (struct it *it, int cursor_vpos)
 		  /* End of a continued line.  */
 
 		  if (it->hpos == 0 + (it->lnum_width ? it->lnum_width + 2 : 0)
+#ifdef HAVE_GLITNIR
 		      || (new_x == IT_WRAP_X (it)
+#else
+		      || (new_x == it->last_visible_x
+#endif
 			  && FRAME_WINDOW_P (it->f)
 			  && (row->reversed_p
 			      ? WINDOW_LEFT_FRINGE_WIDTH (it->w)
@@ -26842,10 +26891,18 @@ display_line (struct it *it, int cursor_vpos)
 			   : WINDOW_RIGHT_FRINGE_WIDTH (it->w)) == 0)
 			produce_special_glyphs (it, IT_CONTINUATION,
 						it->bidi_it.paragraph_dir, false);
+#ifdef HAVE_GLITNIR
 		      it->continuation_lines_width += IT_WRAP_X (it);
+#else
+		      it->continuation_lines_width += it->last_visible_x;
+#endif
 		      row->ends_in_middle_of_char_p = true;
 		      row->continued_p = true;
+#ifdef HAVE_GLITNIR
 		      glyph->pixel_width = IT_WRAP_X (it) - x;
+#else
+		      glyph->pixel_width = it->last_visible_x - x;
+#endif
 		      it->starts_in_middle_of_char_p = true;
 		      if (WINDOW_LEFT_MARGIN_WIDTH (it->w) > 0
 			  || WINDOW_RIGHT_MARGIN_WIDTH (it->w) > 0)

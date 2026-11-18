@@ -3741,17 +3741,15 @@ extern void tty_draw_row_with_mouse_face (struct window *, struct glyph_row *,
 					  int, int, enum draw_glyphs_face);
 extern void display_tty_menu_item (const char *, int, int, int, int, bool);
 #endif
+#ifdef HAVE_GLITNIR
 /* The x at which a wrapped line of iterator IT continues: its wrap
    column's, except for a stretch (`:align-to', which reaches the
    window's edge without wrapping).  */
-#ifdef HAVE_GLITNIR
 # define IT_WRAP_X(it)						\
   ((it)->wrap_x > 0 && (it)->what != IT_STRETCH			\
    ? (it)->wrap_x : (it)->last_visible_x)
-#else
-# define IT_WRAP_X(it) ((it)->last_visible_x)
-#endif
 
+#endif
 /* Flags passed to try_window.  */
 #define TRY_WINDOW_CHECK_MARGINS	(1 << 0)
 #define TRY_WINDOW_IGNORE_FONTS_CHANGE	(1 << 1)
