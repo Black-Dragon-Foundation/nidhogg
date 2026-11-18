@@ -1263,7 +1263,10 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
   their `face` text properties where redisplay fontifies (after `fontification-functions`, within 4096 characters),
   or through `nidhogg-lines-take-faces`. An edit clears the runs of the lines it rewrites until the next parse or
   fontification colours them again. Runs refused while the lines were built make the next parse run the query over
-  the whole tree. `glitnir-minimap`'s `:classes` gives each class a colour; a tab-indented line's runs and bar are in
+  the whole text. A whole-text pass (that, or `nidhogg-treesit-refold`) runs in slices of whole lines, each at most
+  `nidhogg-treesit-highlight-slice` seconds (default 0.004, at least one line): the first at once, the rest from an
+  idle timer (`nidhogg-treesit--highlight-slice`), each going on from where the last stopped; a parse meanwhile still
+  colours its own changed lines at its publish, and a pass whose tree waits for a parse goes on after it. `glitnir-minimap`'s `:classes` gives each class a colour; a tab-indented line's runs and bar are in
   columns.
 - **Hub folds** (source 1, a buffer with no parser of its own): the hub's `folds` layer of a file (Sjá's minimap layers,
   sent while a connection watches the file) becomes the model's source-1 ranges, whole lines, once per layer version:
@@ -1274,7 +1277,7 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
   `nidhogg-lines-next-mark`, `nidhogg-lines-counts`; folds by source: `nidhogg-lines-set-folds`, `nidhogg-lines-folds`,
   `nidhogg-lines-fold-at`; `nidhogg-lines-set-hidden`; `nidhogg-lines-trail-note`, `nidhogg-lines-trail`;
   `nidhogg-lines-classes` (a line's runs), `nidhogg-lines-take-faces`; `nidhogg-lines-take-hub-folds`; `nidhogg-treesit-refold` (the fold and
-  highlight queries over a parser's whole tree);
+  highlight queries over a parser's whole tree, the highlights in slices);
   `nidhogg-lines-describe` → `(:lines :chars :chunks :marks :folds :hidden :bytes :edits :state :rebuilds)`. The feature
   is `nidhogg-lines`.
 - Tests: `test/src/nidhogg-tests/lines-tests.el` (det; in `check-subset.txt`): every change site keeps the lines with

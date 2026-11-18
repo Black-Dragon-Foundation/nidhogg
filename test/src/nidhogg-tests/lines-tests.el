@@ -489,6 +489,90 @@ replaces the runs of the lines it changed."
         (should-not (nidhogg-lines-classes nil 2)))
       (nidhogg-lines-disable))))
 
+(defvar nidhogg-treesit-highlight-slice)
+
+(defun lines-tests--many-functions (n)
+  "N small C functions, five lines each."
+  (mapconcat (lambda (i) (format "int f%d (void)\n{\n  return %d; /* c */\n}\n\n" i i))
+             (number-sequence 0 (1- n)) ""))
+
+(defun lines-tests--all-classes ()
+  "Every line's class runs in the current buffer."
+  (mapcar (lambda (l) (nidhogg-lines-classes nil l))
+          (number-sequence 0 (1- (count-lines (point-min) (point-max))))))
+
+(defun lines-tests--drain ()
+  "Run highlight slices until none is left; how many ran."
+  (let ((n 1))
+    (while (and (nidhogg-treesit--highlight-slice) (< n 100000))
+      (setq n (1+ n)))
+    n))
+
+;; Task 11e: a whole-text highlight pass runs in slices on an idle timer.
+(ert-deftest lines/a-whole-highlight-pass-runs-in-idle-slices ()
+  "A refold (or a model that missed its classes) colours its lines in
+slices of `nidhogg-treesit-highlight-slice' seconds, the first at once and
+the rest from an idle timer, each going on from where the last stopped.
+The result is the whole pass's; an edit meanwhile shifts where the next
+slice starts and its parse colours the changed lines at once; a killed
+buffer's pass is dropped."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-lines-classes)
+                    (lines-tests--grammars)))
+  (let ((treesit-extra-load-path (list (lines-tests--grammars)))
+        (query "(primitive_type) @type (number_literal) @constant
+                (comment) @comment (identifier) @function")
+        whole)
+    ;; the whole pass, in one slice
+    (with-temp-buffer
+      (insert "/* top */\n" (lines-tests--many-functions 300))
+      (nidhogg-lines-enable nil t)
+      (let ((p (treesit-parser-create 'c))
+            (nidhogg-treesit-highlight-slice 60))
+        (treesit-parser-root-node p)
+        (setq-local nidhogg-treesit-highlight-query (treesit-query-compile 'c query))
+        (nidhogg-treesit-refold p)
+        (should-not (nidhogg-treesit--highlight-slice))
+        (setq whole (lines-tests--all-classes)))
+      (nidhogg-lines-disable))
+    (should (equal (nth 1496 whole) '((0 3 3) (4 4 2) (10 4 3))))
+    ;; slices of no time: a line each
+    (with-temp-buffer
+      (insert (lines-tests--many-functions 300))
+      (nidhogg-lines-enable nil t)
+      (let ((p (treesit-parser-create 'c))
+            (nidhogg-treesit-highlight-slice 0))
+        (treesit-parser-root-node p)
+        (setq-local nidhogg-treesit-highlight-query (treesit-query-compile 'c query))
+        (nidhogg-treesit-refold p)
+        (should (nidhogg-lines-classes nil 0))
+        (should-not (nidhogg-lines-classes nil 1495))
+        (should (seq-find (lambda (tm) (eq (timer--function tm) 'nidhogg-treesit--highlight-slice))
+                          timer-idle-list))
+        (dotimes (_ 20) (nidhogg-treesit--highlight-slice))
+        (should (nidhogg-lines-classes nil 7))
+        (should-not (nidhogg-lines-classes nil 1495))
+        ;; a line typed above where the slices are: the next slice goes on
+        ;; from the same text
+        (goto-char (point-min))
+        (insert "/* top */\n")
+        (treesit-parser-root-node p)
+        (should (equal (nidhogg-lines-classes nil 0) '((0 9 5))))
+        (should (> (lines-tests--drain) 1000))
+        (should (equal (lines-tests--all-classes) whole)))
+      (nidhogg-lines-disable))
+    ;; a killed buffer's pass is dropped
+    (let ((b (generate-new-buffer " lines-slices")))
+      (with-current-buffer b
+        (insert (lines-tests--many-functions 50))
+        (nidhogg-lines-enable nil t)
+        (let ((p (treesit-parser-create 'c))
+              (nidhogg-treesit-highlight-slice 0))
+          (treesit-parser-root-node p)
+          (setq-local nidhogg-treesit-highlight-query (treesit-query-compile 'c query))
+          (nidhogg-treesit-refold p)))
+      (kill-buffer b)
+      (should-not (nidhogg-treesit--highlight-slice)))))
+
 ;; Design section 7.2: buffers without a highlight query take their
 ;; classes from the faces fontification gives them.
 (defconst lines-tests--elisp ";; note\n(defun f () \"s\")\n")

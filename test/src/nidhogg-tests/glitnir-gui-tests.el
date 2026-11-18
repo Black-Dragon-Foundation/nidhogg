@@ -1658,6 +1658,63 @@ shows."
       (nidhogg-lines-disable buf)
       (kill-buffer buf))))
 
+(defvar nidhogg-treesit-highlight-slice)
+
+(defconst glitnir-gui--dir (file-name-directory (or load-file-name buffer-file-name "")))
+
+;; Task 11e: a whole-text highlight pass colours the minimap from idle slices.
+(ert-deftest glitnir-gui/idle-highlight-slices-colour-the-minimap ()
+  "A refold of a text larger than one slice colours the minimap's first
+lines at once and the rest from the idle timer's slices; the minimap
+shows each slice's colours with no other change to the window."
+  (glitnir-gui--skip-unless-tree)
+  (let ((grammars (expand-file-name "fixtures/grammars-cache"
+                                    glitnir-gui--dir)))
+    (skip-unless (and (fboundp 'nidhogg-lines-enable) (fboundp 'nidhogg-treesit-refold)
+                      (file-exists-p (expand-file-name "libtree-sitter-c.so" grammars))))
+    (let ((buf (get-buffer-create "*glitnir-minimap-slices*")) (w (selected-window))
+          (treesit-extra-load-path (list grammars)))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (dotimes (i 300)
+                (insert (format "int f%d (void)\n{\n  return %d;\n}\n\n" i i)))
+              (nidhogg-lines-enable buf t))
+            (set-window-buffer w buf)
+            (set-window-start w (with-current-buffer buf
+                                  (save-excursion (goto-char (point-max)) (forward-line -20) (point))))
+            (set-window-parameter w 'glitnir-minimap
+                                  '(:width 120 :open t :fill ("#203040" . 1) :text ("#ff00ff" . 1)
+                                    :classes ((type . "#00ff00"))))
+            (let ((mm (glitnir-gui--minimap-rect w 120)) (green '(0 255 0)))
+              (with-current-buffer buf
+                (let ((p (treesit-parser-create 'c)) (nidhogg-treesit-highlight-slice 0))
+                  (treesit-parser-root-node p)
+                  (setq-local nidhogg-treesit-highlight-query
+                              (treesit-query-compile 'c "(primitive_type) @type"))
+                  (nidhogg-treesit-refold p)
+                  ;; the window shows the text's end: not coloured yet
+                  (should (= 0 (glitnir-gui--count-in (glitnir-gui--painted) mm green)))
+                  ;; slices from the idle timer, a line each, until the last line.  The runner's rows run inside
+                  ;; a timer, where Emacs is never idle (`current-idle-time' is nil), so the row fires the slice's
+                  ;; idle timer itself, as an idle period would: each slice must arm the next one
+                  (let ((deadline (+ (float-time) 60)))
+                    (while (and (not (nidhogg-lines-classes buf 1495)) (< (float-time) deadline))
+                      (let ((tm (seq-find (lambda (tm) (eq (timer--function tm) 'nidhogg-treesit--highlight-slice))
+                                          timer-idle-list)))
+                        (should tm)
+                        (timer-event-handler tm))
+                      (sit-for 0)))
+                  (should (nidhogg-lines-classes buf 1495))))
+              (sit-for 0.05)
+              (gui-runner-wait-settled)
+              (let ((after (glitnir-snapshot nil 'raw)))
+                (glitnir-gui--shot "minimap-slices")
+                (should (> (glitnir-gui--count-in after mm green) 10)))))
+        (set-window-parameter w 'glitnir-minimap nil)
+        (nidhogg-lines-disable buf)
+        (kill-buffer buf)))))
+
 (ert-deftest glitnir-gui/the-minimap-band-follows-a-scroll ()
   "The band over the lines the window shows moves with a scroll, with no Lisp of the minimap's in between: the same
 parameter, only the window's start changes."
