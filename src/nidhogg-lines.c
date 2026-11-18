@@ -222,6 +222,16 @@ nh_lines_fraction (struct buffer *b, ptrdiff_t pos, double *out)
   return r == HLID_OK;
 }
 
+/* Whether POS's visible line in B is folded (a fold starts on it, the
+   lines after it hidden), for the terminal's fold margin; false when B
+   has no model.  */
+bool
+nh_lines_folded_at (struct buffer *b, ptrdiff_t pos)
+{
+  struct nh_lines_text *t = nh_lines_find (b->text);
+  return t && hlid_folded_at (nh_lines_key (b->text), pos) == HLID_OK;
+}
+
 static struct buffer *
 nh_lines_buffer (Lisp_Object buffer)
 {

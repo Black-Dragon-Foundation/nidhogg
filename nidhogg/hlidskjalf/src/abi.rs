@@ -465,6 +465,18 @@ pub unsafe extern "C" fn hlid_fold_at(key: u64, pos: u64, out: *mut Fold) -> i32
     })
 }
 
+/// Whether POS's visible line is folded (`Model::folded_at`): HLID_OK when it is, HLID_NOTHING when not.
+#[unsafe(no_mangle)]
+pub extern "C" fn hlid_folded_at(key: u64, pos: u64) -> i32 {
+    with(key, |m| {
+        if m.folded_at(pos) {
+            HLID_OK
+        } else {
+            HLID_NOTHING
+        }
+    })
+}
+
 /// KEY's hidden ranges: N (BEG, END) pairs at RANGES (2N positions).
 ///
 /// # Safety

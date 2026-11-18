@@ -1250,6 +1250,14 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
 - **The scroll bar** (the `glitnir-ruler` strip) measures visible lines when the window's text has a model: lines
   hidden with `nidhogg-lines-set-hidden` do not count, so a mark keeps its place when the strip widens into the
   minimap. Without a model it measures characters, as before.
+- **On a terminal** (design 7.8, stage T) the strip is one column: a window with a `glitnir-ruler` and a right margin
+  (`set-window-margins`) gets its margin's last column, `┃` over the rows the window shows (the ruler's `:band`
+  colour) and `│` (`shadow`) elsewhere, `▐` in a mark's colour on the rows its marks fall on (a later mark over an
+  earlier one); one with `glitnir-fold-arrows` and a left margin gets `▸` (its `:folded` colour) in that margin's first
+  column on each row starting a folded line. C puts the cells in the frame's desired matrix after
+  `build_frame_matrix` (`glitnir_tty_columns`, `src/nidhogg-glitnir.c`), so `update_frame` owns them: insert/delete
+  line scrolling and the diff stay right, a row not redisplayed is updated only when its cell changed, and a scroll
+  runs no Lisp.
 - **Tree-sitter folds** (source 0): a buffer's `nidhogg-treesit-fold-query` (buffer-local, a compiled query) runs in C
   at each parse's publish (`treesit_ensure_parsed`'s tail, before the after-change functions), over that parse's
   changed ranges only. Its `@fold` / `@fold.KIND` nodes replace the source-0 ranges touching each range, widened to

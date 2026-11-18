@@ -653,7 +653,10 @@ The vector goes into the window parameter `glitnir--ruler', which C
 reads when the frame publishes: the strip at the window's right inner
 edge, its marks at their position's fraction of the buffer (characters,
 as the scroll bar measures) and the band over the part shown.  Nothing
-is done per redisplay: a scroll moves the band in C."
+is done per redisplay: a scroll moves the band in C.  On a terminal the
+strip is the last column of the window's right margin, when it has one
+\(`set-window-margins'): `┃' over the rows shown, `│' elsewhere, `▐' in
+a mark's colour."
   (let ((spec (window-parameter window 'glitnir-ruler))
         (key (window-parameter window 'glitnir--ruler-key)))
     (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
@@ -873,7 +876,9 @@ set, so C lists the frame."
 ;; the buffer's line model, from the matrix at publish (no overlays, no
 ;; Lisp per scroll or hover).  Resolved into `glitnir--fold-arrows' only
 ;; when it, or the theme, changed.  A click on the fringe reaches Lisp as
-;; Emacs's own `left-fringe' event.
+;; Emacs's own `left-fringe' event.  On a terminal there is no fringe: a
+;; window with a left margin gets a `▸' in its first column on each row
+;; starting a folded line, the other arrows not shown.
 
 (defun glitnir--fold-arrows-vector (spec frame)
   "Return fold arrows SPEC as the vector C reads, for FRAME, or nil for none.

@@ -80,6 +80,9 @@ int32_t hlid_line_runs (uint64_t key, uint64_t line, hlid_run *out, size_t *n);
 int32_t hlid_folds (uint64_t key, uint64_t beg, uint64_t end, hlid_fold *out,
 		    size_t cap, size_t *n);
 int32_t hlid_fold_at (uint64_t key, uint64_t pos, hlid_fold *out);
+/* HLID_OK when POS's visible line is folded (a fold starts on it, the lines
+   after it hidden), HLID_NOTHING when not.  */
+int32_t hlid_folded_at (uint64_t key, uint64_t pos);
 int32_t hlid_set_hidden (uint64_t key, const uint64_t *ranges, size_t n);
 /* As hlid_set_hidden, with a name for each range: LENS[I] bytes of UTF-8 at
    NAMES[I] (null: none); NAMES and LENS may both be null.  */

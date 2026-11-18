@@ -149,6 +149,28 @@ fn marks_shift_on_edit() {
 }
 
 #[test]
+fn a_folded_line_starts_a_fold_whose_lines_are_hidden() {
+    let mut p = Pair::new("fn a() {\n  x\n  y\n}\nfn b() {\n  z\n}\n", false);
+    let f = |beg, end| Fold {
+        beg,
+        end,
+        kind: 1,
+        depth: 0,
+        source: 0,
+    };
+    p.m.set_folds(3, &[f(1, 19), f(20, 33)], 100);
+    assert!(!p.m.folded_at(1));
+    // fn a's body hidden: from its first line's end to its last line's
+    p.m.set_hidden(&[(9, 19)]);
+    assert!(p.m.folded_at(1));
+    assert!(p.m.folded_at(5));
+    assert!(!p.m.folded_at(20));
+    assert!(!p.m.folded_at(30));
+    p.m.set_hidden(&[]);
+    assert!(!p.m.folded_at(1));
+}
+
+#[test]
 fn fold_table_shift() {
     let mut p = Pair::new("fn a() {\n  x\n  y\n}\nfn b() {\n  z\n}\n", false);
     let f = |beg, end| Fold {

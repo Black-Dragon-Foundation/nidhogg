@@ -2544,6 +2544,12 @@ build_frame_matrix (struct frame *f)
   /* Build the matrix by walking the window tree.  */
   build_frame_matrix_from_window_tree (f->desired_matrix,
 				       XWINDOW (FRAME_ROOT_WINDOW (f)));
+#ifdef HAVE_GLITNIR
+  /* Nidhogg: the windows' overview columns and fold margins
+     (nidhogg-glitnir.c), in the matrix update_frame writes.  */
+  extern void glitnir_tty_columns (struct frame *);
+  glitnir_tty_columns (f);
+#endif
 }
 
 

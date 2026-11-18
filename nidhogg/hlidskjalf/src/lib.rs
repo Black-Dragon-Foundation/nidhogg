@@ -673,6 +673,18 @@ impl Model {
             .filter(move |f| f.end > beg && f.beg < end)
     }
 
+    /// Whether POS's visible line is folded: a fold starts on it and the lines after it, up to the next visible line,
+    /// are hidden (what a fold arrow shows pointing right, and the terminal's `▸`).
+    pub fn folded_at(&mut self, pos: u64) -> bool {
+        let Some(l) = self.line_of(pos) else {
+            return false;
+        };
+        let (Some(a), b) = (self.pos_of(l), self.pos_of(l + 1).unwrap_or(u64::MAX)) else {
+            return false;
+        };
+        self.folds(a, b).any(|f| f.beg >= a && f.beg < b) && !self.hidden_in(a, b).is_empty()
+    }
+
     /// The fold to toggle at POS: the largest one that starts on POS's line, else the innermost one holding POS.
     pub fn fold_at(&mut self, pos: u64) -> Option<Fold> {
         self.derive();
