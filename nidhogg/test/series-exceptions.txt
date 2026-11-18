@@ -5,3 +5,6 @@ eeabb9fb1ed655e3d7f30b6f8afaf2f6a84c2b55commit misfiled: a HAVE_NHWL change (def
 66be84fe706dccafceb09fa3d1793bdfd0e40755commit misfiled: a HAVE_NHMAC change (the present deadline's wake) without the naglfar: subject; the release rebuild re-subjects it as naglfar: and removes this line
 b4a3d3a998e021e19e8cace7a36849762f81387acommit misfiled: Glitnir-created Lisp (nidhogg-views.el, the rowspans doc) edited under a sja: subject; the release rebuild re-subjects it as glitnir: and removes this line
 f8b86d54dc6d2e6a1a726586cdb250b446de7c39commit misfiled: shell-created Lisp (nhwl-menu.el) edited under an nhwl-menu: subject; the release rebuild re-subjects it as shell: and removes this line
+a99805500cb0c12eef8b7acc571700f6775f5b87commit misfiled: a HAVE_NIDHOGG_HISTORY change (treesit highlight slices) under a treesit: subject; the release rebuild re-subjects it as history: and removes this line
+8f3f4f44c9424548b12d27d72f6e19619d934042commit misfiled: Glitnir-created Lisp (glitnir.el, heat facts) edited under a minimap seams: subject; the release rebuild re-subjects it as glitnir: and removes this line
+ce10d7ec227f40fc97c9941c1ecc8cf2870683fbcommit misfiled: Glitnir-created Lisp (glitnir.el, fold arrows and pills) edited under a minimap: subject; the release rebuild re-subjects it as glitnir: and removes this line
