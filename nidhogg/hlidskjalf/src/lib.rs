@@ -100,6 +100,8 @@ pub struct Model {
     marks: Vec<Mark>,
     folds: Vec<Fold>,
     hidden: Vec<(u64, u64)>,
+    /// Each hidden range's name (a named fold's, F4), by the range's place in `hidden`.
+    hidden_names: Vec<Option<Box<str>>>,
     /// The hidden ranges as line ranges [a, b), merged, with the hidden lines before each (rebuilt on demand).
     hidden_lines: Option<Vec<(u64, u64, u64)>>,
     trail: VecDeque<u64>,
@@ -130,6 +132,7 @@ impl Model {
             marks: Vec::new(),
             folds: Vec::new(),
             hidden: Vec::new(),
+            hidden_names: Vec::new(),
             hidden_lines: None,
             trail: VecDeque::new(),
             edits: 0,
@@ -268,6 +271,8 @@ impl Model {
         for r in &mut self.hidden {
             *r = (shift(r.0), shift(r.1));
         }
+        let mut keep = self.hidden.iter().map(|r| r.0 < r.1);
+        self.hidden_names.retain(|_| keep.next().unwrap_or(false));
         self.hidden.retain(|r| r.0 < r.1);
         for t in &mut self.trail {
             *t = shift(*t);
@@ -687,11 +692,43 @@ impl Model {
 
     /// The ranges an owner made invisible: a line whose start lies in (BEG, END] is hidden.
     pub fn set_hidden(&mut self, ranges: &[(u64, u64)]) {
-        let mut r: Vec<(u64, u64)> = ranges.iter().copied().filter(|r| r.0 < r.1).collect();
-        r.sort_unstable();
-        self.hidden = r;
+        let named: Vec<(u64, u64, Option<&str>)> =
+            ranges.iter().map(|&(b, e)| (b, e, None)).collect();
+        self.set_hidden_named(&named);
+    }
+
+    /// [`Model::set_hidden`] with a name for each range (a named fold's, or `None`): the minimap's fold pill shows it.
+    pub fn set_hidden_named(&mut self, ranges: &[(u64, u64, Option<&str>)]) {
+        let mut r: Vec<(u64, u64, Option<Box<str>>)> = ranges
+            .iter()
+            .filter(|r| r.0 < r.1)
+            .map(|&(b, e, n)| (b, e, n.map(Into::into)))
+            .collect();
+        r.sort_unstable_by_key(|x| (x.0, x.1));
+        self.hidden = r.iter().map(|x| (x.0, x.1)).collect();
+        self.hidden_names = r.into_iter().map(|x| x.2).collect();
         self.hidden_lines = None;
         self.generation += 1;
+    }
+
+    /// The hidden ranges whose start lies in [BEG, END): each one's line (0-based, the line its start is on: the fold's
+    /// first line, which stays visible unless another range hides it), how many lines it hides, and its name.
+    pub fn hidden_in(&mut self, beg: u64, end: u64) -> Vec<(u64, u64, Option<Box<str>>)> {
+        self.poll(false);
+        let Some(idx) = self.idx.as_ref() else {
+            return Vec::new();
+        };
+        let a = self.hidden.partition_point(|r| r.0 < beg);
+        self.hidden[a..]
+            .iter()
+            .zip(&self.hidden_names[a..])
+            .take_while(|(r, _)| r.0 < end)
+            .filter_map(|(&(b, e), n)| {
+                let head = idx.line_at(b - 1);
+                let z = idx.line_at(e - 1) + 1;
+                (z > head + 1).then(|| (head, z - head - 1, n.clone()))
+            })
+            .collect()
     }
 
     /// A count bumped by every change of the lines or of the hidden ones: a drawing of the rows made at one

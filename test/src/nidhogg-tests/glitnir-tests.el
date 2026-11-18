@@ -753,7 +753,7 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; t
               (glitnir--recheck-frame-cards w)
               (should (equal (window-parameter w 'glitnir--minimap)
                              (vector 3 120 2 #x102030 0.5 #xffffff 1 -1 0 0 nil -1 -1 -1 -1 nil
-                                     (make-vector 16 -1) -1 nil)))
+                                     (make-vector 16 -1) -1 nil -1 nil nil nil -1 0 -1 0 -1 -1 nil)))
               (should (eq (frame-parameter nil 'glitnir--blocks) t))
               (glitnir--recheck-frame-cards w)
               (setq glitnir--card-generation (1+ glitnir--card-generation))
@@ -763,7 +763,7 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; t
               (glitnir--recheck-frame-cards w)
               (should (= sets 2))
               (should (equal (window-parameter w 'glitnir--minimap) (vector 0 80 3 -1 0 -1 0 #x808080 0.25 0 nil -1 -1 -1 -1 nil
-                                                                             (make-vector 16 -1) -1 nil)))
+                                                                             (make-vector 16 -1) -1 nil -1 nil nil nil -1 0 -1 0 -1 -1 nil)))
               ;; the labels: t names the file, `marks-only' does not; the colours and the face
               (set-window-parameter w 'glitnir-minimap
                                     '(:width 80 :labels t :file "/a/b.el" :label "#010203" :sub "#040506"
@@ -773,11 +773,35 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; t
               (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 9 16)
                              (vector 1 "/a/b.el" #x010203 #x040506 #x070809 #x0a0b0c 'bold)))
               ;; the hunk labels (`hunk-labels-go-to-c-with-labels-on'): their colour and the vector as given
-              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 17)
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 17 19)
                              (vector #x0d0e0f [[3 "hunk 1 · +2 −0"] [9 "hunk 2"]])))
               (set-window-parameter w 'glitnir-minimap '(:width 80 :labels nil :hunk "#0d0e0f" :hunk-labels [[3 "h"]]))
               (glitnir--recheck-frame-cards w)
-              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 17) (vector #x0d0e0f nil)))
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 17 19) (vector #x0d0e0f nil)))
+              ;; fold pills and the window's number (`fold-pills-and-numbers-go-to-c'): the format defaults with a
+              ;; colour, Lisp's own format as given, none without a colour
+              (set-window-parameter w 'glitnir-minimap '(:width 80 :pill "#112233" :number "2"))
+              (glitnir--recheck-frame-cards w)
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 19 22)
+                             (vector #x112233 "⋯ %d folded" "2")))
+              (set-window-parameter w 'glitnir-minimap '(:width 80 :pill "#112233" :pill-format "%d hidden"))
+              (glitnir--recheck-frame-cards w)
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 19 22) (vector #x112233 "%d hidden" nil)))
+              (set-window-parameter w 'glitnir-minimap '(:width 80 :pill-format "%d hidden"))
+              (glitnir--recheck-frame-cards w)
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 19 22) (vector -1 nil nil)))
+              ;; heat and pins (`heat-and-pins-go-to-c'): the file with heat even with labels off, the ramp's ends; the
+              ;; pins' kind, colour and names as given
+              (set-window-parameter w 'glitnir-minimap
+                                    '(:width 80 :file "/a/b.el" :heat "blame" :heat-low ("#000010" . 0.5)
+                                             :heat-high "#ff0000" :pin-kind 9 :pin "#00ffff" :pin-names ["one" "two"]))
+              (glitnir--recheck-frame-cards w)
+              (should (equal (aref (window-parameter w 'glitnir--minimap) 10) "/a/b.el"))
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 22)
+                             (vector "blame" #x000010 0.5 #xff0000 1 9 #x00ffff ["one" "two"])))
+              (set-window-parameter w 'glitnir-minimap '(:width 80 :file "/a/b.el"))
+              (glitnir--recheck-frame-cards w)
+              (should-not (aref (window-parameter w 'glitnir--minimap) 10))
               (set-window-parameter w 'glitnir-minimap '(:width 80 :labels marks-only :file "/a/b.el"))
               (glitnir--recheck-frame-cards w)
               (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 9 11) (vector 2 nil)))
@@ -789,6 +813,38 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; t
             (set-window-parameter w k nil))
           (clrhash glitnir--blocks-seen)
           (set-frame-parameter nil 'glitnir--blocks nil))))))
+
+(ert-deftest glitnir-fold-arrows-resolve-only-on-change ()
+  "A window's `glitnir-fold-arrows' is resolved into `glitnir--fold-arrows' once per change of the spec or the theme's
+generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; an unknown mode or none is no arrows."
+  (let ((w (selected-window)) (sets 0)
+        (set-window-parameter (symbol-function 'set-window-parameter)))
+    (cl-letf (((symbol-function 'set-window-parameter)
+               (lambda (win p v)
+                 (when (eq p 'glitnir--fold-arrows) (setq sets (1+ sets)))
+                 (funcall set-window-parameter win p v))))
+      (unwind-protect
+          (progn
+            (set-window-parameter w 'glitnir-fold-arrows
+                                  '(:mode hover :size 12 :inset 3 :colour ("#102030" . 0.5) :folded "#405060"))
+            (glitnir--recheck-frame-cards w)
+            (should (equal (window-parameter w 'glitnir--fold-arrows) (vector 1 12 3 #x102030 0.5 #x405060 1)))
+            (should (eq (frame-parameter nil 'glitnir--blocks) t))
+            (glitnir--recheck-frame-cards w)
+            (should (= sets 1))
+            (set-window-parameter w 'glitnir-fold-arrows '(:mode always :size 10))
+            (glitnir--recheck-frame-cards w)
+            (should (equal (window-parameter w 'glitnir--fold-arrows) (vector 2 10 0 -1 0 -1 0)))
+            (set-window-parameter w 'glitnir-fold-arrows '(:size 10))
+            (glitnir--recheck-frame-cards w)
+            (should-not (window-parameter w 'glitnir--fold-arrows))
+            (set-window-parameter w 'glitnir-fold-arrows nil)
+            (glitnir--recheck-frame-cards w)
+            (should-not (frame-parameter nil 'glitnir--blocks)))
+        (dolist (k '(glitnir-fold-arrows glitnir--fold-arrows glitnir--fold-arrows-key))
+          (set-window-parameter w k nil))
+        (clrhash glitnir--blocks-seen)
+        (set-frame-parameter nil 'glitnir--blocks nil)))))
 
 (ert-deftest glitnir-minimap-event-scrolls-and-tells ()
   "A `glitnir-minimap' click or drag step scrolls its window to start at POS; every kind runs

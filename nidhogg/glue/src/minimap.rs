@@ -134,7 +134,78 @@ pub struct NhgMinimap {
     pub hunk_rgb: i32,
     pub hunks: *const NhgMinimapHunk,
     pub hunks_len: usize,
+    /// The fold pills' 0xRRGGBB (-1: none) and their text's format, `pill_format_len` bytes of UTF-8 with one `%d`
+    /// (the lines hidden; null: [`PILL_FORMAT`]): each hidden range of the model gets a dashed pill after its first
+    /// line's bar, its name instead when it has one, placed as a MARK section is, with labels off too (design M5).
+    pub pill_rgb: i32,
+    pub pill_format: *const u8,
+    pub pill_format_len: usize,
+    /// This window's number, `number_len` bytes of UTF-8 (null: none): another window's minimap on the same text shows
+    /// it at the top-right of this window's outlined band (design M8).
+    pub number: *const u8,
+    pub number_len: usize,
+    /// Fold arrows (design F1): `NHG_ARROWS_*` (0: none); the left fringe (same coordinates as `clip`); the chevron's
+    /// box and its inset from the fringe's inner edge (device px); an open fold's and a folded one's 0xRRGGBB (-1:
+    /// none) at their opacities; and the rows of the window's matrix that start a line, `rows_len` of them.
+    pub arrows: u32,
+    pub fringe: NhgRect,
+    pub arrow_size: u32,
+    pub arrow_inset: u32,
+    pub arrow_rgb: i32,
+    pub arrow_opacity: f32,
+    pub folded_rgb: i32,
+    pub folded_opacity: f32,
+    pub rows: *const NhgMinimapRow,
+    pub rows_len: usize,
+    /// The heat layer (design X3): its name, `heat_len` bytes of UTF-8 (null: no heat), Sjá's layer `heat:NAME` of
+    /// `file`; the ramp's colours at 0 and at 1000, 0xRRGGBB (-1: none) at their opacities.  While the layer exists each
+    /// line's bar is one colour mixed between them by its value, a line with no item in the bars' colour.
+    pub heat: *const u8,
+    pub heat_len: usize,
+    pub heat_low_rgb: i32,
+    pub heat_low_opacity: f32,
+    pub heat_high_rgb: i32,
+    pub heat_high_opacity: f32,
+    /// Pinned regions (design X5): the line model's mark kind of pins (-1: none), their 0xRRGGBB (-1: none), and their
+    /// names in buffer order, `pins_len` of them: each pin mark with an end a band over its rows at `band_opacity`, its
+    /// name at its first row, placed as a MARK section is, with labels off too.
+    pub pin_kind: i32,
+    pub pin_rgb: i32,
+    pub pins: *const NhgMinimapName,
+    pub pins_len: usize,
 }
+
+/// A name as C gives it: `len` bytes of UTF-8.  Layout equals `NhgMinimapName`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NhgMinimapName {
+    pub text: *const u8,
+    pub len: usize,
+}
+
+/// A row of a window's current matrix that is a line's first screen row: the line's start position, and the row's
+/// top and height (same coordinates as `clip`).  Layout equals `NhgMinimapRow`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NhgMinimapRow {
+    pub pos: u64,
+    pub y: i32,
+    pub h: i32,
+}
+
+/// [`NhgMinimap::arrows`]: shown while the pointer is over the window's left fringe (folded lines always).
+pub const NHG_ARROWS_HOVER: u32 = 1;
+/// [`NhgMinimap::arrows`]: always shown.
+pub const NHG_ARROWS_ALWAYS: u32 = 2;
+/// [`NhgMinimap::flags`]: the record is for the fold arrows alone (no minimap is drawn).
+pub const NHG_MINIMAP_NONE: u32 = 16;
+
+/// A fold pill's text when C gives no format.
+pub const PILL_FORMAT: &str = "⋯ %d folded";
+/// A fold pill's room around its text (logical px), its gap after the bar, and its dash and gap.
+pub const PILL_PAD: f64 = 3.0;
+pub const PILL_GAP: f64 = 4.0;
+pub const PILL_DASH: f64 = 2.0;
 
 /// One hunk label as C gives it.  Layout equals `NhgMinimapHunk`.
 #[repr(C)]
@@ -183,6 +254,31 @@ impl Default for NhgMinimap {
             hunk_rgb: -1,
             hunks: std::ptr::null(),
             hunks_len: 0,
+            pill_rgb: -1,
+            pill_format: std::ptr::null(),
+            pill_format_len: 0,
+            number: std::ptr::null(),
+            number_len: 0,
+            arrows: 0,
+            fringe: NhgRect::default(),
+            arrow_size: 0,
+            arrow_inset: 0,
+            arrow_rgb: -1,
+            arrow_opacity: 0.0,
+            folded_rgb: -1,
+            folded_opacity: 0.0,
+            rows: std::ptr::null(),
+            rows_len: 0,
+            heat: std::ptr::null(),
+            heat_len: 0,
+            heat_low_rgb: -1,
+            heat_low_opacity: 0.0,
+            heat_high_rgb: -1,
+            heat_high_opacity: 0.0,
+            pin_kind: -1,
+            pin_rgb: -1,
+            pins: std::ptr::null(),
+            pins_len: 0,
         }
     }
 }
@@ -195,6 +291,53 @@ impl NhgMinimap {
         }
         // SAFETY: C passes `file_len` readable bytes, valid for the publish this record is part of.
         std::str::from_utf8(unsafe { std::slice::from_raw_parts(self.file, self.file_len) }).ok()
+    }
+
+    /// UTF-8 text C gives at `p` for `len` bytes, when it is some.
+    fn text_at(p: *const u8, len: usize) -> Option<&'static str> {
+        if p.is_null() || len == 0 {
+            return None;
+        }
+        // SAFETY: C passes `len` readable bytes, valid for the publish the record is part of (the lifetime is the
+        // caller's to keep within it).
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, len) }).ok()
+    }
+
+    /// The fold pills' format.
+    fn pill_format(&self) -> &str {
+        Self::text_at(self.pill_format, self.pill_format_len).unwrap_or(PILL_FORMAT)
+    }
+
+    /// The window's number.
+    fn number(&self) -> Option<&str> {
+        Self::text_at(self.number, self.number_len)
+    }
+
+    /// Sjá's heat layer name (`heat:NAME`), when there is heat and a file.
+    fn heat_layer(&self) -> Option<String> {
+        self.file_name()?;
+        Self::text_at(self.heat, self.heat_len).map(|h| format!("heat:{h}"))
+    }
+
+    /// The pins' names, in buffer order (a name not in UTF-8 is empty).
+    fn pin_names(&self) -> Vec<&str> {
+        if self.pins.is_null() || self.pins_len == 0 {
+            return Vec::new();
+        }
+        // SAFETY: C passes `pins_len` records, each with `len` readable bytes, valid for the publish.
+        let ps = unsafe { std::slice::from_raw_parts(self.pins, self.pins_len) };
+        ps.iter()
+            .map(|p| Self::text_at(p.text, p.len).unwrap_or(""))
+            .collect()
+    }
+
+    /// The matrix rows that start a line.
+    fn line_rows(&self) -> &[NhgMinimapRow] {
+        if self.rows.is_null() || self.rows_len == 0 {
+            return &[];
+        }
+        // SAFETY: C passes `rows_len` records, valid for the publish this record is part of.
+        unsafe { std::slice::from_raw_parts(self.rows, self.rows_len) }
     }
 
     /// The hunk labels, (line from 1, text) in the order C gives them (by line); a text not in UTF-8 is left out.
@@ -380,6 +523,62 @@ fn sprite(
     cache.get_or_render(key, || render_sprite(e, text, rgb, px100, cap_w, cap_h))
 }
 
+/// A fold pill's sprite: TEXT rendered in RGB at PX100, `pad` device px of room each side, in a dashed outline one px
+/// wide in RGB (dashes of `dash` px), at most CAP_W × H; from CACHE, else built.
+#[allow(clippy::too_many_arguments)]
+fn pill(
+    cache: &mut SpriteCache,
+    e: &NhgMinimap,
+    text: &str,
+    rgb: u32,
+    px100: u32,
+    cap_w: i32,
+    h: i32,
+    pad: i32,
+    dash: i32,
+) -> Option<Sprite> {
+    let inner_w = cap_w - 2 * pad;
+    if inner_w <= 0 || h <= 2 {
+        return None;
+    }
+    let (tw, th, tpx) = sprite(cache, e, text, rgb, px100, inner_w, h - 2)?;
+    let key: SpriteKey = (
+        format!("\u{1}pill\u{1}{text}").into(),
+        rgb,
+        px100,
+        cap_w,
+        e.label_face,
+    );
+    cache.get_or_render(key, || {
+        let (w, hh) = (tw as i32 + 2 * pad, h);
+        let mut buf = vec![0u32; (w * hh) as usize];
+        let line = 0xff00_0000 | rgb;
+        let on = |i: i32| (i / dash.max(1)) % 2 == 0;
+        for x in 0..w {
+            if on(x) {
+                buf[x as usize] = line;
+                buf[((hh - 1) * w + x) as usize] = line;
+            }
+        }
+        for y in 0..hh {
+            if on(y) {
+                buf[(y * w) as usize] = line;
+                buf[(y * w + w - 1) as usize] = line;
+            }
+        }
+        let top = ((hh - th as i32) / 2).max(1);
+        for y in 0..(th as i32).min(hh - 1 - top) {
+            for x in 0..tw as i32 {
+                let v = tpx[(y as u32 * tw + x as u32) as usize];
+                if v != 0 {
+                    buf[((top + y) * w + pad + x) as usize] = v;
+                }
+            }
+        }
+        Some((w as u32, hh as u32, buf.into()))
+    })
+}
+
 /// Ask C's renderer for TEXT's sprite.
 fn render_sprite(
     e: &NhgMinimap,
@@ -500,6 +699,7 @@ fn row(l: &Line) -> Row {
         end: at(l.len.saturating_sub(1)).max(indent + 1),
         class: 0,
         runs,
+        heat: None,
     }
 }
 
@@ -509,6 +709,7 @@ struct Stamp {
     key: u64,
     generation: u64,
     first: u64,
+    heat: Option<Heat>,
     spec: TileSpec,
 }
 
@@ -525,6 +726,9 @@ struct Window {
     accent: Option<usize>,
     /// The pieces last given to a shell that shows the minimap on layers of its own (`minimap_layers`).
     given: crate::minimap_layers::Given,
+    /// The fold arrows' fringe (root px) and mode at the last publish, and their layer as last given.
+    arrows: Option<(Rect, u32)>,
+    arrows_applied: Option<(u32, Arc<Minimap>)>,
 }
 
 /// Where a window's minimap was at its last publish (root device px), for the pointer.
@@ -559,6 +763,8 @@ struct Hover {
     /// The row under the pointer (from the minimap's row 0), and the pointer's y (root px).
     row: Option<u64>,
     y: Option<f64>,
+    /// The pointer is over the window's left fringe (the fold arrows show in `NHG_ARROWS_HOVER`).
+    fringe: bool,
 }
 
 impl Hover {
@@ -687,6 +893,14 @@ impl Minimaps {
         self.last = at;
         let mut r = Reply::default();
         for (seq, w) in &mut self.windows {
+            // the fold arrows' fringe: never swallowed (Emacs's fringe clicks fold), a publish on the way in and out
+            if let Some((fringe, mode)) = w.arrows {
+                let on = at.is_some_and(|(x, y)| within(&fringe, x, y));
+                if on != w.hover.fringe {
+                    w.hover.fringe = on;
+                    r.publish |= mode == NHG_ARROWS_HOVER;
+                }
+            }
             let Some(g) = w.geom else {
                 continue;
             };
@@ -815,6 +1029,10 @@ enum Kind {
     Def,
     Mark,
     Hunk,
+    /// A fold pill (design M5): after its line's bar, at its column (logical columns from the minimap's left).
+    Pill(u32),
+    /// A pinned region's name (design X5).
+    Pin,
 }
 
 /// What [`labels`] gives: the sprites placed, the hairlines, each label's rows (top, bottom) and the accented one.
@@ -834,7 +1052,7 @@ fn labels(
     cache: &mut SpriteCache,
 ) -> Labels {
     let none = (Vec::new(), Vec::new(), Vec::new(), None);
-    if e.labels == 0 {
+    if e.labels == 0 && e.pill_rgb < 0 && (e.pin_kind < 0 || e.pin_rgb < 0) {
         return none;
     }
     let row = u64::from(row_px.max(1));
@@ -874,19 +1092,51 @@ fn labels(
         });
     }
     let placed_rows = with_model(e.key, |m| {
-        let marks: Vec<(u64, String)> = m
-            .sections(pa, pb)
-            .iter()
-            .take(4096)
-            .map(|x| (x.pos, x.name.to_uppercase()))
-            .collect();
+        let marks: Vec<(u64, String)> = if e.labels == 0 {
+            Vec::new()
+        } else {
+            m.sections(pa, pb)
+                .iter()
+                .take(4096)
+                .map(|x| (x.pos, x.name.to_uppercase()))
+                .collect()
+        };
         for (pos, name) in marks {
             if let Some(l) = m.line_of(pos) {
                 found.push((l, 0, Kind::Mark, name));
             }
         }
         // Lisp's hunk labels, the lines shown (none without their colour)
-        for (line, text) in e.hunk_labels().into_iter().filter(|_| e.hunk_rgb >= 0) {
+        // the pins' names: the n-th pin by position gets the n-th name, at its first line
+        if e.pin_kind >= 0 && e.pin_rgb >= 0 {
+            let names = e.pin_names();
+            for (pos, name) in pins(m, e.pin_kind).into_iter().zip(names) {
+                if !name.is_empty()
+                    && pos.0 >= pa
+                    && pos.0 < pb
+                    && let Some(l) = m.line_of(pos.0)
+                {
+                    found.push((l, 0, Kind::Pin, name.to_owned()));
+                }
+            }
+        }
+        // the fold pills: each hidden range starting on a line shown, its name or the lines it hides
+        if e.pill_rgb >= 0 {
+            let lo = m.pos_of(la).unwrap_or(pa);
+            for (l, n, name) in m.hidden_in(lo, pb).into_iter().take(4096) {
+                let text = match name {
+                    Some(t) => t.to_string(),
+                    None => e.pill_format().replacen("%d", &n.to_string(), 1),
+                };
+                let end = m.index().map_or(0, |x| self::row(&x.line(l)).end);
+                found.push((l, 0, Kind::Pill(end), text));
+            }
+        }
+        for (line, text) in e
+            .hunk_labels()
+            .into_iter()
+            .filter(|_| e.hunk_rgb >= 0 && e.labels > 0)
+        {
             let l = line.saturating_sub(1);
             if line > 0 && l >= la && l <= lb {
                 found.push((l, 0, Kind::Hunk, text.to_owned()));
@@ -926,8 +1176,40 @@ fn labels(
     let mut lines = Vec::new();
     for (k, &i) in chosen.iter().enumerate() {
         let (_, depth, kind, text) = &placed_rows[i];
+        if let Kind::Pill(end) = *kind {
+            let Ok(rgb) = u32::try_from(e.pill_rgb) else {
+                continue;
+            };
+            let x = p.rect.x + end as i32 * px(1.0).max(1) + px(PILL_GAP);
+            let cap_w = p.rect.x + p.rect.w - px(LABEL_RIGHT) - x;
+            let px100 = (MARK_PX * s * 100.0).round() as u32;
+            let dash = px(PILL_DASH).max(1);
+            if let Some((w, sh, spx)) = pill(
+                cache,
+                e,
+                text,
+                rgb & 0xff_ffff,
+                px100,
+                cap_w,
+                h,
+                px(PILL_PAD),
+                dash,
+            ) {
+                out.push(LabelAt {
+                    x,
+                    y: cands[i].y,
+                    w,
+                    h: sh,
+                    px: spx,
+                    back_argb: back,
+                });
+            }
+            continue;
+        }
         let mark = *kind == Kind::Mark;
-        let rgb = if accent == Some(k) {
+        let rgb = if *kind == Kind::Pin {
+            e.pin_rgb
+        } else if accent == Some(k) {
             e.accent_rgb
         } else if *kind == Kind::Hunk {
             e.hunk_rgb
@@ -974,6 +1256,79 @@ fn labels(
         }
     }
     (out, lines, boxes, accent)
+}
+
+/// Model `m`'s pins: the marks of kind `kind` with an end, (start, end) by position.
+fn pins(m: &mut glitnir::hlidskjalf::Model, kind: i32) -> Vec<(u64, u64)> {
+    let mut v: Vec<(u64, u64)> = m
+        .marks()
+        .iter()
+        .filter(|x| i32::from(x.kind) == kind && x.end > x.pos)
+        .map(|x| (x.pos, x.end))
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// The pin bands of window `e`'s minimap `p` over `rows`: each pin a band over its visible rows in the pin colour at the
+/// band's opacity.
+fn pin_bands(e: &NhgMinimap, rows: &Rows, p: &Placement, row_px: u32) -> Vec<Band> {
+    let Ok(rgb) = u32::try_from(e.pin_rgb) else {
+        return Vec::new();
+    };
+    if e.pin_kind < 0 {
+        return Vec::new();
+    }
+    let row = u64::from(row_px.max(1));
+    let fill = premultiplied(rgb & 0xff_ffff, e.band_opacity);
+    with_model(e.key, |m| {
+        let vis = |m: &mut glitnir::hlidskjalf::Model, pos: u64| -> Option<u64> {
+            let l = m.line_of(pos)?;
+            Some(m.visible_before(l)?.0)
+        };
+        let mut out = Vec::new();
+        for (a, z) in pins(m, e.pin_kind).into_iter().take(4096) {
+            let (Some(a), Some(z)) = (vis(m, a), vis(m, z.saturating_sub(1).max(a))) else {
+                continue;
+            };
+            let (a, z) = (
+                a.saturating_sub(rows.first),
+                z.saturating_sub(rows.first) + 1,
+            );
+            let y = i64::from(p.rect.y) + (a * row) as i64 - p.offset as i64;
+            out.push(Band {
+                rect: Rect::new(
+                    p.rect.x,
+                    y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                    p.rect.w,
+                    ((z.max(a + 1) - a) * row).min(i32::MAX as u64) as i32,
+                ),
+                fill_argb: fill,
+                line_argb: 0,
+            });
+        }
+        out
+    })
+    .unwrap_or_default()
+}
+
+/// A heat layer as a window draws it: the layer's version and the ramp's ends and the plain bars' colour (premultiplied).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Heat {
+    version: u64,
+    low: u32,
+    high: u32,
+    plain: u32,
+}
+
+/// Premultiplied `low` and `high` mixed at `value` / 1000, channel by channel.
+pub fn heat_mix(low: u32, high: u32, value: u16) -> u32 {
+    let v = u32::from(value.min(1000));
+    let ch = |sh: u32| {
+        let (a, b) = ((low >> sh) & 0xff, (high >> sh) & 0xff);
+        ((a * (1000 - v) + b * v + 500) / 1000) << sh
+    };
+    ch(24) | ch(16) | ch(8) | ch(0)
 }
 
 /// The nesting shades of model `key` for the rows minimap `p` shows: a band per fold range of depth below
@@ -1046,6 +1401,114 @@ pub fn minimap_id(seq: u64) -> u64 {
     seq | MINIMAP_TAG
 }
 
+/// The fold arrows' layer bit, beside [`MINIMAP_TAG`].
+pub const ARROWS_TAG: u64 = 1 << 57;
+
+/// The layer id of window `seq`'s fold arrows.
+pub fn arrows_id(seq: u64) -> u64 {
+    seq | MINIMAP_TAG | ARROWS_TAG
+}
+
+/// A chevron in a `size` px square box in `argb` (premultiplied): pointing down (an open fold), or right when `folded`.
+pub fn chevron(size: u32, folded: bool, argb: u32) -> Arc<[u32]> {
+    let n = size as usize;
+    let s = f64::from(size);
+    let pts = if folded {
+        [(0.35, 0.2), (0.65, 0.5), (0.35, 0.8)]
+    } else {
+        [(0.2, 0.35), (0.5, 0.65), (0.8, 0.35)]
+    };
+    let pts = pts.map(|(x, y)| (x * s, y * s));
+    let half = (s / 14.0).max(0.5) + 0.25;
+    let near = |px: f64, py: f64, a: (f64, f64), b: (f64, f64)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = (((px - a.0) * dx + (py - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        let (cx, cy) = (a.0 + t * dx - px, a.1 + t * dy - py);
+        (cx * cx + cy * cy).sqrt() <= half
+    };
+    let mut buf = vec![0u32; n * n];
+    for y in 0..n {
+        for x in 0..n {
+            let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
+            if near(cx, cy, pts[0], pts[1]) || near(cx, cy, pts[1], pts[2]) {
+                buf[y * n + x] = argb;
+            }
+        }
+    }
+    buf.into()
+}
+
+/// Window `e`'s fold arrows (design F1) with the layer origin `origin`: a chevron in its fringe on each matrix row that
+/// starts a line where a fold range starts, right-pointing in the folded colour when the range's lines are hidden; the
+/// open ones only while the pointer is over the fringe in `NHG_ARROWS_HOVER`.  `None` without arrows or a fringe.
+fn arrows(e: &NhgMinimap, origin: (i32, i32), win: &mut Window) -> Option<Minimap> {
+    let fringe = Rect::new(
+        e.fringe.x.saturating_add(origin.0),
+        e.fringe.y.saturating_add(origin.1),
+        e.fringe.w,
+        e.fringe.h,
+    );
+    if e.arrows == 0 || fringe.is_empty() || e.arrow_size == 0 {
+        win.arrows = None;
+        return None;
+    }
+    win.arrows = Some((fringe, e.arrows));
+    let shown_open = e.arrows == NHG_ARROWS_ALWAYS || win.hover.fringe;
+    let size = e.arrow_size.min(fringe.h.max(0) as u32);
+    let x = fringe.x + fringe.w - e.arrow_inset as i32 - size as i32;
+    let rows = e.line_rows();
+    let marks: Vec<(usize, bool)> = with_model(e.key, |m| {
+        let mut out = Vec::new();
+        for (i, r) in rows.iter().enumerate().take(4096) {
+            let Some(l) = m.line_of(r.pos) else {
+                continue;
+            };
+            let (Some(a), b) = (m.pos_of(l), m.pos_of(l + 1).unwrap_or(u64::MAX)) else {
+                continue;
+            };
+            if !m.folds(a, b).any(|f| f.beg >= a && f.beg < b) {
+                continue;
+            }
+            out.push((i, !m.hidden_in(a, b).is_empty()));
+        }
+        out
+    })
+    .unwrap_or_default();
+    let mut labels = Vec::new();
+    for (i, folded) in marks {
+        if !folded && !shown_open {
+            continue;
+        }
+        let (rgb, op) = if folded {
+            (e.folded_rgb, e.folded_opacity)
+        } else {
+            (e.arrow_rgb, e.arrow_opacity)
+        };
+        if rgb < 0 {
+            continue;
+        }
+        let r = rows[i];
+        labels.push(LabelAt {
+            x,
+            y: r.y.saturating_add(origin.1) + (r.h - size as i32) / 2,
+            w: size,
+            h: size,
+            px: chevron(size, folded, colour(rgb, op)),
+            back_argb: 0,
+        });
+    }
+    Some(Minimap {
+        rect: fringe,
+        reveal_px: fringe.w.max(0) as u32,
+        left: true,
+        fill_argb: 0,
+        tiles: Arc::from([]),
+        bands: Arc::from([]),
+        shades: Arc::from([]),
+        labels: labels.into(),
+    })
+}
+
 /// Model `key`'s rows for a window from `start` to `end` of the accessible part `begv`..`zv`; `None` while it has
 /// no lines (no model, or being built).
 pub fn rows_of(key: u64, start: u64, end: u64, begv: u64, zv: u64) -> Option<Rows> {
@@ -1070,13 +1533,43 @@ pub fn rows_of(key: u64, start: u64, end: u64, begv: u64, zv: u64) -> Option<Row
 }
 
 /// Model `key`'s tile `t` for rows from `first`: [`TILE_ROWS`] visible rows rasterised.
-fn tile(key: u64, first: u64, t: u64, spec: &TileSpec) -> Arc<[u32]> {
-    let lines = with_model(key, |m| {
-        m.visible_rows(first + t * TILE_ROWS as u64, TILE_ROWS)
+fn tile(
+    key: u64,
+    first: u64,
+    t: u64,
+    spec: &TileSpec,
+    heat: Option<(&str, &str, Heat)>,
+) -> Arc<[u32]> {
+    let r0 = first + t * TILE_ROWS as u64;
+    let (lines, nums) = with_model(key, |m| {
+        let lines = m.visible_rows(r0, TILE_ROWS)?;
+        let nums: Vec<u64> = if heat.is_some() {
+            (0..lines.len() as u64)
+                .map(|i| m.visible_line(r0 + i).unwrap_or(u64::MAX))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Some((lines, nums))
     })
     .flatten()
     .unwrap_or_default();
-    let rows: Vec<Row> = lines.iter().map(row).collect();
+    let mut rows: Vec<Row> = lines.iter().map(row).collect();
+    if let Some((file, layer, h)) = heat {
+        glitnir::sja::minimap::with_layer(file, layer, |_, d| {
+            if let glitnir::sja::minimap::Data::Heat(v) = d {
+                for (r, &l) in rows.iter_mut().zip(&nums) {
+                    // lines count from 1 in Sjá: the last item starting at or before the line, when it reaches it
+                    let line = l.saturating_add(1);
+                    let i = v.partition_point(|x| u64::from(x.0) <= line);
+                    r.heat = Some(match i.checked_sub(1).map(|i| &v[i]) {
+                        Some(x) if u64::from(x.1) >= line => heat_mix(h.low, h.high, x.2),
+                        _ => h.plain,
+                    });
+                }
+            }
+        });
+    }
     raster(spec, &rows).into()
 }
 
@@ -1120,10 +1613,26 @@ fn minimap(
             colour(rgb, e.text_opacity)
         }),
     };
+    // the heat layer, while it exists: its version is part of what the tiles were drawn for
+    let layer = e.heat_layer();
+    let file = e.file_name().unwrap_or("");
+    let heat = layer.as_deref().and_then(|l| {
+        let version = glitnir::sja::minimap::with_layer(file, l, |v, d| {
+            matches!(d, glitnir::sja::minimap::Data::Heat(_)).then_some(v)
+        })
+        .flatten()?;
+        Some(Heat {
+            version,
+            low: colour(e.heat_low_rgb, e.heat_low_opacity),
+            high: colour(e.heat_high_rgb, e.heat_high_opacity),
+            plain: colour(e.text_rgb, e.text_opacity),
+        })
+    });
     let stamp = Stamp {
         key: e.key,
         generation: rows.generation,
         first: rows.first,
+        heat,
         spec,
     };
     if win.stamp != Some(stamp) {
@@ -1146,11 +1655,10 @@ fn minimap(
         let bottom = (p.offset + p.rect.h as u64).min(last_row_px);
         let (t0, t1) = (p.offset / tile_px, bottom.saturating_sub(1) / tile_px);
         for t in t0..=t1 {
-            let px = Arc::clone(
-                win.tiles
-                    .entry(t)
-                    .or_insert_with(|| tile(e.key, rows.first, t, &spec)),
-            );
+            let px = Arc::clone(win.tiles.entry(t).or_insert_with(|| {
+                let h = heat.and_then(|h| Some((file, layer.as_deref()?, h)));
+                tile(e.key, rows.first, t, &spec, h)
+            }));
             let h = (px.len() / spec.width.max(1) as usize) as u32;
             tiles.push(TileAt {
                 y: (i64::from(p.rect.y) + (t * tile_px) as i64 - p.offset as i64) as i32,
@@ -1183,6 +1691,9 @@ fn minimap(
     win.boxes = boxes;
     win.accent = accent;
     let mut bands = hairlines;
+    if reveal_px > 0 {
+        bands.extend(pin_bands(e, &rows, &p, row_px));
+    }
     bands.push(Band {
         rect: p.band,
         fill_argb: band,
@@ -1233,8 +1744,14 @@ pub fn now_ns() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
-/// The frame's minimaps planned by [`plan`]: each window's by its `sequence_number`, the scale (×120) and the origin.
-type Planned = (BTreeMap<u64, Minimap>, u32, (i32, i32));
+/// The frame's minimaps planned by [`plan`]: each window's by its `sequence_number`, its fold arrows' likewise, the scale
+/// (×120) and the origin.
+type Planned = (
+    BTreeMap<u64, Minimap>,
+    BTreeMap<u64, Minimap>,
+    u32,
+    (i32, i32),
+);
 
 /// Frame `key`'s minimaps from C's `list` at `now`: each window's [`Minimap`] (the other windows on its text add
 /// their bands); `None` before the frame has a scale.
@@ -1246,12 +1763,18 @@ fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Opt
     }
     let mm = &mut f.minimaps;
     let mut planned: BTreeMap<u64, Minimap> = BTreeMap::new();
+    let mut arrows_planned: BTreeMap<u64, Minimap> = BTreeMap::new();
     for e in list {
         if let Some(file) = e.file_name() {
             glitnir::minimap::take_hub_folds(e.key, file);
         }
         let win = mm.windows.entry(e.seq).or_default();
-        if let Some(m) = minimap(e, s120, origin, win, now, &mut mm.sprites) {
+        if let Some(a) = arrows(e, origin, win) {
+            arrows_planned.insert(e.seq, a);
+        }
+        if e.flags & NHG_MINIMAP_NONE != 0 {
+            win.geom = None;
+        } else if let Some(m) = minimap(e, s120, origin, win, now, &mut mm.sprites) {
             planned.insert(e.seq, m);
         }
     }
@@ -1265,12 +1788,38 @@ fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Opt
         };
         let line = colour(e.band_rgb, (e.band_opacity * 2.0).min(1.0));
         let mut bands = m.bands.to_vec();
-        for o in list.iter().filter(|o| o.key == e.key && o.seq != e.seq) {
+        let mut labels = m.labels.to_vec();
+        let s = f64::from(s120) / 120.0;
+        let px = |logical: f64| (logical * s).round() as i32;
+        for o in list
+            .iter()
+            .filter(|o| o.key == e.key && o.seq != e.seq && o.flags & NHG_MINIMAP_NONE == 0)
+        {
             let Some(r) = rows_of(e.key, o.start, o.end, e.begv, e.zv) else {
                 continue;
             };
             let row = u64::from(g.row_px.max(1));
             let y = i64::from(g.rect.y) + (r.shown.0 * row) as i64 - g.offset as i64;
+            // its number at the band's top-right, in the label face and the band's colour (design M8)
+            if let (Some(n), Ok(rgb)) = (o.number(), u32::try_from(e.band_rgb))
+                && m.reveal_px > 0
+            {
+                let cap_w = (g.rect.w - px(LABEL_LEFT) - px(LABEL_RIGHT)).max(0);
+                let h = px(LABEL_H).max(1);
+                let px100 = (LABEL_PX * s * 100.0).round() as u32;
+                if let Some((w, sh, spx)) =
+                    sprite(&mut mm.sprites, e, n, rgb & 0xff_ffff, px100, cap_w, h)
+                {
+                    labels.push(LabelAt {
+                        x: g.rect.x + g.rect.w - px(LABEL_RIGHT) - w as i32,
+                        y: y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                        w,
+                        h: sh,
+                        px: spx,
+                        back_argb: m.fill_argb,
+                    });
+                }
+            }
             bands.push(Band {
                 rect: Rect::new(
                     g.rect.x,
@@ -1284,13 +1833,14 @@ fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Opt
             });
         }
         m.bands = bands.into();
+        m.labels = labels.into();
     }
-    Ok(Some((planned, s120, origin)))
+    Ok(Some((planned, arrows_planned, s120, origin)))
 }
 
 /// [`sync_at`] at `now` (the pointer's legs are read at it).
 pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<u32, i32> {
-    let Some((planned, s120, _)) = plan(b, key, list, now)? else {
+    let Some((planned, arrows_planned, s120, _)) = plan(b, key, list, now)? else {
         return Ok(0);
     };
     let s = f64::from(s120) / 120.0;
@@ -1318,15 +1868,43 @@ pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -
             sc.set_minimap(id, Some(Arc::clone(&m)))?;
             win.applied = Some((m.rect, s120, m));
         }
-        let gone: Vec<u64> = mm
-            .windows
-            .keys()
-            .filter(|q| !planned.contains_key(q))
-            .copied()
-            .collect();
-        for seq in gone {
-            sc.remove(minimap_id(seq));
-            mm.windows.remove(&seq);
+        for (seq, a) in &arrows_planned {
+            let win = mm.windows.get_mut(seq).expect("planned from it");
+            if let Some((q, old)) = &win.arrows_applied
+                && *q == s120
+                && **old == *a
+            {
+                continue;
+            }
+            let id = arrows_id(*seq);
+            sc.upsert(&LayerDesc {
+                id,
+                parent: key,
+                kind: LAYER_WINDOW,
+                rect: a.rect,
+                scale: s,
+                visible: 1,
+            })?;
+            let a = Arc::new(a.clone());
+            sc.set_minimap(id, Some(Arc::clone(&a)))?;
+            win.arrows_applied = Some((s120, a));
+        }
+        let seqs: Vec<u64> = mm.windows.keys().copied().collect();
+        for seq in seqs {
+            let (m, a) = (
+                planned.contains_key(&seq),
+                arrows_planned.contains_key(&seq),
+            );
+            let win = mm.windows.get_mut(&seq).expect("listed");
+            if !m && win.applied.take().is_some() {
+                sc.remove(minimap_id(seq));
+            }
+            if !a && win.arrows_applied.take().is_some() {
+                sc.remove(arrows_id(seq));
+            }
+            if !m && !a {
+                mm.windows.remove(&seq);
+            }
         }
         // the minimap layers on top of the frame's children, edges included
         let kids = sc.children(key).to_vec();
@@ -1355,7 +1933,7 @@ pub fn images_at(
     list: &[NhgMinimap],
     now: u64,
 ) -> Result<Option<Vec<CardImage>>, i32> {
-    let Some((planned, _, origin)) = plan(b, key, list, now)? else {
+    let Some((planned, _, _, origin)) = plan(b, key, list, now)? else {
         return Ok(None);
     };
     let mm = &mut b.frame_mut(key)?.minimaps;
@@ -1566,6 +2144,7 @@ pub fn forget_all(b: &mut Backings) {
     for (_, f) in b.frames_mut() {
         for w in f.minimaps.windows.values_mut() {
             w.applied = None;
+            w.arrows_applied = None;
             w.given = Default::default();
         }
         f.minimaps.sent.clear();

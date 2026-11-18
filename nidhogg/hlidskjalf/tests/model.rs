@@ -503,3 +503,31 @@ fn class_spans_become_runs_on_their_lines() {
     assert!(!p.m.take_classes_missed());
     p.check();
 }
+
+/// Named hidden ranges (F4, M5): each range's first line, the lines it hides and its name, kept through edits before
+/// them; a range an edit empties goes with its name.
+#[test]
+fn hidden_ranges_keep_their_names_through_edits() {
+    // ten lines of "nn\n": line i starts at 3i + 1
+    let text: String = (0..10).map(|i| format!("{i:02}\n")).collect();
+    let mut p = Pair::new(&text, false);
+    // lines 2–3 hidden after line 1 (unnamed), lines 6–8 after line 5 as "body"
+    p.m.set_hidden_named(&[(18, 27, Some("body")), (6, 12, None)]);
+    let got = p.m.hidden_in(1, 31);
+    assert_eq!(
+        got,
+        [(1, 2, None), (5, 3, Some("body".into()))],
+        "sorted by start"
+    );
+    assert_eq!(p.m.hidden_in(7, 31).len(), 1, "from a position on");
+    // a line inserted at the top: both move down a line, names kept
+    p.edit(1, 0, "xx\n");
+    assert_eq!(
+        p.m.hidden_in(1, 34),
+        [(2, 2, None), (6, 3, Some("body".into()))]
+    );
+    // the unnamed range's text deleted: it goes, the name stays with its range
+    p.edit(7, 9, "");
+    assert_eq!(p.m.hidden_in(1, 40), [(3, 3, Some("body".into()))]);
+    p.check();
+}

@@ -1999,6 +1999,145 @@ either kind of labels."
       (nidhogg-lines-disable buf)
       (kill-buffer buf))))
 
+;; Task 12: fold arrows in the fringe, fold pills in the minimap.
+(defun glitnir-gui--fold-row (w pos)
+  "The device-pixel rectangle (X Y W H) of the left fringe of window W on the screen row of POS."
+  (pcase-let* ((`(,tx ,_ ,_ ,_) (window-inside-pixel-edges w))
+               (`(,_ ,wy ,_ ,_) (window-pixel-edges w))
+               (`(,_ ,y ,_ ,_ ,_ ,h) (pos-visible-in-window-p pos w t))
+               (lf (car (window-fringes w))))
+    (list (- tx lf) (+ wy y) lf (or h (frame-char-height)))))
+
+(defun glitnir-gui--extent-where (snap rect pred)
+  "The width from RECT's left to the rightmost pixel of RECT in SNAP satisfying PRED (0: none)."
+  (pcase-let ((`(,x ,y ,w ,h) rect) (far 0))
+    (cl-loop for yy from (max 0 y) below (+ y h) do
+             (cl-loop for xx from (max 0 x) below (+ x w) do
+                      (when (apply pred (glitnir-gui--pixel snap (list xx yy)))
+                        (setq far (max far (1+ (- xx x)))))))
+    far))
+
+(ert-deftest glitnir-gui/fold-arrows-and-pills-show-the-folds ()
+  "With `glitnir-fold-arrows' `always', a fold range's first line gets a chevron in the left fringe in `:colour', a
+folded one (its lines hidden in the line model) in `:folded', other lines none.  An open minimap with `:pill' draws a
+pill after the bar of the folded range's first line: the range's name when it has one, else `:pill-format''s count,
+wider."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-lines-set-folds))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-fold-arrows*" 300)) (w (selected-window))
+        (at (lambda (i) (+ 1 (* 77 i)))))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (set-window-fringes w (round (* 16 (frame-scale-factor))) nil)
+          (nidhogg-lines-enable buf t)
+          ;; folds on lines 5–8 and 10–15; lines 11–15 hidden as "zz"
+          (nidhogg-lines-set-folds buf 7 (list (list (funcall at 5) (1- (funcall at 9)) 0)
+                                              (list (funcall at 10) (1- (funcall at 16)) 0)))
+          (nidhogg-lines-set-hidden buf (list (list (1- (funcall at 11)) (1- (funcall at 16)) "zz")))
+          (let* ((lf (car (window-fringes w)))
+                 (red (lambda (r g b) (and (> r 180) (< g 80) (< b 80))))
+                 (green (lambda (r g b) (and (< r 80) (> g 180) (< b 80))))
+                 (cyan (lambda (r g b) (and (< r 80) (> g 180) (> b 180)))))
+            (set-window-parameter w 'glitnir-fold-arrows
+                                  `(:mode always :size ,(- lf 4) :inset 2 :colour ("#ff0000" . 1) :folded ("#00ff00" . 1)))
+            (force-window-update w)
+            (let ((snap (glitnir-gui--painted)))
+              (glitnir-gui--shot "fold-arrows")
+              (should (> (glitnir-gui--count-where snap (glitnir-gui--fold-row w (funcall at 5)) red) 3))
+              (should (= (glitnir-gui--count-where snap (glitnir-gui--fold-row w (funcall at 5)) green) 0))
+              (should (> (glitnir-gui--count-where snap (glitnir-gui--fold-row w (funcall at 10)) green) 3))
+              (should (= (glitnir-gui--count-where snap (glitnir-gui--fold-row w (funcall at 7))
+                                                   (lambda (r g b) (or (funcall red r g b) (funcall green r g b))))
+                         0)))
+            (set-window-parameter w 'glitnir-fold-arrows nil)
+            (pcase-let* ((s (frame-scale-factor))
+                         (row (floor (+ 0.5 (* 2 s))))
+                         (box (floor (+ 0.5 (* 13 s))))
+                         (mm (glitnir-gui--minimap-rect w 120))
+                         (line10 (list (nth 0 mm) (+ (nth 1 mm) (* 10 row)) (nth 2 mm) box))
+                         (spec `(:width 120 :open t :fill ("#203040" . 1) :text ("#203040" . 1)
+                                        :pill ("#00ffff" . 1) :label-face default)))
+              (set-window-parameter w 'glitnir-minimap spec)
+              (force-window-update w)
+              (let* ((snap (glitnir-gui--painted))
+                     (named (glitnir-gui--extent-where snap line10 cyan)))
+                (glitnir-gui--shot "fold-pill")
+                (should (> (glitnir-gui--count-where snap line10 cyan) 3))
+                ;; no fold pill but this one
+                (should (= 0 (glitnir-gui--count-where
+                              snap (list (nth 0 mm) (+ (nth 1 mm) (* 30 row)) (nth 2 mm) box) cyan)))
+                (nidhogg-lines-set-hidden buf (list (cons (1- (funcall at 11)) (1- (funcall at 16)))))
+                (force-window-update w)
+                (let ((counted (glitnir-gui--extent-where (glitnir-gui--painted) line10 cyan)))
+                  (should (> counted (+ named (* 8 s)))))))))
+      (set-window-parameter w 'glitnir-fold-arrows nil)
+      (set-window-parameter w 'glitnir-minimap nil)
+      (set-window-fringes w nil nil)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
+;; Tasks 13 and 17: heat layers and pinned regions in the minimap.
+(ert-deftest glitnir-gui/the-minimap-heat-and-pin-bands ()
+  "An open minimap with `:heat' colours each line's bar from Sjá's heat:NAME layer of its `:file': `:heat-high' at
+value 1000, `:heat-low' at 0, `:text' where no item is; a heat layer not pushed leaves the bars in `:text'.  A mark of
+`:pin-kind' with an end is a band over its lines in `:pin', its `:pin-names' label at its first line."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-lines-set-marks))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-minimap-heat*" 300)) (w (selected-window))
+        (file "/glitnir-gui/heat.el")
+        (at (lambda (i) (+ 1 (* 77 i)))))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (nidhogg-lines-enable buf t)
+          (nidhogg-view-push
+           (json-serialize
+            `((event . "view-model")
+              (data . ((minimap . ((file . ,file) (layer . "heat:blame") (version . 1)
+                                   (items . [[11 20 1000 "2 days ago"] [31 40 0]]))))))))
+          (pcase-let* ((s (frame-scale-factor))
+                       (row (floor (+ 0.5 (* 2 s))))
+                       (mm (glitnir-gui--minimap-rect w 120))
+                       (rows (lambda (from n) (list (nth 0 mm) (+ (nth 1 mm) (* from row)) (nth 2 mm) (* n row))))
+                       (red (lambda (r g b) (and (> r 180) (< g 80) (< b 80))))
+                       (blue (lambda (r g b) (and (< r 80) (< g 80) (> b 180))))
+                       (green (lambda (r g b) (and (< r 80) (> g 180) (< b 80))))
+                       (spec (lambda (heat)
+                               `(:width 120 :open t :fill ("#000000" . 1) :text ("#00ff00" . 1) :file ,file
+                                        :heat ,heat :heat-low ("#0000ff" . 1) :heat-high ("#ff0000" . 1)))))
+            (set-window-parameter w 'glitnir-minimap (funcall spec "blame"))
+            (let ((snap (glitnir-gui--painted)))
+              (glitnir-gui--shot "minimap-heat")
+              (should (> (glitnir-gui--count-where snap (funcall rows 10 10) red) 50))
+              (should (= (glitnir-gui--count-where snap (funcall rows 10 10) green) 0))
+              (should (> (glitnir-gui--count-where snap (funcall rows 30 10) blue) 50))
+              (should (> (glitnir-gui--count-where snap (funcall rows 50 10) green) 50))
+              (should (= (glitnir-gui--count-where snap (funcall rows 50 10) red) 0)))
+            (set-window-parameter w 'glitnir-minimap (funcall spec "coverage"))
+            (let ((snap (glitnir-gui--painted)))
+              (should (= (glitnir-gui--count-where snap (funcall rows 10 10) red) 0))
+              (should (> (glitnir-gui--count-where snap (funcall rows 10 10) green) 50)))
+            ;; a pin over lines 60–69, named
+            (nidhogg-lines-set-marks buf 9 (list (vector (funcall at 60) (1- (funcall at 70)))))
+            (set-window-parameter w 'glitnir-minimap
+                                  `(:width 120 :open t :fill ("#000000" . 1) :text ("#000000" . 1) :band ("#808080" . 0.5)
+                                           :pin-kind 9 :pin ("#00ffff" . 1) :pin-names ["pinned"] :label-face default))
+            (force-window-update w)
+            (let* ((snap (glitnir-gui--painted))
+                   ;; (the window's own band may lie over it: teal under half grey is still more green and blue than red)
+                   (teal (lambda (r g b) (and (< r 100) (> g (+ r 40)) (> b (+ r 40))))))
+              (glitnir-gui--shot "minimap-pin")
+              ;; the band covers its rows across the width; the label is at its first row; none past it
+              (should (> (glitnir-gui--count-where snap (funcall rows 60 10) teal) (* 4 (nth 2 mm))))
+              (should (= (glitnir-gui--count-where snap (funcall rows 80 10) teal) 0)))))
+      (set-window-parameter w 'glitnir-minimap nil)
+      (nidhogg-view-minimap 'forget file)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
 ;;; The shell's menus (nhwl-menu.el): the metrics a theme gives them and the submenu's tolerance
 
 (defvar nhwl-menu--frames)

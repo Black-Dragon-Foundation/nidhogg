@@ -943,6 +943,9 @@ int32_t nhg_edges_count (NhgDisplay *d, uint64_t frame);
 #define NHG_MINIMAP_LEFT  2   /* on the text's left edge */
 #define NHG_MINIMAP_REDUCED_MOTION 4   /* the pointer's open and close are final in their first frame */
 #define NHG_MINIMAP_NESTING 8   /* each fold range of the model a faint band behind its bars, by depth */
+#define NHG_MINIMAP_NONE 16   /* the record is for the fold arrows alone: no minimap is drawn */
+#define NHG_ARROWS_HOVER 1    /* fold arrows: shown while the pointer is over the left fringe (folded ones always) */
+#define NHG_ARROWS_ALWAYS 2   /* fold arrows: always shown */
 #define NHG_MINIMAP_LABELS_ALL 1     /* labels: the hub's definitions of FILE and the MARK sections */
 #define NHG_MINIMAP_LABELS_MARKS 2   /* labels: the MARK sections alone */
 
@@ -965,6 +968,21 @@ typedef struct
   const uint8_t *text;
   size_t len;
 } NhgMinimapHunk;
+
+/* A name: LEN bytes of UTF-8 at TEXT.  */
+typedef struct
+{
+  const uint8_t *text;
+  size_t len;
+} NhgMinimapName;
+
+/* A row of the window's current matrix that is a line's first screen row: the line's start position, the row's top
+   and height (as CLIP).  */
+typedef struct
+{
+  uint64_t pos;
+  int32_t y, h;
+} NhgMinimapRow;
 
 typedef struct
 {
@@ -994,6 +1012,44 @@ typedef struct
   int32_t hunk_rgb;
   const NhgMinimapHunk *hunks;
   size_t hunks_len;
+  /* Fold pills (design M5): PILL_RGB (-1: none), and PILL_FORMAT (PILL_FORMAT_LEN bytes of UTF-8 with one %d, the
+     lines hidden; null: "⋯ %d folded"): a dashed pill after the bar of each hidden range's first line, its name (from
+     nidhogg-lines-set-hidden) instead when it has one; with labels off too.  */
+  int32_t pill_rgb;
+  const uint8_t *pill_format;
+  size_t pill_format_len;
+  /* This window's number (NUMBER_LEN bytes of UTF-8; null: none), shown at its band's top-right in another window's
+     minimap of the same text.  */
+  const uint8_t *number;
+  size_t number_len;
+  /* Fold arrows (design F1, the window parameter glitnir-fold-arrows): ARROWS NHG_ARROWS_* (0: none), FRINGE the left
+     fringe (as CLIP), the chevron's box ARROW_SIZE at ARROW_INSET from the fringe's inner edge (device pixels), an open
+     fold's and a folded one's 0xRRGGBB (-1: none) at their opacities, and ROWS (ROWS_LEN) the matrix rows that start a
+     line.  */
+  uint32_t arrows;
+  NhgRect fringe;
+  uint32_t arrow_size, arrow_inset;
+  int32_t arrow_rgb;
+  float arrow_opacity;
+  int32_t folded_rgb;
+  float folded_opacity;
+  const NhgMinimapRow *rows;
+  size_t rows_len;
+  /* Heat (design X3): HEAT (HEAT_LEN bytes of UTF-8; null: none) names Sjá's layer heat:HEAT of FILE; while it exists
+     each line's bar is one colour, mixed between HEAT_LOW (value 0) and HEAT_HIGH (1000) 0xRRGGBB at their opacities,
+     a line with no item in TEXT_RGB.  */
+  const uint8_t *heat;
+  size_t heat_len;
+  int32_t heat_low_rgb;
+  float heat_low_opacity;
+  int32_t heat_high_rgb;
+  float heat_high_opacity;
+  /* Pinned regions (design X5): the line model's marks of kind PIN_KIND (-1: none) with an end, each a band over its
+     rows in PIN_RGB (-1: none) at BAND_OPACITY, and the n-th of PINS (PINS_LEN, in buffer order) its label.  */
+  int32_t pin_kind;
+  int32_t pin_rgb;
+  const NhgMinimapName *pins;
+  size_t pins_len;
 } NhgMinimap;
 
 /* The label renderer: TEXT (LEN bytes of UTF-8) in face FACE of frame HOST at PX100 / 100 device pixels, in 0xRRGGBB

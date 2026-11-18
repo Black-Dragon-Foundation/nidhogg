@@ -681,24 +681,52 @@ that holds POS.  */)
 
 DEFUN ("nidhogg-lines-set-hidden", Fnidhogg_lines_set_hidden,
        Snidhogg_lines_set_hidden, 2, 2, 0,
-       doc: /* Tell BUFFER's line model which ranges are hidden: RANGES, a list of (BEG . END).
+       doc: /* Tell BUFFER's line model which ranges are hidden: RANGES, a list of (BEG . END) or (BEG END NAME).
 A line whose start lies after BEG and at or before END is hidden: the
-scroll bar and the minimap leave it out.  */)
+scroll bar and the minimap leave it out.  NAME, a string or nil, is a
+named fold's name: the minimap's fold pill on the range's first line
+shows it instead of the count of lines hidden.  */)
   (Lisp_Object buffer, Lisp_Object ranges)
 {
   uint64_t key = nh_lines_key_of (buffer);
   ptrdiff_t n = list_length (ranges), i = 0;
   USE_SAFE_ALLOCA;
   uint64_t *v;
+  const uint8_t **names;
+  size_t *lens;
   SAFE_NALLOCA (v, 2, max (n, 1));
+  SAFE_NALLOCA (names, 1, max (n, 1));
+  SAFE_NALLOCA (lens, 1, max (n, 1));
+  /* The names encoded first: their data must not move before the call.  */
+  Lisp_Object encoded = Qnil;
   for (Lisp_Object l = ranges; CONSP (l); l = XCDR (l))
     {
       Lisp_Object r = XCAR (l);
       CHECK_CONS (r);
-      v[i++] = nh_lines_pos (XCAR (r));
-      v[i++] = nh_lines_pos (XCDR (r));
+      Lisp_Object name = Qnil;
+      if (CONSP (XCDR (r)))
+	{
+	  v[i++] = nh_lines_pos (XCAR (r));
+	  v[i++] = nh_lines_pos (XCAR (XCDR (r)));
+	  name = CONSP (XCDR (XCDR (r))) ? XCAR (XCDR (XCDR (r))) : Qnil;
+	  if (!NILP (name))
+	    CHECK_STRING (name);
+	}
+      else
+	{
+	  v[i++] = nh_lines_pos (XCAR (r));
+	  v[i++] = nh_lines_pos (XCDR (r));
+	}
+      encoded = Fcons (NILP (name) ? Qnil : ENCODE_UTF_8 (name), encoded);
     }
-  hlid_set_hidden (key, v, i / 2);
+  encoded = Fnreverse (encoded);
+  ptrdiff_t k = 0;
+  for (Lisp_Object e = encoded; CONSP (e); e = XCDR (e), k++)
+    {
+      names[k] = STRINGP (XCAR (e)) ? SDATA (XCAR (e)) : NULL;
+      lens[k] = STRINGP (XCAR (e)) ? SBYTES (XCAR (e)) : 0;
+    }
+  hlid_set_hidden_named (key, v, names, lens, i / 2);
   SAFE_FREE ();
   return Qnil;
 }

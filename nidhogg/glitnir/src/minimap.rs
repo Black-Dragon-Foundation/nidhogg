@@ -140,6 +140,8 @@ pub struct Row {
     pub class: u8,
     /// Runs of other classes drawn over the bar, within it (`to` 0: none).
     pub runs: [RowRun; hlidskjalf::RUNS],
+    /// A heat layer's colour for the whole bar, premultiplied ARGB: it replaces the class and the runs (design X3).
+    pub heat: Option<u32>,
 }
 
 /// A run of a class over a row's bar: columns FROM to TO.
@@ -179,11 +181,15 @@ pub fn raster(spec: &TileSpec, rows: &[Row]) -> Vec<u32> {
                 0
             }]
         };
-        let c = argb(r.class);
+        let c = r.heat.unwrap_or_else(|| argb(r.class));
         for y in i * rp..(i + 1) * rp {
             px[y * w + x0..y * w + x1].fill(c);
         }
-        for run in r.runs.iter().filter(|run| run.to > run.from) {
+        for run in r
+            .runs
+            .iter()
+            .filter(|run| r.heat.is_none() && run.to > run.from)
+        {
             let a = (run.from as usize).saturating_mul(cp).clamp(x0, x1);
             let b = (run.to as usize).saturating_mul(cp).clamp(x0, x1);
             if b > a {
@@ -433,10 +439,26 @@ mod tests {
                 end: 10,
                 class: 0,
                 runs,
+                heat: None,
             }],
         );
         let blue = 0xff_00_00_ff;
         let grey = 0xff_80_80_80;
+        // a heat colour: the whole bar in it, no runs
+        let hot = raster(
+            &spec(),
+            &[Row {
+                indent: 2,
+                end: 10,
+                class: 0,
+                runs,
+                heat: Some(0xff_10_20_30),
+            }],
+        );
+        let row: Vec<u32> = (0..12).map(|x| at(&hot, x, 1)).collect();
+        assert_eq!(row[..2], [0, 0]);
+        assert!(row[2..10].iter().all(|&p| p == 0xff_10_20_30), "{row:x?}");
+        assert_eq!(row[10..], [0, 0]);
         let row: Vec<u32> = (0..12).map(|x| at(&px, x, 1)).collect();
         assert_eq!(
             row,

@@ -81,6 +81,11 @@ int32_t hlid_folds (uint64_t key, uint64_t beg, uint64_t end, hlid_fold *out,
 		    size_t cap, size_t *n);
 int32_t hlid_fold_at (uint64_t key, uint64_t pos, hlid_fold *out);
 int32_t hlid_set_hidden (uint64_t key, const uint64_t *ranges, size_t n);
+/* As hlid_set_hidden, with a name for each range: LENS[I] bytes of UTF-8 at
+   NAMES[I] (null: none); NAMES and LENS may both be null.  */
+int32_t hlid_set_hidden_named (uint64_t key, const uint64_t *ranges,
+			       const uint8_t *const *names,
+			       const size_t *lens, size_t n);
 int32_t hlid_trail_note (uint64_t key, uint64_t pos);
 int32_t hlid_trail (uint64_t key, uint64_t *out, size_t cap, size_t *n);
 int32_t hlid_describe (uint64_t key, hlid_stats *out);

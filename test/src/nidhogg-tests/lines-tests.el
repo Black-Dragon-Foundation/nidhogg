@@ -196,6 +196,22 @@ rebuilt it.  The buffer is killed after."
     (should (= (nidhogg-lines-fraction b 19) 0.0))
     (should (= (nidhogg-lines-fraction b (point-max)) 1.0))))
 
+(ert-deftest lines/a-named-hidden-range-hides-as-a-pair-does ()
+  "`nidhogg-lines-set-hidden' takes (BEG END NAME) beside (BEG . END): the same lines leave the measure; a NAME that
+is not a string or nil is an error."
+  (skip-unless (lines-tests--built-p))
+  (lines-tests--with (b (mapconcat (lambda (i) (format "%02d\n" i))
+                                   (number-sequence 0 9) ""))
+    (nidhogg-lines-set-hidden b '((3 18 "body") (21 . 24)))
+    (let ((named (nidhogg-lines-fraction b 25)))
+      (nidhogg-lines-set-hidden b '((3 . 18) (21 24 nil)))
+      (should (= (nidhogg-lines-fraction b 25) named))
+      (nidhogg-lines-set-hidden b '((3 . 18) (21 . 24)))
+      (should (= (nidhogg-lines-fraction b 25) named))
+      (nidhogg-lines-set-hidden b nil)
+      (should-not (= (nidhogg-lines-fraction b 25) named)))
+    (should-error (nidhogg-lines-set-hidden b '((3 18 body))) :type 'wrong-type-argument)))
+
 (ert-deftest lines/trail-keeps-one-visit-per-line ()
   "The trail is newest first, one per line, at most 20."
   (skip-unless (lines-tests--built-p))

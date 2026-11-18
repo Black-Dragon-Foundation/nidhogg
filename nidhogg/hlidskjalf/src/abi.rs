@@ -487,6 +487,60 @@ pub unsafe extern "C" fn hlid_set_hidden(key: u64, ranges: *const u64, n: usize)
     })
 }
 
+/// KEY's hidden ranges with names: N (BEG, END) pairs at RANGES (2N positions), and for each range a name of
+/// `LENS[i]` bytes of UTF-8 at `NAMES[i]` (a null name, or one not in UTF-8: none).  NAMES and LENS may both be null.
+///
+/// # Safety
+/// RANGES must be readable for 2N positions unless N is 0; NAMES and LENS, when not null, for N entries each, and each
+/// name not null for its length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_set_hidden_named(
+    key: u64,
+    ranges: *const u64,
+    names: *const *const u8,
+    lens: *const usize,
+    n: usize,
+) -> i32 {
+    if (ranges.is_null() && n > 0) || names.is_null() != lens.is_null() {
+        return HLID_E_ARG;
+    }
+    // SAFETY: checked; the caller promises 2N readable positions and N names and lengths.
+    let (r, nm, ln) = if n == 0 {
+        (&[][..], &[][..], &[][..])
+    } else if names.is_null() {
+        (
+            unsafe { std::slice::from_raw_parts(ranges, 2 * n) },
+            &[][..],
+            &[][..],
+        )
+    } else {
+        unsafe {
+            (
+                std::slice::from_raw_parts(ranges, 2 * n),
+                std::slice::from_raw_parts(names, n),
+                std::slice::from_raw_parts(lens, n),
+            )
+        }
+    };
+    let named: Vec<(u64, u64, Option<&str>)> = r
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let name = nm.get(i).filter(|q| !q.is_null()).and_then(|&q| {
+                // SAFETY: the caller promises LENS[i] readable bytes at a name that is not null.
+                std::str::from_utf8(unsafe { std::slice::from_raw_parts(q, ln[i]) }).ok()
+            });
+            (p[0], p[1], name)
+        })
+        .collect();
+    with(key, |m| {
+        m.set_hidden_named(&named);
+        HLID_OK
+    })
+}
+
 /// Note a visit to POS on KEY's trail.
 #[unsafe(no_mangle)]
 pub extern "C" fn hlid_trail_note(key: u64, pos: u64) -> i32 {

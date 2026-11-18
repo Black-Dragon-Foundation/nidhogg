@@ -142,19 +142,24 @@ fn data(layer: &str, v: &Value) -> Option<Data> {
             })?,
             total: u32_of(v.get("total")?)?,
         },
-        l if l.starts_with("heat:") && l.len() > 5 => Data::Heat(items(v, |i| {
-            let (a, b, x, fact) = match i {
-                [a, b, x] => (a, b, x, None),
-                [a, b, x, f] => (a, b, x, Some(text(f, LABEL_MAX)?)),
-                _ => return None,
-            };
-            Some((
-                u32_of(a)?,
-                u32_of(b)?,
-                u16::try_from(x.as_u64()?).ok()?.min(1000),
-                fact,
-            ))
-        })?),
+        l if l.starts_with("heat:") && l.len() > 5 => Data::Heat({
+            let mut v = items(v, |i| {
+                let (a, b, x, fact) = match i {
+                    [a, b, x] => (a, b, x, None),
+                    [a, b, x, f] => (a, b, x, Some(text(f, LABEL_MAX)?)),
+                    _ => return None,
+                };
+                Some((
+                    u32_of(a)?,
+                    u32_of(b)?,
+                    u16::try_from(x.as_u64()?).ok()?.min(1000),
+                    fact,
+                ))
+            })?;
+            // looked up by line: sorted by the first line (the order of equal ones kept)
+            v.sort_by_key(|x| x.0);
+            v
+        }),
         _ => return None,
     })
 }

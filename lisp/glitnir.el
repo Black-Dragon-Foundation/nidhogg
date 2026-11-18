@@ -773,10 +773,27 @@ Lisp's own labels, a vector of [LINE TEXT] sorted by LINE (from 1),
 TEXT at most 256 bytes (\"hunk 2 · +4 −2\"), each drawn at its line's
 start in `:hunk' (a colour as `:text') and placed before the
 definitions, as a MARK section is; send them again when they change.
+`:pill' (a colour as `:text') draws a dashed fold pill after the bar
+of each hidden range's first line (`nidhogg-lines-set-hidden'), with
+labels off too: the range's NAME when it has one, else `:pill-format'
+(a format with one %d, the lines hidden; default \"⋯ %d folded\").
+`:number' (a short string) is this window's number: another window's
+minimap of the same buffer shows it at the top-right of this window's
+outlined band, in `:label-face'.
+`:heat' (a layer's name such as \"blame\", or nil) colours each line's
+bar from Sjá's layer heat:NAME of `:file' while it exists: mixed
+between `:heat-low' (value 0) and `:heat-high' (1000), colours as
+`:text', a line with no value in `:text'; `:file' is sent with heat
+even with labels off.  `:pin-kind' (a mark kind of the line model,
+0 to 63) with `:pin' (a colour as `:text') draws each mark of that
+kind with an end as a band over its lines at `:band''s opacity, and
+the n-th of `:pin-names' (a vector of strings, in buffer order) as its
+label at its first line, with labels off too.
 The vector is [FLAGS WIDTH SCALE FILL-RGB
 FILL-OPACITY TEXT-RGB TEXT-OPACITY BAND-RGB BAND-OPACITY LABELS FILE
 LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE CLASS-RGB HUNK-RGB
-HUNKS], CLASS-RGB a
+HUNKS PILL-RGB PILL-FORMAT NUMBER HEAT HEAT-LOW-RGB HEAT-LOW-OPACITY
+HEAT-HIGH-RGB HEAT-HIGH-OPACITY PIN-KIND PIN-RGB PIN-NAMES], CLASS-RGB a
 vector of 16 RGBs by class number (0, text, unused), HUNKS the
 `:hunk-labels' (nil with labels off), FLAGS 1 for `:open', 2
 for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
@@ -791,7 +808,7 @@ for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
               (if fill (car fill) -1) (if fill (cdr fill) 0)
               (if text (car text) -1) (if text (cdr text) 0)
               (if band (car band) -1) (if band (cdr band) 0)
-              labels (and (= labels 1) (plist-get spec :file))
+              labels (and (or (= labels 1) (plist-get spec :heat)) (plist-get spec :file))
               (funcall rgb :label) (funcall rgb :sub) (funcall rgb :accent) (funcall rgb :mark)
               (plist-get spec :label-face)
               (let ((v (make-vector 16 -1)))
@@ -801,7 +818,15 @@ for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
                     (aset v (- 16 (length tail)) (car c))))
                 v)
               (funcall rgb :hunk)
-              (and (> labels 0) (plist-get spec :hunk-labels))))))
+              (and (> labels 0) (plist-get spec :hunk-labels))
+              (funcall rgb :pill)
+              (and (plist-get spec :pill) (or (plist-get spec :pill-format) "⋯ %d folded"))
+              (plist-get spec :number)
+              (plist-get spec :heat)
+              (or (car (funcall c :heat-low)) -1) (or (cdr (funcall c :heat-low)) 0)
+              (or (car (funcall c :heat-high)) -1) (or (cdr (funcall c :heat-high)) 0)
+              (or (plist-get spec :pin-kind) -1) (funcall rgb :pin)
+              (plist-get spec :pin-names)))))
 
 (defun glitnir--recheck-minimap (window)
   "Resolve WINDOW's minimap when its `glitnir-minimap' or the theme changed.
@@ -818,6 +843,49 @@ set, so C lists the frame."
           (set-window-parameter window 'glitnir--minimap v)
           (force-window-update window))))
     (when (window-parameter window 'glitnir--minimap)
+      (setq glitnir--blocks-any t))))
+
+;; Fold arrows: a window parameter `glitnir-fold-arrows' draws a chevron
+;; in the window's left fringe on each line that starts a fold range of
+;; the buffer's line model, from the matrix at publish (no overlays, no
+;; Lisp per scroll or hover).  Resolved into `glitnir--fold-arrows' only
+;; when it, or the theme, changed.  A click on the fringe reaches Lisp as
+;; Emacs's own `left-fringe' event.
+
+(defun glitnir--fold-arrows-vector (spec frame)
+  "Return fold arrows SPEC as the vector C reads, for FRAME, or nil for none.
+SPEC is a plist: `:mode' (`hover': shown while the pointer is over the
+window's left fringe, folded lines' always; `always'), `:size' (the
+chevron's square box) and `:inset' (from the fringe's inner edge to
+the box), device pixels; `:colour' (an open fold's chevron, pointing
+down) and `:folded' (a folded range's, pointing right: its following
+lines are hidden, `nidhogg-lines-set-hidden'), each a face, whose
+foreground is used, a colour name or (FACE-OR-COLOUR . OPACITY).  The
+vector is [MODE SIZE INSET RGB OPACITY FOLDED-RGB FOLDED-OPACITY], MODE
+1 for `hover' and 2 for `always', RGB -1 for none."
+  (let ((mode (pcase (plist-get spec :mode) ('always 2) ('hover 1) (_ 0)))
+        (open (glitnir--ruler-colour (plist-get spec :colour) frame))
+        (folded (glitnir--ruler-colour (plist-get spec :folded) frame)))
+    (and (> mode 0)
+         (vector mode (or (plist-get spec :size) 0) (or (plist-get spec :inset) 0)
+                 (if open (car open) -1) (if open (cdr open) 0)
+                 (if folded (car folded) -1) (if folded (cdr folded) 0)))))
+
+(defun glitnir--recheck-fold-arrows (window)
+  "Resolve WINDOW's fold arrows when its `glitnir-fold-arrows' or the theme changed.
+The vector goes into the window parameter `glitnir--fold-arrows', which
+C reads when the frame publishes; it sets the frame's flag that blocks
+set, so C lists the frame."
+  (let ((spec (window-parameter window 'glitnir-fold-arrows))
+        (key (window-parameter window 'glitnir--fold-arrows-key)))
+    (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
+                (and (null spec) (null key)))
+      (set-window-parameter window 'glitnir--fold-arrows-key (and spec (cons spec glitnir--card-generation)))
+      (let ((v (and spec (glitnir--fold-arrows-vector spec (window-frame window)))))
+        (unless (equal v (window-parameter window 'glitnir--fold-arrows))
+          (set-window-parameter window 'glitnir--fold-arrows v)
+          (force-window-update window))))
+    (when (window-parameter window 'glitnir--fold-arrows)
       (setq glitnir--blocks-any t))))
 
 (defvar glitnir-minimap-functions nil
@@ -891,6 +959,7 @@ This runs on every redisplay, so it walks the tree rather than building a window
         (glitnir--recheck-ruler window)
         (glitnir--recheck-edges window)
         (glitnir--recheck-minimap window)
+        (glitnir--recheck-fold-arrows window)
         (when (window-parameter window 'glitnir--card) (setq any t)))
       (setq window (window-next-sibling window)))
     any))

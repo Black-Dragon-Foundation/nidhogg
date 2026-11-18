@@ -1868,6 +1868,86 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
             ),
             ("NHG_MINIMAP_LABELS_ALL", NHG_MINIMAP_LABELS_ALL.into()),
             ("NHG_MINIMAP_LABELS_MARKS", NHG_MINIMAP_LABELS_MARKS.into()),
+            ("offsetof (M, pill_rgb)", offset_of!(M, pill_rgb) as i64),
+            (
+                "offsetof (M, pill_format)",
+                offset_of!(M, pill_format) as i64,
+            ),
+            (
+                "offsetof (M, pill_format_len)",
+                offset_of!(M, pill_format_len) as i64,
+            ),
+            ("offsetof (M, number)", offset_of!(M, number) as i64),
+            ("offsetof (M, number_len)", offset_of!(M, number_len) as i64),
+            ("offsetof (M, arrows)", offset_of!(M, arrows) as i64),
+            ("offsetof (M, fringe)", offset_of!(M, fringe) as i64),
+            ("offsetof (M, arrow_size)", offset_of!(M, arrow_size) as i64),
+            (
+                "offsetof (M, arrow_inset)",
+                offset_of!(M, arrow_inset) as i64,
+            ),
+            ("offsetof (M, arrow_rgb)", offset_of!(M, arrow_rgb) as i64),
+            (
+                "offsetof (M, arrow_opacity)",
+                offset_of!(M, arrow_opacity) as i64,
+            ),
+            ("offsetof (M, folded_rgb)", offset_of!(M, folded_rgb) as i64),
+            (
+                "offsetof (M, folded_opacity)",
+                offset_of!(M, folded_opacity) as i64,
+            ),
+            ("offsetof (M, rows)", offset_of!(M, rows) as i64),
+            ("offsetof (M, rows_len)", offset_of!(M, rows_len) as i64),
+            ("sizeof (NhgMinimapRow)", size_of::<NhgMinimapRow>() as i64),
+            (
+                "offsetof (NhgMinimapRow, pos)",
+                offset_of!(NhgMinimapRow, pos) as i64,
+            ),
+            (
+                "offsetof (NhgMinimapRow, y)",
+                offset_of!(NhgMinimapRow, y) as i64,
+            ),
+            (
+                "offsetof (NhgMinimapRow, h)",
+                offset_of!(NhgMinimapRow, h) as i64,
+            ),
+            ("offsetof (M, heat)", offset_of!(M, heat) as i64),
+            ("offsetof (M, heat_len)", offset_of!(M, heat_len) as i64),
+            (
+                "offsetof (M, heat_low_rgb)",
+                offset_of!(M, heat_low_rgb) as i64,
+            ),
+            (
+                "offsetof (M, heat_low_opacity)",
+                offset_of!(M, heat_low_opacity) as i64,
+            ),
+            (
+                "offsetof (M, heat_high_rgb)",
+                offset_of!(M, heat_high_rgb) as i64,
+            ),
+            (
+                "offsetof (M, heat_high_opacity)",
+                offset_of!(M, heat_high_opacity) as i64,
+            ),
+            ("offsetof (M, pin_kind)", offset_of!(M, pin_kind) as i64),
+            ("offsetof (M, pin_rgb)", offset_of!(M, pin_rgb) as i64),
+            ("offsetof (M, pins)", offset_of!(M, pins) as i64),
+            ("offsetof (M, pins_len)", offset_of!(M, pins_len) as i64),
+            (
+                "sizeof (NhgMinimapName)",
+                size_of::<NhgMinimapName>() as i64,
+            ),
+            (
+                "offsetof (NhgMinimapName, text)",
+                offset_of!(NhgMinimapName, text) as i64,
+            ),
+            (
+                "offsetof (NhgMinimapName, len)",
+                offset_of!(NhgMinimapName, len) as i64,
+            ),
+            ("NHG_MINIMAP_NONE", NHG_MINIMAP_NONE.into()),
+            ("NHG_ARROWS_HOVER", NHG_ARROWS_HOVER.into()),
+            ("NHG_ARROWS_ALWAYS", NHG_ARROWS_ALWAYS.into()),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)

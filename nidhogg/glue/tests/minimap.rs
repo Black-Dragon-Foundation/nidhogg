@@ -534,13 +534,15 @@ mod minimap {
     }
 
     use nhglue::minimap::{
-        NHG_MINIMAP_LABELS_ALL, NHG_MINIMAP_LABELS_MARKS, NhgMinimapHunk,
+        NHG_MINIMAP_LABELS_ALL, NHG_MINIMAP_LABELS_MARKS, NhgMinimapHunk, NhgMinimapName,
         nhg_minimap_set_label_render,
     };
     use std::sync::Mutex;
 
     /// The texts the fake renderer was asked for.
     static RENDERED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// Held by each test that sets the (process-wide) label renderer.
+    static RENDERER: Mutex<()> = Mutex::new(());
 
     /// A renderer that fills 5 px a byte (at most the room) by the whole height, in the colour asked.
     unsafe extern "C" fn fake_render(
@@ -650,6 +652,7 @@ mod minimap {
             })
             .collect();
         let t = text.as_bytes();
+        let _held = RENDERER.lock().unwrap_or_else(|e| e.into_inner());
         let build = || {
             // SAFETY: T is readable for its length.
             let rc = unsafe { hlid_build(key, 0, 8, t.as_ptr(), t.len(), std::ptr::null(), 0, 0) };
@@ -794,6 +797,362 @@ mod minimap {
         assert!(m.labels.is_empty());
         nhg_minimap_set_label_render(None);
         glitnir::sja::minimap::forget(file);
+        hlid_drop(key);
+    }
+
+    /// Fold pills (design M5, `fold-pills-show-the-hidden-lines-or-the-name`): each hidden range gets a dashed pill in
+    /// `pill_rgb` after its first line's bar, the lines it hides through the format, a named range its name; with
+    /// labels off too; none without the colour.
+    #[test]
+    fn fold_pills_show_the_hidden_lines_or_the_name() {
+        let _held = RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let key = 0x6d6d_0021;
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        // lines 21–25 hidden after line 20, lines 61–63 after line 60 as the fold "parse"
+        let (a, z, c, d) = (pos(21) - 1, pos(26) - 1, pos(61) - 1, pos(64) - 1);
+        with_model(key, |m| {
+            m.set_hidden_named(&[(a, z, None), (c, d, Some("parse"))])
+        });
+        nhg_minimap_set_label_render(Some(fake_render));
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let e = NhgMinimap {
+            pill_rgb: 0x66_6666,
+            ..entry(key, 1, 100, zv, NHG_MINIMAP_OPEN)
+        };
+        let get = |b: &mut Backings, e: &NhgMinimap| {
+            sync_at(b, f, std::slice::from_ref(e)).unwrap();
+            placed(&commit(f).1, minimap_id(SEQ))
+                .unwrap()
+                .minimap
+                .unwrap()
+        };
+        RENDERED.lock().unwrap().clear();
+        let m = get(&mut b, &e);
+        let top = 10 + STRIP;
+        let mut got: Vec<(i32, i32, u32)> =
+            m.labels.iter().map(|l| (l.y - top, l.x, l.px[0])).collect();
+        got.sort();
+        // rows of 2 px: line 20 at 40, line 60 five rows up (55) at 110; after the bar (indent 4 + 10 columns) and
+        // 4 px; the dashed outline's first pixel in the pill colour
+        assert_eq!(got, [(40, 218, 0xff66_6666), (110, 218, 0xff66_6666)]);
+        let texts = RENDERED.lock().unwrap().clone();
+        assert!(
+            texts.contains(&"⋯ 5 folded".to_owned()) && texts.contains(&"parse".to_owned()),
+            "{texts:?}"
+        );
+        // the outline is dashed: the top row has gaps; the text inside, 3 px in
+        let l = m.labels.iter().find(|l| l.y == top + 40).unwrap();
+        let row0: Vec<u32> = l.px[..l.w as usize].to_vec();
+        assert!(row0.contains(&0) && row0.contains(&0xff66_6666));
+        assert_eq!(l.px[(6 * l.w + 3) as usize], 0xff66_6666, "the text's fill");
+        // a format of Lisp's
+        let fmt = "%d hidden";
+        let m = get(
+            &mut b,
+            &NhgMinimap {
+                pill_format: fmt.as_ptr(),
+                pill_format_len: fmt.len(),
+                ..e
+            },
+        );
+        assert_eq!(m.labels.len(), 2);
+        assert!(RENDERED.lock().unwrap().contains(&"5 hidden".to_owned()));
+        // no colour: no pills
+        let m = get(&mut b, &NhgMinimap { pill_rgb: -1, ..e });
+        assert!(m.labels.is_empty());
+        hlid_drop(key);
+    }
+
+    /// Another window on the same text (design M8, `another-windows-band-shows-its-number`): its outlined band shows its
+    /// number at the top-right, in the band's colour; none without a number.
+    #[test]
+    fn another_windows_band_shows_its_number() {
+        let _held = RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let key = 0x6d6d_0022;
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        nhg_minimap_set_label_render(Some(fake_render));
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let mine = entry(key, 1, 200, zv, NHG_MINIMAP_OPEN);
+        let n = "2";
+        let other = NhgMinimap {
+            seq: SEQ + 1,
+            start: pos(50),
+            end: pos(60),
+            number: n.as_ptr(),
+            number_len: n.len(),
+            ..mine
+        };
+        sync_at(&mut b, f, &[mine, other]).unwrap();
+        let m = placed(&commit(f).1, minimap_id(SEQ))
+            .unwrap()
+            .minimap
+            .unwrap();
+        let top = 10 + STRIP;
+        // the fake renderer draws 5 px a byte: at the right less 10 px of room
+        let got: Vec<(i32, i32, u32)> =
+            m.labels.iter().map(|l| (l.y - top, l.x, l.px[0])).collect();
+        assert_eq!(got, [(100, 285, 0xff80_8080)]);
+        // the other window's own minimap: mine has no number
+        let o = placed(&commit(f).1, minimap_id(SEQ + 1))
+            .map(|p| p.minimap.unwrap().labels.len())
+            .unwrap_or(0);
+        assert_eq!(o, 0);
+        hlid_drop(key);
+    }
+
+    /// Fold arrows (design F1, `fold-arrows-mark-the-fold-starts-in-the-fringe`): on each matrix row that starts a fold
+    /// range's line, a chevron in the fringe at its inset, down in the open colour, right in the folded colour for a
+    /// range whose lines are hidden; in hover mode the open ones only while the pointer is over the fringe (moving on
+    /// and off publishes, and is never swallowed); a record for the arrows alone draws no minimap.
+    #[test]
+    fn fold_arrows_mark_the_fold_starts_in_the_fringe() {
+        use nhglue::minimap::{
+            NHG_ARROWS_ALWAYS, NHG_ARROWS_HOVER, NHG_MINIMAP_NONE, NhgMinimapRow, arrows_id,
+            chevron,
+        };
+        let key = 0x6d6d_0023;
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        let fold = |a, z| Fold {
+            beg: pos(a),
+            end: pos(z) - 1,
+            kind: 0,
+            depth: 0,
+            source: 0,
+        };
+        let folds = [fold(10, 20), fold(30, 40)];
+        let hidden = (pos(31) - 1, pos(40) - 1);
+        with_model(key, |m| {
+            m.set_folds(0, &folds, 100);
+            m.set_hidden(&[hidden]);
+        });
+        let rows = [
+            NhgMinimapRow {
+                pos: pos(10),
+                y: 100,
+                h: 16,
+            },
+            NhgMinimapRow {
+                pos: pos(11),
+                y: 116,
+                h: 16,
+            },
+            NhgMinimapRow {
+                pos: pos(30),
+                y: 132,
+                h: 16,
+            },
+        ];
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let e = NhgMinimap {
+            arrows: NHG_ARROWS_ALWAYS,
+            fringe: NhgRect {
+                x: 0,
+                y: 10,
+                w: 16,
+                h: 200,
+            },
+            arrow_size: 10,
+            arrow_inset: 2,
+            arrow_rgb: 0x11_2233,
+            arrow_opacity: 1.0,
+            folded_rgb: 0x44_5566,
+            folded_opacity: 1.0,
+            rows: rows.as_ptr(),
+            rows_len: rows.len(),
+            ..entry(key, pos(10), pos(31), zv, NHG_MINIMAP_OPEN)
+        };
+        let get = |b: &mut Backings, e: &NhgMinimap| {
+            sync_at(b, f, std::slice::from_ref(e)).unwrap();
+            placed(&commit(f).1, arrows_id(SEQ)).map(|p| p.minimap.unwrap())
+        };
+        let a = get(&mut b, &e).expect("the arrows' layer");
+        assert_eq!(a.rect, Rect::new(0, 10 + STRIP, 16, 200));
+        let got: Vec<(i32, i32, bool)> = a
+            .labels
+            .iter()
+            .map(|l| {
+                let folded = l.px == chevron(10, true, 0xff44_5566);
+                assert!(folded || l.px == chevron(10, false, 0xff11_2233));
+                (l.x, l.y, folded)
+            })
+            .collect();
+        // inner edge 16 less the inset 2 and the box 10; each centred in its row (moved down by the title strip)
+        assert_eq!(got, [(4, 123, false), (4, 155, true)]);
+        assert!(chevron(10, true, 1) != chevron(10, false, 1));
+        // hover: the folded one alone until the pointer is over the fringe
+        let h = NhgMinimap {
+            arrows: NHG_ARROWS_HOVER,
+            ..e
+        };
+        let a = get(&mut b, &h).unwrap();
+        assert_eq!(a.labels.len(), 1);
+        let r = of(&mut b, f).unwrap().motion(Some((8.0, 140.0)), 1);
+        assert!(r.publish && !r.swallow, "{r:?}");
+        assert_eq!(get(&mut b, &h).unwrap().labels.len(), 2);
+        let r = of(&mut b, f).unwrap().motion(Some((100.0, 140.0)), 2);
+        assert!(r.publish && !r.swallow);
+        assert_eq!(get(&mut b, &h).unwrap().labels.len(), 1);
+        // the arrows alone: no minimap layer; gone from the list, the arrows' layer goes
+        let alone = NhgMinimap {
+            flags: NHG_MINIMAP_NONE,
+            ..e
+        };
+        assert_eq!(get(&mut b, &alone).unwrap().labels.len(), 2);
+        assert!(placed(&commit(f).1, minimap_id(SEQ)).is_none());
+        sync_at(&mut b, f, &[]).unwrap();
+        assert!(placed(&commit(f).1, arrows_id(SEQ)).is_none());
+        assert_eq!(count(&mut b, f), 0);
+        hlid_drop(key);
+    }
+
+    /// Heat (design X3, `a-heat-layer-recolours-the-bars-on-the-ramp`): while Sjá holds the file's `heat:NAME` layer,
+    /// each line's bar is one colour mixed between the ramp's ends by its value (items in any order), a line with no
+    /// item in the bars' colour; a newer version draws the tiles again; a layer not pushed leaves the bars as they were.
+    #[test]
+    fn a_heat_layer_recolours_the_bars_on_the_ramp() {
+        let key = 0x6d6d_0024;
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let file = "/t/heat-test.rs";
+        let push = |version: u32, items: &str| {
+            let line = format!(
+                r#"{{"event":"view-model","data":{{"minimap":{{"file":"{file}","layer":"heat:blame","version":{version},"items":{items}}}}}}}"#
+            );
+            glitnir::sja::minimap::push(glitnir::sja::minimap::read_line(&line).unwrap().unwrap());
+        };
+        push(1, r#"[[30,39,1000,"2 days ago"],[10,19,0],[20,20,500]]"#);
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let name = "blame";
+        let e = NhgMinimap {
+            file: file.as_ptr(),
+            file_len: file.len(),
+            heat: name.as_ptr(),
+            heat_len: name.len(),
+            heat_low_rgb: 0x00_00ff,
+            heat_low_opacity: 1.0,
+            heat_high_rgb: 0xff_0000,
+            heat_high_opacity: 1.0,
+            ..entry(key, 1, 100, zv, NHG_MINIMAP_OPEN)
+        };
+        let at = |b: &mut Backings, e: &NhgMinimap, line: usize| {
+            sync_at(b, f, std::slice::from_ref(e)).unwrap();
+            let m = placed(&commit(f).1, minimap_id(SEQ))
+                .unwrap()
+                .minimap
+                .unwrap();
+            // rows of 2 px, 100 px wide; column 8 is inside every line's bar
+            m.tiles[0].px[line * 2 * 100 + 8]
+        };
+        assert_eq!(at(&mut b, &e, 9), 0xff00_00ff, "value 0: the low end");
+        assert_eq!(at(&mut b, &e, 19), 0xff80_0080, "500: half way");
+        assert_eq!(at(&mut b, &e, 29), 0xffff_0000, "1000: the high end");
+        assert_eq!(at(&mut b, &e, 0), 0xffff_ffff, "no item: the bars' colour");
+        assert_eq!(at(&mut b, &e, 40), 0xffff_ffff);
+        // a newer version: drawn again
+        push(2, r#"[[10,10,1000]]"#);
+        assert_eq!(at(&mut b, &e, 9), 0xffff_0000);
+        assert_eq!(at(&mut b, &e, 29), 0xffff_ffff);
+        // another layer, not pushed: the bars as without heat
+        let other = "coverage";
+        let c = NhgMinimap {
+            heat: other.as_ptr(),
+            heat_len: other.len(),
+            ..e
+        };
+        assert_eq!(at(&mut b, &c, 9), 0xffff_ffff);
+        glitnir::sja::minimap::forget(file);
+        hlid_drop(key);
+    }
+
+    /// Pinned regions (design X5, `pin-marks-give-a-band-and-a-label`): each mark of the pin kind with an end is a band
+    /// over its rows in the pin colour at the band's opacity, the n-th pin by position labelled with the n-th name, with
+    /// labels off; marks of another kind or without an end are not pins.
+    #[test]
+    fn pin_marks_give_a_band_and_a_label() {
+        use glitnir::hlidskjalf::Mark;
+        let _held = RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let key = 0x6d6d_0025;
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        let mark = |a: u64, z: u64| Mark {
+            pos: a,
+            end: z,
+            lane: 0,
+            class: 0,
+            prio: 0,
+            kind: 9,
+        };
+        // (given out of order: the names follow the positions)
+        let pins = [mark(pos(60), pos(65) - 1), mark(pos(20), pos(30) - 1)];
+        let other = [mark(pos(40), pos(45))];
+        let lone = [mark(pos(80), 0)];
+        with_model(key, |m| {
+            m.set_marks(9, &[pins[0], pins[1], lone[0]]);
+            m.set_marks(3, &other);
+        });
+        nhg_minimap_set_label_render(Some(fake_render));
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let names = [
+            NhgMinimapName {
+                text: "alpha".as_ptr(),
+                len: 5,
+            },
+            NhgMinimapName {
+                text: "beta".as_ptr(),
+                len: 4,
+            },
+        ];
+        let e = NhgMinimap {
+            pin_kind: 9,
+            pin_rgb: 0x00_ffff,
+            pins: names.as_ptr(),
+            pins_len: names.len(),
+            ..entry(key, 1, 100, zv, NHG_MINIMAP_OPEN)
+        };
+        sync_at(&mut b, f, std::slice::from_ref(&e)).unwrap();
+        let m = placed(&commit(f).1, minimap_id(SEQ))
+            .unwrap()
+            .minimap
+            .unwrap();
+        let top = 10 + STRIP;
+        let fill = 0x4000_4040;
+        let pinned: Vec<Rect> = m
+            .bands
+            .iter()
+            .filter(|b| b.fill_argb == fill)
+            .map(|b| b.rect)
+            .collect();
+        assert_eq!(
+            pinned,
+            [
+                Rect::new(200, top + 40, 100, 20),
+                Rect::new(200, top + 120, 100, 10)
+            ]
+        );
+        let mut got: Vec<(i32, u32)> = m.labels.iter().map(|l| (l.y - top, l.px[0])).collect();
+        got.sort();
+        assert_eq!(got, [(40, 0xff00_ffff), (120, 0xff00_ffff)]);
+        let texts = RENDERED.lock().unwrap().clone();
+        assert!(texts.contains(&"alpha".to_owned()) && texts.contains(&"beta".to_owned()));
+        // no pin colour: neither
+        sync_at(&mut b, f, &[NhgMinimap { pin_rgb: -1, ..e }]).unwrap();
+        let m = placed(&commit(f).1, minimap_id(SEQ))
+            .unwrap()
+            .minimap
+            .unwrap();
+        assert!(m.labels.is_empty() && m.bands.iter().all(|b| b.fill_argb != fill));
         hlid_drop(key);
     }
 }
