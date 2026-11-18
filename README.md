@@ -1418,6 +1418,15 @@ Bugs of upstream Emacs that touch no Nidhogg feature are fixed in their own flag
   sharing one cache) found it missing meanwhile, and its own load failed (`file-missing "Renaming"`). The load now
   opens a private copy and deletes it once it is open; the shared file never moves. Row:
   `fixes/two-emacs-reloading-one-eln-never-lose-it` (two processes reload one `.eln` 400 times each).
+- **A terminal made small keeps its windows on it** (`src/window.c`, `resize_frame_windows`). With many windows,
+  each with a mode line and a header or tab line, a terminal shrunk below their minimum sizes made the frame resize
+  try normal and then `ignore` minimum sizes; both count those lines, so both failed and the windows kept their old
+  sizes, larger than the frame. Redisplay wrote past the frame and Emacs aborted (`cmcheckmagic`) or crashed. A third
+  try with safe sizes (one line, two columns; the safe minimum of `window-min-size`) now fits, as
+  `adjust_frame_size` never makes a terminal frame smaller than them. Below even the safe sizes the frame stays at
+  them, larger than the terminal, as upstream: what lies past the terminal's last line or column is not shown until it
+  grows. Rows: `fixes/a-shrunk-terminal-keeps-every-window-on-it` (36 windows, 120x40 → 30x8 → 120x40, aborts
+  without the fix) and `fixes/below-the-safe-sizes-the-frame-stays-at-them` (12 windows in 8 lines: a 14-line frame).
 
 ## Reporting issues
 
