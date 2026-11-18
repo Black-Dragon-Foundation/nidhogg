@@ -736,6 +736,17 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; e
           (clrhash glitnir--blocks-seen)
           (set-frame-parameter nil 'glitnir--blocks nil))))))
 
+(ert-deftest glitnir-wrap-column-is-buffer-local ()
+  "`nidhogg-wrap-column' is nil by default and buffer-local when set."
+  (should (boundp 'nidhogg-wrap-column))
+  (should (local-variable-if-set-p 'nidhogg-wrap-column))
+  (should-not (default-value 'nidhogg-wrap-column))
+  (with-temp-buffer
+    (setq nidhogg-wrap-column 40)
+    (should (local-variable-p 'nidhogg-wrap-column))
+    (should (= nidhogg-wrap-column 40)))
+  (should-not (default-value 'nidhogg-wrap-column)))
+
 (ert-deftest glitnir-hstrip-resolves-and-its-event-scrolls ()
   "A window's `glitnir-hstrip' is resolved into `glitnir--hstrip' ([HEIGHT LANE INSET RADIUS LEAST RGB OPACITY]) once
 per change, and sets the frame's flag so C lists it; `:lane' defaults to the height.  The strip's event scrolls its

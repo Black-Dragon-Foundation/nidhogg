@@ -2913,6 +2913,14 @@ struct it
      line numbers, or zero if not computed.  */
   int lnum_width;
   int lnum_pixel_width;
+#ifdef HAVE_GLITNIR
+
+  /* Where a wrapped line continues, when `nidhogg-wrap-column' asks
+     for a column before the window's edge (0: at last_visible_x).
+     Only the decision to continue reads it; last_visible_x keeps its
+     meaning for fills, `:align-to' and clipping.  */
+  int wrap_x;
+#endif
 
   /* The line number of point's line, or zero if not computed yet.  */
   ptrdiff_t pt_lnum;
@@ -3733,6 +3741,17 @@ extern void tty_draw_row_with_mouse_face (struct window *, struct glyph_row *,
 					  int, int, enum draw_glyphs_face);
 extern void display_tty_menu_item (const char *, int, int, int, int, bool);
 #endif
+/* The x at which a wrapped line of iterator IT continues: its wrap
+   column's, except for a stretch (`:align-to', which reaches the
+   window's edge without wrapping).  */
+#ifdef HAVE_GLITNIR
+# define IT_WRAP_X(it)						\
+  ((it)->wrap_x > 0 && (it)->what != IT_STRETCH			\
+   ? (it)->wrap_x : (it)->last_visible_x)
+#else
+# define IT_WRAP_X(it) ((it)->last_visible_x)
+#endif
+
 /* Flags passed to try_window.  */
 #define TRY_WINDOW_CHECK_MARGINS	(1 << 0)
 #define TRY_WINDOW_IGNORE_FONTS_CHANGE	(1 << 1)
