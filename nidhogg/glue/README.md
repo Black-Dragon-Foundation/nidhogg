@@ -356,14 +356,26 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   `_DRAG` or `_DWELL`, `dx` the position (the window start that centres the row; the row's start for a dwell) and
   `dy` the window's sequence number, which C stores as a `glitnir-minimap` event. A reveal step is
   `NHG_MINIMAP_PUBLISH`: C publishes the frame again, with no redisplay. A dwell on the marks lane (the strip's width
-  at the minimap's outer edge) is `_DWELL_MARKS`, on a label `_DWELL_LABEL` at the label's line start.
+  at the minimap's outer edge) is `_DWELL_MARKS`, on a label `_DWELL_LABEL` at the label's line start. A Shift-press
+  is `_SELECT_START` (no click, no scroll), each row change while held `_SELECT_EXTEND`, the release `_SELECT_END`,
+  each at its row's start (design X2); the label under the pointer changing is one `_LABEL_HOVER` at its line's start
+  (0 for none, design X7).
 - **The minimap's other layers** (design F1, M4, M5, M8, M9, X3, X5): fold pills (`pill_rgb`: a dashed pill after
   the bar of each hidden range's first line, its name from `nidhogg-lines-set-hidden` or `pill_format`'s count, placed
   as a MARK section); another window's `number` at the top-right of its outlined band; heat (`heat`: Sjá's
   `heat:NAME` layer of `file` recolours each tile row's bar on the ramp `heat_low`..`heat_high`, its version part of
   the tiles' stamp); pins (marks of `pin_kind` with an end: a band at the band's opacity and the n-th of `pins` as a
   label); the trail (`trail_rgb`: a 2 px bar on the rows of the model's newest `trail_length` visits, fading to 15 %);
-  and a jump flash (`nhg_minimap_flash`: the row lit in the accent for 400 ms, faded on the frame clock).
+  a jump flash (`nhg_minimap_flash`: the row lit in the accent for 400 ms, faded on the frame clock); and the line
+  model's search hits (`hit_rgb`: a bar at each hit's column as long as the hit, at most 4096 drawn, the current hit
+  ringed).
+- **The density strip** (design M7, state C; `NHG_MINIMAP_DENSITY`, `minimap::density`): a record with no line model
+  (key 0) for a huge file: the hub's buckets of `file` (Sjá's `density` layer) over the strip's height, one 1 px row
+  per pixel, its brightness the bytes under it against the fullest row's, a mark at the outer edge in `error_rgb` (else
+  `warning_rgb`) where its buckets hold errors (warnings), the buckets not yet built outlined, and the window's band at
+  its fraction of the file: a buffer holding a chunk maps its positions into the file (`chunk_start`, `chunk_bytes`,
+  `file_bytes`). A dwell is `NHG_MINIMAP_DWELL_BUCKET` with the bucket's index; a click the start that centres the
+  fraction.
 - **Fold arrows** (design F1, the window parameter `glitnir-fold-arrows`): the record's `arrows` with the left
   fringe and the matrix rows that start a line (`NhgMinimapRow`); a second layer per window, id
   `sequence_number | MINIMAP_TAG | ARROWS_TAG`, over the fringe, a chevron sprite per row whose line starts a fold

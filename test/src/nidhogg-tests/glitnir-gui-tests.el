@@ -1966,6 +1966,53 @@ event, at most 80 ms after the dwell's 300 ms."
         (should (equal seen '(dwell-marks)))
         (should (<= (- at t0) (+ 0.3 0.08 0.05)))))))
 
+(ert-deftest glitnir-gui/the-minimap-search-hits-and-the-label-hover ()
+  "The line model's search (X1) draws each hit as a `:hit' bar at its column on its row, as many as `how-many'
+finds, the current hit ringed; the pointer onto a label is one `label-hover' event at its line (X7), off it one of
+nil."
+  (glitnir-gui--with-hover-minimap '(:width 120 :open t :fill ("#000000" . 1) :text ("#000000" . 1)
+                                            :hit ("#ff0000" . 1) :band ("#000000" . 0) :pin-kind 9
+                                            :pin ("#000000" . 0) :pin-names ["pinned"] :label-face default)
+    (let* ((row-px (floor (+ 0.5 (* 2 (frame-scale-factor)))))
+           (col-px (max 1 (floor (+ 0.5 (frame-scale-factor)))))
+           (at (lambda (l) (+ 1 (* 77 l))))
+           (rows (lambda (from n) (list (nth 0 mm) (+ (nth 1 mm) (* from row-px)) (nth 2 mm) (* n row-px))))
+           (red (lambda (r g b) (and (> r 150) (< g 60) (< b 60))))
+           (n (nidhogg-lines-search buf "kkkkk" t)))
+      (while (eq n 'running) (setq n (nidhogg-lines-search-step buf)))
+      (should (= n 168))
+      (should (= n (with-current-buffer buf (how-many "kkkkk" (point-min) (point-max)))))
+      ;; (the search redisplays the buffer's windows itself)
+      (redisplay)
+      (should (gui-runner-wait (lambda () (> (glitnir-gui--count-where (glitnir-snapshot nil 'raw) (funcall rows 10 1) red) 0))
+                               3))
+      (let ((snap (glitnir-snapshot nil 'raw)))
+        (glitnir-gui--shot "minimap-hits")
+        ;; the bars start at column 6, after the line number
+        (should (= (glitnir-gui--count-where snap (list (nth 0 mm) (+ (nth 1 mm) (* 10 row-px)) (* 6 col-px) row-px) red) 0))
+        (should (= (glitnir-gui--count-where snap (funcall rows 11 1) red) 0))
+        (should (= (glitnir-gui--count-where snap (funcall rows 12 20) red) 0)))
+      ;; the current hit: a ring 1 px outside its bar, into the next row
+      (nidhogg-lines-search-current buf (+ (funcall at 10) 6))
+      (redisplay)
+      (should (gui-runner-wait (lambda () (> (glitnir-gui--count-where (glitnir-snapshot nil 'raw) (funcall rows 11 1) red) 0))
+                               3))
+      ;; a label at line 20 (a pin there): the pointer onto it, along it, then off
+      (nidhogg-lines-set-marks buf 9 (list (vector (funcall at 20) (1- (funcall at 25)))))
+      (force-window-update w)
+      (redisplay t)
+      (gui-runner-observe 0.3 #'gui-runner-read-all)
+      (let* ((seen nil)
+             (glitnir-minimap-functions (list (lambda (kind _w pos) (when (eq kind 'label-hover) (push pos seen))))))
+        (glitnir-gui--vp-to vp map (+ (nth 0 mm) 30) (+ (nth 1 mm) (* 20 row-px) 3))
+        (gui-runner-observe 0.3 #'gui-runner-read-all)
+        (glitnir-gui--vp-to vp map (+ (nth 0 mm) 40) (+ (nth 1 mm) (* 20 row-px) 5))
+        (gui-runner-observe 0.3 #'gui-runner-read-all)
+        (glitnir-gui--vp-to vp map (+ (nth 0 mm) 30) (+ (nth 1 mm) (* 100 row-px)))
+        (gui-runner-observe 0.3 #'gui-runner-read-all)
+        (should (equal (reverse seen) (list (funcall at 20) nil))))
+      (nidhogg-lines-search buf nil))))
+
 (defun glitnir-gui--count-where (snap rect pred)
   "How many pixels of RECT (X Y W H) in SNAP satisfy PRED, called with R, G and B."
   (pcase-let ((`(,x ,y ,w ,h) rect) (n 0))
@@ -2178,6 +2225,46 @@ value 1000, `:heat-low' at 0, `:text' where no item is; a heat layer not pushed 
       (set-window-parameter w 'glitnir-minimap nil)
       (nidhogg-view-minimap 'forget file)
       (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/the-density-strip-draws-the-hubs-buckets ()
+  "A `:density' minimap on a buffer with no line model draws the hub's density buckets of its `:file': the full rows
+brightest, an `:error' mark at the outer edge on a bucket with errors, the band at the window's fraction."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-view-push))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-density*" 300)) (w (selected-window))
+        (file "/glitnir-gui/big.log"))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (should-not (and (fboundp 'nidhogg-lines-describe) (nidhogg-lines-describe buf)))
+          ;; 100 buckets: the first ten full, an error in bucket 50, the rest a tenth as full
+          (nidhogg-view-push
+           (json-serialize
+            `((event . "view-model")
+              (data . ((minimap . ((file . ,file) (layer . "density") (version . 1)
+                                   (items . ((buckets . ,(vconcat (mapcar (lambda (i) (vector (if (< i 10) 1000 100)
+                                                                                                (if (= i 50) 3 0) 0))
+                                                                          (number-sequence 0 99))))
+                                             (total . 100))))))))))
+          (set-window-parameter w 'glitnir-minimap
+                                `(:width 26 :open t :density t :file ,file :fill ("#000000" . 1) :text ("#ffffff" . 1)
+                                         :band ("#000000" . 0) :error "#ff0000"))
+          (pcase-let* ((mm (glitnir-gui--minimap-rect w 26))
+                       (`(,x ,y ,mw ,h) mm)
+                       (row (lambda (frac) (list x (+ y (round (* frac h))) (- mw (round (* 4 (frame-scale-factor)))) 1)))
+                       (snap (glitnir-gui--painted))
+                       (white (lambda (r g b) (and (> r 200) (> g 200) (> b 200))))
+                       (dim (lambda (r g b) (and (> r 10) (< r 60) (= r g b))))
+                       (red (lambda (r g b) (and (> r 200) (< g 60) (< b 60)))))
+            (glitnir-gui--shot "minimap-density")
+            (should (> (glitnir-gui--count-where snap (funcall row 0.05) white) 0))
+            (should (> (glitnir-gui--count-where snap (funcall row 0.3) dim) 0))
+            (should (= (glitnir-gui--count-where snap (funcall row 0.3) white) 0))
+            (should (> (glitnir-gui--count-where snap (list (+ x mw -3) (+ y (round (* 0.505 h))) 3 2) red) 0))))
+      (set-window-parameter w 'glitnir-minimap nil)
+      (nidhogg-view-minimap 'forget file)
       (kill-buffer buf))))
 
 ;;; The shell's menus (nhwl-menu.el): the metrics a theme gives them and the submenu's tolerance

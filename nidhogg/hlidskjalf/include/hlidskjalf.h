@@ -88,6 +88,11 @@ int32_t hlid_set_hidden_named (uint64_t key, const uint64_t *ranges,
 			       const size_t *lens, size_t n);
 int32_t hlid_trail_note (uint64_t key, uint64_t pos);
 int32_t hlid_trail_clear (uint64_t key);
+int32_t hlid_search (uint64_t key, const uint8_t *query, size_t len, uint32_t flags);
+int32_t hlid_search_step (uint64_t key, const uint8_t *p1, size_t n1, const uint8_t *p2, size_t n2,
+			  uint64_t budget_ns, int32_t *state, uint64_t *count);
+int32_t hlid_search_hits (uint64_t key, uint64_t beg, uint64_t end, uint64_t *out, size_t cap, size_t *n);
+int32_t hlid_search_current (uint64_t key, uint64_t pos, uint64_t *index);
 int32_t hlid_trail (uint64_t key, uint64_t *out, size_t cap, size_t *n);
 int32_t hlid_describe (uint64_t key, hlid_stats *out);
 /* MARK sections: the expression (RE null: none), then the Ith section whose

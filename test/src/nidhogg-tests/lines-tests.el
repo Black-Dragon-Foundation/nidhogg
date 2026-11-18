@@ -227,6 +227,52 @@ is not a string or nil is an error."
     (nidhogg-lines-trail-clear b)
     (should-not (nidhogg-lines-trail b))))
 
+(ert-deftest lines/search-counts-as-how-many-does ()
+  "The minimap search (X1): the hits of a literal or a regexp in the subset are `how-many''s, with or without case
+folding, over a text whose gap lies inside a line; their positions are `re-search-forward''s; a query outside the
+subset is nil (Lisp's), an edit starts the scan over, and the current hit's index counts the hits before it."
+  (skip-unless (lines-tests--built-p))
+  (lines-tests--with (b (concat (mapconcat (lambda (i) (format "\tfoo(%d) Foo bar.baz ÿ foo\n" i)) (number-sequence 1 3000) "")
+                                "^x* (a) FOO\n"))
+    ;; the gap inside a line
+    (goto-char 50) (insert "foo") (delete-char -3)
+    (let ((count (lambda (q fold)
+                   (let ((case-fold-search fold))
+                     (save-excursion (how-many q (point-min) (point-max))))))
+          (run (lambda (q &optional literal fold)
+                 (let ((r (nidhogg-lines-search b q literal fold)))
+                   (while (eq r 'running) (setq r (nidhogg-lines-search-step b)))
+                   r))))
+      (dolist (q '("foo" "f[aeiou]\\{2\\}" "\\(foo\\|bar\\)\\.?" "^\tfoo" "foo$" "([0-9]+)" "a.b"
+                   "x*" "^x\\*" "ÿ fo+"))
+        (should (equal (list q (funcall run q)) (list q (funcall count q nil)))))
+      (should (= (funcall run "foo" nil t) (funcall count "foo" t)))
+      ;; literal: "o." is in no line, though the regexp o. is in every one
+      (should (= (funcall run "o." t) (funcall count (regexp-quote "o.") nil) 0))
+      ;; the positions: `re-search-forward''s
+      (funcall run "\\(foo\\|bar\\)")
+      (should (equal (nidhogg-lines-search-hits b)
+                     (save-excursion
+                       (goto-char 1)
+                       (let (l) (while (re-search-forward "\\(foo\\|bar\\)" nil t)
+                                  (push (cons (match-beginning 0) (match-end 0)) l))
+                            (nreverse l)))))
+      (dolist (q '("\\w+" "\\_<foo" "[^a]" "\\bfoo" "a\\{"))
+        (should-not (nidhogg-lines-search b q)))
+      ;; an edit: the scan starts over and finds the new text
+      (should (numberp (funcall run "qux")))
+      (should (= (funcall run "qux") 0))
+      (goto-char (point-max)) (insert "qux qux\n")
+      (should-not (nidhogg-lines-search-hits b))
+      (let ((r (nidhogg-lines-search-step b)))
+        (while (eq r 'running) (setq r (nidhogg-lines-search-step b)))
+        (should (eql r 2)))
+      (let ((first (car (nidhogg-lines-search-hits b))))
+        (should (= (nidhogg-lines-search-current b (cdr (cadr (nidhogg-lines-search-hits b)))) 2))
+        (should (= (nidhogg-lines-search-current b (car first)) 0)))
+      (should-not (nidhogg-lines-search b nil))
+      (should-not (nidhogg-lines-search-step b)))))
+
 (ert-deftest lines/swap-text-rebuilds ()
   "`buffer-swap-text' and `set-buffer-multibyte' read the text again."
   (skip-unless (lines-tests--built-p))

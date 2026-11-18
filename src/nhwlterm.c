@@ -1283,13 +1283,16 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object a,
   bool arrows = VECTORP (a) && ASIZE (a) >= 7 && nhwl_block_int (a, 0, 0) > 0;
   if (!(VECTORP (v) && ASIZE (v) >= 9) && !arrows)
     return;
-  if (!nh_lines_ntracked)
+  /* A density strip (state C) is for a text with no line model.  */
+  bool density = (VECTORP (v) && ASIZE (v) > 38
+		  && (nhwl_block_int (v, 0, 0) & NHG_MINIMAP_DENSITY));
+  if (!nh_lines_ntracked && !density)
     return;
   if (!VECTORP (v) || ASIZE (v) < 9)
     v = make_vector (9, Qnil);
   struct buffer *b = XBUFFER (w->contents);
-  uint64_t key = nh_lines_model (b);
-  if (!key)
+  uint64_t key = density ? 0 : nh_lines_model (b);
+  if (!key && !density)
     return;
   ptrdiff_t start, end;
   nhwl_shown (w, b, &start, &end);
@@ -1337,7 +1340,8 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object a,
 	face = DEFAULT_FACE_ID;
     }
   /* The file's name: the key of the hub's labels and heat in Sjá.  */
-  if ((labels || heat) && STRINGP (AREF (v, 10)) && SBYTES (AREF (v, 10)) > 0)
+  if ((labels || heat || density)
+      && STRINGP (AREF (v, 10)) && SBYTES (AREF (v, 10)) > 0)
     {
       Lisp_Object u = ENCODE_UTF_8 (AREF (v, 10));
       file_len = SBYTES (u);
@@ -1471,6 +1475,20 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object a,
 		      ? XFLOATINT (AREF (v, 31)) : 0);
   m->trail_length = (ASIZE (v) > 32
 		     ? min (64, max (0, nhwl_block_int (v, 32, 20))) : 0);
+  m->hit_rgb = ASIZE (v) > 34 ? nhwl_block_int (v, 33, -1) : -1;
+  m->hit_opacity = (ASIZE (v) > 34 && NUMBERP (AREF (v, 34))
+		    ? XFLOATINT (AREF (v, 34)) : 0);
+  if (density)
+    {
+      m->chunk_start = max (0, nhwl_block_int (v, 35, 0));
+      m->chunk_bytes = BUF_Z_BYTE (b) - BUF_BEG_BYTE (b);
+      m->file_bytes = (nhwl_block_int (v, 36, 0) > 0
+		       ? nhwl_block_int (v, 36, 0) : m->chunk_bytes);
+      m->error_rgb = nhwl_block_int (v, 37, -1);
+      m->warning_rgb = nhwl_block_int (v, 38, -1);
+    }
+  else
+    m->error_rgb = m->warning_rgb = -1;
   m->pin_kind = pins ? nhwl_block_int (v, 27, -1) : -1;
   m->pin_rgb = pins ? nhwl_block_int (v, 28, -1) : -1;
   m->pins = (const NhgMinimapName *) pin_names;
@@ -1671,11 +1689,24 @@ nhwl_minimap_action (struct frame *f, const NhgAction *a,
 		      ? Qnhwl_minimap_dwell_marks
 		      : a->code == NHG_MINIMAP_DWELL_LABEL
 		      ? Qnhwl_minimap_dwell_label
+		      : a->code == NHG_MINIMAP_SELECT_START
+		      ? Qnhwl_minimap_select_start
+		      : a->code == NHG_MINIMAP_SELECT_EXTEND
+		      ? Qnhwl_minimap_select_extend
+		      : a->code == NHG_MINIMAP_SELECT_END
+		      ? Qnhwl_minimap_select_end
+		      : a->code == NHG_MINIMAP_LABEL_HOVER
+		      ? Qnhwl_minimap_label_hover
+		      : a->code == NHG_MINIMAP_DWELL_BUCKET
+		      ? Qnhwl_minimap_dwell_bucket
 		      : Qnhwl_minimap_dwell);
   struct input_event ie;
   EVENT_INIT (ie);
   ie.kind = NHWL_MINIMAP_EVENT;
-  ie.arg = list3 (kind, window, make_fixnum ((EMACS_INT) a->dx));
+  /* (a label hover of 0 is none) */
+  ie.arg = list3 (kind, window,
+		  (a->code == NHG_MINIMAP_LABEL_HOVER && a->dx == 0 ? Qnil
+		   : make_fixnum ((EMACS_INT) a->dx)));
   XSETFRAME (ie.frame_or_window, f);
   kbd_buffer_store_event_hold (&ie, hold_quit);
   return 1;

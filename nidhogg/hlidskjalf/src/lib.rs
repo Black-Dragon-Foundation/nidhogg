@@ -11,6 +11,7 @@
 pub mod abi;
 pub mod derived;
 pub mod index;
+pub mod search;
 pub mod sections;
 
 use std::collections::VecDeque;
@@ -105,6 +106,8 @@ pub struct Model {
     /// The hidden ranges as line ranges [a, b), merged, with the hidden lines before each (rebuilt on demand).
     hidden_lines: Option<Vec<(u64, u64, u64)>>,
     trail: VecDeque<u64>,
+    /// The minimap search's query and hits (design X1).
+    search: Option<search::Search>,
     pub edits: u64,
     /// Bumped by every change of the lines or of the hidden ones (what a drawing of the rows depends on).
     generation: u64,
@@ -135,6 +138,7 @@ impl Model {
             hidden_names: Vec::new(),
             hidden_lines: None,
             trail: VecDeque::new(),
+            search: None,
             edits: 0,
             generation: 0,
         };
@@ -148,6 +152,9 @@ impl Model {
         self.text_gen += 1;
         self.stale = false;
         self.hidden_lines = None;
+        if let Some(s) = &mut self.search {
+            s.restart();
+        }
         if background {
             let text: Vec<u8> = parts.concat();
             let (mb, tw) = (self.multibyte, self.tab_width);
@@ -276,6 +283,9 @@ impl Model {
         self.hidden.retain(|r| r.0 < r.1);
         for t in &mut self.trail {
             *t = shift(*t);
+        }
+        if let Some(s) = &mut self.search {
+            s.restart();
         }
         self.hidden_lines = None;
         self.poll(false);
@@ -891,6 +901,37 @@ impl Model {
     /// Forget the trail.
     pub fn trail_clear(&mut self) {
         self.trail.clear();
+    }
+
+    // ---- the minimap search
+
+    /// Search for QUERY (`search::translate`'s arguments), or for nothing: false (and no search) when the query is
+    /// outside the subset Rust carries.
+    pub fn search_start(&mut self, query: Option<(&str, bool, bool)>) -> bool {
+        self.search = query.and_then(|(q, literal, fold)| search::Search::new(q, literal, fold));
+        self.search.is_some()
+    }
+
+    /// Scan on for up to BUDGET through the whole text in PARTS; `None` with no search.
+    pub fn search_step(
+        &mut self,
+        parts: &[&[u8]],
+        budget: std::time::Duration,
+    ) -> Option<search::State> {
+        let (mb, tw) = (self.multibyte, self.tab_width);
+        let s = self.search.as_mut()?;
+        Some(s.step(parts, mb, tw, budget))
+    }
+
+    pub fn search(&self) -> Option<&search::Search> {
+        self.search.as_ref()
+    }
+
+    /// The current hit (drawn with a ring), or none.
+    pub fn search_set_current(&mut self, pos: Option<u64>) {
+        if let Some(s) = &mut self.search {
+            s.set_current(pos);
+        }
     }
 
     /// The bytes the model holds.

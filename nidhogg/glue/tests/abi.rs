@@ -1959,6 +1959,34 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
             ),
             ("NHG_MINIMAP_DWELL_MARKS", NHG_MINIMAP_DWELL_MARKS.into()),
             ("NHG_MINIMAP_DWELL_LABEL", NHG_MINIMAP_DWELL_LABEL.into()),
+            ("NHG_MINIMAP_SELECT_START", NHG_MINIMAP_SELECT_START.into()),
+            (
+                "NHG_MINIMAP_SELECT_EXTEND",
+                NHG_MINIMAP_SELECT_EXTEND.into(),
+            ),
+            ("NHG_MINIMAP_SELECT_END", NHG_MINIMAP_SELECT_END.into()),
+            ("NHG_MINIMAP_LABEL_HOVER", NHG_MINIMAP_LABEL_HOVER.into()),
+            ("offsetof (M, hit_rgb)", offset_of!(M, hit_rgb) as i64),
+            (
+                "offsetof (M, hit_opacity)",
+                offset_of!(M, hit_opacity) as i64,
+            ),
+            (
+                "offsetof (M, chunk_start)",
+                offset_of!(M, chunk_start) as i64,
+            ),
+            (
+                "offsetof (M, chunk_bytes)",
+                offset_of!(M, chunk_bytes) as i64,
+            ),
+            ("offsetof (M, file_bytes)", offset_of!(M, file_bytes) as i64),
+            ("offsetof (M, error_rgb)", offset_of!(M, error_rgb) as i64),
+            (
+                "offsetof (M, warning_rgb)",
+                offset_of!(M, warning_rgb) as i64,
+            ),
+            ("NHG_MINIMAP_DENSITY", NHG_MINIMAP_DENSITY.into()),
+            ("NHG_MINIMAP_DWELL_BUCKET", NHG_MINIMAP_DWELL_BUCKET.into()),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)

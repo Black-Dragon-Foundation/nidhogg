@@ -38,6 +38,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "lisp.h"
 #include "buffer.h"
 #include "coding.h"
+#include "window.h"
 #include "nidhogg-history.h"
 
 #include <hlidskjalf.h>
@@ -763,6 +764,106 @@ DEFUN ("nidhogg-lines-trail-clear", Fnidhogg_lines_trail_clear,
   return Qnil;
 }
 
+/* Step B's search (model KEY) for up to 4 ms: its answer as
+   `nidhogg-lines-search-step' gives it.  New hits redisplay B.  */
+static Lisp_Object
+nh_lines_search_answer (struct buffer *b, uint64_t key)
+{
+  ptrdiff_t gpt = BUF_GPT_BYTE (b), z = BUF_Z_BYTE (b);
+  const unsigned char *p1 = BUF_BEG_ADDR (b);
+  size_t n1 = gpt - BEG_BYTE;
+  const unsigned char *p2 = BUF_GAP_END_ADDR (b);
+  size_t n2 = z - gpt;
+  int32_t state = 0;
+  uint64_t count = 0;
+  if (hlid_search_step (key, n1 ? p1 : NULL, n1, n2 ? p2 : NULL, n2,
+			4 * 1000 * 1000, &state, &count) != HLID_OK
+      || state == 0)
+    return Qnil;
+  if (count > 0 || state == 2)
+    bset_redisplay (b);
+  return (state == 1 ? Qrunning : state == 3 ? Qfallback
+	  : make_uint (count));
+}
+
+DEFUN ("nidhogg-lines-search", Fnidhogg_lines_search,
+       Snidhogg_lines_search, 2, 4, 0,
+       doc: /* Search BUFFER's whole text for QUERY, for the minimap (design X1).
+QUERY is an Emacs regexp, or with LITERAL plain text; CASE-FOLD folds
+case (ASCII only: a query with other letters is not taken).  The scan
+runs in slices of 4 ms: this call makes the first, and
+`nidhogg-lines-search-step' the next ones.  The answer is that of
+`nidhogg-lines-search-step', or nil when the query is outside the subset
+the line model carries (syntax classes such as \\w or \\_<, back
+references, a negated bracket, anything that matches a newline): Lisp
+searches it itself.  QUERY nil ends the search.  Empty matches are not
+hits, so the count is `how-many''s.  An edit starts the scan over.  */)
+  (Lisp_Object buffer, Lisp_Object query, Lisp_Object literal,
+   Lisp_Object case_fold)
+{
+  struct buffer *b = nh_lines_buffer (buffer);
+  uint64_t key = nh_lines_key_of (buffer);
+  if (NILP (query))
+    {
+      hlid_search (key, NULL, 0, 0);
+      bset_redisplay (b);
+      return Qnil;
+    }
+  CHECK_STRING (query);
+  uint32_t flags = (NILP (literal) ? 0 : 1) | (NILP (case_fold) ? 0 : 2);
+  if (hlid_search (key, SDATA (query), SBYTES (query), flags) != HLID_OK)
+    return Qnil;
+  return nh_lines_search_answer (b, key);
+}
+
+DEFUN ("nidhogg-lines-search-step", Fnidhogg_lines_search_step,
+       Snidhogg_lines_search_step, 1, 1, 0,
+       doc: /* Scan on for BUFFER's search for up to 4 ms.
+Return `running' while there is more to scan, the number of hits when
+the scan is done, `fallback' when the text holds what the line model
+cannot read (Lisp searches it), or nil with no search.  */)
+  (Lisp_Object buffer)
+{
+  return nh_lines_search_answer (nh_lines_buffer (buffer),
+				 nh_lines_key_of (buffer));
+}
+
+DEFUN ("nidhogg-lines-search-hits", Fnidhogg_lines_search_hits,
+       Snidhogg_lines_search_hits, 1, 3, 0,
+       doc: /* BUFFER's search hits starting from BEG to before END, as (POS . END).
+BEG and END default to the text's ends; at most 65536 are given.  */)
+  (Lisp_Object buffer, Lisp_Object beg, Lisp_Object end)
+{
+  uint64_t key = nh_lines_key_of (buffer);
+  uint64_t a = NILP (beg) ? 0 : nh_lines_pos (beg);
+  uint64_t z = NILP (end) ? UINT64_MAX : nh_lines_pos (end);
+  size_t n = 0;
+  hlid_search_hits (key, a, z, NULL, 0, &n);
+  n = min (n, 65536);
+  uint64_t *v = xmalloc (max (n, 1) * 2 * sizeof *v);
+  size_t got = 0;
+  hlid_search_hits (key, a, z, v, n, &got);
+  Lisp_Object out = Qnil;
+  for (size_t i = min (n, got); i > 0; i--)
+    out = Fcons (Fcons (make_uint (v[2 * i - 2]), make_uint (v[2 * i - 1])),
+		 out);
+  xfree (v);
+  return out;
+}
+
+DEFUN ("nidhogg-lines-search-current", Fnidhogg_lines_search_current,
+       Snidhogg_lines_search_current, 2, 2, 0,
+       doc: /* Make the search hit at POS in BUFFER the current one (nil: none).
+The minimap draws it with a ring.  Return how many hits start before
+POS (so the hit at POS is that plus one of the count).  */)
+  (Lisp_Object buffer, Lisp_Object pos)
+{
+  uint64_t key = nh_lines_key_of (buffer), index = 0;
+  hlid_search_current (key, NILP (pos) ? 0 : nh_lines_pos (pos), &index);
+  bset_redisplay (nh_lines_buffer (buffer));
+  return make_uint (index);
+}
+
 DEFUN ("nidhogg-lines-set-section-regexp", Fnidhogg_lines_set_section_regexp,
        Snidhogg_lines_set_section_regexp, 2, 2, 0,
        doc: /* Find MARK sections in BUFFER's text with REGEXP, nil for none.
@@ -907,6 +1008,12 @@ nil builds every model at once, on the main thread.  */);
   defsubr (&Snidhogg_lines_trail_note);
   defsubr (&Snidhogg_lines_trail);
   defsubr (&Snidhogg_lines_trail_clear);
+  defsubr (&Snidhogg_lines_search);
+  defsubr (&Snidhogg_lines_search_step);
+  defsubr (&Snidhogg_lines_search_hits);
+  defsubr (&Snidhogg_lines_search_current);
+  DEFSYM (Qrunning, "running");
+  DEFSYM (Qfallback, "fallback");
   defsubr (&Snidhogg_lines_set_section_regexp);
   defsubr (&Snidhogg_lines_sections);
   defsubr (&Snidhogg_lines_set_fold_sources);

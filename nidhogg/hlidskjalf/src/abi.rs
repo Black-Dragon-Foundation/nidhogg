@@ -559,6 +559,114 @@ pub extern "C" fn hlid_trail_clear(key: u64) -> i32 {
     })
 }
 
+/// Search KEY's text for the LEN bytes of QUERY (UTF-8; FLAGS 1: literal, 2: case folded), or for nothing (QUERY null):
+/// `HLID_OK` with a scan to step, `HLID_NOTHING` when the query is outside the subset Rust carries (no search then).
+///
+/// # Safety
+/// QUERY is null or readable for LEN bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_search(key: u64, query: *const u8, len: usize, flags: u32) -> i32 {
+    let q = if query.is_null() {
+        None
+    } else {
+        // SAFETY: readable for LEN bytes (the caller's promise).
+        match std::str::from_utf8(unsafe { std::slice::from_raw_parts(query, len) }) {
+            Ok(q) => Some(q),
+            Err(_) => return HLID_E_ARG,
+        }
+    };
+    with(key, |m| {
+        let started = m.search_start(q.map(|q| (q, flags & 1 != 0, flags & 2 != 0)));
+        if started || q.is_none() {
+            HLID_OK
+        } else {
+            HLID_NOTHING
+        }
+    })
+}
+
+/// Step KEY's search for up to BUDGET-NS through its whole text (P1, N1 then P2, N2): *STATE becomes 0 (no search),
+/// 1 (running), 2 (done) or 3 (the text is Lisp's to search) and *COUNT the hits so far.
+///
+/// # Safety
+/// P1 and P2 are readable for N1 and N2 bytes (null when 0); STATE and COUNT are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_search_step(
+    key: u64,
+    p1: *const u8,
+    n1: usize,
+    p2: *const u8,
+    n2: usize,
+    budget_ns: u64,
+    state: *mut i32,
+    count: *mut u64,
+) -> i32 {
+    if state.is_null() || count.is_null() {
+        return HLID_E_ARG;
+    }
+    // SAFETY: passed through from the caller's promise.
+    let Some(t) = (unsafe { parts(p1, n1, p2, n2) }) else {
+        return HLID_E_ARG;
+    };
+    with(key, |m| {
+        let st = m.search_step(&t, std::time::Duration::from_nanos(budget_ns));
+        // SAFETY: checked non-null.
+        unsafe {
+            *state = st.map_or(0, |s| s as i32);
+            *count = m.search().map_or(0, |s| s.count());
+        }
+        HLID_OK
+    })
+}
+
+/// KEY's search hits starting in [BEG, END) into OUT as (POS, END) pairs (at most CAP pairs), their number into *N.
+///
+/// # Safety
+/// OUT is writable for 2 × CAP positions unless CAP is 0; N is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_search_hits(
+    key: u64,
+    beg: u64,
+    end: u64,
+    out: *mut u64,
+    cap: usize,
+    n: *mut usize,
+) -> i32 {
+    if n.is_null() || (out.is_null() && cap > 0) {
+        return HLID_E_ARG;
+    }
+    with(key, |m| {
+        let hits = m.search().map_or(&[][..], |s| s.hits(beg, end));
+        for (k, h) in hits.iter().take(cap).enumerate() {
+            // SAFETY: k < CAP, 2 × CAP writable.
+            unsafe {
+                *out.add(2 * k) = h.pos;
+                *out.add(2 * k + 1) = h.end;
+            }
+        }
+        // SAFETY: checked non-null.
+        unsafe { *n = hits.len() };
+        HLID_OK
+    })
+}
+
+/// Make the hit at POS KEY's current one (0: none), drawn with a ring; *INDEX becomes how many hits start before POS.
+///
+/// # Safety
+/// INDEX is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_search_current(key: u64, pos: u64, index: *mut u64) -> i32 {
+    if index.is_null() {
+        return HLID_E_ARG;
+    }
+    with(key, |m| {
+        m.search_set_current((pos > 0).then_some(pos));
+        // SAFETY: checked non-null.
+        unsafe { *index = m.search().map_or(0, |s| s.index(pos) as u64) };
+        HLID_OK
+    })
+}
+
 /// KEY's trail, newest first, into OUT (at most CAP), its length into *N.
 ///
 /// # Safety

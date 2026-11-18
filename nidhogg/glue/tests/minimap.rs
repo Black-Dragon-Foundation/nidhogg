@@ -412,7 +412,7 @@ mod minimap {
         let shown = rows_of(key, 1, 200, 1, zv).unwrap().shown.1;
         let r = of(&mut b, f)
             .unwrap()
-            .button(250.0, y(50), true, true, t2 + 400 * MS);
+            .button(250.0, y(50), true, true, false, t2 + 400 * MS);
         assert!(r.swallow);
         assert_eq!(r.events, [(NHG_MINIMAP_CLICK, SEQ, pos(20 - shown / 2))]);
         let r = of(&mut b, f)
@@ -421,7 +421,7 @@ mod minimap {
         assert_eq!(r.events, [(NHG_MINIMAP_DRAG, SEQ, pos(70 - shown / 2))]);
         let r = of(&mut b, f)
             .unwrap()
-            .button(250.0, y(150), true, false, t2 + 420 * MS);
+            .button(250.0, y(150), true, false, false, t2 + 420 * MS);
         assert!(r.swallow && r.events.is_empty());
 
         // out over the text: Emacs has the pointer again; 600 ms later the minimap closes, hidden over 120 ms
@@ -1346,5 +1346,267 @@ mod minimap {
             [(NHG_MINIMAP_DWELL, SEQ, pos(60))]
         );
         hlid_drop(key);
+    }
+
+    /// The search's hits (design X1): a bar at each hit's column as long as the hit (at least 2 px), the current one
+    /// ringed; none without a colour, none for a hidden line.
+    #[test]
+    fn search_hits_are_bars_at_their_columns_and_the_current_one_is_ringed() {
+        let key = 0x6d6d_0029;
+        // line i: i % 8 spaces, then ten x
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        with_model(key, |m| {
+            assert!(m.search_start(Some(("xxx", true, false))));
+            m.search_step(&[text.as_slice()], std::time::Duration::from_secs(5));
+            // the first hit of line 3 (3 spaces in) is the current one
+            m.search_set_current(Some(pos(3) + 3));
+        });
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let e = NhgMinimap {
+            hit_rgb: 0xff_0000,
+            hit_opacity: 1.0,
+            ..entry(key, 1, 100, zv, NHG_MINIMAP_OPEN)
+        };
+        let get = |b: &mut Backings, e: &NhgMinimap| {
+            sync_at(b, f, std::slice::from_ref(e)).unwrap();
+            placed(&commit(f).1, minimap_id(SEQ))
+                .unwrap()
+                .minimap
+                .unwrap()
+                .bands
+                .to_vec()
+        };
+        let top = 10 + STRIP;
+        let bands = get(&mut b, &e);
+        let bars: Vec<Rect> = bands
+            .iter()
+            .filter(|b| b.fill_argb == 0xffff_0000)
+            .map(|b| b.rect)
+            .collect();
+        // ten x hold three hits of xxx: columns indent, +3, +6, 3 px long, on every row
+        assert_eq!(bars.len(), 300);
+        assert_eq!(
+            &bars[9..12],
+            [
+                Rect::new(203, top + 6, 3, 2),
+                Rect::new(206, top + 6, 3, 2),
+                Rect::new(209, top + 6, 3, 2)
+            ]
+        );
+        let rings: Vec<Rect> = bands
+            .iter()
+            .filter(|b| b.fill_argb == 0 && b.line_argb == 0xffff_0000)
+            .map(|b| b.rect)
+            .collect();
+        assert_eq!(rings, [Rect::new(202, top + 5, 5, 4)]);
+        // a hidden line's hits are not drawn
+        with_model(key, |m| m.set_hidden(&[(pos(3), pos(4))]));
+        assert_eq!(
+            get(&mut b, &e)
+                .iter()
+                .filter(|b| b.fill_argb == 0xffff_0000)
+                .count(),
+            297
+        );
+        let none = NhgMinimap { hit_rgb: -1, ..e };
+        assert!(
+            get(&mut b, &none)
+                .iter()
+                .all(|b| b.fill_argb != 0xffff_0000)
+        );
+        hlid_drop(key);
+    }
+
+    /// A Shift-press starts a line selection (design X2): select-start at the row, select-extend at each row change,
+    /// select-end at the release, no click or drag; the label under the pointer is told once per change (X7).
+    #[test]
+    fn a_shift_drag_selects_lines_and_a_label_hover_is_told_once() {
+        use glitnir::hlidskjalf::Mark;
+        use nhglue::minimap::{
+            NHG_MINIMAP_LABEL_HOVER, NHG_MINIMAP_SELECT_END, NHG_MINIMAP_SELECT_EXTEND,
+            NHG_MINIMAP_SELECT_START,
+        };
+        let _held = RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let key = 0x6d6d_002a;
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        with_model(key, |m| {
+            m.set_marks(
+                9,
+                &[Mark {
+                    pos: pos(19),
+                    end: pos(25) - 1,
+                    lane: 0,
+                    class: 0,
+                    prio: 0,
+                    kind: 9,
+                }],
+            )
+        });
+        nhg_minimap_set_label_render(Some(fake_render));
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let names = [NhgMinimapName {
+            text: "pinned".as_ptr(),
+            len: 6,
+        }];
+        let e = NhgMinimap {
+            pin_kind: 9,
+            pin_rgb: 0x00_ffff,
+            pins: names.as_ptr(),
+            pins_len: 1,
+            ..entry(
+                key,
+                1,
+                100,
+                zv,
+                NHG_MINIMAP_OPEN | NHG_MINIMAP_REDUCED_MOTION,
+            )
+        };
+        let t0 = 1_000 * MS;
+        sync_at_time(&mut b, f, std::slice::from_ref(&e), t0).unwrap();
+        let y = |v: i32| f64::from(v + STRIP);
+        let mm = of(&mut b, f).unwrap();
+        // row 10, then a shift-press there; rows 15 and 16; the release on row 16
+        mm.motion(Some((250.0, y(30))), t0);
+        let r = mm.button(250.0, y(30), true, true, true, t0 + MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_SELECT_START, SEQ, pos(10))]);
+        let r = mm.motion(Some((250.0, y(40))), t0 + 2 * MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_SELECT_EXTEND, SEQ, pos(15))]);
+        let r = mm.motion(Some((250.0, y(40))), t0 + 3 * MS);
+        assert!(r.events.is_empty());
+        let r = mm.motion(Some((250.0, y(42))), t0 + 4 * MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_SELECT_EXTEND, SEQ, pos(16))]);
+        let r = mm.button(250.0, y(42), true, false, false, t0 + 5 * MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_SELECT_END, SEQ, pos(16))]);
+        // a press without Shift is a click again
+        let r = mm.button(250.0, y(42), true, true, false, t0 + 6 * MS);
+        assert_eq!(r.events[0].0, NHG_MINIMAP_CLICK);
+        mm.button(250.0, y(42), true, false, false, t0 + 7 * MS);
+        // onto the label at row 19 (rows 21 and 22 inside it): one hover, then none; off it, a hover of 0
+        let r = mm.motion(Some((250.0, y(52))), t0 + 8 * MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_LABEL_HOVER, SEQ, pos(19))]);
+        let r = mm.motion(Some((250.0, y(54))), t0 + 9 * MS);
+        assert!(r.events.iter().all(|e| e.0 != NHG_MINIMAP_LABEL_HOVER));
+        let r = mm.motion(Some((250.0, y(130))), t0 + 10 * MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_LABEL_HOVER, SEQ, 0)]);
+        let r = mm.motion(Some((250.0, y(52))), t0 + 11 * MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_LABEL_HOVER, SEQ, pos(19))]);
+        let r = mm.motion(Some((50.0, y(52))), t0 + 12 * MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_LABEL_HOVER, SEQ, 0)]);
+        hlid_drop(key);
+    }
+
+    /// A density strip (design M7, state C): no line model; a 1 px row per pixel of the hub's buckets, brightness the
+    /// bytes against the fullest row's, an error (else warning) mark at the outer edge, the unbuilt part outlined, the
+    /// band at the window's file fraction (a chunk mapped into the file); a dwell names the bucket, a click the start
+    /// that centres the fraction.
+    #[test]
+    fn a_density_strip_draws_the_hubs_buckets() {
+        use nhglue::minimap::{NHG_MINIMAP_DENSITY, NHG_MINIMAP_DWELL_BUCKET};
+        let file = "/t/density.log";
+        // 400 buckets, 300 built: 0..2 full (400 bytes), the rest 100; bucket 100 an error, 150 two warnings
+        let buckets: Vec<String> = (0..300)
+            .map(|i| {
+                let bytes = if i < 3 { 400 } else { 100 };
+                let (e, w) = match i {
+                    100 => (1, 0),
+                    150 => (0, 2),
+                    _ => (0, 0),
+                };
+                format!("[{bytes},{e},{w}]")
+            })
+            .collect();
+        let line = format!(
+            r#"{{"event":"view-model","data":{{"minimap":{{"file":"{file}","layer":"density","version":1,"items":{{"buckets":[{}],"total":400}}}}}}}}"#,
+            buckets.join(",")
+        );
+        glitnir::sja::minimap::push(glitnir::sja::minimap::read_line(&line).unwrap().unwrap());
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let e = NhgMinimap {
+            key: 0,
+            width: 26,
+            file: file.as_ptr(),
+            file_len: file.len(),
+            start: 251,
+            end: 351,
+            begv: 1,
+            zv: 1001,
+            chunk_start: 0,
+            chunk_bytes: 1000,
+            file_bytes: 1000,
+            error_rgb: 0xff_0000,
+            warning_rgb: 0xff_aa00,
+            ..entry(
+                0,
+                251,
+                351,
+                1001,
+                NHG_MINIMAP_OPEN | NHG_MINIMAP_DENSITY | NHG_MINIMAP_REDUCED_MOTION,
+            )
+        };
+        let get = |b: &mut Backings, e: &NhgMinimap| {
+            sync_at_time(b, f, std::slice::from_ref(e), 1_000 * MS).unwrap();
+            placed(&commit(f).1, minimap_id(SEQ))
+                .unwrap()
+                .minimap
+                .unwrap()
+        };
+        let m = get(&mut b, &e);
+        let top = 10 + STRIP;
+        assert_eq!(m.rect, Rect::new(274, top, 26, 200));
+        assert!(m.tiles.is_empty());
+        let at = |y: i32| -> Vec<(Rect, u32, u32)> {
+            m.bands
+                .iter()
+                .filter(|b| b.rect.y == top + y && b.rect.h == 1)
+                .map(|b| (b.rect, b.fill_argb, b.line_argb))
+                .collect()
+        };
+        assert_eq!(at(0), [(Rect::new(274, top, 26, 1), 0xffff_ffff, 0)]);
+        let a = at(10)[0].1 >> 24;
+        assert!((63..=64).contains(&a), "{a}");
+        assert_eq!(at(50)[1], (Rect::new(297, top + 50, 3, 1), 0xffff_0000, 0));
+        assert_eq!(at(75)[1], (Rect::new(297, top + 75, 3, 1), 0xffff_aa00, 0));
+        assert!(at(160).is_empty());
+        let outlined: Vec<Rect> = m
+            .bands
+            .iter()
+            .filter(|b| b.fill_argb == 0 && b.line_argb == 0xffff_ffff)
+            .map(|b| b.rect)
+            .collect();
+        assert_eq!(outlined, [Rect::new(274, top + 150, 26, 50)]);
+        assert_eq!(
+            m.bands.last().unwrap().rect,
+            Rect::new(274, top + 50, 26, 20)
+        );
+        // a chunk: the buffer is the file's bytes 2000 to 3000 of 4000
+        let chunk = NhgMinimap {
+            chunk_start: 2000,
+            file_bytes: 4000,
+            ..e
+        };
+        assert_eq!(
+            get(&mut b, &chunk).bands.last().unwrap().rect,
+            Rect::new(274, top + 113, 26, 5)
+        );
+        get(&mut b, &e);
+        // the pointer: a dwell on row 60 is bucket 120; a click on row 100 the start that centres the middle
+        let y = |v: i32| f64::from(v + STRIP);
+        let t0 = 2_000 * MS;
+        let mm = of(&mut b, f).unwrap();
+        mm.motion(Some((290.0, y(70))), t0);
+        assert_eq!(
+            mm.tick(t0 + DWELL_NS).events,
+            [(NHG_MINIMAP_DWELL_BUCKET, SEQ, 120)]
+        );
+        let r = mm.button(290.0, y(110), true, true, false, t0 + DWELL_NS + MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_CLICK, SEQ, 451)]);
+        glitnir::sja::minimap::forget(file);
     }
 }

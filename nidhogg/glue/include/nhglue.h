@@ -944,6 +944,7 @@ int32_t nhg_edges_count (NhgDisplay *d, uint64_t frame);
 #define NHG_MINIMAP_REDUCED_MOTION 4   /* the pointer's open and close are final in their first frame */
 #define NHG_MINIMAP_NESTING 8   /* each fold range of the model a faint band behind its bars, by depth */
 #define NHG_MINIMAP_NONE 16   /* the record is for the fold arrows alone: no minimap is drawn */
+#define NHG_MINIMAP_DENSITY 32 /* a density strip (state C): the hub's buckets of FILE, no line model */
 #define NHG_ARROWS_HOVER 1    /* fold arrows: shown while the pointer is over the left fringe (folded ones always) */
 #define NHG_ARROWS_ALWAYS 2   /* fold arrows: always shown */
 #define NHG_MINIMAP_LABELS_ALL 1     /* labels: the hub's definitions of FILE and the MARK sections */
@@ -1055,6 +1056,17 @@ typedef struct
   int32_t trail_rgb;
   float trail_opacity;
   uint32_t trail_length;
+  /* The search's hits (design X1, the line model's `nidhogg-lines-search'): HIT_RGB (-1: none) at HIT_OPACITY, a bar
+     at each hit's column as long as the hit, the current hit ringed.  */
+  int32_t hit_rgb;
+  float hit_opacity;
+  /* A density strip (NHG_MINIMAP_DENSITY, state C; KEY 0): the buffer's text is CHUNK_BYTES of the file's FILE_BYTES
+     from byte CHUNK_START; rows holding errors (else warnings) get a mark in ERROR_RGB (WARNING_RGB), -1: none.  */
+  uint64_t chunk_start;
+  uint64_t chunk_bytes;
+  uint64_t file_bytes;
+  int32_t error_rgb;
+  int32_t warning_rgb;
 } NhgMinimap;
 
 /* The label renderer: TEXT (LEN bytes of UTF-8) in face FACE of frame HOST at PX100 / 100 device pixels, in 0xRRGGBB
@@ -1229,6 +1241,11 @@ typedef struct { int32_t x, y, id; } NhgTouchPoint;
 #define NHG_MINIMAP_DWELL     3   /* DX: the start of the row the pointer rests on */
 #define NHG_MINIMAP_DWELL_MARKS 4 /* a dwell on the marks lane (the strip's width at the outer edge): as _DWELL */
 #define NHG_MINIMAP_DWELL_LABEL 5 /* a dwell on a label: DX the label line's start */
+#define NHG_MINIMAP_SELECT_START 6 /* a Shift-press: a line selection from the row starting at DX */
+#define NHG_MINIMAP_SELECT_EXTEND 7 /* the selection's row changed while held: DX its start */
+#define NHG_MINIMAP_SELECT_END 8 /* the release: DX the last row's start */
+#define NHG_MINIMAP_LABEL_HOVER 9 /* the label under the pointer changed: DX its line's start, 0 for none */
+#define NHG_MINIMAP_DWELL_BUCKET 10 /* a dwell on a density strip: DX the bucket's index */
 #define NHG_SETTLE_REPORT     1   /* every shown frame presented again, or 2 s passed: run `reconnected' */
 #define NHG_SETTLE_MONITORS   2   /* the monitor list differs from before the loss (ids aside) */
 #define NHG_SETTLE_FOCUS_OUT  4   /* no keyboard enter 1 s after the report: *WINDOW loses the focus */

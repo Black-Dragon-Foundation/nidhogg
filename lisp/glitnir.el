@@ -793,27 +793,40 @@ label at its first line, with labels off too.  `:trail' (a colour as
 default 20; `nidhogg-lines-trail-note') as 2 px bars at the minimap's
 left edge, the newest at `:trail''s opacity fading to 15 %.
 `glitnir-minimap-flash' lights a row in `:accent', with labels off too.
+`:hit' (a colour as `:text') draws the hits of the buffer's search
+\(`nidhogg-lines-search') as bars at their columns, the current one
+\(`nidhogg-lines-search-current') ringed.
+`:density' t makes it a density strip (state C) for a buffer with no
+line model: the hub's buckets of `:file' (Sjá's density layer), a 1 px
+row each, brightness the bytes under it in `:text', a mark at the outer
+edge in `:error' (or `:warning') where a row holds errors (warnings),
+the buckets not yet built outlined, the band at the window's fraction of
+the file; `:chunk' (START . FILE-BYTES) says the buffer holds the file's
+bytes from START of FILE-BYTES (nil: the whole file).
 The vector is [FLAGS WIDTH SCALE FILL-RGB
 FILL-OPACITY TEXT-RGB TEXT-OPACITY BAND-RGB BAND-OPACITY LABELS FILE
 LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE CLASS-RGB HUNK-RGB
 HUNKS PILL-RGB PILL-FORMAT NUMBER HEAT HEAT-LOW-RGB HEAT-LOW-OPACITY
 HEAT-HIGH-RGB HEAT-HIGH-OPACITY PIN-KIND PIN-RGB PIN-NAMES TRAIL-RGB
-TRAIL-OPACITY TRAIL-LENGTH], CLASS-RGB a
+TRAIL-OPACITY TRAIL-LENGTH HIT-RGB HIT-OPACITY CHUNK-START FILE-BYTES
+ERROR-RGB WARNING-RGB], CLASS-RGB a
 vector of 16 RGBs by class number (0, text, unused), HUNKS the
 `:hunk-labels' (nil with labels off), FLAGS 1 for `:open', 2
-for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
-`:nesting', LABELS 0 (none), 1 (t) or 2 (`marks-only'), RGB -1 for none."
+for `:left', 4 for reduced motion (`glitnir-reduced-motion-p'), 8 for
+`:nesting' and 32 for `:density', LABELS 0 (none), 1 (t) or 2 (`marks-only'), RGB -1 for none."
   (let ((c (lambda (k) (glitnir--ruler-colour (plist-get spec k) frame))))
     (let ((fill (funcall c :fill)) (text (funcall c :text)) (band (funcall c :band))
           (labels (pcase (plist-get spec :labels) ('nil 0) ('marks-only 2) (_ 1)))
           (rgb (lambda (k) (or (car (funcall c k)) -1))))
       (vector (logior (if (plist-get spec :open) 1 0) (if (plist-get spec :left) 2 0)
-                      (if (glitnir--reduced-motion-p) 4 0) (if (plist-get spec :nesting) 8 0))
+                      (if (glitnir--reduced-motion-p) 4 0) (if (plist-get spec :nesting) 8 0)
+                      (if (plist-get spec :density) 32 0))
               (or (plist-get spec :width) 0) (or (plist-get spec :scale) 2)
               (if fill (car fill) -1) (if fill (cdr fill) 0)
               (if text (car text) -1) (if text (cdr text) 0)
               (if band (car band) -1) (if band (cdr band) 0)
-              labels (and (or (= labels 1) (plist-get spec :heat)) (plist-get spec :file))
+              labels (and (or (= labels 1) (plist-get spec :heat) (plist-get spec :density))
+                          (plist-get spec :file))
               (funcall rgb :label) (funcall rgb :sub) (funcall rgb :accent) (funcall rgb :mark)
               (plist-get spec :label-face)
               (let ((v (make-vector 16 -1)))
@@ -833,7 +846,10 @@ for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
               (or (plist-get spec :pin-kind) -1) (funcall rgb :pin)
               (plist-get spec :pin-names)
               (funcall rgb :trail) (or (cdr (funcall c :trail)) 0)
-              (or (plist-get spec :trail-length) 20)))))
+              (or (plist-get spec :trail-length) 20)
+              (funcall rgb :hit) (or (cdr (funcall c :hit)) 0)
+              (or (car (plist-get spec :chunk)) 0) (or (cdr (plist-get spec :chunk)) 0)
+              (funcall rgb :error) (funcall rgb :warning)))))
 
 (defun glitnir--recheck-minimap (window)
   "Resolve WINDOW's minimap when its `glitnir-minimap' or the theme changed.
@@ -901,8 +917,13 @@ KIND is `click' or `drag' (WINDOW was scrolled to start at POS, the
 start that centres the row), `dwell' (the pointer rests on the row
 starting at POS, for a peek), `dwell-marks' (it rests on the marks lane,
 the ruler strip's width at the minimap's outer edge, on the row starting
-at POS: the problems card) or `dwell-label' (it rests on a label, whose
-line starts at POS: describe).")
+at POS: the problems card), `dwell-label' (it rests on a label, whose
+line starts at POS: describe), `select-start', `select-extend' and
+`select-end' (a Shift-drag selecting whole lines: from the row starting
+at POS, to the row starting at POS; no scroll) or `label-hover' (the
+label under the pointer changed: its line starts at POS, nil for none;
+sent once per change) or `dwell-bucket' (the pointer rests on a density
+strip's bucket POS, from 0).")
 
 (defun glitnir-minimap-event (event)
   "Handle EVENT, a `glitnir-minimap' event: scroll its window to a click or a

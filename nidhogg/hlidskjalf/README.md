@@ -11,6 +11,11 @@ bar's marks and folding. It keeps, for each buffer text a window shows with the 
   edits and capped (the smallest dropped first).
 - **Hidden lines:** the ranges drgnx's folds hide, so the scroll bar and minimap measure visible lines.
 - **The trail:** the last 64 visited lines (`nidhogg-lines-trail-clear` forgets them).
+- **The search** (`search.rs`, design X1): a query's hits over the whole text, scanned a line at a time in 4 ms slices
+  on the main thread (`nidhogg-lines-search`, `-search-step`), each a position, its end and its column; an edit starts
+  the scan over. A literal, or an Emacs regexp in the subset `search::translate` carries (no syntax classes, back
+  references, buffer anchors or anything that matches a newline), runs here; anything else is Lisp's
+  (`re-search-forward`), so the counts are `how-many`'s.
 - **MARK sections:** with an expression (`nidhogg-lines-set-section-regexp`, Rust regex syntax), the lines that match
   it and their names (the group `name`, else the first group, else the match), found at each build and in each edit's
   lines, kept sorted and shifted like the marks; the minimap draws them as labels (`sections.rs`).
@@ -22,7 +27,7 @@ text is replaced as a whole, and the `nidhogg-lines-*` functions.
 ## Crate rules
 
 - Standard library, and `regex-lite` (exact pin, no default features) for the MARK sections' expression, which
-  drgnx documents in Rust regex syntax; nothing else.
+  drgnx documents in Rust regex syntax, and the search's translated queries; nothing else.
 - The first build of a text of 1 MB or more runs on a thread of its own, from a copy of the text; the edits made
   meanwhile are kept and replayed when it is installed. Everything else runs on the thread that holds Emacs's global
   lock.
