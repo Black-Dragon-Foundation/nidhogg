@@ -768,10 +768,17 @@ model finds (`nidhogg-lines-set-section-regexp'); `marks-only', the MARK
 sections alone.  Their colours: `:label' (a definition), `:sub' (a
 nested one), `:accent' (the one under the pointer), `:mark' (a MARK
 section, in capitals with a hairline above); `:label-face' is the face
-whose font they are drawn in.  The vector is [FLAGS WIDTH SCALE FILL-RGB
+whose font they are drawn in.  With `:labels' on, `:hunk-labels' are
+Lisp's own labels, a vector of [LINE TEXT] sorted by LINE (from 1),
+TEXT at most 256 bytes (\"hunk 2 · +4 −2\"), each drawn at its line's
+start in `:hunk' (a colour as `:text') and placed before the
+definitions, as a MARK section is; send them again when they change.
+The vector is [FLAGS WIDTH SCALE FILL-RGB
 FILL-OPACITY TEXT-RGB TEXT-OPACITY BAND-RGB BAND-OPACITY LABELS FILE
-LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE CLASS-RGB], CLASS-RGB a
-vector of 16 RGBs by class number (0, text, unused), FLAGS 1 for `:open', 2
+LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE CLASS-RGB HUNK-RGB
+HUNKS], CLASS-RGB a
+vector of 16 RGBs by class number (0, text, unused), HUNKS the
+`:hunk-labels' (nil with labels off), FLAGS 1 for `:open', 2
 for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
 `:nesting', LABELS 0 (none), 1 (t) or 2 (`marks-only'), RGB -1 for none."
   (let ((c (lambda (k) (glitnir--ruler-colour (plist-get spec k) frame))))
@@ -792,7 +799,9 @@ for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
                   (when-let* ((tail (memq class glitnir-minimap-classes))
                               (c (glitnir--ruler-colour colour frame)))
                     (aset v (- 16 (length tail)) (car c))))
-                v)))))
+                v)
+              (funcall rgb :hunk)
+              (and (> labels 0) (plist-get spec :hunk-labels))))))
 
 (defun glitnir--recheck-minimap (window)
   "Resolve WINDOW's minimap when its `glitnir-minimap' or the theme changed.

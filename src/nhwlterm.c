@@ -1143,6 +1143,12 @@ static ptrdiff_t nhwl_nminimaps, nhwl_minimaps_cap;
    nhwl_minimap_files_fix makes it a pointer, just before the sync.  */
 static char *nhwl_minimap_names;
 static ptrdiff_t nhwl_minimap_names_len, nhwl_minimap_names_cap;
+/* Their hunk labels, each TEXT an offset into the names and each
+   minimap's HUNKS an offset into these, until nhwl_minimap_files_fix.  */
+static NhgMinimapHunk *nhwl_minimap_hunks;
+static ptrdiff_t nhwl_minimap_hunks_len, nhwl_minimap_hunks_cap;
+/* The most hunk labels a minimap takes.  */
+#define NHWL_MINIMAP_HUNKS_MAX 4096
 
 #ifdef NHWL_WAYLAND
 extern int32_t nhwl_minimap_label_render (void *, int32_t, const uint8_t *,
@@ -1151,21 +1157,45 @@ extern int32_t nhwl_minimap_label_render (void *, int32_t, const uint8_t *,
 					  int32_t *, int32_t *);
 #endif
 
-/* Make each listed minimap's FILE offset a pointer into the copied names.  */
+/* Copy LEN bytes at DATA to the minimap names; their offset.  */
+static uintptr_t
+nhwl_minimap_name_copy (const unsigned char *data, size_t len)
+{
+  if (nhwl_minimap_names_cap - nhwl_minimap_names_len < (ptrdiff_t) len)
+    nhwl_minimap_names = xpalloc (nhwl_minimap_names, &nhwl_minimap_names_cap,
+				  len, -1, 1);
+  memcpy (nhwl_minimap_names + nhwl_minimap_names_len, data, len);
+  uintptr_t at = nhwl_minimap_names_len;
+  nhwl_minimap_names_len += len;
+  return at;
+}
+
+/* Make each listed minimap's FILE and hunk offsets pointers into the
+   copied names and hunks.  */
 static void
 nhwl_minimap_files_fix (void)
 {
+  for (ptrdiff_t i = 0; i < nhwl_minimap_hunks_len; i++)
+    nhwl_minimap_hunks[i].text
+      = (const uint8_t *) nhwl_minimap_names
+	+ (uintptr_t) nhwl_minimap_hunks[i].text;
   for (ptrdiff_t i = 0; i < nhwl_nminimaps; i++)
-    if (nhwl_minimaps[i].file_len)
-      nhwl_minimaps[i].file
-	= (const uint8_t *) nhwl_minimap_names
-	  + (uintptr_t) nhwl_minimaps[i].file;
+    {
+      if (nhwl_minimaps[i].file_len)
+	nhwl_minimaps[i].file
+	  = (const uint8_t *) nhwl_minimap_names
+	    + (uintptr_t) nhwl_minimaps[i].file;
+      if (nhwl_minimaps[i].hunks_len)
+	nhwl_minimaps[i].hunks
+	  = nhwl_minimap_hunks + (uintptr_t) nhwl_minimaps[i].hunks;
+    }
 }
 
 /* List leaf window W's minimap V (the window parameter glitnir--minimap,
    [FLAGS WIDTH SCALE FILL-RGB FILL-OPACITY TEXT-RGB TEXT-OPACITY
    BAND-RGB BAND-OPACITY LABELS FILE LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB
-   LABEL-FACE CLASS-RGB]) over its text area CLIP, when its buffer's
+   LABEL-FACE CLASS-RGB HUNK-RGB HUNKS], HUNKS a vector of [LINE TEXT])
+   over its text area CLIP, when its buffer's
    text has a line model; the glue reads the rows from the model.  R is
    its ruler (glitnir--ruler): the pointer resting on that strip opens
    the minimap.  */
@@ -1223,16 +1253,33 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
 	{
 	  Lisp_Object u = ENCODE_UTF_8 (name);
 	  file_len = SBYTES (u);
-	  if (nhwl_minimap_names_cap - nhwl_minimap_names_len
-	      < (ptrdiff_t) file_len)
-	    nhwl_minimap_names = xpalloc (nhwl_minimap_names,
-					  &nhwl_minimap_names_cap,
-					  file_len, -1, 1);
-	  memcpy (nhwl_minimap_names + nhwl_minimap_names_len, SDATA (u),
-		  file_len);
-	  file = nhwl_minimap_names_len;
-	  nhwl_minimap_names_len += file_len;
+	  file = nhwl_minimap_name_copy (SDATA (u), file_len);
 	}
+    }
+  /* The hunk labels, with labels on: each [LINE TEXT] copied.  */
+  uintptr_t hunks = nhwl_minimap_hunks_len;
+  size_t hunks_len = 0;
+  Lisp_Object hv = labels && ASIZE (v) > 18 ? AREF (v, 18) : Qnil;
+  for (ptrdiff_t i = 0;
+       VECTORP (hv) && i < ASIZE (hv) && hunks_len < NHWL_MINIMAP_HUNKS_MAX;
+       i++)
+    {
+      Lisp_Object h = AREF (hv, i);
+      if (!VECTORP (h) || ASIZE (h) < 2 || !FIXNATP (AREF (h, 0))
+	  || !STRINGP (AREF (h, 1)))
+	continue;
+      Lisp_Object u = ENCODE_UTF_8 (AREF (h, 1));
+      if (nhwl_minimap_hunks_len == nhwl_minimap_hunks_cap)
+	nhwl_minimap_hunks = xpalloc (nhwl_minimap_hunks,
+				      &nhwl_minimap_hunks_cap, 1, -1,
+				      sizeof *nhwl_minimap_hunks);
+      nhwl_minimap_hunks[nhwl_minimap_hunks_len++] = (NhgMinimapHunk) {
+	.line = XFIXNAT (AREF (h, 0)),
+	.text = (const uint8_t *) nhwl_minimap_name_copy (SDATA (u),
+							  SBYTES (u)),
+	.len = SBYTES (u),
+      };
+      hunks_len++;
     }
 #define NHWL_MINIMAP_OPACITY(i) \
   (NUMBERP (AREF (v, i)) ? (float) XFLOATINT (AREF (v, i)) : 1.0f)
@@ -1271,6 +1318,9 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
   for (int c = 0; c < 16; c++)
     m->class_rgb[c] = (VECTORP (classes) && c < ASIZE (classes)
 		       ? nhwl_block_int (classes, c, -1) : -1);
+  m->hunk_rgb = labels && ASIZE (v) > 17 ? nhwl_block_int (v, 17, -1) : -1;
+  m->hunks = (const NhgMinimapHunk *) hunks;
+  m->hunks_len = hunks_len;
 #endif
 }
 
@@ -1546,7 +1596,7 @@ nhwl_blocks_sync (struct frame *f)
 							    out->glitnir_id))) > 0))
     {
       nhwl_nblocks = nhwl_nedges = nhwl_nminimaps = 0;
-      nhwl_minimap_names_len = 0;
+      nhwl_minimap_names_len = nhwl_minimap_hunks_len = 0;
       nhwl_blocks_add (FRAME_ROOT_WINDOW (f));
       nhwl_glue_rc (dpyinfo,
 		    NHG (nhg_blocks_sync (dpyinfo->glue, out->window,

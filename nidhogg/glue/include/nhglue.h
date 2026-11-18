@@ -955,7 +955,17 @@ int32_t nhg_edges_count (NhgDisplay *d, uint64_t frame);
    it on its own timers and the frame clock.  LABELS (NHG_MINIMAP_LABELS_*, 0: none) draws names over it: FILE's
    definitions (FILE_LEN bytes of UTF-8, the key of the hub's labels in Sjá; null: none) and the line model's MARK
    sections, rendered by the label renderer in face LABEL_FACE of frame HOST, in LABEL_RGB (a definition), SUB_RGB (a
-   nested one), ACCENT_RGB (the one under the pointer) and MARK_RGB (a MARK section, with a hairline above).  */
+   nested one), ACCENT_RGB (the one under the pointer) and MARK_RGB (a MARK section, with a hairline above).  With
+   LABELS, HUNKS (HUNKS_LEN of them, sorted by line; null: none) are Lisp's hunk labels ("hunk 2 · +4 −2"), each drawn
+   at its line's start in HUNK_RGB (-1: none) and placed before the definitions, as a MARK section is.  */
+/* One hunk label: its line (from 1) and its text, LEN bytes of UTF-8 (at most 256 are drawn).  */
+typedef struct
+{
+  uint64_t line;
+  const uint8_t *text;
+  size_t len;
+} NhgMinimapHunk;
+
 typedef struct
 {
   uint64_t seq;
@@ -981,6 +991,9 @@ typedef struct
   /* Each display class's bar 0xRRGGBB (-1: TEXT_RGB's), at TEXT_OPACITY: the line model's class runs (1 keyword ...
      15 special; 0 is text).  */
   int32_t class_rgb[16];
+  int32_t hunk_rgb;
+  const NhgMinimapHunk *hunks;
+  size_t hunks_len;
 } NhgMinimap;
 
 /* The label renderer: TEXT (LEN bytes of UTF-8) in face FACE of frame HOST at PX100 / 100 device pixels, in 0xRRGGBB

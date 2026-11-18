@@ -330,7 +330,9 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   here.
 - **The minimap's labels** (design M1): with `labels`, the names of the hub's definitions of the window's `file`
   (Sjá's `labels` layer for that name, `sja::minimap`) and the model's MARK sections (in capitals, with a hairline
-  above), for the rows the minimap shows. Placed in the glitnir crate (`minimap::place_labels`): 13 logical px tall,
+  above), and Lisp's hunk labels (`hunks`, `[LINE TEXT]` of the spec's `:hunk-labels`, the text cut at 256 bytes; each
+  at its line's start in `hunk_rgb`, placed as a MARK section is, no hairline; none when `hunk_rgb` is -1), for the
+  rows the minimap shows. Placed in the glitnir crate (`minimap::place_labels`): 13 logical px tall,
   none overlapping another, a MARK section first, then by depth (a deeper one yields), then from the top. Each is a
   sprite C renders (`nhg_minimap_set_label_render`: Cairo in the label face, `glitnir-decor.c`), cached per frame
   (freed with it) by text, colour, size and room, at most 2048 (when full, the least recently used eighth goes); a

@@ -129,7 +129,26 @@ pub struct NhgMinimap {
     pub mark_rgb: i32,
     /// Each display class's bar 0xRRGGBB (-1: `text_rgb`'s), at `text_opacity`: the line model's class runs.
     pub class_rgb: [i32; CLASSES],
+    /// The hunk labels' 0xRRGGBB (-1: none), and the labels, `hunks_len` of them sorted by line (null: none): drawn
+    /// with `labels` on, each at its line's start, placed as a MARK section is.
+    pub hunk_rgb: i32,
+    pub hunks: *const NhgMinimapHunk,
+    pub hunks_len: usize,
 }
+
+/// One hunk label as C gives it.  Layout equals `NhgMinimapHunk`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NhgMinimapHunk {
+    /// Its line, from 1.
+    pub line: u64,
+    /// Its text, `len` bytes of UTF-8; at most [`HUNK_TEXT_MAX`] are drawn.
+    pub text: *const u8,
+    pub len: usize,
+}
+
+/// The longest hunk label text drawn, in bytes (cut at a character boundary).
+pub const HUNK_TEXT_MAX: usize = 256;
 
 impl Default for NhgMinimap {
     fn default() -> Self {
@@ -161,6 +180,9 @@ impl Default for NhgMinimap {
             accent_rgb: -1,
             mark_rgb: -1,
             class_rgb: [-1; CLASSES],
+            hunk_rgb: -1,
+            hunks: std::ptr::null(),
+            hunks_len: 0,
         }
     }
 }
@@ -173,6 +195,29 @@ impl NhgMinimap {
         }
         // SAFETY: C passes `file_len` readable bytes, valid for the publish this record is part of.
         std::str::from_utf8(unsafe { std::slice::from_raw_parts(self.file, self.file_len) }).ok()
+    }
+
+    /// The hunk labels, (line from 1, text) in the order C gives them (by line); a text not in UTF-8 is left out.
+    fn hunk_labels(&self) -> Vec<(u64, &str)> {
+        if self.hunks.is_null() || self.hunks_len == 0 {
+            return Vec::new();
+        }
+        // SAFETY: C passes `hunks_len` records, each with `len` readable bytes, valid for the publish this record is
+        // part of.
+        let hs = unsafe { std::slice::from_raw_parts(self.hunks, self.hunks_len) };
+        hs.iter()
+            .filter(|h| !h.text.is_null())
+            .filter_map(|h| {
+                // SAFETY: as above, `len` readable bytes at `text`.
+                let t = unsafe { std::slice::from_raw_parts(h.text, h.len) };
+                let t = std::str::from_utf8(t).ok()?;
+                let mut end = t.len().min(HUNK_TEXT_MAX);
+                while !t.is_char_boundary(end) {
+                    end -= 1;
+                }
+                Some((h.line, &t[..end]))
+            })
+            .collect()
     }
 }
 
@@ -763,6 +808,15 @@ fn accent_of(boxes: &[(i32, i32)], y: Option<f64>) -> Option<usize> {
         .position(|&(a, b)| y >= f64::from(a) && y < f64::from(b))
 }
 
+/// Where a label comes from: the hub's definitions, the model's MARK sections or Lisp's hunk labels (the last two
+/// placed before any definition).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Def,
+    Mark,
+    Hunk,
+}
+
 /// What [`labels`] gives: the sprites placed, the hairlines, each label's rows (top, bottom) and the accented one.
 type Labels = (Vec<LabelAt>, Vec<Band>, Vec<(i32, i32)>, Option<usize>);
 
@@ -801,8 +855,8 @@ fn labels(
     .flatten() else {
         return none;
     };
-    // (line, depth, mark, text)
-    let mut found: Vec<(u64, u32, bool, String)> = Vec::new();
+    // (line, depth, kind, text)
+    let mut found: Vec<(u64, u32, Kind, String)> = Vec::new();
     if e.labels == NHG_MINIMAP_LABELS_ALL
         && let Some(file) = e.file_name()
     {
@@ -814,7 +868,7 @@ fn labels(
                     .take_while(|x| u64::from(x.0) <= lb.saturating_add(1))
                     .take(4096)
                 {
-                    found.push((u64::from(x.0) - 1, x.1, false, x.3.to_string()));
+                    found.push((u64::from(x.0) - 1, x.1, Kind::Def, x.3.to_string()));
                 }
             }
         });
@@ -828,7 +882,14 @@ fn labels(
             .collect();
         for (pos, name) in marks {
             if let Some(l) = m.line_of(pos) {
-                found.push((l, 0, true, name));
+                found.push((l, 0, Kind::Mark, name));
+            }
+        }
+        // Lisp's hunk labels, the lines shown (none without their colour)
+        for (line, text) in e.hunk_labels().into_iter().filter(|_| e.hunk_rgb >= 0) {
+            let l = line.saturating_sub(1);
+            if line > 0 && l >= la && l <= lb {
+                found.push((l, 0, Kind::Hunk, text.to_owned()));
             }
         }
         let mut out = Vec::new();
@@ -847,12 +908,12 @@ fn labels(
     let h = px(LABEL_H).max(1);
     let cands: Vec<Candidate> = placed_rows
         .iter()
-        .map(|(r, depth, mark, _)| Candidate {
+        .map(|(r, depth, kind, _)| Candidate {
             y: (i64::from(p.rect.y) + (*r * row) as i64 - p.offset as i64)
                 .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
             h: h as u32,
             depth: *depth,
-            mark: *mark,
+            mark: *kind != Kind::Def,
         })
         .collect();
     let chosen = place_labels(&cands, p.rect.y, p.rect.y + p.rect.h, px(1.0).max(1));
@@ -864,10 +925,13 @@ fn labels(
     let mut out = Vec::new();
     let mut lines = Vec::new();
     for (k, &i) in chosen.iter().enumerate() {
-        let (_, depth, mark, text) = &placed_rows[i];
+        let (_, depth, kind, text) = &placed_rows[i];
+        let mark = *kind == Kind::Mark;
         let rgb = if accent == Some(k) {
             e.accent_rgb
-        } else if *mark {
+        } else if *kind == Kind::Hunk {
+            e.hunk_rgb
+        } else if mark {
             e.mark_rgb
         } else if *depth > 0 {
             e.sub_rgb
@@ -877,14 +941,14 @@ fn labels(
         let Ok(rgb) = u32::try_from(rgb) else {
             continue;
         };
-        let indent = if *mark {
+        let indent = if *kind != Kind::Def {
             0
         } else {
             (*depth).min(LABEL_DEPTHS) as i32 * px(LABEL_INDENT)
         };
         let x = p.rect.x + px(LABEL_LEFT) + indent;
         let cap_w = p.rect.x + p.rect.w - px(LABEL_RIGHT) - x;
-        let size = if *mark { MARK_PX } else { LABEL_PX };
+        let size = if mark { MARK_PX } else { LABEL_PX };
         let px100 = (size * s * 100.0).round() as u32;
         if let Some((w, sh, spx)) = sprite(cache, e, text, rgb & 0xff_ffff, px100, cap_w, h) {
             out.push(LabelAt {
@@ -896,7 +960,7 @@ fn labels(
                 back_argb: back,
             });
         }
-        if *mark && let Ok(m) = u32::try_from(e.mark_rgb) {
+        if mark && let Ok(m) = u32::try_from(e.mark_rgb) {
             lines.push(Band {
                 rect: Rect::new(
                     p.rect.x + px(LABEL_LEFT),

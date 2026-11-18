@@ -534,7 +534,8 @@ mod minimap {
     }
 
     use nhglue::minimap::{
-        NHG_MINIMAP_LABELS_ALL, NHG_MINIMAP_LABELS_MARKS, nhg_minimap_set_label_render,
+        NHG_MINIMAP_LABELS_ALL, NHG_MINIMAP_LABELS_MARKS, NhgMinimapHunk,
+        nhg_minimap_set_label_render,
     };
     use std::sync::Mutex;
 
@@ -744,6 +745,52 @@ mod minimap {
         );
         assert_eq!(m.labels.len(), 2);
         let m = get(&mut b, &NhgMinimap { labels: 0, ..e });
+        assert!(m.labels.is_empty());
+        // Lisp's hunk labels (`hunk-labels-are-placed-as-mark-sections`): at their lines' start in their colour, placed
+        // before a definition (the one on line 3 yields; the pointer still rests there, so that one is in the accent),
+        // no hairline, a text cut at 256 bytes; none without their colour or with labels off
+        let long = "x".repeat(300);
+        let hunks = [
+            NhgMinimapHunk {
+                line: 3,
+                text: "hunk 1 · +2 −0".as_ptr(),
+                len: "hunk 1 · +2 −0".len(),
+            },
+            NhgMinimapHunk {
+                line: 45,
+                text: long.as_ptr(),
+                len: long.len(),
+            },
+        ];
+        let h = NhgMinimap {
+            hunk_rgb: 0x55_5555,
+            hunks: hunks.as_ptr(),
+            hunks_len: hunks.len(),
+            ..e
+        };
+        let m = get(&mut b, &h);
+        let mut got: Vec<(i32, i32, u32)> =
+            m.labels.iter().map(|l| (l.y - top, l.x, l.px[0])).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                (4, 212, 0xff33_3333),
+                (18, 212, 0xff44_4444),
+                (58, 220, 0xff22_2222),
+                (88, 212, 0xff55_5555),
+                (118, 212, 0xff44_4444)
+            ]
+        );
+        assert!(!m.bands.iter().any(|b| b.rect.y == top + 88));
+        let texts = RENDERED.lock().unwrap().clone();
+        assert!(
+            texts.contains(&"hunk 1 · +2 −0".to_owned()) && texts.contains(&"x".repeat(256)),
+            "{texts:?}"
+        );
+        let m = get(&mut b, &NhgMinimap { hunk_rgb: -1, ..h });
+        assert_eq!(m.labels.len(), 4);
+        let m = get(&mut b, &NhgMinimap { labels: 0, ..h });
         assert!(m.labels.is_empty());
         nhg_minimap_set_label_render(None);
         glitnir::sja::minimap::forget(file);

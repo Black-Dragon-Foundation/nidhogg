@@ -1850,6 +1850,22 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
             ("offsetof (M, sub_rgb)", offset_of!(M, sub_rgb) as i64),
             ("offsetof (M, accent_rgb)", offset_of!(M, accent_rgb) as i64),
             ("offsetof (M, mark_rgb)", offset_of!(M, mark_rgb) as i64),
+            ("offsetof (M, class_rgb)", offset_of!(M, class_rgb) as i64),
+            ("offsetof (M, hunk_rgb)", offset_of!(M, hunk_rgb) as i64),
+            ("offsetof (M, hunks)", offset_of!(M, hunks) as i64),
+            ("offsetof (M, hunks_len)", offset_of!(M, hunks_len) as i64),
+            (
+                "sizeof (NhgMinimapHunk)",
+                size_of::<NhgMinimapHunk>() as i64,
+            ),
+            (
+                "offsetof (NhgMinimapHunk, text)",
+                offset_of!(NhgMinimapHunk, text) as i64,
+            ),
+            (
+                "offsetof (NhgMinimapHunk, len)",
+                offset_of!(NhgMinimapHunk, len) as i64,
+            ),
             ("NHG_MINIMAP_LABELS_ALL", NHG_MINIMAP_LABELS_ALL.into()),
             ("NHG_MINIMAP_LABELS_MARKS", NHG_MINIMAP_LABELS_MARKS.into()),
         ];

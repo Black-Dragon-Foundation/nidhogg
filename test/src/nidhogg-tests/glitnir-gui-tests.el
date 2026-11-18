@@ -1935,7 +1935,8 @@ uncovered)."
 (ert-deftest glitnir-gui/the-minimap-labels-the-definitions-and-the-mark-sections ()
   "An open minimap with `:labels' draws the hub's definitions of its `:file' (Sjá's labels layer) at their lines, a
 nested one in `:sub', and the line model's MARK sections in `:mark', in capitals; with `marks-only' the definitions
-go, and without `:labels' nothing of them is drawn."
+go, and without `:labels' nothing of them is drawn.  A `:hunk-labels' label is drawn at its line in `:hunk', with
+either kind of labels."
   (glitnir-gui--skip-unless-tree)
   (skip-unless (fboundp 'nidhogg-lines-set-section-regexp))
   (let ((buf (glitnir-gui--text-buffer "*glitnir-minimap-labels*" 300)) (w (selected-window))
@@ -1967,10 +1968,12 @@ go, and without `:labels' nothing of them is drawn."
                        (red (lambda (r g b) (and (> r 180) (< g 80) (< b 80))))
                        (green (lambda (r g b) (and (< r 80) (> g 180) (< b 80))))
                        (yellow (lambda (r g b) (and (> r 180) (> g 180) (< b 80))))
+                       (cyan (lambda (r g b) (and (< r 80) (> g 180) (> b 180))))
                        (spec (lambda (labels)
                                `(:width 120 :open t :fill ("#203040" . 1) :text ("#203040" . 1)
                                         :labels ,labels :file ,file :label ("#ff0000" . 1) :sub ("#00ff00" . 1)
-                                        :accent ("#0000ff" . 1) :mark ("#ffff00" . 1) :label-face default))))
+                                        :accent ("#0000ff" . 1) :mark ("#ffff00" . 1) :label-face default
+                                        :hunk ("#00ffff" . 1) :hunk-labels [[101 "hunk 1 · +2 −0"]]))))
             (set-window-parameter w 'glitnir-minimap (funcall spec t))
             (let ((snap (glitnir-gui--painted)))
               (glitnir-gui--shot "minimap-labels")
@@ -1978,15 +1981,19 @@ go, and without `:labels' nothing of them is drawn."
               (should (> (glitnir-gui--count-where snap (funcall at 80) green) 3))
               (should (> (glitnir-gui--count-where snap (funcall at 40) yellow) 3))
               (should (> (glitnir-gui--count-where snap (funcall at 120) yellow) 3))
+              ;; a hunk label at its line, in `:hunk'
+              (should (> (glitnir-gui--count-where snap (funcall at 100) cyan) 3))
               ;; between them, only the surface
               (should (= 0 (glitnir-gui--count-where snap (funcall at 60) (lambda (r g _) (or (> r 180) (> g 180)))))))
             (set-window-parameter w 'glitnir-minimap (funcall spec 'marks-only))
             (let ((snap (glitnir-gui--painted)))
               (should (= 0 (glitnir-gui--count-where snap (funcall at 10) red)))
-              (should (> (glitnir-gui--count-where snap (funcall at 40) yellow) 3)))
+              (should (> (glitnir-gui--count-where snap (funcall at 40) yellow) 3))
+              (should (> (glitnir-gui--count-where snap (funcall at 100) cyan) 3)))
             (set-window-parameter w 'glitnir-minimap (funcall spec nil))
             (let ((snap (glitnir-gui--painted)))
-              (should (= 0 (glitnir-gui--count-where snap (funcall at 40) yellow))))))
+              (should (= 0 (glitnir-gui--count-where snap (funcall at 40) yellow)))
+              (should (= 0 (glitnir-gui--count-where snap (funcall at 100) cyan))))))
       (set-window-parameter w 'glitnir-minimap nil)
       (nidhogg-view-minimap 'forget file)
       (nidhogg-lines-disable buf)
