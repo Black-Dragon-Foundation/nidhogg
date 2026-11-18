@@ -753,7 +753,7 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; t
               (glitnir--recheck-frame-cards w)
               (should (equal (window-parameter w 'glitnir--minimap)
                              (vector 3 120 2 #x102030 0.5 #xffffff 1 -1 0 0 nil -1 -1 -1 -1 nil
-                                     (make-vector 16 -1) -1 nil -1 nil nil nil -1 0 -1 0 -1 -1 nil)))
+                                     (make-vector 16 -1) -1 nil -1 nil nil nil -1 0 -1 0 -1 -1 nil -1 0 20)))
               (should (eq (frame-parameter nil 'glitnir--blocks) t))
               (glitnir--recheck-frame-cards w)
               (setq glitnir--card-generation (1+ glitnir--card-generation))
@@ -763,7 +763,7 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; t
               (glitnir--recheck-frame-cards w)
               (should (= sets 2))
               (should (equal (window-parameter w 'glitnir--minimap) (vector 0 80 3 -1 0 -1 0 #x808080 0.25 0 nil -1 -1 -1 -1 nil
-                                                                             (make-vector 16 -1) -1 nil -1 nil nil nil -1 0 -1 0 -1 -1 nil)))
+                                                                             (make-vector 16 -1) -1 nil -1 nil nil nil -1 0 -1 0 -1 -1 nil -1 0 20)))
               ;; the labels: t names the file, `marks-only' does not; the colours and the face
               (set-window-parameter w 'glitnir-minimap
                                     '(:width 80 :labels t :file "/a/b.el" :label "#010203" :sub "#040506"
@@ -797,8 +797,12 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; t
                                              :heat-high "#ff0000" :pin-kind 9 :pin "#00ffff" :pin-names ["one" "two"]))
               (glitnir--recheck-frame-cards w)
               (should (equal (aref (window-parameter w 'glitnir--minimap) 10) "/a/b.el"))
-              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 22)
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 22 30)
                              (vector "blame" #x000010 0.5 #xff0000 1 9 #x00ffff ["one" "two"])))
+              ;; the trail (`trail-goes-to-c'): its colour and opacity, its length as given
+              (set-window-parameter w 'glitnir-minimap '(:width 80 :trail ("#a0b0c0" . 0.75) :trail-length 40))
+              (glitnir--recheck-frame-cards w)
+              (should (equal (seq-subseq (window-parameter w 'glitnir--minimap) 30) (vector #xa0b0c0 0.75 40)))
               (set-window-parameter w 'glitnir-minimap '(:width 80 :file "/a/b.el"))
               (glitnir--recheck-frame-cards w)
               (should-not (aref (window-parameter w 'glitnir--minimap) 10))

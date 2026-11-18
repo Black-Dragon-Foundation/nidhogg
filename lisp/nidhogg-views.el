@@ -236,13 +236,15 @@ word of B, best first, in the groups Commands, Files, Agents.  `close':
 A the handle.  At most 16 lists are kept; the oldest goes first."
   (nidhogg-view--call (nidhogg-view--op pick) (symbol-name what) a b c))
 
-(defsubst nidhogg-view-minimap (what file &optional layer)
+(defsubst nidhogg-view-minimap (what file &optional layer line)
   "The minimap's hub layers of FILE that Sjá keeps (labels, folds, heat,
 density), pushed by the hub on the model's raw path.  WHAT is `layers',
-`get' or `forget'.  `layers': the answer is ((NAME . VERSION) ...).
-`get': LAYER's (VERSION COUNT), or nil when FILE has no such layer.
+`get', `heat-at' or `forget'.  `layers': the answer is ((NAME . VERSION)
+...).  `get': LAYER's (VERSION COUNT), or nil when FILE has no such
+layer.  `heat-at': heat LAYER's (VALUE FACT) at LINE (from 1), VALUE 0
+to 1000 and FACT its text or nil; nil when no item covers LINE.
 `forget': drop FILE's layers (its last buffer was killed)."
-  (nidhogg-view--call (nidhogg-view--op minimap) (symbol-name what) file layer))
+  (nidhogg-view--call (nidhogg-view--op minimap) (symbol-name what) file layer line))
 
 (defsubst nidhogg-view-hub-lost ()
   "The hub connection went: every view is stale; keys keep working."

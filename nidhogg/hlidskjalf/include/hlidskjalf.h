@@ -87,6 +87,7 @@ int32_t hlid_set_hidden_named (uint64_t key, const uint64_t *ranges,
 			       const uint8_t *const *names,
 			       const size_t *lens, size_t n);
 int32_t hlid_trail_note (uint64_t key, uint64_t pos);
+int32_t hlid_trail_clear (uint64_t key);
 int32_t hlid_trail (uint64_t key, uint64_t *out, size_t cap, size_t *n);
 int32_t hlid_describe (uint64_t key, hlid_stats *out);
 /* MARK sections: the expression (RE null: none), then the Ith section whose

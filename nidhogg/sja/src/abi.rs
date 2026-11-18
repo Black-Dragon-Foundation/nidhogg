@@ -49,7 +49,7 @@ pub const SJA_BAR: i32 = 16;
 /// A local list (`pick.rs`): `("load" TEXT)` → handle, `("top" H INPUT N)` → indices, `("close" H)`.
 pub const SJA_PICK: i32 = 17;
 /// The minimap's hub layers (`minimap.rs`): `("layers" FILE)` → `((NAME . VERSION) ...)`, `("get" FILE LAYER)` →
-/// `(VERSION COUNT)` or nil, `("forget" FILE)` → nil.
+/// `(VERSION COUNT)` or nil, `("heat-at" FILE LAYER LINE)` → `(VALUE FACT)` or nil, `("forget" FILE)` → nil.
 pub const SJA_MINIMAP: i32 = 18;
 /// Feature `test-hooks` only: panic inside the named view's guard.
 pub const SJA_TEST_PANIC: i32 = 99;
@@ -836,6 +836,16 @@ fn call(op: i32, args: &[Arg]) -> Result<Ans, Refused> {
                     ])
                 })
                 .unwrap_or(Ans::Nil)),
+                "heat-at" => {
+                    let line = u32::try_from(arg(args, 3).int()?).map_err(|_| Refused::Arg)?;
+                    Ok(match minimap::heat_at(file, arg(args, 2).str()?, line) {
+                        Some((v, fact)) => Ans::List(vec![
+                            Ans::Int(i64::from(v)),
+                            fact.map_or(Ans::Nil, |f| Ans::Str(f.into())),
+                        ]),
+                        None => Ans::Nil,
+                    })
+                }
                 "forget" => {
                     minimap::forget(file);
                     Ok(Ans::Nil)

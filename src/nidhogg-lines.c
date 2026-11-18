@@ -733,7 +733,7 @@ shows it instead of the count of lines hidden.  */)
 
 DEFUN ("nidhogg-lines-trail-note", Fnidhogg_lines_trail_note,
        Snidhogg_lines_trail_note, 2, 2, 0,
-       doc: /* Note a visit to POS on BUFFER's trail (the last 20 visited lines).  */)
+       doc: /* Note a visit to POS on BUFFER's trail (the last 64 visited lines).  */)
   (Lisp_Object buffer, Lisp_Object pos)
 {
   hlid_trail_note (nh_lines_key_of (buffer), nh_lines_pos (pos));
@@ -745,13 +745,22 @@ DEFUN ("nidhogg-lines-trail", Fnidhogg_lines_trail, Snidhogg_lines_trail,
        doc: /* BUFFER's trail: the positions visited, newest first, one per line.  */)
   (Lisp_Object buffer)
 {
-  uint64_t key = nh_lines_key_of (buffer), v[32];
+  uint64_t key = nh_lines_key_of (buffer), v[64];
   size_t n = 0;
-  hlid_trail (key, v, 32, &n);
+  hlid_trail (key, v, 64, &n);
   Lisp_Object out = Qnil;
-  for (size_t i = min (n, 32); i > 0; i--)
+  for (size_t i = min (n, 64); i > 0; i--)
     out = Fcons (make_uint (v[i - 1]), out);
   return out;
+}
+
+DEFUN ("nidhogg-lines-trail-clear", Fnidhogg_lines_trail_clear,
+       Snidhogg_lines_trail_clear, 1, 1, 0,
+       doc: /* Forget BUFFER's trail.  */)
+  (Lisp_Object buffer)
+{
+  hlid_trail_clear (nh_lines_key_of (buffer));
+  return Qnil;
 }
 
 DEFUN ("nidhogg-lines-set-section-regexp", Fnidhogg_lines_set_section_regexp,
@@ -897,6 +906,7 @@ nil builds every model at once, on the main thread.  */);
   defsubr (&Snidhogg_lines_set_hidden);
   defsubr (&Snidhogg_lines_trail_note);
   defsubr (&Snidhogg_lines_trail);
+  defsubr (&Snidhogg_lines_trail_clear);
   defsubr (&Snidhogg_lines_set_section_regexp);
   defsubr (&Snidhogg_lines_sections);
   defsubr (&Snidhogg_lines_set_fold_sources);

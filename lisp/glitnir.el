@@ -788,12 +788,17 @@ even with labels off.  `:pin-kind' (a mark kind of the line model,
 0 to 63) with `:pin' (a colour as `:text') draws each mark of that
 kind with an end as a band over its lines at `:band''s opacity, and
 the n-th of `:pin-names' (a vector of strings, in buffer order) as its
-label at its first line, with labels off too.
+label at its first line, with labels off too.  `:trail' (a colour as
+`:text') draws the line model's last `:trail-length' visits (1 to 64,
+default 20; `nidhogg-lines-trail-note') as 2 px bars at the minimap's
+left edge, the newest at `:trail''s opacity fading to 15 %.
+`glitnir-minimap-flash' lights a row in `:accent', with labels off too.
 The vector is [FLAGS WIDTH SCALE FILL-RGB
 FILL-OPACITY TEXT-RGB TEXT-OPACITY BAND-RGB BAND-OPACITY LABELS FILE
 LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE CLASS-RGB HUNK-RGB
 HUNKS PILL-RGB PILL-FORMAT NUMBER HEAT HEAT-LOW-RGB HEAT-LOW-OPACITY
-HEAT-HIGH-RGB HEAT-HIGH-OPACITY PIN-KIND PIN-RGB PIN-NAMES], CLASS-RGB a
+HEAT-HIGH-RGB HEAT-HIGH-OPACITY PIN-KIND PIN-RGB PIN-NAMES TRAIL-RGB
+TRAIL-OPACITY TRAIL-LENGTH], CLASS-RGB a
 vector of 16 RGBs by class number (0, text, unused), HUNKS the
 `:hunk-labels' (nil with labels off), FLAGS 1 for `:open', 2
 for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
@@ -826,7 +831,9 @@ for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
               (or (car (funcall c :heat-low)) -1) (or (cdr (funcall c :heat-low)) 0)
               (or (car (funcall c :heat-high)) -1) (or (cdr (funcall c :heat-high)) 0)
               (or (plist-get spec :pin-kind) -1) (funcall rgb :pin)
-              (plist-get spec :pin-names)))))
+              (plist-get spec :pin-names)
+              (funcall rgb :trail) (or (cdr (funcall c :trail)) 0)
+              (or (plist-get spec :trail-length) 20)))))
 
 (defun glitnir--recheck-minimap (window)
   "Resolve WINDOW's minimap when its `glitnir-minimap' or the theme changed.
@@ -891,8 +898,11 @@ set, so C lists the frame."
 (defvar glitnir-minimap-functions nil
   "Functions called with KIND, WINDOW and POS for each minimap event.
 KIND is `click' or `drag' (WINDOW was scrolled to start at POS, the
-start that centres the row) or `dwell' (the pointer rests on the row
-starting at POS, for a peek).")
+start that centres the row), `dwell' (the pointer rests on the row
+starting at POS, for a peek), `dwell-marks' (it rests on the marks lane,
+the ruler strip's width at the minimap's outer edge, on the row starting
+at POS: the problems card) or `dwell-label' (it rests on a label, whose
+line starts at POS: describe).")
 
 (defun glitnir-minimap-event (event)
   "Handle EVENT, a `glitnir-minimap' event: scroll its window to a click or a

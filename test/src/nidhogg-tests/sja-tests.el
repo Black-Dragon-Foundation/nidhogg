@@ -381,6 +381,14 @@ file's layers."
     (nidhogg-view-push (funcall line 1 "[[1,2,\"block\"]]"))
     (should (equal (nidhogg-view-minimap 'get "/t/m.el" "folds") '(2 2)))
     (should (equal (nidhogg-view-minimap 'layers "/t/m.el") '(("folds" . 2))))
+    ;; a heat layer's value and fact by line (`heat-at'): the item covering it, none past the items
+    (nidhogg-view-push
+     (format "{\"event\":\"view-model\",\"data\":{\"minimap\":{\"file\":\"/t/m.el\",\"layer\":\"heat:blame\",\"version\":1,\"items\":%s}}}"
+             "[[5,8,900,\"2 days ago\"],[1,3,100]]"))
+    (should (equal (nidhogg-view-minimap 'heat-at "/t/m.el" "heat:blame" 2) '(100 nil)))
+    (should (equal (nidhogg-view-minimap 'heat-at "/t/m.el" "heat:blame" 8) '(900 "2 days ago")))
+    (should-not (nidhogg-view-minimap 'heat-at "/t/m.el" "heat:blame" 4))
+    (should-not (nidhogg-view-minimap 'heat-at "/t/m.el" "heat:blame" 9))
     (nidhogg-view-minimap 'forget "/t/m.el")
     (should-not (nidhogg-view-minimap 'layers "/t/m.el"))))
 

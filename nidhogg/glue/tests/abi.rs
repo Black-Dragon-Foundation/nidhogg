@@ -1798,7 +1798,7 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
     /// The minimaps' part of the header: the flags, the record's layout and the entry points.
     #[test]
     fn minimap_header_matches() {
-        use nhglue::ffi::{nhg_minimap_count, nhg_minimap_sync};
+        use nhglue::ffi::{nhg_minimap_count, nhg_minimap_flash, nhg_minimap_sync};
         use nhglue::minimap::*;
         type M = NhgMinimap;
         let rows: &[(&str, i64)] = &[
@@ -1948,17 +1948,30 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
             ("NHG_MINIMAP_NONE", NHG_MINIMAP_NONE.into()),
             ("NHG_ARROWS_HOVER", NHG_ARROWS_HOVER.into()),
             ("NHG_ARROWS_ALWAYS", NHG_ARROWS_ALWAYS.into()),
+            ("offsetof (M, trail_rgb)", offset_of!(M, trail_rgb) as i64),
+            (
+                "offsetof (M, trail_opacity)",
+                offset_of!(M, trail_opacity) as i64,
+            ),
+            (
+                "offsetof (M, trail_length)",
+                offset_of!(M, trail_length) as i64,
+            ),
+            ("NHG_MINIMAP_DWELL_MARKS", NHG_MINIMAP_DWELL_MARKS.into()),
+            ("NHG_MINIMAP_DWELL_LABEL", NHG_MINIMAP_DWELL_LABEL.into()),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 typedef NhgMinimap M;
 PROTO (nhg_minimap_sync, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgMinimap *, size_t));
 PROTO (nhg_minimap_count, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_minimap_flash, int32_t (NhgDisplay *, uint64_t, uint64_t, uint64_t));
 PROTO (nhg_minimap_set_label_render, void (NhgLabelRender));
 PROTO (nhg_label_raster, int32_t (uint64_t, uint32_t, const uint8_t *, size_t, uint32_t, uint32_t *, int32_t, int32_t, int32_t *, int32_t *));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const M, usize) -> i32 =
             nhg_minimap_sync;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_minimap_count;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, u64) -> i32 = nhg_minimap_flash;
         let _: extern "C" fn(Option<NhgLabelRender>) = nhg_minimap_set_label_render;
         let _: unsafe extern "C" fn(
             u64,

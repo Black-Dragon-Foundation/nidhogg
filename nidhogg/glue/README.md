@@ -355,7 +355,21 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   dragging a drag step, and 300 ms at rest on a row a dwell: `NHG_ACT_MINIMAP` with code `NHG_MINIMAP_CLICK`,
   `_DRAG` or `_DWELL`, `dx` the position (the window start that centres the row; the row's start for a dwell) and
   `dy` the window's sequence number, which C stores as a `glitnir-minimap` event. A reveal step is
-  `NHG_MINIMAP_PUBLISH`: C publishes the frame again, with no redisplay.
+  `NHG_MINIMAP_PUBLISH`: C publishes the frame again, with no redisplay. A dwell on the marks lane (the strip's width
+  at the minimap's outer edge) is `_DWELL_MARKS`, on a label `_DWELL_LABEL` at the label's line start.
+- **The minimap's other layers** (design F1, M4, M5, M8, M9, X3, X5): fold pills (`pill_rgb`: a dashed pill after
+  the bar of each hidden range's first line, its name from `nidhogg-lines-set-hidden` or `pill_format`'s count, placed
+  as a MARK section); another window's `number` at the top-right of its outlined band; heat (`heat`: Sjá's
+  `heat:NAME` layer of `file` recolours each tile row's bar on the ramp `heat_low`..`heat_high`, its version part of
+  the tiles' stamp); pins (marks of `pin_kind` with an end: a band at the band's opacity and the n-th of `pins` as a
+  label); the trail (`trail_rgb`: a 2 px bar on the rows of the model's newest `trail_length` visits, fading to 15 %);
+  and a jump flash (`nhg_minimap_flash`: the row lit in the accent for 400 ms, faded on the frame clock).
+- **Fold arrows** (design F1, the window parameter `glitnir-fold-arrows`): the record's `arrows` with the left
+  fringe and the matrix rows that start a line (`NhgMinimapRow`); a second layer per window, id
+  `sequence_number | MINIMAP_TAG | ARROWS_TAG`, over the fringe, a chevron sprite per row whose line starts a fold
+  range (right-pointing in the folded colour when the range's lines are hidden). In `NHG_ARROWS_HOVER` the open ones
+  show while the pointer is over the fringe; the pointer there is never swallowed. A record with `NHG_MINIMAP_NONE`
+  carries the arrows alone.
 - **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose
   last full-window scroll is 2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
   box demotes first. Demotion is `set_output (…, 0)` and the layer's removal, in that publish: Glitnir damages the

@@ -2076,6 +2076,17 @@ nhg_export! {
 }
 
 nhg_export! {
+    /// Light Emacs window `seq`'s row of position `pos` in the frame's minimap for 400 ms (design M9): 1 when it has a
+    /// minimap revealed, else 0.
+    ///
+    /// # Safety
+    /// `d` is null or a live display.
+    fn nhg_minimap_flash(d: *mut NhgDisplay, frame: u64, seq: u64, pos: u64) -> i32 |state| {
+        Ok(i32::from(crate::minimap::flash(state, frame, seq, pos)))
+    }
+}
+
+nhg_export! {
     /// How many of the frame's Emacs windows have a minimap layer (0 for a frame without a backing).
     ///
     /// # Safety

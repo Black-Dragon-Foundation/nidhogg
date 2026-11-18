@@ -213,16 +213,19 @@ is not a string or nil is an error."
     (should-error (nidhogg-lines-set-hidden b '((3 18 body))) :type 'wrong-type-argument)))
 
 (ert-deftest lines/trail-keeps-one-visit-per-line ()
-  "The trail is newest first, one per line, at most 20."
+  "The trail is newest first, one per line, at most 64; `nidhogg-lines-trail-clear' empties it."
   (skip-unless (lines-tests--built-p))
-  (lines-tests--with (b (make-string 40 ?\n))
+  (lines-tests--with (b (make-string 100 ?\n))
     (dolist (p '(1 5 2 5 9)) (nidhogg-lines-trail-note b p))
     (should (equal (nidhogg-lines-trail b) '(9 5 2 1)))
-    (dotimes (i 30) (nidhogg-lines-trail-note b (+ 10 i)))
-    (should (= (length (nidhogg-lines-trail b)) 20))
+    (dotimes (i 80) (nidhogg-lines-trail-note b (+ 10 i)))
+    (should (= (length (nidhogg-lines-trail b)) 64))
+    (should (= (car (last (nidhogg-lines-trail b))) 26))
     (goto-char 1)
     (insert "\n\n")
-    (should (= (car (nidhogg-lines-trail b)) 41))))
+    (should (= (car (nidhogg-lines-trail b)) 91))
+    (nidhogg-lines-trail-clear b)
+    (should-not (nidhogg-lines-trail b))))
 
 (ert-deftest lines/swap-text-rebuilds ()
   "`buffer-swap-text' and `set-buffer-multibyte' read the text again."

@@ -1155,4 +1155,196 @@ mod minimap {
         assert!(m.labels.is_empty() && m.bands.iter().all(|b| b.fill_argb != fill));
         hlid_drop(key);
     }
+
+    /// The trail (design M4): a 2 px bar at the minimap's left edge on the rows of the newest `trail_length` visits,
+    /// the newest at the trail's opacity fading to 15 % for the oldest drawn; no colour, none.
+    #[test]
+    fn the_trail_draws_fading_bars_at_the_left_edge() {
+        let key = 0x6d6d_0026;
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        with_model(key, |m| {
+            for l in [5, 10, 30, 50] {
+                m.trail_note(pos(l));
+            }
+        });
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let e = NhgMinimap {
+            trail_rgb: 0xff_0000,
+            trail_opacity: 1.0,
+            trail_length: 3,
+            ..entry(key, 1, 100, zv, NHG_MINIMAP_OPEN)
+        };
+        sync_at(&mut b, f, std::slice::from_ref(&e)).unwrap();
+        let m = placed(&commit(f).1, minimap_id(SEQ))
+            .unwrap()
+            .minimap
+            .unwrap();
+        let top = 10 + STRIP;
+        let bars: Vec<(Rect, u32)> = m
+            .bands
+            .iter()
+            .filter(|b| b.rect.w == 2)
+            .map(|b| (b.rect, b.fill_argb >> 24))
+            .collect();
+        let rects: Vec<Rect> = bars.iter().map(|b| b.0).collect();
+        assert_eq!(
+            rects,
+            [
+                Rect::new(200, top + 100, 2, 2),
+                Rect::new(200, top + 60, 2, 2),
+                Rect::new(200, top + 20, 2, 2)
+            ]
+        );
+        let alphas: Vec<u32> = bars.iter().map(|b| b.1).collect();
+        assert_eq!(alphas[0], 0xff);
+        assert!((146..=147).contains(&alphas[1]), "{alphas:?}");
+        assert!((38..=39).contains(&alphas[2]), "{alphas:?}");
+        sync_at(&mut b, f, &[NhgMinimap { trail_rgb: -1, ..e }]).unwrap();
+        let m = placed(&commit(f).1, minimap_id(SEQ))
+            .unwrap()
+            .minimap
+            .unwrap();
+        assert!(m.bands.iter().all(|b| b.rect.w != 2));
+        hlid_drop(key);
+    }
+
+    /// A jump flash (design M9): the row lit in the accent, fading over 400 ms on the frame clock and gone at its end
+    /// (a publish); with reduced motion lit at full until then; none on a minimap not revealed.
+    #[test]
+    fn a_flash_lights_the_row_and_fades() {
+        use nhglue::minimap::FLASH_NS;
+        let key = 0x6d6d_0027;
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let top = 10 + STRIP;
+        let lit = |b: &mut Backings, e: &NhgMinimap, t: u64| -> Vec<(Rect, u32)> {
+            sync_at_time(b, f, std::slice::from_ref(e), t).unwrap();
+            placed(&commit(f).1, minimap_id(SEQ))
+                .unwrap()
+                .minimap
+                .unwrap()
+                .bands
+                .iter()
+                .filter(|b| b.fill_argb & 0xff_ffff != 0 && b.fill_argb & 0xff_ff00 == 0)
+                .map(|b| (b.rect, b.fill_argb >> 24))
+                .collect()
+        };
+        let t0 = 1_000 * MS;
+        let closed = NhgMinimap {
+            accent_rgb: 0x00_00ff,
+            ..entry(key, 1, 100, zv, 0)
+        };
+        lit(&mut b, &closed, t0);
+        assert!(!of(&mut b, f).unwrap().flash(SEQ, pos(30), t0));
+        let e = NhgMinimap {
+            accent_rgb: 0x00_00ff,
+            ..entry(key, 1, 100, zv, NHG_MINIMAP_OPEN)
+        };
+        lit(&mut b, &e, t0);
+        assert!(of(&mut b, f).unwrap().flash(SEQ, pos(30), t0));
+        assert!(of(&mut b, f).unwrap().animating());
+        assert_eq!(of(&mut b, f).unwrap().deadline(), Some(t0 + FLASH_NS));
+        assert_eq!(
+            lit(&mut b, &e, t0),
+            [(Rect::new(200, top + 60, 100, 2), 0xff)]
+        );
+        let half = lit(&mut b, &e, t0 + FLASH_NS / 2);
+        assert!(
+            half.len() == 1 && (127..=128).contains(&half[0].1),
+            "{half:?}"
+        );
+        assert!(of(&mut b, f).unwrap().tick(t0 + FLASH_NS).publish);
+        assert!(lit(&mut b, &e, t0 + FLASH_NS).is_empty());
+        assert!(!of(&mut b, f).unwrap().animating());
+        // reduced motion: full until the end, no frames asked for
+        let r = NhgMinimap {
+            flags: NHG_MINIMAP_OPEN | NHG_MINIMAP_REDUCED_MOTION,
+            ..e
+        };
+        let t1 = t0 + 2 * FLASH_NS;
+        lit(&mut b, &r, t1);
+        assert!(of(&mut b, f).unwrap().flash(SEQ, pos(30), t1));
+        assert_eq!(
+            lit(&mut b, &r, t1 + FLASH_NS / 2),
+            [(Rect::new(200, top + 60, 100, 2), 0xff)]
+        );
+        assert!(!of(&mut b, f).unwrap().animating());
+        assert!(of(&mut b, f).unwrap().tick(t1 + FLASH_NS).publish);
+        assert!(lit(&mut b, &r, t1 + FLASH_NS).is_empty());
+        hlid_drop(key);
+    }
+
+    /// A dwell's part (design M7): on the marks lane (the strip's width at the outer edge) `_DWELL_MARKS` at the row,
+    /// on a label `_DWELL_LABEL` at the label's line, elsewhere `_DWELL` at the row.
+    #[test]
+    fn a_dwell_names_the_marks_lane_or_the_label() {
+        use glitnir::hlidskjalf::Mark;
+        use nhglue::minimap::{NHG_MINIMAP_DWELL_LABEL, NHG_MINIMAP_DWELL_MARKS};
+        let _held = RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let key = 0x6d6d_0028;
+        let text = model(key, 100);
+        let zv = text.len() as u64 + 1;
+        let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        with_model(key, |m| {
+            m.set_marks(
+                9,
+                &[Mark {
+                    pos: pos(19),
+                    end: pos(25) - 1,
+                    lane: 0,
+                    class: 0,
+                    prio: 0,
+                    kind: 9,
+                }],
+            )
+        });
+        nhg_minimap_set_label_render(Some(fake_render));
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        let names = [NhgMinimapName {
+            text: "pinned".as_ptr(),
+            len: 6,
+        }];
+        let e = NhgMinimap {
+            pin_kind: 9,
+            pin_rgb: 0x00_ffff,
+            pins: names.as_ptr(),
+            pins_len: 1,
+            ..entry(
+                key,
+                1,
+                100,
+                zv,
+                NHG_MINIMAP_OPEN | NHG_MINIMAP_REDUCED_MOTION,
+            )
+        };
+        let t0 = 1_000 * MS;
+        sync_at_time(&mut b, f, std::slice::from_ref(&e), t0).unwrap();
+        let y = |v: i32| f64::from(v + STRIP);
+        let mut dwell = |x: f64, v: i32, t: u64| {
+            of(&mut b, f).unwrap().motion(Some((x, y(v))), t);
+            of(&mut b, f).unwrap().tick(t + DWELL_NS).events
+        };
+        // the lane: x 288 to 300; row (50 - 10) / 2 = 20
+        assert_eq!(
+            dwell(295.0, 50, t0),
+            [(NHG_MINIMAP_DWELL_MARKS, SEQ, pos(20))]
+        );
+        // row 21, inside the label drawn at row 19
+        assert_eq!(
+            dwell(250.0, 52, t0 + 1_000 * MS),
+            [(NHG_MINIMAP_DWELL_LABEL, SEQ, pos(19))]
+        );
+        assert_eq!(
+            dwell(250.0, 130, t0 + 2_000 * MS),
+            [(NHG_MINIMAP_DWELL, SEQ, pos(60))]
+        );
+        hlid_drop(key);
+    }
 }

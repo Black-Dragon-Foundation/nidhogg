@@ -1050,6 +1050,11 @@ typedef struct
   int32_t pin_rgb;
   const NhgMinimapName *pins;
   size_t pins_len;
+  /* The trail (design M4): TRAIL_RGB (-1: none) at TRAIL_OPACITY, a 2 logical px bar at the minimap's left edge on the
+     rows of the line model's newest TRAIL_LENGTH (1 to 64) visits, fading to 15 % for the oldest drawn.  */
+  int32_t trail_rgb;
+  float trail_opacity;
+  uint32_t trail_length;
 } NhgMinimap;
 
 /* The label renderer: TEXT (LEN bytes of UTF-8) in face FACE of frame HOST at PX100 / 100 device pixels, in 0xRRGGBB
@@ -1076,6 +1081,11 @@ int32_t nhg_minimap_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const 
 /* How many of FRAME's windows have a minimap layer (while it is not 0, C lists the frame's minimaps at each
    publish).  */
 int32_t nhg_minimap_count (NhgDisplay *d, uint64_t frame);
+
+/* Light Emacs window SEQ's row of position POS in FRAME's minimap in its accent for 400 ms, fading on the frame clock
+   (lit, then gone, with reduced motion); the frame is published.  Returns 1, or 0 when the window has no minimap
+   revealed.  */
+int32_t nhg_minimap_flash (NhgDisplay *d, uint64_t frame, uint64_t seq, uint64_t pos);
 
 /* Layout legs.  Emacs window W_SEQ of FRAME (WINDOW its shell window, a top-level's) has the layout leg vector V, N
    floats as glitnir--leg-vector gave them (lisp/glitnir.el's glitnir--leg-slots; N 0 for none).  A new capture number
@@ -1217,6 +1227,8 @@ typedef struct { int32_t x, y, id; } NhgTouchPoint;
 #define NHG_MINIMAP_CLICK     1   /* DX: the window start that centres the row clicked */
 #define NHG_MINIMAP_DRAG      2   /* DX: the same for the row dragged to */
 #define NHG_MINIMAP_DWELL     3   /* DX: the start of the row the pointer rests on */
+#define NHG_MINIMAP_DWELL_MARKS 4 /* a dwell on the marks lane (the strip's width at the outer edge): as _DWELL */
+#define NHG_MINIMAP_DWELL_LABEL 5 /* a dwell on a label: DX the label line's start */
 #define NHG_SETTLE_REPORT     1   /* every shown frame presented again, or 2 s passed: run `reconnected' */
 #define NHG_SETTLE_MONITORS   2   /* the monitor list differs from before the loss (ids aside) */
 #define NHG_SETTLE_FOCUS_OUT  4   /* no keyboard enter 1 s after the report: *WINDOW loses the focus */

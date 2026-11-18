@@ -1924,6 +1924,48 @@ uncovered)."
                                  3))
         (should (equal (glitnir-gui--pixel first inner) '(#x20 #x30 #x40)))))))
 
+(ert-deftest glitnir-gui/the-minimap-trail-flash-and-dwell-parts ()
+  "The trail draws a bar at the minimap's left edge on each visit's row, the newest strongest; a flash lights its row
+in the accent for 400 ms, then it is gone with no Lisp in between; a rest on the marks lane is one `dwell-marks'
+event, at most 80 ms after the dwell's 300 ms."
+  (glitnir-gui--with-hover-minimap '(:width 120 :open t :fill ("#203040" . 1) :text ("#203040" . 1)
+                                            :trail ("#ff0000" . 1) :trail-length 3 :accent "#00ff00")
+    (let* ((row-px (floor (+ 0.5 (* 2 (frame-scale-factor)))))
+           (pos (lambda (l) (with-current-buffer buf (save-excursion (goto-char (point-min)) (forward-line l) (point)))))
+           (row-rect (lambda (l w) (list (nth 0 mm) (+ (nth 1 mm) (* l row-px)) w row-px)))
+           (red (lambda (snap l) (glitnir-gui--count-where snap (funcall row-rect l row-px)
+                                                           (lambda (r g b) (and (> r 40) (< g 80) (< b 90))))))
+           (strength (lambda (snap l) (car (glitnir-gui--pixel snap (list (nth 0 mm) (+ (nth 1 mm) (* l row-px))))))))
+      ;; (a bar is as wide as a row is tall: 2 logical px)
+      (dolist (l '(5 10 30 50)) (nidhogg-lines-trail-note buf (funcall pos l)))
+      ;; (the trail is read at a publish: one comes with the window's redisplay)
+      (force-window-update w)
+      (redisplay t)
+      (should (gui-runner-wait (lambda () (> (funcall red (glitnir-snapshot nil 'raw) 50) 0)) 3))
+      (let ((snap (glitnir-snapshot nil 'raw)))
+        (should (> (funcall red snap 30) 0))
+        (should (> (funcall red snap 10) 0))
+        (should (= (funcall red snap 5) 0))
+        (should (> (funcall strength snap 50) (funcall strength snap 30) (funcall strength snap 10))))
+      (glitnir-gui--shot "minimap-trail")
+      ;; the flash: lit, then gone after 400 ms with no redisplay asked
+      (let ((green (lambda () (glitnir-gui--count-where (glitnir-snapshot nil 'raw) (funcall row-rect 80 (nth 2 mm))
+                                                        (lambda (r g b) (and (> g 120) (< r 80) (< b 90)))))))
+        (should (glitnir-minimap-flash w (funcall pos 80)))
+        (should (gui-runner-wait (lambda () (> (funcall green) 0)) 1))
+        (should (gui-runner-wait (lambda () (gui-runner-read-all) (= (funcall green) 0)) 2)))
+      (nidhogg-lines-trail-clear buf)
+      ;; the marks lane: the strip's 12 px at the outer edge
+      (let* ((seen nil) (at nil)
+             (glitnir-minimap-functions (list (lambda (kind &rest _) (push kind seen) (setq at (float-time)))))
+             (lane-x (- (+ (nth 0 mm) (nth 2 mm)) (round (* 6 (frame-scale-factor)))))
+             (t0 (float-time)))
+        (glitnir-gui--vp-to vp map lane-x mid)
+        (should (gui-runner-wait (lambda () (gui-runner-read-all) seen) 3))
+        (gui-runner-observe 0.5 #'gui-runner-read-all)
+        (should (equal seen '(dwell-marks)))
+        (should (<= (- at t0) (+ 0.3 0.08 0.05)))))))
+
 (defun glitnir-gui--count-where (snap rect pred)
   "How many pixels of RECT (X Y W H) in SNAP satisfy PRED, called with R, G and B."
   (pcase-let ((`(,x ,y ,w ,h) rect) (n 0))

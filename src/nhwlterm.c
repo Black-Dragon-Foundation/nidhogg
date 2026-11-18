@@ -1438,7 +1438,7 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object a,
     .file_len = file_len,
     .label_rgb = labels ? nhwl_block_int (v, 11, -1) : -1,
     .sub_rgb = labels ? nhwl_block_int (v, 12, -1) : -1,
-    .accent_rgb = labels ? nhwl_block_int (v, 13, -1) : -1,
+    .accent_rgb = ASIZE (v) > 13 ? nhwl_block_int (v, 13, -1) : -1,
     .mark_rgb = labels ? nhwl_block_int (v, 14, -1) : -1,
   };
 #undef NHWL_MINIMAP_OPACITY
@@ -1466,6 +1466,11 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object a,
     }
   else
     m->heat_low_rgb = m->heat_high_rgb = -1;
+  m->trail_rgb = ASIZE (v) > 32 ? nhwl_block_int (v, 30, -1) : -1;
+  m->trail_opacity = (ASIZE (v) > 32 && NUMBERP (AREF (v, 31))
+		      ? XFLOATINT (AREF (v, 31)) : 0);
+  m->trail_length = (ASIZE (v) > 32
+		     ? min (64, max (0, nhwl_block_int (v, 32, 20))) : 0);
   m->pin_kind = pins ? nhwl_block_int (v, 27, -1) : -1;
   m->pin_rgb = pins ? nhwl_block_int (v, 28, -1) : -1;
   m->pins = (const NhgMinimapName *) pin_names;
@@ -1662,6 +1667,10 @@ nhwl_minimap_action (struct frame *f, const NhgAction *a,
     return 0;
   Lisp_Object kind = (a->code == NHG_MINIMAP_CLICK ? Qnhwl_minimap_click
 		      : a->code == NHG_MINIMAP_DRAG ? Qnhwl_minimap_drag
+		      : a->code == NHG_MINIMAP_DWELL_MARKS
+		      ? Qnhwl_minimap_dwell_marks
+		      : a->code == NHG_MINIMAP_DWELL_LABEL
+		      ? Qnhwl_minimap_dwell_label
 		      : Qnhwl_minimap_dwell);
   struct input_event ie;
   EVENT_INIT (ie);
@@ -1706,6 +1715,28 @@ nhwl_blocks_add (Lisp_Object window)
       nhwl_edges_add (w, e, clip);
       nhwl_minimap_add (w, mm, fa, r, clip);
     }
+}
+
+DEFUN ("glitnir-minimap-flash", Fglitnir_minimap_flash,
+       Sglitnir_minimap_flash, 2, 2, 0,
+       doc: /* Light the row of POS in WINDOW's minimap for 400 ms (a jump's flash).
+The row is drawn in the minimap's `:accent', fading on the compositor's
+frame clock (with reduced motion: lit for 400 ms, then gone); no Lisp
+runs meanwhile.  Return t, or nil when WINDOW has no minimap open.  */)
+  (Lisp_Object window, Lisp_Object pos)
+{
+  struct window *w = decode_live_window (window);
+  CHECK_FIXNUM_COERCE_MARKER (pos);
+  struct frame *f = XFRAME (w->frame);
+  if (!FRAME_NHWL_P (f))
+    return Qnil;
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  if (!out->glitnir_id || !dpyinfo->glue)
+    return Qnil;
+  int32_t rc = NHG (nhg_minimap_flash (dpyinfo->glue, out->glitnir_id,
+				       w->sequence_number, XFIXNUM (pos)));
+  return rc > 0 ? Qt : Qnil;
 }
 
 DEFUN ("glitnir-edges-resolved", Fglitnir_edges_resolved,
@@ -6053,6 +6084,7 @@ syms_of_nhwlterm (void)
 {
   defsubr (&Snhwl__bench_full_redraw);
   defsubr (&Sglitnir_edges_resolved);
+  defsubr (&Sglitnir_minimap_flash);
   defsubr (&Snhwl_presenter_stats);
   defsubr (&Snhwl_glue_panics);
   defsubr (&Snhwl__scroll_layers);

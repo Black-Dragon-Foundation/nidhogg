@@ -173,7 +173,20 @@ pub struct NhgMinimap {
     pub pin_rgb: i32,
     pub pins: *const NhgMinimapName,
     pub pins_len: usize,
+    /// The trail (design M4): its 0xRRGGBB (-1: none) at its opacity, and how many of the model's visits are drawn
+    /// (1 to 64): a 2 logical px bar at the minimap's left edge on each visit's row, the newest at the opacity, fading to
+    /// [`TRAIL_FADE`] of it for the oldest drawn.
+    pub trail_rgb: i32,
+    pub trail_opacity: f32,
+    pub trail_length: u32,
 }
+
+/// The oldest trail bar's share of the trail's opacity.
+pub const TRAIL_FADE: f32 = 0.15;
+/// A trail bar's width, logical px.
+pub const TRAIL_W: f64 = 2.0;
+/// A jump flash's length (design M9): the row lit in the accent, fading over it (with reduced motion lit, then gone).
+pub const FLASH_NS: u64 = 400_000_000;
 
 /// A name as C gives it: `len` bytes of UTF-8.  Layout equals `NhgMinimapName`.
 #[repr(C)]
@@ -279,6 +292,9 @@ impl Default for NhgMinimap {
             pin_rgb: -1,
             pins: std::ptr::null(),
             pins_len: 0,
+            trail_rgb: -1,
+            trail_opacity: 0.0,
+            trail_length: 0,
         }
     }
 }
@@ -729,12 +745,19 @@ struct Window {
     /// The fold arrows' fringe (root px) and mode at the last publish, and their layer as last given.
     arrows: Option<(Rect, u32)>,
     arrows_applied: Option<(u32, Arc<Minimap>)>,
+    /// A jump flash: the position lit and when it started; whether the window's minimap has reduced motion.
+    flash: Option<(u64, u64)>,
+    reduced: bool,
+    /// Each label box's line start (as `boxes`).
+    box_pos: Vec<u64>,
 }
 
 /// Where a window's minimap was at its last publish (root device px), for the pointer.
 #[derive(Debug, Clone, Copy)]
 struct Geom {
     key: u64,
+    /// On the text's left edge.
+    left: bool,
     rect: Rect,
     /// The part revealed.
     shown: Rect,
@@ -765,6 +788,8 @@ struct Hover {
     y: Option<f64>,
     /// The pointer is over the window's left fringe (the fold arrows show in `NHG_ARROWS_HOVER`).
     fringe: bool,
+    /// The pointer's x (root px) over the minimap.
+    x: Option<f64>,
 }
 
 impl Hover {
@@ -815,6 +840,10 @@ pub const NHG_MINIMAP_PUBLISH: i32 = 0;
 pub const NHG_MINIMAP_CLICK: i32 = 1;
 pub const NHG_MINIMAP_DRAG: i32 = 2;
 pub const NHG_MINIMAP_DWELL: i32 = 3;
+/// A dwell on the marks lane (the ruler strip's width at the minimap's outer edge), at the row's position.
+pub const NHG_MINIMAP_DWELL_MARKS: i32 = 4;
+/// A dwell on a label, at the label's line start.
+pub const NHG_MINIMAP_DWELL_LABEL: i32 = 5;
 
 /// What the pointer did to a frame's minimaps: whether the event is the minimap's (Emacs never sees it), whether
 /// Emacs is sent a `LEAVE` first, whether the frame is to be published, and the events for Lisp: (code, window, pos).
@@ -870,15 +899,30 @@ impl Minimaps {
 
     /// A pointer leg runs: the frame is published again at its next frame.
     pub fn animating(&self) -> bool {
-        self.windows.values().any(|w| w.hover.leg.is_some())
+        self.windows
+            .values()
+            .any(|w| w.hover.leg.is_some() || (w.flash.is_some() && !w.reduced))
     }
 
-    /// The earliest deadline of the frame's minimaps.
+    /// The earliest deadline of the frame's minimaps (a flash's end among them).
     pub fn deadline(&self) -> Option<u64> {
         self.windows
             .values()
-            .filter_map(|w| w.hover.deadline())
+            .flat_map(|w| [w.hover.deadline(), w.flash.map(|(_, t)| t + FLASH_NS)])
+            .flatten()
             .min()
+    }
+
+    /// Light window `seq`'s row of `pos` for [`FLASH_NS`] from `now` (design M9); false when the window has no minimap
+    /// revealed.
+    pub fn flash(&mut self, seq: u64, pos: u64, now: u64) -> bool {
+        match self.windows.get_mut(&seq) {
+            Some(w) if w.applied.as_ref().is_some_and(|(_, _, m)| m.reveal_px > 0) => {
+                w.flash = Some((pos, now));
+                true
+            }
+            _ => false,
+        }
     }
 
     /// When the shell's timer is due for the frame's minimaps, at `now`: the earliest deadline, or the next step of a
@@ -920,6 +964,7 @@ impl Minimaps {
                 });
                 let row = row.map(|v| v.min(g.rows.total.saturating_sub(1)));
                 h.y = at.map(|(_, y)| y);
+                h.x = at.map(|(x, _)| x);
                 // the label under the pointer changed: drawn again in the accent
                 if accent_of(&w.boxes, h.y) != w.accent {
                     r.publish = true;
@@ -988,6 +1033,10 @@ impl Minimaps {
             ..Reply::default()
         };
         for (seq, w) in &mut self.windows {
+            if w.flash.is_some_and(|(_, t)| t + FLASH_NS <= now) {
+                w.flash = None;
+                r.publish = true;
+            }
             let h = &mut w.hover;
             if !h.open && h.strip_since.is_some_and(|t| t + OPEN_DELAY_NS <= now) {
                 h.open = true;
@@ -1006,7 +1055,25 @@ impl Minimaps {
                 if let (Some(g), Some(row), true) = (w.geom, h.row, h.inside)
                     && let Some(p) = pos_of_row(g.key, g.rows.first, row)
                 {
-                    r.events.push((NHG_MINIMAP_DWELL, *seq, p));
+                    // the marks lane at the outer edge, else a label, else the row
+                    let lane = g.strip.w.max(0);
+                    let outer = if g.left {
+                        g.rect.x
+                    } else {
+                        g.rect.x + g.rect.w - lane
+                    };
+                    let on_lane =
+                        h.x.is_some_and(|x| x >= f64::from(outer) && x < f64::from(outer + lane));
+                    let ev = if on_lane {
+                        (NHG_MINIMAP_DWELL_MARKS, p)
+                    } else if let Some(k) = accent_of(&w.boxes, h.y)
+                        && let Some(&lp) = w.box_pos.get(k)
+                    {
+                        (NHG_MINIMAP_DWELL_LABEL, lp)
+                    } else {
+                        (NHG_MINIMAP_DWELL, p)
+                    };
+                    r.events.push((ev.0, *seq, ev.1));
                 }
             }
         }
@@ -1036,7 +1103,13 @@ enum Kind {
 }
 
 /// What [`labels`] gives: the sprites placed, the hairlines, each label's rows (top, bottom) and the accented one.
-type Labels = (Vec<LabelAt>, Vec<Band>, Vec<(i32, i32)>, Option<usize>);
+type Labels = (
+    Vec<LabelAt>,
+    Vec<Band>,
+    Vec<(i32, i32)>,
+    Option<usize>,
+    Vec<u64>,
+);
 
 /// The labels of window `e`'s minimap `p` over `rows` (each `row_px` tall) at scale `s`: the sprites placed, and the
 /// MARK sections' hairlines; `hover_y` the pointer's y (root px), whose label is in the accent; `back` the backing.
@@ -1051,7 +1124,7 @@ fn labels(
     back: u32,
     cache: &mut SpriteCache,
 ) -> Labels {
-    let none = (Vec::new(), Vec::new(), Vec::new(), None);
+    let none = (Vec::new(), Vec::new(), Vec::new(), None, Vec::new());
     if e.labels == 0 && e.pill_rgb < 0 && (e.pin_kind < 0 || e.pin_rgb < 0) {
         return none;
     }
@@ -1172,6 +1245,17 @@ fn labels(
         .map(|&i| (cands[i].y, cands[i].y + h))
         .collect();
     let accent = accent_of(&boxes, hover_y);
+    let box_pos: Vec<u64> = with_model(e.key, |m| {
+        chosen
+            .iter()
+            .map(|&i| {
+                m.visible_line(rows.first + placed_rows[i].0)
+                    .and_then(|l| m.pos_of(l))
+                    .unwrap_or(0)
+            })
+            .collect()
+    })
+    .unwrap_or_default();
     let mut out = Vec::new();
     let mut lines = Vec::new();
     for (k, &i) in chosen.iter().enumerate() {
@@ -1255,7 +1339,7 @@ fn labels(
             });
         }
     }
-    (out, lines, boxes, accent)
+    (out, lines, boxes, accent, box_pos)
 }
 
 /// Model `m`'s pins: the marks of kind `kind` with an end, (start, end) by position.
@@ -1310,6 +1394,57 @@ fn pin_bands(e: &NhgMinimap, rows: &Rows, p: &Placement, row_px: u32) -> Vec<Ban
         out
     })
     .unwrap_or_default()
+}
+
+/// The minimap row (from `rows.first`) of position `pos`, when its line is visible.
+fn row_of_pos(key: u64, rows: &Rows, pos: u64) -> Option<u64> {
+    with_model(key, |m| {
+        let l = m.line_of(pos)?;
+        match m.visible_before(l)? {
+            (v, false) if v >= rows.first => Some(v - rows.first),
+            _ => None,
+        }
+    })
+    .flatten()
+}
+
+/// Minimap `p`'s rectangle of row `r` (`row_px` tall), across its width.
+fn row_rect(p: &Placement, r: u64, row_px: u32) -> Rect {
+    let row = u64::from(row_px.max(1));
+    let y = i64::from(p.rect.y) + (r * row) as i64 - p.offset as i64;
+    Rect::new(
+        p.rect.x,
+        y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        p.rect.w,
+        row_px.max(1) as i32,
+    )
+}
+
+/// The trail's bars (design M4): `w_px` wide at minimap `p`'s left edge on the rows of the model's newest
+/// `trail_length` visits, the newest at the trail's opacity fading to [`TRAIL_FADE`] of it for the oldest drawn.
+fn trail_bars(e: &NhgMinimap, rows: &Rows, p: &Placement, row_px: u32, w_px: i32) -> Vec<Band> {
+    if e.trail_rgb < 0 || e.trail_length == 0 {
+        return Vec::new();
+    }
+    let n = e.trail_length.min(64) as usize;
+    let visits: Vec<u64> =
+        with_model(e.key, |m| m.trail().take(n).copied().collect()).unwrap_or_default();
+    let last = visits.len().saturating_sub(1).max(1) as f32;
+    visits
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &pos)| {
+            let r = row_of_pos(e.key, rows, pos)?;
+            let k = 1.0 - (1.0 - TRAIL_FADE) * i as f32 / last;
+            let mut rect = row_rect(p, r, row_px);
+            rect.w = w_px.min(p.rect.w);
+            Some(Band {
+                rect,
+                fill_argb: colour(e.trail_rgb, e.trail_opacity * k),
+                line_argb: 0,
+            })
+        })
+        .collect()
 }
 
 /// A heat layer as a window draws it: the layer's version and the ramp's ends and the plain bars' colour (premultiplied).
@@ -1683,16 +1818,39 @@ fn minimap(
         Vec::new()
     };
     let fill = colour(e.fill_rgb, e.fill_opacity);
-    let (labels, hairlines, boxes, accent) = if reveal_px > 0 {
+    let (labels, hairlines, boxes, accent, box_pos) = if reveal_px > 0 {
         labels(e, &rows, &p, row_px, s, win.hover.y, fill, sprites)
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), None)
+        (Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
     };
     win.boxes = boxes;
     win.accent = accent;
+    win.box_pos = box_pos;
+    win.reduced = reduced;
     let mut bands = hairlines;
     if reveal_px > 0 {
         bands.extend(pin_bands(e, &rows, &p, row_px));
+        bands.extend(trail_bars(e, &rows, &p, row_px, px(TRAIL_W) as i32));
+    }
+    // a jump flash: its row in the accent, fading on the frame clock (with reduced motion lit, then gone)
+    if let Some((pos, t0)) = win.flash {
+        let age = now.saturating_sub(t0);
+        if age >= FLASH_NS {
+            win.flash = None;
+        } else if reveal_px > 0
+            && let Some(r) = row_of_pos(e.key, &rows, pos)
+        {
+            let k = if reduced {
+                1.0
+            } else {
+                1.0 - age as f32 / FLASH_NS as f32
+            };
+            bands.push(Band {
+                rect: row_rect(&p, r, row_px),
+                fill_argb: colour(e.accent_rgb, k),
+                line_argb: 0,
+            });
+        }
     }
     bands.push(Band {
         rect: p.band,
@@ -1711,6 +1869,7 @@ fn minimap(
     };
     win.geom = Some(Geom {
         key: e.key,
+        left,
         rect: p.rect,
         shown: m.shown(),
         strip: Rect::new(
@@ -2102,6 +2261,30 @@ pub fn pointer(state: &mut Display, ev: &nhshell::event::Record) -> bool {
     apply(state, ev.window, ev.time_ns, &reply);
     rearm(state);
     reply.swallow
+}
+
+/// Light Emacs window `seq`'s row of `pos` in frame `frame`'s minimap (`glitnir-minimap-flash`), published at once and
+/// faded on the frame clock; false when the window has no minimap revealed.
+pub fn flash(state: &mut Display, frame: u64, seq: u64, pos: u64) -> bool {
+    let now = now_ns();
+    let Ok(f) = state.backings.frame_mut(frame) else {
+        return false;
+    };
+    if !f.minimaps.flash(seq, pos, now) {
+        return false;
+    }
+    let window = f.minimaps.shell_window;
+    apply(
+        state,
+        window,
+        now,
+        &Reply {
+            publish: true,
+            ..Reply::default()
+        },
+    );
+    rearm(state);
+    true
 }
 
 /// The shell's timer: every frame's due deadlines.

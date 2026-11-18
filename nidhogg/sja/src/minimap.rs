@@ -239,6 +239,20 @@ pub fn with_layer<R>(file: &str, layer: &str, f: impl FnOnce(u64, &Data) -> R) -
     })
 }
 
+/// The value and fact of FILE's heat LAYER (a `heat:` name) at LINE (from 1): the last item starting at or before the
+/// line, when it reaches it (design M5's peek and describe); `None` for no such layer or no item there.
+pub fn heat_at(file: &str, layer: &str, line: u32) -> Option<(u16, Option<Box<str>>)> {
+    with_layer(file, layer, |_, d| match d {
+        Data::Heat(v) => {
+            let i = v.partition_point(|x| x.0 <= line).checked_sub(1)?;
+            let x = &v[i];
+            (x.1 >= line).then(|| (x.2, x.3.clone()))
+        }
+        _ => None,
+    })
+    .flatten()
+}
+
 /// FILE's layers by name, with their versions.
 pub fn layers(file: &str) -> Vec<(String, u64)> {
     with_store(|s| {

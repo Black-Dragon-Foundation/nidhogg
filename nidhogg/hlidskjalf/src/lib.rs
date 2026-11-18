@@ -57,7 +57,7 @@ pub struct Fold {
 }
 
 /// The trail's length (design §5.3, M4).
-pub const TRAIL: usize = 20;
+pub const TRAIL: usize = 64;
 
 /// An edit kept while the first build runs: START, OLD-END, NEW-END and the new text of its whole lines.
 struct Pending {
@@ -886,6 +886,11 @@ impl Model {
 
     pub fn trail(&self) -> impl Iterator<Item = &u64> {
         self.trail.iter()
+    }
+
+    /// Forget the trail.
+    pub fn trail_clear(&mut self) {
+        self.trail.clear();
     }
 
     /// The bytes the model holds.

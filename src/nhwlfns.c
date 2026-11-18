@@ -3607,6 +3607,8 @@ syms_of_nhwlfns (void)
   DEFSYM (Qnhwl_minimap_click, "click");
   DEFSYM (Qnhwl_minimap_drag, "drag");
   DEFSYM (Qnhwl_minimap_dwell, "dwell");
+  DEFSYM (Qnhwl_minimap_dwell_marks, "dwell-marks");
+  DEFSYM (Qnhwl_minimap_dwell_label, "dwell-label");
   defsubr (&Snhwl__session_open);
   defsubr (&Snhwl__session_remove);
 

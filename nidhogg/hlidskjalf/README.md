@@ -10,7 +10,7 @@ bar's marks and folding. It keeps, for each buffer text a window shows with the 
 - **Folds:** fold ranges per source (tree-sitter, the hub, headings, indentation), with their nesting depth, shifted on
   edits and capped (the smallest dropped first).
 - **Hidden lines:** the ranges drgnx's folds hide, so the scroll bar and minimap measure visible lines.
-- **The trail:** the last 20 visited lines.
+- **The trail:** the last 64 visited lines (`nidhogg-lines-trail-clear` forgets them).
 - **MARK sections:** with an expression (`nidhogg-lines-set-section-regexp`, Rust regex syntax), the lines that match
   it and their names (the group `name`, else the first group, else the match), found at each build and in each edit's
   lines, kept sorted and shifted like the marks; the minimap draws them as labels (`sections.rs`).

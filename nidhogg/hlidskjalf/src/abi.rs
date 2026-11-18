@@ -550,6 +550,15 @@ pub extern "C" fn hlid_trail_note(key: u64, pos: u64) -> i32 {
     })
 }
 
+/// Forget KEY's trail.
+#[unsafe(no_mangle)]
+pub extern "C" fn hlid_trail_clear(key: u64) -> i32 {
+    with(key, |m| {
+        m.trail_clear();
+        HLID_OK
+    })
+}
+
 /// KEY's trail, newest first, into OUT (at most CAP), its length into *N.
 ///
 /// # Safety
