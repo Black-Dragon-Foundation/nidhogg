@@ -2086,6 +2086,10 @@ impl WaylandShell {
         let size = (first.w, first.h);
         let scale120 = |id| m.scales.get(&id).map_or(SCALE_ONE, |s| s.scale120()).max(1);
         let root_scale = f64::from(scale120(root)) / 120.0;
+        let at = |v: i32| (f64::from(v) * root_scale).round() as i32;
+        // every surface's place counts from the root's own corner: a popup (a tree of its own) has an origin in the
+        // toplevel it hangs from, which is not where its own picture starts
+        let base = m.origin(root);
         let mut out = vec![0; size.0 as usize * size.1 as usize];
         // each surface's host pixels, for its children's backdrops
         let mut hosts: HashMap<WindowId, (Vec<u32>, i32, i32, f64)> = HashMap::new();
@@ -2139,9 +2143,15 @@ impl WaylandShell {
                 alpha_multiply(&mut t, f.alpha_cut);
             }
             let (x, y) = m.origin(id);
-            let at = |v: i32| (f64::from(v) * root_scale).round() as i32;
             let alpha = m.present_alpha(id).unwrap_or(u32::MAX);
-            blend(&mut out, size, &px, f.w, (at(x), at(y)), alpha);
+            blend(
+                &mut out,
+                size,
+                &px,
+                f.w,
+                (at(x) - at(base.0), at(y) - at(base.1)),
+                alpha,
+            );
         }
         Ok(out)
     }

@@ -179,8 +179,9 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   everything asked so far, whatever else was committed. The GUI runner's settle waits on it. `:shown` follows once the
   compositor has also used each shown window's newest commit (its frame callback is done): a request sent before then
   may meet the compositor's old state. A state request that changes nothing (leaving a maximized state the window is
-  not in) is not sent. `glitnir-snapshot` is one
-  frame's backing, without its child frames. Test primitives: `glitnir--draw-count` (the commits of a tree that showed
+  not in) is not sent. `glitnir-snapshot` is a
+  root's tree as the compositor was given it (child frames and popups at their places); a popup frame's, such as an
+  open menu's, starts at the popup's own corner. Test primitives: `glitnir--draw-count` (the commits of a tree that showed
   something), `glitnir--stacking` (a root's child frames bottom to top), `glitnir--chrome` (the chrome the shell holds
   for a frame, in device pixels), `nhwl--frame-states` (the fullscreen and maximized states of the compositor's last
   configure, its answer to the frame's `fullscreen` parameter), `nhwl--hold-configures` (leave the compositor's

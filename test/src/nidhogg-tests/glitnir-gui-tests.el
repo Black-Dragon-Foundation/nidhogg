@@ -1996,6 +1996,63 @@ that close the menu last; a C-g closes it a second after the last step in any ca
     (should (consp (car got)))
     (should (>= (nth 0 (car got)) (floor (nth 1 (car got)))))))
 
+(defun glitnir-gui--first (snap rgb)
+  "The first device pixel (X . Y) of SNAP, a raw snapshot, in colour RGB, row by row, or nil."
+  (catch 'found
+    (dotimes (y (nth 1 snap))
+      (dotimes (x (nth 0 snap))
+        (when (equal (glitnir-gui--pixel snap (list x y)) rgb) (throw 'found (cons x y)))))
+    nil))
+
+(defun glitnir-gui--differ-at (a at-a b at-b w h)
+  "The pixels of the W x H rectangles at AT-A of the raw snapshot A and at AT-B of B, each (X . Y), that differ; a
+pixel outside either picture differs."
+  (let ((n 0))
+    (dotimes (y h)
+      (dotimes (x w)
+        (let ((xa (+ (car at-a) x)) (ya (+ (cdr at-a) y)) (xb (+ (car at-b) x)) (yb (+ (cdr at-b) y)))
+          (unless (and (< -1 xa (nth 0 a)) (< -1 ya (nth 1 a)) (< -1 xb (nth 0 b)) (< -1 yb (nth 1 b))
+                       (equal (glitnir-gui--pixel a (list xa ya)) (glitnir-gui--pixel b (list xb yb))))
+            (cl-incf n)))))
+    n))
+
+(ert-deftest glitnir-snapshot/popup-frame-is-its-own-picture ()
+  "`glitnir-snapshot' of a popup frame (an open menu, a tree of its own) is that popup's picture from its own corner:
+its native area, found by the menu's background, is the same pixels as where the root's picture shows the menu.  Red
+first: the popup was placed at its offset in its toplevel's tree, so its own picture started about 41 px in and was
+cut off."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let ((menu-spec (get 'nhwl-menu 'face-defface-spec)))
+    (unwind-protect
+        (let* ((root (selected-frame))
+               (got (progn
+                      (face-spec-set 'nhwl-menu '((t :background "#0000ff" :foreground "#ffffff")) 'face-defface-spec)
+                      (glitnir-gui--menu-steps
+                       '("M" ("P" ("One" . 1) ("Two" . 2) ("Three" . 3)))
+                       (list (cons 0.5 (lambda ()
+                                         (let* ((f (glitnir-gui--menu-frame 0))
+                                                (whole (progn (redisplay t) (gui-runner-wait-settled)
+                                                              (glitnir-snapshot root 'raw)))
+                                                (own (glitnir-snapshot f 'raw))
+                                                (in-whole (glitnir-gui--first whole '(0 0 255)))
+                                                (in-own (glitnir-gui--first own '(0 0 255)))
+                                                ;; the native area less 2 px all round (its rounded corners blend
+                                                ;; over what lies beneath)
+                                                (w (- (frame-pixel-width f) 4)) (h (- (frame-pixel-height f) 4)))
+                                           (prog1 (list :whole in-whole :own in-own :size (list (nth 0 own) (nth 1 own))
+                                                        :differ (and in-whole in-own
+                                                                     (glitnir-gui--differ-at
+                                                                      whole (cons (+ 2 (car in-whole)) (+ 2 (cdr in-whole)))
+                                                                      own (cons (+ 2 (car in-own)) (+ 2 (cdr in-own)))
+                                                                      w h)))
+                                             (push ?\C-g unread-command-events))))))))))
+          (ert-info ((format "%S" got))
+            (should (plist-get (car got) :whole))
+            (should (plist-get (car got) :own))
+            (should (equal 0 (plist-get (car got) :differ)))))
+      (face-spec-set 'nhwl-menu menu-spec 'face-defface-spec))))
+
 (ert-deftest nhwl-menu/rows-are-the-row-height ()
   "With `nhwl-menu-row-height' 30 every item row is 30 logical pixels tall."
   (skip-unless (featurep 'nidhogg-wayland))
