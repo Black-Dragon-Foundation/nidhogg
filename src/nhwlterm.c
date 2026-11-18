@@ -1513,6 +1513,77 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object a,
 #endif
 }
 
+/* List leaf window W's horizontal strip V (the parameter glitnir--hstrip,
+   [HEIGHT LANE INSET RADIUS LEAST RGB OPACITY], device pixels), its text
+   area CLIP: while W's redisplay found it showing
+   (glitnir_hstrip_window, nidhogg-glitnir.c), a thumb along the text's
+   bottom HEIGHT pixels from the first text column (after the line
+   numbers) to the text area's right edge, INSET in from its top and
+   bottom, RADIUS at the corners, at least LEAST long: as long as the
+   text's width is of the whole W stands for, placed at the hscroll's
+   share of what lies beyond, mirrored right to left.  No track, no
+   marks.  The glue gets the bottom LANE pixels to take presses on, the
+   thumb's length and the most columns, in W's minimap record (one with
+   no minimap when W has none).  */
+static void
+nhwl_hstrip_add (struct window *w, Lisp_Object v, NhgRect clip)
+{
+  int whole = w->glitnir_whole_px;
+  if (!VECTORP (v) || ASIZE (v) < 7 || whole <= 0)
+    return;
+  struct frame *f = XFRAME (w->frame);
+  int height = min (nhwl_block_int (v, 0, 0), clip.h);
+  int lane = clip_to_bounds (0, nhwl_block_int (v, 1, height), height);
+  int inset = clip_to_bounds (0, nhwl_block_int (v, 2, 0), (height - 1) / 2);
+  int radius = max (0, nhwl_block_int (v, 3, 0));
+  int x0 = clip.x + clip_to_bounds (0, w->glitnir_lnum_px, clip.w);
+  int len = clip.x + clip.w - x0;
+  if (height <= 0 || len <= 0)
+    return;
+  NhgRect strip = { x0, clip.y + clip.h - height, len, height };
+  int least = clip_to_bounds (1, nhwl_block_int (v, 4, 1), len);
+  int thumb = clip_to_bounds (least,
+			      (int) ((double) len * len / whole + 0.5), len);
+  double range = (double) whole - len;
+  double hscroll_px = (double) w->hscroll * FRAME_COLUMN_WIDTH (f);
+  double share = range > 0 ? min (1.0, hscroll_px / range) : 0;
+  int tx = (int) (share * (len - thumb) + 0.5);
+  if (w->glitnir_rtl)
+    tx = len - thumb - tx;
+  Lisp_Object op = AREF (v, 6);
+  nhwl_bar_add (w, strip,
+		(NhgRect) { x0 + tx, strip.y + inset, thumb,
+			    height - 2 * inset },
+		nhwl_block_int (v, 5, -1), NUMBERP (op) ? XFLOATINT (op) : 1.0f,
+		radius);
+  /* The glue's pointer seam: W's minimap record, or one of its own.  */
+  if (!(nhwl_nminimaps
+	&& nhwl_minimaps[nhwl_nminimaps - 1].seq == w->sequence_number))
+    {
+      if (nhwl_nminimaps == nhwl_minimaps_cap)
+	nhwl_minimaps = xpalloc (nhwl_minimaps, &nhwl_minimaps_cap, 1, -1,
+				 sizeof *nhwl_minimaps);
+      NhgMinimap *n = &nhwl_minimaps[nhwl_nminimaps++];
+      memset (n, 0, sizeof *n);
+      n->seq = w->sequence_number;
+      n->clip = clip;
+      n->flags = NHG_MINIMAP_NONE;
+      n->scale = 1;
+      n->fill_rgb = n->text_rgb = n->band_rgb = -1;
+      n->label_rgb = n->sub_rgb = n->accent_rgb = n->mark_rgb = -1;
+      n->hunk_rgb = n->pill_rgb = n->arrow_rgb = n->folded_rgb = -1;
+      n->heat_low_rgb = n->heat_high_rgb = n->pin_kind = n->pin_rgb = -1;
+      n->trail_rgb = n->hit_rgb = n->error_rgb = n->warning_rgb = -1;
+      for (int c = 0; c < 16; c++)
+	n->class_rgb[c] = -1;
+    }
+  NhgMinimap *m = &nhwl_minimaps[nhwl_nminimaps - 1];
+  m->hstrip_lane = (NhgRect) { x0, strip.y + height - lane, len, lane };
+  m->hstrip_thumb = thumb;
+  m->hstrip_rtl = w->glitnir_rtl;
+  m->hstrip_max = (uint64_t) ceil (max (0, range) / FRAME_COLUMN_WIDTH (f));
+}
+
 /* Where position POS of leaf window W's buffer is drawn, plus DX and
    DY: the left of its glyph and the top of its row in W's current
    matrix, frame pixels, into P.  A position not on the rows shown sits
@@ -1683,6 +1754,20 @@ nhwl_minimap_action (struct frame *f, const NhgAction *a,
 					   (EMACS_INT) a->dy);
   if (NILP (window))
     return 0;
+  struct input_event ie;
+  EVENT_INIT (ie);
+  ie.kind = NHWL_MINIMAP_EVENT;
+  XSETFRAME (ie.frame_or_window, f);
+  /* The horizontal strip's press or drag step: (glitnir-hstrip WINDOW
+     HSCROLL), HSCROLL in columns.  */
+  if (a->code == NHG_MINIMAP_HSTRIP)
+    {
+      ie.arg = list3 (Qglitnir_hstrip, window,
+		      make_fixnum (min ((EMACS_INT) a->dx,
+					MOST_POSITIVE_FIXNUM)));
+      kbd_buffer_store_event_hold (&ie, hold_quit);
+      return 1;
+    }
   Lisp_Object kind = (a->code == NHG_MINIMAP_CLICK ? Qnhwl_minimap_click
 		      : a->code == NHG_MINIMAP_DRAG ? Qnhwl_minimap_drag
 		      : a->code == NHG_MINIMAP_DWELL_MARKS
@@ -1700,14 +1785,10 @@ nhwl_minimap_action (struct frame *f, const NhgAction *a,
 		      : a->code == NHG_MINIMAP_DWELL_BUCKET
 		      ? Qnhwl_minimap_dwell_bucket
 		      : Qnhwl_minimap_dwell);
-  struct input_event ie;
-  EVENT_INIT (ie);
-  ie.kind = NHWL_MINIMAP_EVENT;
   /* (a label hover of 0 is none) */
   ie.arg = list3 (kind, window,
 		  (a->code == NHG_MINIMAP_LABEL_HOVER && a->dx == 0 ? Qnil
 		   : make_fixnum ((EMACS_INT) a->dx)));
-  XSETFRAME (ie.frame_or_window, f);
   kbd_buffer_store_event_hold (&ie, hold_quit);
   return 1;
 }
@@ -1732,8 +1813,9 @@ nhwl_blocks_add (Lisp_Object window)
       Lisp_Object e = Fwindow_parameter (window, Qglitnir__edges);
       Lisp_Object mm = Fwindow_parameter (window, Qglitnir__minimap);
       Lisp_Object fa = Fwindow_parameter (window, Qglitnir__fold_arrows);
+      Lisp_Object hs = Fwindow_parameter (window, Qglitnir__hstrip);
       if ((!VECTORP (v) && !VECTORP (r) && !VECTORP (e) && !VECTORP (mm)
-	   && !VECTORP (fa))
+	   && !VECTORP (fa) && !VECTORP (hs))
 	  || !BUFFERP (w->contents))
 	continue;
       int x, y, width, height;
@@ -1745,6 +1827,7 @@ nhwl_blocks_add (Lisp_Object window)
       nhwl_ruler_add (w, r, y, height);
       nhwl_edges_add (w, e, clip);
       nhwl_minimap_add (w, mm, fa, r, clip);
+      nhwl_hstrip_add (w, hs, clip);
     }
 }
 

@@ -713,6 +713,13 @@ impl Model {
             .filter(move |f| f.end > beg && f.beg < end)
     }
 
+    /// The display width in columns of POS's line (`Line::cols`), for the horizontal strip's rows that are cut while
+    /// their line fits; `None` before the first build.
+    pub fn cols_at(&mut self, pos: u64) -> Option<u32> {
+        let l = self.line_of(pos)?;
+        Some(self.index()?.line(l).cols)
+    }
+
     /// Whether POS's visible line is folded: a fold starts on it and the lines after it, up to the next visible line,
     /// are hidden (what a fold arrow shows pointing right, and the terminal's `▸`).
     pub fn folded_at(&mut self, pos: u64) -> bool {

@@ -296,6 +296,16 @@ nh_lines_folded_at (struct buffer *b, ptrdiff_t pos)
   return t && hlid_folded_at (nh_lines_key (b->text), pos) == HLID_OK;
 }
 
+/* The display width in columns of POS's line in B into *COLS, for the
+   horizontal strip's rows cut while their line fits; false when B has
+   no model or it is not built.  */
+bool
+nh_lines_cols_at (struct buffer *b, ptrdiff_t pos, uint32_t *cols)
+{
+  struct nh_lines_text *t = nh_lines_find (b->text);
+  return t && hlid_cols_at (nh_lines_key (b->text), pos, cols) == HLID_OK;
+}
+
 static struct buffer *
 nh_lines_buffer (Lisp_Object buffer)
 {

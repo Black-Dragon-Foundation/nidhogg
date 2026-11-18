@@ -376,6 +376,13 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   its fraction of the file: a buffer holding a chunk maps its positions into the file (`chunk_start`, `chunk_bytes`,
   `file_bytes`). A dwell is `NHG_MINIMAP_DWELL_BUCKET` with the bucket's index; a click the start that centres the
   fraction.
+- **The horizontal strip's pointer** (hscroll design §3.1, `glitnir-hstrip`): C draws the thumb as a block bar; the
+  record carries the strip's bottom band that takes presses (`hstrip_lane`, empty: none), the thumb's length, the most
+  columns and whether it is mirrored (`hstrip_rtl`). A window with no minimap gets a record of its own
+  (`NHG_MINIMAP_NONE`). A left press on the lane, with no minimap under the pointer, is `NHG_MINIMAP_HSTRIP` with the
+  hscroll in columns that centres the thumb on the pointer and starts a drag; the drag's steps wait for the frame
+  (`STEP_NS`) and only the last is sent; the release sends a step still waiting and nothing of its own. Motion and the
+  release during the drag are the strip's.
 - **Fold arrows** (design F1, the window parameter `glitnir-fold-arrows`): the record's `arrows` with the left
   fringe and the matrix rows that start a line (`NhgMinimapRow`); a second layer per window, id
   `sequence_number | MINIMAP_TAG | ARROWS_TAG`, over the fringe, a chevron sprite per row whose line starts a fold

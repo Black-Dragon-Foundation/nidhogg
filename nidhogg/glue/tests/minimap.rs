@@ -1609,4 +1609,79 @@ mod minimap {
         assert_eq!(r.events, [(NHG_MINIMAP_CLICK, SEQ, 451)]);
         glitnir::sja::minimap::forget(file);
     }
+
+    /// The horizontal strip's lane (design 21b): a press centres the thumb on the pointer (one event at once, the hscroll
+    /// in columns), a drag waits for its frame and sends only the last step, the release sends none; a press above the
+    /// lane is the text's, and right to left the thumb's place is mirrored.  A window with no minimap has a record of its
+    /// own for it, and a sync without the strip forgets it.
+    #[test]
+    fn the_hstrip_lane_scrolls_to_the_pointer_one_step_a_frame() {
+        use nhglue::minimap::{NHG_MINIMAP_HSTRIP, NHG_MINIMAP_NONE, STEP_NS};
+        let mut b = Backings::default();
+        let f = frame(&mut b, 120);
+        // the lane: 260 px from x 40, 8 px tall; a 60 px thumb, so its centre runs from 70 to 270; 100 columns at most
+        let e = NhgMinimap {
+            hstrip_lane: NhgRect {
+                x: 40,
+                y: 202,
+                w: 260,
+                h: 8,
+            },
+            hstrip_thumb: 60,
+            hstrip_max: 100,
+            ..entry(0, 1, 1, 1, NHG_MINIMAP_NONE)
+        };
+        let t0 = 1_000 * MS;
+        sync_at_time(&mut b, f, std::slice::from_ref(&e), t0).unwrap();
+        let y = f64::from(206 + STRIP);
+        let mm = of(&mut b, f).unwrap();
+        // above the lane: the text's
+        let r = mm.button(170.0, f64::from(201 + STRIP), true, true, false, t0);
+        assert!(!r.swallow && r.events.is_empty(), "{r:?}");
+        mm.button(170.0, f64::from(201 + STRIP), true, false, false, t0);
+        // a press on the lane's middle: half way
+        let r = mm.button(170.0, y, true, true, false, t0 + MS);
+        assert!(r.swallow);
+        assert_eq!(r.events, [(NHG_MINIMAP_HSTRIP, SEQ, 50)]);
+        // two steps in one frame: nothing yet, then the last at the frame
+        let r = mm.motion(Some((220.0, y)), t0 + 2 * MS);
+        assert!(r.swallow && r.events.is_empty(), "{r:?}");
+        let r = mm.motion(Some((240.0, y - 30.0)), t0 + 3 * MS);
+        assert!(r.swallow && r.events.is_empty(), "{r:?}");
+        assert!(mm.tick(t0 + 2 * MS + STEP_NS - 1).events.is_empty());
+        assert_eq!(
+            mm.tick(t0 + 2 * MS + STEP_NS).events,
+            [(NHG_MINIMAP_HSTRIP, SEQ, 85)]
+        );
+        // past the end: the most; the same column again: nothing
+        mm.motion(Some((400.0, y)), t0 + 20 * MS);
+        assert_eq!(
+            mm.tick(t0 + 20 * MS + STEP_NS).events,
+            [(NHG_MINIMAP_HSTRIP, SEQ, 100)]
+        );
+        mm.motion(Some((390.0, y)), t0 + 40 * MS);
+        assert!(mm.tick(t0 + 40 * MS + STEP_NS).events.is_empty());
+        // a step waiting at the release is sent; the release sends nothing of its own
+        mm.motion(Some((70.0, y)), t0 + 50 * MS);
+        let r = mm.button(70.0, y, true, false, false, t0 + 51 * MS);
+        assert!(r.swallow);
+        assert_eq!(r.events, [(NHG_MINIMAP_HSTRIP, SEQ, 0)]);
+        let r = mm.button(70.0, y, true, false, false, t0 + 52 * MS);
+        assert!(!r.swallow && r.events.is_empty(), "{r:?}");
+        // after the release a motion is the text's
+        let r = mm.motion(Some((200.0, y)), t0 + 60 * MS);
+        assert!(!r.swallow && r.events.is_empty(), "{r:?}");
+        // right to left: the left end is the most
+        let rtl = NhgMinimap { hstrip_rtl: 1, ..e };
+        sync_at_time(&mut b, f, std::slice::from_ref(&rtl), t0 + 70 * MS).unwrap();
+        let mm = of(&mut b, f).unwrap();
+        let r = mm.button(70.0, y, true, true, false, t0 + 71 * MS);
+        assert_eq!(r.events, [(NHG_MINIMAP_HSTRIP, SEQ, 100)]);
+        mm.button(70.0, y, true, false, false, t0 + 72 * MS);
+        // gone from the list: the lane is forgotten
+        sync_at_time(&mut b, f, &[], t0 + 80 * MS).unwrap();
+        let mm = of(&mut b, f).unwrap();
+        let r = mm.button(170.0, y, true, true, false, t0 + 81 * MS);
+        assert!(!r.swallow && r.events.is_empty(), "{r:?}");
+    }
 }

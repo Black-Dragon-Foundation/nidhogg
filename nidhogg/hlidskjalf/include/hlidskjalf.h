@@ -90,6 +90,9 @@ int32_t hlid_fold_at (uint64_t key, uint64_t pos, hlid_fold *out);
 /* HLID_OK when POS's visible line is folded (a fold starts on it, the lines
    after it hidden), HLID_NOTHING when not.  */
 int32_t hlid_folded_at (uint64_t key, uint64_t pos);
+/* POS's line's display width in columns (tabs, wide characters) into
+   *OUT: HLID_OK, or HLID_NOTHING before a build.  */
+int32_t hlid_cols_at (uint64_t key, uint64_t pos, uint32_t *out);
 int32_t hlid_set_hidden (uint64_t key, const uint64_t *ranges, size_t n);
 /* As hlid_set_hidden, with a name for each range: LENS[I] bytes of UTF-8 at
    NAMES[I] (null: none); NAMES and LENS may both be null.  */

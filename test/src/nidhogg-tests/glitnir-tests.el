@@ -736,6 +736,44 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; e
           (clrhash glitnir--blocks-seen)
           (set-frame-parameter nil 'glitnir--blocks nil))))))
 
+(ert-deftest glitnir-hstrip-resolves-and-its-event-scrolls ()
+  "A window's `glitnir-hstrip' is resolved into `glitnir--hstrip' ([HEIGHT LANE INSET RADIUS LEAST RGB OPACITY]) once
+per change, and sets the frame's flag so C lists it; `:lane' defaults to the height.  The strip's event scrolls its
+window sideways, not selecting it or moving point; a bad one does nothing."
+  (let ((w (selected-window)) (sets 0)
+        (set-window-parameter (symbol-function 'set-window-parameter)))
+    (with-temp-buffer
+      (insert (make-string 300 ?x) "\n")
+      (goto-char 1)
+      (set-window-buffer w (current-buffer))
+      (cl-letf (((symbol-function 'set-window-parameter)
+                 (lambda (win p v)
+                   (when (eq p 'glitnir--hstrip) (setq sets (1+ sets)))
+                   (funcall set-window-parameter win p v))))
+        (unwind-protect
+            (progn
+              (set-window-parameter w 'glitnir-hstrip
+                                    '(:height 12 :lane 8 :thumb-inset 3 :radius 3 :least 24 :band ("#102030" . 0.26)))
+              (glitnir--recheck-frame-cards w)
+              (should (equal (window-parameter w 'glitnir--hstrip) (vector 12 8 3 3 24 #x102030 0.26)))
+              (should (eq (frame-parameter nil 'glitnir--blocks) t))
+              (glitnir--recheck-frame-cards w)
+              (should (= sets 1))
+              (set-window-parameter w 'glitnir-hstrip '(:height 10))
+              (glitnir--recheck-frame-cards w)
+              (should (= sets 2))
+              (should (equal (window-parameter w 'glitnir--hstrip) (vector 10 10 0 0 1 -1 0)))
+              (should (eq (lookup-key special-event-map [glitnir-hstrip]) #'glitnir-hstrip-event))
+              (glitnir-hstrip-event (list 'glitnir-hstrip w 40))
+              (should (= (window-hscroll w) 40))
+              (should (= (point) 1))
+              (glitnir-hstrip-event (list 'glitnir-hstrip w -3))
+              (should (= (window-hscroll w) 40)))
+          (set-window-hscroll w 0)
+          (set-window-parameter w 'glitnir-hstrip nil)
+          (glitnir--recheck-frame-cards w)
+          (should-not (window-parameter w 'glitnir--hstrip)))))))
+
 (ert-deftest glitnir-minimap-resolves-only-on-change ()
   "A window's `glitnir-minimap' is resolved into `glitnir--minimap' once per change of the spec or the theme's
 generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; the minimap gone, both go."

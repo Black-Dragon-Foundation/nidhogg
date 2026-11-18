@@ -15,6 +15,8 @@ bar's marks and folding. It keeps, for each buffer text a window shows with the 
   snapshot of `char-width-table` (`hlid_set_widths`, sorted ranges). Each chunk keeps its widest line and its widest
   visible one (found again when the hidden lines change); `Model::widest` answers per buffer (BEGV, ZV) from a cache
   kept until the lines or the hidden ones change. Lines built with another tab width or table are built again.
+  `Model::cols_at` (`hlid_cols_at`) gives one line's width: the horizontal strip walks only the rows cut while their
+  line fits.
 - **The trail:** the last 64 visited lines (`nidhogg-lines-trail-clear` forgets them).
 - **The search** (`search.rs`, design X1): a query's hits over the whole text, scanned a line at a time in 4 ms slices
   on the main thread (`nidhogg-lines-search`, `-search-step`), each a position, its end and its column; an edit starts

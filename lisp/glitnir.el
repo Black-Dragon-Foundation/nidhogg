@@ -916,6 +916,62 @@ set, so C lists the frame."
     (when (window-parameter window 'glitnir--fold-arrows)
       (setq glitnir--blocks-any t))))
 
+;; The horizontal strip: a window parameter `glitnir-hstrip' draws a
+;; thumb along the bottom of the window's text while it cuts lines wider
+;; than the text (`truncate-lines', or scrolled sideways), standing for
+;; the buffer's widest line (the line model's, `nidhogg-lines-widest',
+;; and rows cut while their line fits, measured).  It takes no space:
+;; it is drawn over the text's bottom, and while it shows point never
+;; rests on the row under it (the window scrolls a row).  C decides when
+;; it shows and places the thumb at every redisplay, with no Lisp; the
+;; spec is resolved into `glitnir--hstrip' only when it, or the theme,
+;; changed.  A press on its bottom `:lane' pixels, or a drag, reaches
+;; Lisp as a `glitnir-hstrip' special event.  No strip on a terminal.
+
+(defun glitnir--hstrip-vector (spec frame)
+  "Return horizontal strip SPEC as the vector C reads, for FRAME.
+SPEC is a plist, device pixels: `:height' (the strip, drawn over the
+text's bottom), `:lane' (its bottom pixels that take presses; the
+default the whole height), `:thumb-inset' (the thumb's inset from the
+strip's top and bottom), `:radius' (its corners), `:least' (its least
+length); `:band', the thumb's colour: a face, whose foreground is used,
+a colour name, or (FACE-OR-COLOUR . OPACITY).  The vector is [HEIGHT
+LANE INSET RADIUS LEAST RGB OPACITY], RGB -1 for none."
+  (let ((band (glitnir--ruler-colour (plist-get spec :band) frame))
+        (height (or (plist-get spec :height) 0)))
+    (vector height (or (plist-get spec :lane) height) (or (plist-get spec :thumb-inset) 0)
+            (or (plist-get spec :radius) 0) (or (plist-get spec :least) 1)
+            (if band (car band) -1) (if band (cdr band) 0))))
+
+(defun glitnir--recheck-hstrip (window)
+  "Resolve WINDOW's horizontal strip when its `glitnir-hstrip' or the theme changed.
+The vector goes into the window parameter `glitnir--hstrip', which C
+reads at each redisplay of WINDOW (whether the strip shows) and when the
+frame publishes (the thumb)."
+  (let ((spec (window-parameter window 'glitnir-hstrip))
+        (key (window-parameter window 'glitnir--hstrip-key)))
+    (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
+                (and (null spec) (null key)))
+      (set-window-parameter window 'glitnir--hstrip-key (and spec (cons spec glitnir--card-generation)))
+      (let ((v (and spec (glitnir--hstrip-vector spec (window-frame window)))))
+        (unless (equal v (window-parameter window 'glitnir--hstrip))
+          (set-window-parameter window 'glitnir--hstrip v)
+          (force-window-update window))))
+    (when (window-parameter window 'glitnir--hstrip)
+      (setq glitnir--blocks-any t))))
+
+(defun glitnir-hstrip-event (event)
+  "Handle EVENT, (glitnir-hstrip WINDOW HSCROLL): a press on WINDOW's horizontal
+strip, or a drag step.  Scroll WINDOW sideways to HSCROLL columns, which
+suspends auto-hscroll until point moves; WINDOW is not selected and
+point does not move."
+  (interactive "e")
+  (pcase-let ((`(,_ ,window ,hscroll) event))
+    (when (and (window-live-p window) (natnump hscroll))
+      (set-window-hscroll window hscroll))))
+
+(define-key special-event-map [glitnir-hstrip] #'glitnir-hstrip-event)
+
 (defvar glitnir-minimap-functions nil
   "Functions called with KIND, WINDOW and POS for each minimap event.
 KIND is `click' or `drag' (WINDOW was scrolled to start at POS, the
@@ -996,6 +1052,7 @@ This runs on every redisplay, so it walks the tree rather than building a window
         (glitnir--recheck-edges window)
         (glitnir--recheck-minimap window)
         (glitnir--recheck-fold-arrows window)
+        (glitnir--recheck-hstrip window)
         (when (window-parameter window 'glitnir--card) (setq any t)))
       (setq window (window-next-sibling window)))
     any))

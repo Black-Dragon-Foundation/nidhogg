@@ -7499,6 +7499,11 @@ make_lispy_event (struct input_event *event)
     case NHWL_SESSION_EVENT:
       return list2 (Qnhwl_session, event->arg);
     case NHWL_MINIMAP_EVENT:
+#ifdef HAVE_GLITNIR
+      /* The horizontal strip's: (glitnir-hstrip WINDOW HSCROLL).  */
+      if (CONSP (event->arg) && EQ (XCAR (event->arg), Qglitnir_hstrip))
+	return event->arg;
+#endif
       return list2 (Qglitnir_minimap, event->arg);
     case NHWL_KEY_RELEASE_EVENT:
       {

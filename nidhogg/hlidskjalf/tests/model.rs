@@ -163,6 +163,19 @@ fn widest_follows_edits() {
     p.check();
 }
 
+/// A line's own width, at any position on it: the strip's measured rows are only those whose line fits.
+#[test]
+fn cols_at_is_the_lines_width() {
+    let mut p = Pair::new("ab\n\tabcdef\nx\n", false);
+    assert_eq!(p.m.cols_at(1), Some(2));
+    assert_eq!(p.m.cols_at(4), Some(14));
+    assert_eq!(p.m.cols_at(10), Some(14));
+    assert_eq!(p.m.cols_at(12), Some(1));
+    p.edit(12, 1, "0123");
+    assert_eq!(p.m.cols_at(13), Some(4));
+    p.check();
+}
+
 #[test]
 fn widest_counts_tabs_and_wide() {
     use hlidskjalf::index::{LineIndex, Widths, parse_with};

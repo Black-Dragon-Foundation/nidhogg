@@ -532,6 +532,25 @@ pub unsafe extern "C" fn hlid_fold_at(key: u64, pos: u64, out: *mut Fold) -> i32
     })
 }
 
+/// The display width in columns of POS's line (`Model::cols_at`) into OUT: HLID_OK, or HLID_NOTHING before a build.
+///
+/// # Safety
+/// OUT must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_cols_at(key: u64, pos: u64, out: *mut u32) -> i32 {
+    if out.is_null() {
+        return HLID_E_ARG;
+    }
+    with(key, |m| match m.cols_at(pos) {
+        // SAFETY: checked non-null; the caller promises it is writable.
+        Some(c) => unsafe {
+            *out = c;
+            HLID_OK
+        },
+        None => HLID_NOTHING,
+    })
+}
+
 /// Whether POS's visible line is folded (`Model::folded_at`): HLID_OK when it is, HLID_NOTHING when not.
 #[unsafe(no_mangle)]
 pub extern "C" fn hlid_folded_at(key: u64, pos: u64) -> i32 {

@@ -191,6 +191,14 @@ pub struct NhgMinimap {
     pub file_bytes: u64,
     pub error_rgb: i32,
     pub warning_rgb: i32,
+    /// The horizontal strip (design 21b, the window parameter `glitnir-hstrip`): the bottom band of it that takes
+    /// presses (same coordinates as `clip`; empty: no strip), its thumb's length (device px), whether the thumb is
+    /// mirrored (right to left), and the most columns the window scrolls to (the thumb at the far end).  A press there
+    /// scrolls the window so the thumb centres on the pointer, a drag follows it, one [`NHG_MINIMAP_HSTRIP`] per frame.
+    pub hstrip_lane: NhgRect,
+    pub hstrip_thumb: u32,
+    pub hstrip_rtl: u32,
+    pub hstrip_max: u64,
 }
 
 /// The oldest trail bar's share of the trail's opacity.
@@ -316,6 +324,10 @@ impl Default for NhgMinimap {
             file_bytes: 0,
             error_rgb: -1,
             warning_rgb: -1,
+            hstrip_lane: NhgRect::default(),
+            hstrip_thumb: 0,
+            hstrip_rtl: 0,
+            hstrip_max: 0,
         }
     }
 }
@@ -771,6 +783,45 @@ struct Window {
     reduced: bool,
     /// Each label box's line start (as `boxes`).
     box_pos: Vec<u64>,
+    /// The horizontal strip at the last publish.
+    hstrip: Option<HStrip>,
+}
+
+/// A window's horizontal strip at its last publish (root device px): the lane that takes presses, the thumb's length,
+/// the most columns, mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HStrip {
+    lane: Rect,
+    thumb: i32,
+    max: u64,
+    rtl: bool,
+}
+
+impl HStrip {
+    fn of(e: &NhgMinimap, origin: (i32, i32)) -> Option<HStrip> {
+        let lane = Rect::new(
+            e.hstrip_lane.x.saturating_add(origin.0),
+            e.hstrip_lane.y.saturating_add(origin.1),
+            e.hstrip_lane.w,
+            e.hstrip_lane.h,
+        );
+        (!lane.is_empty()).then_some(HStrip {
+            lane,
+            thumb: i32::try_from(e.hstrip_thumb)
+                .unwrap_or(i32::MAX)
+                .min(lane.w),
+            max: e.hstrip_max,
+            rtl: e.hstrip_rtl != 0,
+        })
+    }
+
+    /// The hscroll (columns) that centres the thumb on the pointer's `x`.
+    fn cols_at(&self, x: f64) -> u64 {
+        let span = f64::from((self.lane.w - self.thumb).max(1));
+        let k = ((x - f64::from(self.lane.x) - f64::from(self.thumb) / 2.0) / span).clamp(0.0, 1.0);
+        let k = if self.rtl { 1.0 - k } else { k };
+        (k * self.max as f64).round() as u64
+    }
 }
 
 /// Where a window's minimap was at its last publish (root device px), for the pointer.
@@ -845,6 +896,11 @@ struct Hover {
     fringe: bool,
     /// The pointer's x (root px) over the minimap.
     x: Option<f64>,
+    /// The left button went down on the horizontal strip's lane and is held; the hscroll last sent, and one waiting
+    /// for its frame (the columns, and when it is due).
+    hdrag: bool,
+    hsent: Option<u64>,
+    hpending: Option<(u64, u64)>,
 }
 
 impl Hover {
@@ -881,6 +937,7 @@ impl Hover {
                 .map(|t| t + OPEN_DELAY_NS),
             self.close_at,
             self.dwell_at,
+            self.hpending.map(|(_, t)| t),
         ]
         .into_iter()
         .flatten()
@@ -908,6 +965,9 @@ pub const NHG_MINIMAP_SELECT_END: i32 = 8;
 pub const NHG_MINIMAP_LABEL_HOVER: i32 = 9;
 /// A dwell on a density strip: DX the bucket's index (design M7's bucket peek).
 pub const NHG_MINIMAP_DWELL_BUCKET: i32 = 10;
+/// The horizontal strip's press or a drag step (design 21b): DX the window's new hscroll in columns.  A drag sends at
+/// most one a frame ([`STEP_NS`]); the release sends none.
+pub const NHG_MINIMAP_HSTRIP: i32 = 11;
 /// The most hits drawn in a minimap.
 pub const HITS_DRAWN: usize = 4096;
 
@@ -1011,6 +1071,20 @@ impl Minimaps {
                     r.publish |= mode == NHG_ARROWS_HOVER;
                 }
             }
+            // a drag on the horizontal strip: the thumb follows the pointer, a step waiting for the frame
+            if w.hover.hdrag {
+                r.swallow = true;
+                if let (Some(hs), Some((x, _))) = (w.hstrip, at) {
+                    let c = hs.cols_at(x);
+                    let h = &mut w.hover;
+                    match h.hpending {
+                        _ if h.hsent == Some(c) => h.hpending = None,
+                        Some((_, due)) => h.hpending = Some((c, due)),
+                        None => h.hpending = Some((c, now + STEP_NS)),
+                    }
+                }
+                continue;
+            }
             let Some(g) = w.geom else {
                 continue;
             };
@@ -1095,6 +1169,32 @@ impl Minimaps {
         now: u64,
     ) -> Reply {
         let mut r = self.motion(Some((x, y)), now);
+        // the horizontal strip's lane, under no minimap: a press scrolls so the thumb centres on the pointer and
+        // starts a drag; the release ends it, sending what waits
+        let on_minimap = self.windows.values().any(|w| w.hover.inside);
+        for (seq, w) in &mut self.windows {
+            let h = &mut w.hover;
+            if left && !press && h.hdrag {
+                h.hdrag = false;
+                r.swallow = true;
+                if let Some((c, _)) = h.hpending.take() {
+                    h.hsent = Some(c);
+                    r.events.push((NHG_MINIMAP_HSTRIP, *seq, c));
+                }
+            } else if left
+                && press
+                && !on_minimap
+                && let Some(hs) = w.hstrip
+                && within(&hs.lane, x, y)
+            {
+                let c = hs.cols_at(x);
+                h.hdrag = true;
+                h.hpending = None;
+                h.hsent = Some(c);
+                r.swallow = true;
+                r.events.push((NHG_MINIMAP_HSTRIP, *seq, c));
+            }
+        }
         for (seq, w) in &mut self.windows {
             let (Some(g), h) = (w.geom, &mut w.hover) else {
                 continue;
@@ -1139,6 +1239,13 @@ impl Minimaps {
                 r.publish = true;
             }
             let h = &mut w.hover;
+            if let Some((c, due)) = h.hpending
+                && due <= now
+            {
+                h.hpending = None;
+                h.hsent = Some(c);
+                r.events.push((NHG_MINIMAP_HSTRIP, *seq, c));
+            }
             if !h.open && h.strip_since.is_some_and(|t| t + OPEN_DELAY_NS <= now) {
                 h.open = true;
                 h.strip_since = None;
@@ -2243,11 +2350,16 @@ fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Opt
     let mm = &mut f.minimaps;
     let mut planned: BTreeMap<u64, Minimap> = BTreeMap::new();
     let mut arrows_planned: BTreeMap<u64, Minimap> = BTreeMap::new();
+    // a window not listed has no horizontal strip
+    for w in mm.windows.values_mut() {
+        w.hstrip = None;
+    }
     for e in list {
         if let Some(file) = e.file_name() {
             glitnir::minimap::take_hub_folds(e.key, file);
         }
         let win = mm.windows.entry(e.seq).or_default();
+        win.hstrip = HStrip::of(e, origin);
         if let Some(a) = arrows(e, origin, win) {
             arrows_planned.insert(e.seq, a);
         }
@@ -2382,7 +2494,7 @@ pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -
             if !a && win.arrows_applied.take().is_some() {
                 sc.remove(arrows_id(seq));
             }
-            if !m && !a {
+            if !m && !a && win.hstrip.is_none() {
                 mm.windows.remove(&seq);
             }
         }
@@ -2417,7 +2529,8 @@ pub fn images_at(
         return Ok(None);
     };
     let mm = &mut b.frame_mut(key)?.minimaps;
-    mm.windows.retain(|q, _| planned.contains_key(q));
+    mm.windows
+        .retain(|q, w| planned.contains_key(q) || w.hstrip.is_some());
     let mut out = Vec::new();
     for (seq, m) in &planned {
         let win = mm.windows.get_mut(seq).expect("planned from it");

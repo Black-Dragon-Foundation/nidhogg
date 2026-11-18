@@ -29,6 +29,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "buffer.h"
 #include "dispextern.h"
 #include "window.h"
+#include "font.h"
 #ifdef HAVE_NIDHOGG_HISTORY
 #include "nidhogg-history.h"
 #endif
@@ -874,6 +875,253 @@ glitnir_tty_columns (struct frame *f)
   glitnir_tty_tree (f, XWINDOW (FRAME_ROOT_WINDOW (f)));
 }
 
+/* The horizontal strip (the window parameter glitnir--hstrip, as
+   glitnir--hstrip-vector makes it: [HEIGHT LANE INSET RADIUS LEAST RGB
+   OPACITY], device pixels): a thumb along the text's bottom HEIGHT
+   pixels, from the first text column (after the line numbers) to the
+   text area's right edge, while the window cuts lines (truncate-lines,
+   partial-width truncation or an hscroll) and something is wider than
+   the text.  It takes no space and never reflows.
+
+   What it stands for, WHOLE (pixels), is the largest of: the buffer's
+   widest line from the line model (nh_lines_widest, folded lines and
+   narrowing left out) plus 4 columns, so the thumb reaches a cursor
+   past the longest line's end; the rows shown that are cut while the
+   model says their line fits (display strings, inlay hints, images,
+   fold summaries), each walked once per (window, row start, buffer and
+   overlay modiffs, column width); and hscroll plus the text's width.
+   A row the model says is too wide is never walked, so a long line
+   costs nothing.  Without a model (none, not built, a density view, or
+   a buffer with long-line optimizations) nothing is walked: the strip
+   shows while a row is cut or the window is hscrolled, standing for
+   hscroll plus twice the text's width, open-ended.
+
+   It is worked out in redisplay_window, at its start (the cursor's row
+   check, cursor_row_fully_visible_p, reads whether it shows: a row
+   reaching into it counts as partly visible) and once its rows are
+   made (the cut rows measured).  nhwlterm.c draws the thumb from the
+   window's fields when the frame publishes, and gives the glue the
+   bottom LANE pixels to take presses on.  */
+
+/* Rows walked: window, row start, modiffs, column width, width.  */
+#define GLITNIR_HSTRIP_CACHE 64
+static struct
+{
+  EMACS_INT seq;
+  ptrdiff_t start;
+  modiff_count modiff;
+  int col, px;
+} glitnir_hstrip_cache[GLITNIR_HSTRIP_CACHE];
+static int glitnir_hstrip_next;
+
+/* Whether leaf window W, showing B, cuts its lines (init_iterator's
+   rule).  */
+static bool
+glitnir_hstrip_cuts (struct window *w, struct buffer *b)
+{
+  if (w->hscroll || !NILP (BVAR (b, truncate_lines)))
+    return true;
+  return !(WINDOW_FULL_WIDTH_P (w)
+	   || NILP (Vtruncate_partial_width_windows)
+	   || (FIXNUMP (Vtruncate_partial_width_windows)
+	       && (XFIXNUM (Vtruncate_partial_width_windows)
+		   <= WINDOW_TOTAL_COLS (w))));
+}
+
+/* Text row I of W (from its first): the desired row when DESIRED and it
+   was made, else the current one; NULL past the window's rows.  */
+static struct glyph_row *
+glitnir_hstrip_row (struct window *w, int i, bool desired)
+{
+  struct glyph_matrix *c = w->current_matrix, *d = w->desired_matrix;
+  if (!c)
+    return NULL;
+  struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (c);
+  if (first + i >= MATRIX_BOTTOM_TEXT_ROW (c, w))
+    return NULL;
+  if (desired && d && d->nrows == c->nrows)
+    {
+      struct glyph_row *r = MATRIX_FIRST_TEXT_ROW (d) + i;
+      if (r < MATRIX_BOTTOM_TEXT_ROW (d, w) && r->enabled_p)
+	return r;
+    }
+  return first[i].enabled_p ? first + i : NULL;
+}
+
+/* Whether ROW of W is cut at the right edge: marked truncated, or its
+   glyphs reaching past the text area (a display string or stretch that
+   ends the line there is not marked: its newline overflows into the
+   fringe).  */
+static bool
+glitnir_hstrip_row_cut (struct window *w, struct glyph_row *row)
+{
+  return (!row->mode_line_p
+	  && (row->truncated_on_right_p
+	      || row->pixel_width > window_box_width (w, TEXT_AREA)));
+}
+
+/* The widest row of W cut while the line model says its line fits in
+   TEXT_PX at COL pixels a column, measured or as last measured.  */
+static int
+glitnir_hstrip_exceptions (struct window *w, struct buffer *b, int col,
+			   int text_px)
+{
+  int widest = 0;
+#ifdef HAVE_NIDHOGG_HISTORY
+  modiff_count modiff = BUF_MODIFF (b) + BUF_OVERLAY_MODIFF (b);
+  int bottom = window_text_bottom_y (w);
+  struct glyph_row *row;
+  for (int i = 0; (row = glitnir_hstrip_row (w, i, true)); i++)
+    {
+      if (row->y >= bottom)
+	break;
+      if (glitnir_hstrip_row_cut (w, row))
+	{
+	  ptrdiff_t start = CHARPOS (row->start.pos);
+	  uint32_t cols;
+	  /* The model says the line is too wide (or knows nothing):
+	     never walked.  */
+	  if (!nh_lines_cols_at (b, start, &cols)
+	      || (intmax_t) cols * col > text_px)
+	    continue;
+	  int px = -1;
+	  for (int k = 0; k < GLITNIR_HSTRIP_CACHE; k++)
+	    if (glitnir_hstrip_cache[k].seq == w->sequence_number
+		&& glitnir_hstrip_cache[k].start == start
+		&& glitnir_hstrip_cache[k].modiff == modiff
+		&& glitnir_hstrip_cache[k].col == col)
+	      {
+		px = glitnir_hstrip_cache[k].px;
+		break;
+	      }
+	  if (px < 0)
+	    {
+	      px = glitnir_line_width (w, row->start.pos);
+	      glitnir_hstrip_measures++;
+	      int k = glitnir_hstrip_next;
+	      glitnir_hstrip_cache[k].seq = w->sequence_number;
+	      glitnir_hstrip_cache[k].start = start;
+	      glitnir_hstrip_cache[k].modiff = modiff;
+	      glitnir_hstrip_cache[k].col = col;
+	      glitnir_hstrip_cache[k].px = px;
+	      glitnir_hstrip_next
+		= (glitnir_hstrip_next + 1) % GLITNIR_HSTRIP_CACHE;
+	    }
+	  widest = max (widest, px);
+	}
+      if (row->ends_at_zv_p)
+	break;
+    }
+#endif
+  return widest;
+}
+
+/* Whether a text row of W is cut (the made rows when DESIRED).  */
+static bool
+glitnir_hstrip_any_cut (struct window *w, bool desired)
+{
+  struct glyph_row *row;
+  for (int i = 0; (row = glitnir_hstrip_row (w, i, desired)); i++)
+    {
+      if (glitnir_hstrip_row_cut (w, row))
+	return true;
+      if (row->ends_at_zv_p)
+	break;
+    }
+  return false;
+}
+
+/* Work out leaf window W's horizontal strip into its fields: whether it
+   shows, and the whole it stands for.  MEASURE: W's rows were just made
+   (the end of redisplay_window); its cut rows are measured.  W's buffer
+   must be current; otherwise nothing changes.  */
+void
+glitnir_hstrip_window (struct window *w, bool measure)
+{
+  struct frame *f = XFRAME (w->frame);
+  if (!BUFFERP (w->contents) || XBUFFER (w->contents) != current_buffer)
+    return;
+  Lisp_Object window;
+  XSETWINDOW (window, w);
+  Lisp_Object v = (FRAME_WINDOW_P (f) && !MINI_WINDOW_P (w)
+		   ? Fwindow_parameter (window, Qglitnir__hstrip) : Qnil);
+  struct buffer *b = current_buffer;
+  int height = VECTORP (v) ? max (0, glitnir_tty_int (v, 0, 0)) : 0;
+  int whole = 0;
+  bool shown = false;
+  if (height > 0)
+    {
+      struct face *face
+	= FACE_FROM_ID_OR_NULL (f, lookup_basic_face (w, f, DEFAULT_FACE_ID));
+      int col = (face && face->font && face->font->space_width > 0
+		 ? face->font->space_width : FRAME_COLUMN_WIDTH (f));
+      w->glitnir_col_px = col;
+      int text_px = window_box_width (w, TEXT_AREA) - w->glitnir_lnum_px;
+      intmax_t hscroll_px = (intmax_t) w->hscroll * FRAME_COLUMN_WIDTH (f);
+      if (text_px > 0 && glitnir_hstrip_cuts (w, b))
+	{
+	  uint32_t cols = 0;
+	  bool model = false;
+#ifdef HAVE_NIDHOGG_HISTORY
+	  model = (!b->long_line_optimizations_p && nh_lines_ntracked
+		   && nh_lines_widest (b, &cols));
+#endif
+	  if (model)
+	    {
+	      if (measure)
+		w->glitnir_cut_px = glitnir_hstrip_exceptions (w, b, col,
+							       text_px);
+	      intmax_t m = max ((intmax_t) (cols + 4) * col,
+				(intmax_t) w->glitnir_cut_px);
+	      if (w->hscroll > 0)
+		m = max (m, hscroll_px + text_px);
+	      whole = min (m, INT_MAX / 2);
+	      shown = whole > text_px;
+	    }
+	  else
+	    {
+	      w->glitnir_cut_px = 0;
+	      whole = min (hscroll_px + 2 * (intmax_t) text_px, INT_MAX / 2);
+	      /* Before the rows are made, the last display's decision
+		 (the current matrix may hold rows of an earlier start).  */
+	      shown = (w->hscroll > 0
+		       || (measure ? glitnir_hstrip_any_cut (w, true)
+			   : w->glitnir_strip_px > 0));
+	    }
+	}
+      /* Right to left: the thumb mirrored (as the scroll bar's).  */
+      if (shown && measure)
+	{
+	  Lisp_Object dir = BVAR (b, bidi_paragraph_direction);
+	  w->glitnir_rtl
+	    = (!NILP (BVAR (b, bidi_display_reordering))
+	       && EQ (NILP (dir) ? Fcurrent_bidi_paragraph_direction (Qnil)
+		      : dir, Qright_to_left));
+	}
+    }
+  w->glitnir_whole_px = shown ? whole : 0;
+  w->glitnir_strip_px = shown ? height : 0;
+}
+
+DEFUN ("glitnir-hstrip-state", Fglitnir_hstrip_state, Sglitnir_hstrip_state,
+       0, 1, 0,
+       doc: /* The horizontal strip of WINDOW as its last redisplay worked it out.
+WINDOW defaults to the selected window.  A list (WHOLE HEIGHT LNUM COL
+CUT RTL): the pixels the strip stands for (0: no strip), its height
+while it shows, the line numbers' width, the default face's column
+width, the widest row measured that was cut while its line fits, and
+whether the thumb is mirrored.  For tests and `describe'.  */)
+  (Lisp_Object window)
+{
+  struct window *w = decode_live_window (window);
+  return list (make_fixnum (w->glitnir_whole_px),
+	       make_fixnum (w->glitnir_strip_px),
+	       make_fixnum (w->glitnir_lnum_px),
+	       make_fixnum (w->glitnir_col_px),
+	       make_fixnum (w->glitnir_cut_px),
+	       w->glitnir_rtl ? Qt : Qnil);
+}
+
 void
 syms_of_nidhogg_glitnir (void)
 {
@@ -896,6 +1144,14 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__stacking);
   defsubr (&Sglitnir__chrome);
   defsubr (&Sglitnir__rechrome);
+  defsubr (&Sglitnir_hstrip_state);
+
+  DEFVAR_INT ("glitnir--hstrip-measures", glitnir_hstrip_measures,
+	      doc: /* How many rows the horizontal strip walked to measure.
+A row cut while its line fits is walked once per window, row start,
+buffer and overlay change and column width; a test sets this to 0 and
+reads it.  */);
+  glitnir_hstrip_measures = 0;
 
   DEFVAR_BOOL ("glitnir-enable", glitnir_enable,
 	       doc: /* Non-nil means Glitnir (the compositor) decorates graphical frames.
@@ -939,6 +1195,10 @@ The number of the reason in `try_window_id' (xdisp.c), for tests.  */);
   DEFSYM (Qglitnir__edges, "glitnir--edges");
   DEFSYM (Qglitnir__minimap, "glitnir--minimap");
   DEFSYM (Qglitnir__fold_arrows, "glitnir--fold-arrows");
+  DEFSYM (Qglitnir__hstrip, "glitnir--hstrip");
+  /* The horizontal strip's press and drag: (glitnir-hstrip WINDOW
+     HSCROLL), a special event.  */
+  DEFSYM (Qglitnir_hstrip, "glitnir-hstrip");
 
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();

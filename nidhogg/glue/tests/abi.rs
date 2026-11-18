@@ -1987,6 +1987,17 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
             ),
             ("NHG_MINIMAP_DENSITY", NHG_MINIMAP_DENSITY.into()),
             ("NHG_MINIMAP_DWELL_BUCKET", NHG_MINIMAP_DWELL_BUCKET.into()),
+            ("NHG_MINIMAP_HSTRIP", NHG_MINIMAP_HSTRIP.into()),
+            (
+                "offsetof (M, hstrip_lane)",
+                offset_of!(M, hstrip_lane) as i64,
+            ),
+            (
+                "offsetof (M, hstrip_thumb)",
+                offset_of!(M, hstrip_thumb) as i64,
+            ),
+            ("offsetof (M, hstrip_rtl)", offset_of!(M, hstrip_rtl) as i64),
+            ("offsetof (M, hstrip_max)", offset_of!(M, hstrip_max) as i64),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)

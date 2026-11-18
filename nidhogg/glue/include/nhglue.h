@@ -1067,6 +1067,14 @@ typedef struct
   uint64_t file_bytes;
   int32_t error_rgb;
   int32_t warning_rgb;
+  /* The horizontal strip (design 21b, glitnir-hstrip): HSTRIP_LANE the bottom band of it that takes presses (as CLIP;
+     empty: no strip), HSTRIP_THUMB its thumb's length (device pixels), HSTRIP_RTL nonzero when the thumb is mirrored,
+     HSTRIP_MAX the most columns the window scrolls to.  A press there is an NHG_MINIMAP_HSTRIP centring the thumb on
+     the pointer; a drag sends one a frame.  */
+  NhgRect hstrip_lane;
+  uint32_t hstrip_thumb;
+  uint32_t hstrip_rtl;
+  uint64_t hstrip_max;
 } NhgMinimap;
 
 /* The label renderer: TEXT (LEN bytes of UTF-8) in face FACE of frame HOST at PX100 / 100 device pixels, in 0xRRGGBB
@@ -1246,6 +1254,7 @@ typedef struct { int32_t x, y, id; } NhgTouchPoint;
 #define NHG_MINIMAP_SELECT_END 8 /* the release: DX the last row's start */
 #define NHG_MINIMAP_LABEL_HOVER 9 /* the label under the pointer changed: DX its line's start, 0 for none */
 #define NHG_MINIMAP_DWELL_BUCKET 10 /* a dwell on a density strip: DX the bucket's index */
+#define NHG_MINIMAP_HSTRIP    11  /* the horizontal strip's press or drag step: DX the hscroll in columns */
 #define NHG_SETTLE_REPORT     1   /* every shown frame presented again, or 2 s passed: run `reconnected' */
 #define NHG_SETTLE_MONITORS   2   /* the monitor list differs from before the loss (ids aside) */
 #define NHG_SETTLE_FOCUS_OUT  4   /* no keyboard enter 1 s after the report: *WINDOW loses the focus */
