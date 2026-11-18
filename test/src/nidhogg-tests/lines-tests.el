@@ -227,6 +227,46 @@ is not a string or nil is an error."
     (nidhogg-lines-trail-clear b)
     (should-not (nidhogg-lines-trail b))))
 
+(ert-deftest lines/widest-counts-columns-without-folds-or-narrowing ()
+  "`nidhogg-lines-widest' is the widest visible line in columns: tabs to `tab-width' stops, characters at their
+`char-width-table' width (taken again when the table is another, or on REFRESH after an in-place change), folded
+lines and the text outside a narrowing left out."
+  (skip-unless (lines-tests--built-p))
+  (let ((cjk (string-width "中文字"))
+        (b (generate-new-buffer " *lines-widest*")))
+    (unwind-protect
+        (with-current-buffer b
+          (insert "ab\n\tx\n中文字\nshort\n")
+          (should (nidhogg-lines-enable b t))
+          (should (= (nidhogg-lines-widest b) (max 9 cjk)))
+          (setq tab-width 4)
+          (should (= (nidhogg-lines-widest b) (max 5 cjk)))
+          ;; another table: CJK 3 wide
+          (let ((char-width-table (copy-sequence char-width-table)))
+            (set-char-table-range char-width-table '(#x4e00 . #x9fff) 3)
+            (should (= (nidhogg-lines-widest b) 9)))
+          (should (= (nidhogg-lines-widest b) (max 5 cjk)))
+          ;; the same table changed in place: seen on REFRESH
+          (let ((old (aref char-width-table ?中)))
+            (unwind-protect
+                (progn
+                  (aset char-width-table ?中 6)
+                  (should (= (nidhogg-lines-widest b) (max 5 cjk)))
+                  (should (= (nidhogg-lines-widest b t) (+ 6 (string-width "文字")))))
+              (aset char-width-table ?中 old)
+              (nidhogg-lines-widest b t)))
+          ;; line 3 folded into line 2
+          (nidhogg-lines-set-hidden b '((6 . 10)))
+          (should (= (nidhogg-lines-widest b) 5))
+          (nidhogg-lines-set-hidden b nil)
+          (save-restriction
+            (narrow-to-region 11 17)
+            (should (= (nidhogg-lines-widest b) 5))
+            (narrow-to-region 1 4)
+            (should (= (nidhogg-lines-widest b) 5)))
+          (should (= (nidhogg-lines-widest b) (max 5 cjk))))
+      (kill-buffer b))))
+
 (ert-deftest lines/search-counts-as-how-many-does ()
   "The minimap search (X1): the hits of a literal or a regexp in the subset are `how-many''s, with or without case
 folding, over a text whose gap lies inside a line; their positions are `re-search-forward''s; a query outside the

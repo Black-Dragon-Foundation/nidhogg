@@ -10,6 +10,11 @@ bar's marks and folding. It keeps, for each buffer text a window shows with the 
 - **Folds:** fold ranges per source (tree-sitter, the hub, headings, indentation), with their nesting depth, shifted on
   edits and capped (the smallest dropped first).
 - **Hidden lines:** the ranges drgnx's folds hide, so the scroll bar and minimap measure visible lines.
+- **The widest line** (hscroll design §3.2, `nidhogg-lines-widest`): each line's display width (`cols`) counted in the
+  parse that counts its length: ASCII with no lookup, a tab to the next `tab-width` stop, other characters from a
+  snapshot of `char-width-table` (`hlid_set_widths`, sorted ranges). Each chunk keeps its widest line and its widest
+  visible one (found again when the hidden lines change); `Model::widest` answers per buffer (BEGV, ZV) from a cache
+  kept until the lines or the hidden ones change. Lines built with another tab width or table are built again.
 - **The trail:** the last 64 visited lines (`nidhogg-lines-trail-clear` forgets them).
 - **The search** (`search.rs`, design X1): a query's hits over the whole text, scanned a line at a time in 4 ms slices
   on the main thread (`nidhogg-lines-search`, `-search-step`), each a position, its end and its column; an edit starts

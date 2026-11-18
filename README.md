@@ -1250,6 +1250,10 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
 - **The scroll bar** (the `glitnir-ruler` strip) measures visible lines when the window's text has a model: lines
   hidden with `nidhogg-lines-set-hidden` do not count, so a mark keeps its place when the strip widens into the
   minimap. Without a model it measures characters, as before.
+- **The widest line** (`nidhogg-lines-widest`, the horizontal strip's measure): the widest visible line of the
+  accessible part, in columns (tabs to `tab-width` stops, other characters at their `char-width-table` width), kept per
+  chunk as edits happen and cached per buffer. A buffer whose `tab-width` changed, or a new `char-width-table`, builds
+  the lines again; a table changed in place is taken with `(nidhogg-lines-widest BUFFER t)`.
 - **On a terminal** (design 7.8, stage T) the strip is one column: a window with a `glitnir-ruler` and a right margin
   (`set-window-margins`) gets its margin's last column, `┃` over the rows the window shows (the ruler's `:band`
   colour) and `│` (`shadow`) elsewhere, `▐` in a mark's colour on the rows its marks fall on (a later mark over an

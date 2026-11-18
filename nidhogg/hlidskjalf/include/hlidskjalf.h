@@ -64,6 +64,13 @@ int32_t hlid_line_of (uint64_t key, uint64_t pos, uint64_t *out);
 int32_t hlid_pos_of (uint64_t key, uint64_t line, uint64_t *out);
 int32_t hlid_fraction (uint64_t key, uint64_t pos, uint64_t begv,
 		       uint64_t zv, double *out);
+/* The character widths (Emacs's char-width-table): N ranges of 3 values
+   (first, last, width), the characters whose width is not 1.  */
+int32_t hlid_set_widths (const uint32_t *ranges, size_t n);
+/* The columns of the widest visible line of BUFFER's BEGV..ZV: HLID_STALE
+   when the lines were built with another TAB_WIDTH or older widths.  */
+int32_t hlid_widest (uint64_t key, uint64_t buffer, uint64_t begv,
+		     uint64_t zv, uint32_t tab_width, uint32_t *out);
 int32_t hlid_set_marks (uint64_t key, uint32_t kind, const hlid_mark *marks,
 			size_t n);
 int32_t hlid_next_mark (uint64_t key, uint64_t pos, uint64_t kinds,

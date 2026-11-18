@@ -70,6 +70,47 @@ nh_lines_find (struct buffer_text *text)
   return NULL;
 }
 
+/* The char-width-table the line model's character widths were last
+   taken from, and those widths: ranges (first, last, width) of the
+   characters past ASCII whose width is not 1.  */
+static Lisp_Object nh_lines_widths_of;
+static uint32_t *nh_lines_widths;
+static ptrdiff_t nh_lines_widths_len, nh_lines_widths_cap;
+
+static void
+nh_lines_width_range (Lisp_Object arg, Lisp_Object key, Lisp_Object val)
+{
+  if (!FIXNUMP (val))
+    return;
+  int w = sanitize_char_width (XFIXNUM (val));
+  EMACS_INT from = CONSP (key) ? XFIXNUM (XCAR (key)) : XFIXNUM (key);
+  EMACS_INT to = CONSP (key) ? XFIXNUM (XCDR (key)) : XFIXNUM (key);
+  if (w == 1 || to < 0x80)
+    return;
+  if (nh_lines_widths_cap - nh_lines_widths_len < 3)
+    nh_lines_widths = xpalloc (nh_lines_widths, &nh_lines_widths_cap, 3, -1,
+			       sizeof *nh_lines_widths);
+  nh_lines_widths[nh_lines_widths_len++] = max (from, 0x80);
+  nh_lines_widths[nh_lines_widths_len++] = to;
+  nh_lines_widths[nh_lines_widths_len++] = w;
+}
+
+/* Send `char-width-table' to the line model when it holds another table
+   than the one sent last, or when FORCE (the table changed in place):
+   the models built with the old widths are built again when next
+   asked for their widest line.  */
+static void
+nh_lines_widths_sync (bool force)
+{
+  if (!force && EQ (Vchar_width_table, nh_lines_widths_of))
+    return;
+  nh_lines_widths_of = Vchar_width_table;
+  nh_lines_widths_len = 0;
+  if (CHAR_TABLE_P (Vchar_width_table))
+    map_char_table (nh_lines_width_range, Qnil, Vchar_width_table, Qnil);
+  hlid_set_widths (nh_lines_widths, nh_lines_widths_len / 3);
+}
+
 /* Build B's lines from its whole text (BEG..Z, narrowing ignored), on a
    thread of their own when the text is large and BACKGROUND.  */
 static void
@@ -80,12 +121,12 @@ nh_lines_build (struct buffer *b, struct nh_lines_text *t, bool background)
   size_t n1 = gpt - BEG_BYTE;
   const unsigned char *p2 = BUF_GAP_END_ADDR (b);
   size_t n2 = z - gpt;
-  Lisp_Object tw = BVAR (b, tab_width);
   bool bg = background && FIXNATP (Vnidhogg_lines_sync_limit)
 	    && n1 + n2 >= XFIXNAT (Vnidhogg_lines_sync_limit);
+  nh_lines_widths_sync (false);
   if (hlid_build (nh_lines_key (b->text),
 		  !NILP (BVAR (b, enable_multibyte_characters)),
-		  FIXNATP (tw) ? min (XFIXNAT (tw), 1000) : 8,
+		  SANE_TAB_WIDTH (b),
 		  n1 ? p1 : NULL, n1, n2 ? p2 : NULL, n2, bg)
       != HLID_OK)
     emacs_abort ();
@@ -219,6 +260,29 @@ nh_lines_fraction (struct buffer *b, ptrdiff_t pos, double *out)
 			 BUF_ZV (b), out);
   if (r == HLID_STALE)
     nh_lines_build (b, t, true);
+  return r == HLID_OK;
+}
+
+/* The columns of the widest visible line in B's accessible part into
+   *COLS (the horizontal strip's measure); false when B has no model or
+   its lines are being built.  Lines built with another tab width or
+   other character widths are built again first.  */
+bool
+nh_lines_widest (struct buffer *b, uint32_t *cols)
+{
+  struct nh_lines_text *t = nh_lines_find (b->text);
+  if (!t)
+    return false;
+  nh_lines_widths_sync (false);
+  uint64_t key = nh_lines_key (b->text);
+  int r = hlid_widest (key, (uintptr_t) b, BUF_BEGV (b), BUF_ZV (b),
+		       SANE_TAB_WIDTH (b), cols);
+  if (r == HLID_STALE)
+    {
+      nh_lines_build (b, t, true);
+      r = hlid_widest (key, (uintptr_t) b, BUF_BEGV (b), BUF_ZV (b),
+		       SANE_TAB_WIDTH (b), cols);
+    }
   return r == HLID_OK;
 }
 
@@ -535,6 +599,26 @@ the lines are being built.  This is the scroll bar's measure.  */)
   double f;
   return hlid_fraction (key, nh_lines_pos (pos), BUF_BEGV (b), BUF_ZV (b), &f)
 	 == HLID_OK ? make_float (f) : Qnil;
+}
+
+DEFUN ("nidhogg-lines-widest", Fnidhogg_lines_widest,
+       Snidhogg_lines_widest, 0, 2, 0,
+       doc: /* The columns of the widest visible line in BUFFER's accessible part.
+Lines hidden with `nidhogg-lines-set-hidden' do not count.  A tab reaches
+the next `tab-width' stop, another control character takes 2 columns and
+any other character its `char-width-table' width.  nil while the lines
+are being built.  The model takes `char-width-table' again when the
+variable holds another table, or with REFRESH non-nil (after the table
+was changed in place), and builds the lines again when the widths or
+`tab-width' changed.  This is the horizontal strip's measure.  */)
+  (Lisp_Object buffer, Lisp_Object refresh)
+{
+  struct buffer *b = nh_lines_buffer (buffer);
+  nh_lines_key_of (buffer);
+  if (!NILP (refresh))
+    nh_lines_widths_sync (true);
+  uint32_t cols;
+  return nh_lines_widest (b, &cols) ? make_fixnum (cols) : Qnil;
 }
 
 DEFUN ("nidhogg-lines-set-marks", Fnidhogg_lines_set_marks,
@@ -1001,6 +1085,9 @@ nil builds every model at once, on the main thread.  */);
   Vnidhogg_lines_sync_limit = make_fixnum (1024 * 1024);
 
   defsubr (&Snidhogg_lines_enable);
+  defsubr (&Snidhogg_lines_widest);
+  nh_lines_widths_of = Qnil;
+  staticpro (&nh_lines_widths_of);
   defsubr (&Snidhogg_lines_disable);
   defsubr (&Snidhogg_lines_line);
   defsubr (&Snidhogg_lines_classes);

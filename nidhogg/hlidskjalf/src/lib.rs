@@ -17,9 +17,10 @@ pub mod sections;
 use std::collections::VecDeque;
 use std::thread::JoinHandle;
 
-pub use index::{BLANK, Line, LineIndex, RUNS, Run};
+pub use index::{BLANK, Line, LineIndex, RUNS, Run, Widths};
 use regex_lite::Regex;
 pub use sections::Section;
+use std::sync::{Arc, Mutex};
 
 /// The characters of a line that class runs cover (a minimap row is narrower).
 pub const CLASS_COLUMNS: u64 = 512;
@@ -75,9 +76,37 @@ pub struct Stale;
 /// What the build thread hands back: the lines, the MARK sections and the headings found in them.
 type Built = (LineIndex, Vec<Section>, Vec<Section>);
 
+/// The host's current character widths (`hlid_set_widths`): a model's lines are built with the snapshot current then.
+static WIDTHS: Mutex<Option<Arc<Widths>>> = Mutex::new(None);
+
+/// The current character widths snapshot (all 1 until the host sends one).
+pub fn widths() -> Arc<Widths> {
+    WIDTHS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .clone()
+}
+
+/// Make RANGES (`(first, last, width)`, the characters whose width is not 1) the current widths; returns its
+/// generation.  Models built before keep theirs until they are built again.
+pub fn set_widths(ranges: Vec<(u32, u32, u8)>) -> u64 {
+    let mut w = WIDTHS.lock().unwrap_or_else(|e| e.into_inner());
+    let next = w.as_ref().map_or(0, |w| w.generation) + 1;
+    *w = Some(Arc::new(Widths::new(next, ranges)));
+    next
+}
+
+/// The most buffers whose widest line a model keeps (hscroll design §3.2: one entry per buffer).
+const WIDEST_KEPT: usize = 8;
+
 pub struct Model {
     multibyte: bool,
     tab_width: u16,
+    /// The character widths the lines were built with.
+    widths: Arc<Widths>,
+    /// The widest line per buffer: (buffer, generation, BEGV, ZV, columns), the latest first.
+    widest: Vec<(u64, u64, u64, u64, u32)>,
     idx: Option<LineIndex>,
     building: Option<(JoinHandle<Built>, Vec<Pending>)>,
     /// The MARK sections' expression, and the sections found with it (kept with the lines: built and edited with them).
@@ -119,6 +148,8 @@ impl Model {
         let mut m = Model {
             multibyte,
             tab_width,
+            widths: widths(),
+            widest: Vec::new(),
             idx: None,
             building: None,
             section_re: None,
@@ -150,6 +181,7 @@ impl Model {
     pub fn rebuild(&mut self, parts: &[&[u8]], background: bool) {
         self.generation += 1;
         self.text_gen += 1;
+        self.widths = widths();
         self.stale = false;
         self.hidden_lines = None;
         if let Some(s) = &mut self.search {
@@ -157,10 +189,10 @@ impl Model {
         }
         if background {
             let text: Vec<u8> = parts.concat();
-            let (mb, tw) = (self.multibyte, self.tab_width);
+            let (mb, tw, ws) = (self.multibyte, self.tab_width, self.widths.clone());
             let (re, hre) = (self.section_re.clone(), self.heading_re.clone());
             let h = std::thread::spawn(move || {
-                let idx = LineIndex::new(index::parse(&[&text], mb, tw, true));
+                let idx = LineIndex::new(index::parse_with(&[&text], mb, tw, true, &ws));
                 let found = re.map_or_else(Vec::new, |re| sections::scan(&re, &text, 1, mb));
                 let heads = hre.map_or_else(Vec::new, |re| sections::scan(&re, &text, 1, mb));
                 (idx, found, heads)
@@ -171,11 +203,12 @@ impl Model {
             self.building = Some((h, Vec::new()));
         } else {
             self.building = None;
-            self.idx = Some(LineIndex::new(index::parse(
+            self.idx = Some(LineIndex::new(index::parse_with(
                 parts,
                 self.multibyte,
                 self.tab_width,
                 true,
+                &self.widths,
             )));
             let text = parts.concat();
             let scan = |re: &Option<Regex>| match re {
@@ -275,6 +308,11 @@ impl Model {
             f.end = shift(f.end);
         }
         self.folds.retain(|f| f.beg < f.end);
+        // a hidden range the change cuts into hides other lines past it: every chunk's widest visible line again
+        let cut = self
+            .hidden
+            .iter()
+            .any(|r| (r.0 > start && r.0 < old_end) || (r.1 > start && r.1 < old_end));
         for r in &mut self.hidden {
             *r = (shift(r.0), shift(r.1));
         }
@@ -305,6 +343,8 @@ impl Model {
         if r.is_err() {
             self.idx = None;
             self.stale = true;
+        } else if cut && let Some(idx) = self.idx.as_mut() {
+            idx.clear_visible();
         }
         r
     }
@@ -325,7 +365,7 @@ impl Model {
         let old_chars = idx.start_of(l1 + 1) - idx.start_of(l0);
         // the segment reaches the end of the text when its last line is the text's last
         let to_end = l1 + 1 == idx.lines();
-        let new = index::parse(seg, self.multibyte, self.tab_width, to_end);
+        let new = index::parse_with(seg, self.multibyte, self.tab_width, to_end, &self.widths);
         let new_chars: u64 = new.iter().map(|l| u64::from(l.len)).sum();
         if new_chars + old_end != old_chars + new_end {
             return Err(Stale);
@@ -731,6 +771,42 @@ impl Model {
         self.hidden_names = r.into_iter().map(|x| x.2).collect();
         self.hidden_lines = None;
         self.generation += 1;
+        if let Some(idx) = self.idx.as_mut() {
+            idx.clear_visible();
+        }
+    }
+
+    /// The lines the widest line's queries have walked since the lines were built (the tests' locality measure).
+    pub fn widest_scanned(&mut self) -> u64 {
+        self.index().map_or(0, LineIndex::scanned)
+    }
+
+    /// The tab width and the character widths' generation the lines were built with: a host whose own differ builds
+    /// the lines again before it trusts [`Model::widest`].
+    pub fn built_with(&self) -> (u16, u64) {
+        (self.tab_width, self.widths.generation)
+    }
+
+    /// The columns of the widest visible line of BUFFER's accessible part BEGV..ZV (the folded lines left out), `None`
+    /// while the lines are built.  Kept per buffer until the lines or the hidden ones change, so a publish with no edit
+    /// asks nothing of the index; after an edit only the chunks it rewrote walk their lines.
+    pub fn widest(&mut self, buffer: u64, begv: u64, zv: u64) -> Option<u32> {
+        let generation = self.generation;
+        if let Some(i) = self.widest.iter().position(|e| e.0 == buffer) {
+            let e = self.widest[i];
+            if (e.1, e.2, e.3) == (generation, begv, zv) {
+                return Some(e.4);
+            }
+            self.widest.remove(i);
+        }
+        let first = self.line_of(begv)?;
+        let last = self.line_of(zv)?;
+        self.hidden_lines()?;
+        let (h, idx) = (self.hidden_lines.as_deref()?, self.idx.as_mut()?);
+        let cols = idx.widest(first, last, h);
+        self.widest.insert(0, (buffer, generation, begv, zv, cols));
+        self.widest.truncate(WIDEST_KEPT);
+        Some(cols)
     }
 
     /// The hidden ranges whose start lies in [BEG, END): each one's line (0-based, the line its start is on: the fold's

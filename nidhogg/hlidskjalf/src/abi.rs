@@ -122,6 +122,73 @@ pub unsafe extern "C" fn hlid_build(
     })
 }
 
+/// Make the N ranges at RANGES (3N values: first, last, width; the characters whose width is not 1, Emacs's
+/// `char-width-table`) the current character widths.  Models keep theirs until built again: `hlid_widest` says
+/// HLID_STALE for one built with others.
+///
+/// # Safety
+/// RANGES must be readable for 3N values unless N is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_set_widths(ranges: *const u32, n: usize) -> i32 {
+    if ranges.is_null() && n > 0 {
+        return HLID_E_ARG;
+    }
+    guard(|| {
+        // SAFETY: checked; the caller promises 3N readable values.
+        let r = if n == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(ranges, 3 * n) }
+        };
+        crate::set_widths(
+            r.as_chunks::<3>()
+                .0
+                .iter()
+                .map(|t| (t[0], t[1], t[2].min(255) as u8))
+                .collect(),
+        );
+        HLID_OK
+    })
+}
+
+/// The columns of the widest visible line of BUFFER's accessible part BEGV..ZV into *OUT (`Model::widest`):
+/// HLID_STALE when the lines were built with another TAB_WIDTH or older character widths (the host builds them
+/// again), HLID_BUILDING while they are built.
+///
+/// # Safety
+/// OUT must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_widest(
+    key: u64,
+    buffer: u64,
+    begv: u64,
+    zv: u64,
+    tab_width: u32,
+    out: *mut u32,
+) -> i32 {
+    if out.is_null() {
+        return HLID_E_ARG;
+    }
+    let current = crate::widths().generation;
+    with(key, |m| {
+        let s = state(m);
+        if s != HLID_OK {
+            return s;
+        }
+        if m.built_with() != (tab_width.clamp(1, 1000) as u16, current) {
+            return HLID_STALE;
+        }
+        match m.widest(buffer, begv, zv) {
+            // SAFETY: checked non-null; the caller promises it is writable.
+            Some(c) => unsafe {
+                *out = c;
+                HLID_OK
+            },
+            None => HLID_BUILDING,
+        }
+    })
+}
+
 /// Forget KEY's model.
 #[unsafe(no_mangle)]
 pub extern "C" fn hlid_drop(key: u64) -> i32 {

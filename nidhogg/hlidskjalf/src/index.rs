@@ -5,14 +5,53 @@
 //! only a change in the number of chunks rebuilds the tree.
 
 /// A line: its length in characters (its newline included), its indent in columns (`BLANK` when it holds only
-/// spaces and tabs), the characters of that indent, and up to [`RUNS`] runs of a display class (design §7.2: none
-/// until a class producer sends them; an edit that rewrites the line clears them).
+/// spaces and tabs), the characters of that indent, up to [`RUNS`] runs of a display class (design §7.2: none
+/// until a class producer sends them; an edit that rewrites the line clears them), and its display width in columns
+/// (`cols`, its newline not counted: hscroll design §3.2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Line {
     pub len: u32,
     pub indent: u16,
     pub lead: u16,
     pub runs: [Run; RUNS],
+    pub cols: u32,
+}
+
+/// A snapshot of the host's character widths (Emacs's `char-width-table`): sorted, disjoint ranges `(first, last,
+/// width)` of the characters whose width is not 1; GENERATION tells snapshots apart.  ASCII never looks here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Widths {
+    pub generation: u64,
+    ranges: Vec<(u32, u32, u8)>,
+}
+
+thread_local! {
+    /// The width lookups this thread's parses made (the tests' measure of the ASCII fast path).
+    static LOOKUPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The width lookups this thread's parses have made.
+pub fn lookups() -> u64 {
+    LOOKUPS.with(std::cell::Cell::get)
+}
+
+impl Widths {
+    /// The snapshot GENERATION of RANGES (any order).
+    pub fn new(generation: u64, mut ranges: Vec<(u32, u32, u8)>) -> Widths {
+        ranges.retain(|r| r.0 <= r.1 && r.2 != 1);
+        ranges.sort_unstable_by_key(|r| r.0);
+        Widths { generation, ranges }
+    }
+
+    /// Character C's width (a non-ASCII character).
+    pub fn of(&self, c: u32) -> u32 {
+        LOOKUPS.with(|n| n.set(n.get() + 1));
+        let i = self.ranges.partition_point(|r| r.0 <= c);
+        match i.checked_sub(1).map(|i| self.ranges[i]) {
+            Some((_, last, w)) if c <= last => u32::from(w),
+            _ => 1,
+        }
+    }
 }
 
 /// The most class runs a line keeps.
@@ -39,12 +78,22 @@ const CHUNK_TARGET: usize = 2048;
 struct Chunk {
     lines: Vec<Line>,
     chars: u64,
+    /// The widest line's columns, and the widest visible line's (hidden lines skipped; `None` until asked, and again
+    /// when the hidden lines change).
+    max_cols: u32,
+    max_visible: Option<u32>,
 }
 
 impl Chunk {
     fn new(lines: Vec<Line>) -> Chunk {
         let chars = lines.iter().map(|l| u64::from(l.len)).sum();
-        Chunk { lines, chars }
+        let max_cols = lines.iter().map(|l| l.cols).max().unwrap_or(0);
+        Chunk {
+            lines,
+            chars,
+            max_cols,
+            max_visible: None,
+        }
     }
 }
 
@@ -122,6 +171,8 @@ pub struct LineIndex {
     fen: Fenwick,
     /// Chunks rewritten by edits since the index was built (the tests' locality measure).
     touched: u64,
+    /// Lines walked for the widest visible line since the index was built (the same, for [`LineIndex::widest`]).
+    scanned: u64,
 }
 
 impl LineIndex {
@@ -140,7 +191,65 @@ impl LineIndex {
             chunks,
             fen,
             touched: 0,
+            scanned: 0,
         }
+    }
+
+    /// The lines [`LineIndex::widest`] has walked since the index was built.
+    pub fn scanned(&self) -> u64 {
+        self.scanned
+    }
+
+    /// The hidden lines changed: each chunk's widest visible line is found again when next asked.
+    pub fn clear_visible(&mut self) {
+        for c in &mut self.chunks {
+            c.max_visible = None;
+        }
+    }
+
+    /// The columns of the widest line from 0-based FIRST through LAST, the lines in HIDDEN (merged line ranges [a, z),
+    /// sorted, as `Model::hidden_lines` keeps them) left out.  A chunk wholly inside gives its kept maximum, so only
+    /// the chunks at a narrowing's ends, and the chunks an edit or a fold change rewrote, walk their lines.
+    pub fn widest(&mut self, first: u64, last: u64, hidden: &[(u64, u64, u64)]) -> u32 {
+        let last = last.min(self.lines().saturating_sub(1));
+        if first > last {
+            return 0;
+        }
+        let (c0, _, mut l) = self.fen.find(first, true);
+        let mut best = 0u32;
+        let mut ci = c0;
+        while ci < self.chunks.len() && l <= last {
+            let n = self.chunks[ci].lines.len() as u64;
+            let whole = first <= l && l + n - 1 <= last;
+            let h0 = hidden.partition_point(|r| r.1 <= l);
+            let any_hidden = h0 < hidden.len() && hidden[h0].0 < l + n;
+            if whole && !any_hidden {
+                best = best.max(self.chunks[ci].max_cols);
+            } else if whole && self.chunks[ci].max_visible.is_some() {
+                best = best.max(self.chunks[ci].max_visible.unwrap_or(0));
+            } else {
+                let (a, z) = (first.max(l), last.min(l + n - 1));
+                let mut m = 0u32;
+                let mut h = h0;
+                for line in a..=z {
+                    while h < hidden.len() && hidden[h].1 <= line {
+                        h += 1;
+                    }
+                    if h < hidden.len() && hidden[h].0 <= line {
+                        continue;
+                    }
+                    m = m.max(self.chunks[ci].lines[(line - l) as usize].cols);
+                }
+                self.scanned += z - a + 1;
+                if whole {
+                    self.chunks[ci].max_visible = Some(m);
+                }
+                best = best.max(m);
+            }
+            l += n;
+            ci += 1;
+        }
+        best
     }
 
     pub fn lines(&self) -> u64 {
@@ -277,17 +386,66 @@ fn chunked(lines: Vec<Line>) -> Vec<Chunk> {
 /// Split TEXT (PARTS in order: the bytes of whole lines) into lines.  MULTIBYTE counts a character per UTF-8-style
 /// lead byte (Emacs's internal form), else one per byte; TAB_WIDTH sets the columns a tab reaches.  Text with no
 /// newline at its end ends with a line of its own; so does text TO_END (reaching the end of the buffer text), whose
-/// last line is empty after a final newline.
+/// last line is empty after a final newline.  Every character has width 1 but ASCII's own ([`parse_with`]).
 pub fn parse(parts: &[&[u8]], multibyte: bool, tab_width: u16, to_end: bool) -> Vec<Line> {
+    parse_with(parts, multibyte, tab_width, to_end, &Widths::default())
+}
+
+/// [`parse`], each line's display width counted in the same pass: a printable ASCII byte 1 with no lookup, a tab to
+/// the next TAB_WIDTH stop, another control character 2 (`^X`), a unibyte text's byte past ASCII 4 (`\NNN`), any
+/// other character its width in WIDTHS.
+pub fn parse_with(
+    parts: &[&[u8]],
+    multibyte: bool,
+    tab_width: u16,
+    to_end: bool,
+    widths: &Widths,
+) -> Vec<Line> {
     let tw = u32::from(tab_width.max(1));
     let mut out = Vec::new();
     let (mut len, mut col, mut lead, mut last_nl) = (0u32, 0u32, true, false);
     let mut lc = 0u32;
+    // the display columns so far, and the character being decoded: its bits and the continuation bytes still due
+    let (mut cols, mut cp, mut due) = (0u32, 0u32, 0u32);
+    let mut raw = false;
     for part in parts {
         for &b in *part {
             last_nl = false;
             if !multibyte || b & 0xC0 != 0x80 {
                 len += 1;
+            }
+            if b < 0x80 {
+                due = 0;
+                cols = cols.saturating_add(match b {
+                    0x20..=0x7e => 1,
+                    b'\t' => tw - cols % tw,
+                    b'\n' => 0,
+                    _ => 2,
+                });
+            } else if !multibyte {
+                cols = cols.saturating_add(4);
+            } else if b & 0xC0 == 0x80 {
+                if due > 0 {
+                    cp = if raw {
+                        cp + u32::from(b & 0x3F)
+                    } else {
+                        cp << 6 | u32::from(b & 0x3F)
+                    };
+                    due -= 1;
+                    if due == 0 {
+                        cols = cols.saturating_add(widths.of(cp));
+                    }
+                }
+            } else {
+                raw = b < 0xC2;
+                (cp, due) = match b {
+                    // a raw byte (Emacs's eight-bit characters, #x3FFF80 up)
+                    0xC0..=0xC1 => (0x3F_FF80 + (u32::from(b & 1) << 6), 1),
+                    0xC2..=0xDF => (u32::from(b & 0x1F), 1),
+                    0xE0..=0xEF => (u32::from(b & 0x0F), 2),
+                    0xF0..=0xF7 => (u32::from(b & 0x07), 3),
+                    _ => (0, 4),
+                };
             }
             if b == b'\n' {
                 out.push(Line {
@@ -298,9 +456,10 @@ pub fn parse(parts: &[&[u8]], multibyte: bool, tab_width: u16, to_end: bool) -> 
                         col.min(u32::from(BLANK) - 1) as u16
                     },
                     lead: lc.min(u32::from(u16::MAX)) as u16,
+                    cols,
                     ..Default::default()
                 });
-                (len, col, lead, last_nl, lc) = (0, 0, true, true, 0);
+                (len, col, lead, last_nl, lc, cols) = (0, 0, true, true, 0, 0);
             } else if lead {
                 match b {
                     b' ' => col += 1,
@@ -323,6 +482,7 @@ pub fn parse(parts: &[&[u8]], multibyte: bool, tab_width: u16, to_end: bool) -> 
                 col.min(u32::from(BLANK) - 1) as u16
             },
             lead: lc.min(u32::from(u16::MAX)) as u16,
+            cols,
             ..Default::default()
         });
     }
@@ -353,12 +513,14 @@ mod tests {
                     len: 4,
                     indent: 2,
                     lead: 2,
+                    cols: 3,
                     ..Default::default()
                 },
                 Line {
                     len: 4,
                     indent: 8,
                     lead: 1,
+                    cols: 10,
                     ..Default::default()
                 },
                 Line {
@@ -370,6 +532,7 @@ mod tests {
                     len: 2,
                     indent: BLANK,
                     lead: 2,
+                    cols: 2,
                     ..Default::default()
                 },
             ]
@@ -379,6 +542,7 @@ mod tests {
             vec![Line {
                 len: 2,
                 indent: 0,
+                cols: 1,
                 ..Default::default()
             }]
         );
@@ -393,6 +557,7 @@ mod tests {
                 Line {
                     len: 2,
                     indent: 0,
+                    cols: 1,
                     ..Default::default()
                 },
                 blank
