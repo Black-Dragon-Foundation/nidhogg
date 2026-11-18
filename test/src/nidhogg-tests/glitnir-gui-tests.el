@@ -2820,6 +2820,74 @@ right edge (the free space on the left): the row's 40 characters, a left-to-righ
       (should (>= (car (posn-x-y (posn-at-point (+ start 39) w))) (- tw (* 2 col))))
       (should (<= (car (posn-x-y (posn-at-point start w))) (- tw (* 39 col)))))))
 
+;; Horizontal scroll followers (`nidhogg-hscroll-of', hscroll design §3.4(e)): the sticky card's window follows its
+;; editor's hscroll, copied in C where the hscroll changes.
+
+(defmacro glitnir-gui--with-hscroll-follower (&rest body)
+  "Run BODY with LEAD (the selected window) and CARD (a window below it, following LEAD) on BUF: lines of 300
+characters whose column N is (format \"%03d\" N)-ish markers, truncated."
+  (declare (indent 0))
+  `(let ((buf (get-buffer-create "*glitnir-hscroll-of*")))
+     (glitnir-gui--skip-unless-tree)
+     (save-window-excursion
+       (delete-other-windows)
+       (unwind-protect
+           (let* ((lead (selected-window))
+                  (card (split-window lead)))
+             (with-current-buffer buf
+               (erase-buffer)
+               (dotimes (_ 20)
+                 (dotimes (i 30) (insert (format "%-10d" (* i 10))))
+                 (insert "\n"))
+               (setq truncate-lines t)
+               (goto-char (point-min)))
+             (set-window-buffer lead buf)
+             (set-window-buffer card buf)
+             (set-window-point card (with-current-buffer buf (point-min)))
+             (set-window-parameter card 'nidhogg-hscroll-of lead)
+             (redisplay t)
+             ,@body)
+         (kill-buffer buf)))))
+
+(defun glitnir-gui--first-column (w)
+  "The buffer column of the character drawn first on W's first text row."
+  (pcase-let* ((`(,wx ,wy ,_ ,_) (window-pixel-edges w))
+               (`(,tx ,ty ,_ ,_) (window-inside-pixel-edges w))
+               (p (posn-point (posn-at-x-y (+ (- tx wx) 1) (+ (- ty wy) 1) w))))
+    (with-current-buffer (window-buffer w) (save-excursion (goto-char p) (current-column)))))
+
+(ert-deftest glitnir-gui/hscroll-follower-follows-auto-hscroll ()
+  "Point moved past the window's right edge auto-hscrolls the editor; its follower gets the same hscroll in the same
+redisplay, its first drawn column the editor's, with no Lisp run for it."
+  (glitnir-gui--with-hscroll-follower
+    (with-selected-window lead
+      (goto-char (with-current-buffer buf (+ (point-min) 250))))
+    (redisplay t)
+    (glitnir-gui--shot "hscroll-of-auto")
+    (should (> (window-hscroll lead) 0))
+    (should (= (window-hscroll card) (window-hscroll lead)))
+    (should (= (glitnir-gui--first-column card) (glitnir-gui--first-column lead)))
+    ;; the follower's own point, at a line's start, does not scroll it back
+    (set-window-point card (with-current-buffer buf (save-excursion (goto-char (point-min)) (forward-line 3) (point))))
+    (redisplay t)
+    (should (= (window-hscroll card) (window-hscroll lead)))
+    ;; and back
+    (with-selected-window lead (goto-char (with-current-buffer buf (point-min))))
+    (redisplay t)
+    (should (= (window-hscroll lead) 0))
+    (should (= (window-hscroll card) 0))))
+
+(ert-deftest glitnir-gui/hscroll-follower-pixels-shift ()
+  "`set-window-hscroll' on the editor shifts the follower's drawn text by the same pixels: the follower's first drawn
+column is the editor's hscroll."
+  (glitnir-gui--with-hscroll-follower
+    (set-window-hscroll lead 40)
+    (redisplay t)
+    (glitnir-gui--shot "hscroll-of-set")
+    (should (= (window-hscroll card) 40))
+    (should (= (glitnir-gui--first-column card) 40))
+    (should (= (glitnir-gui--first-column lead) 40))))
+
 ;;; The shell's menus (nhwl-menu.el): the metrics a theme gives them and the submenu's tolerance
 
 (defvar nhwl-menu--frames)

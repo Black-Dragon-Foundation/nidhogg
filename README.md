@@ -1274,6 +1274,10 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
   continue (`IT_WRAP_X`), so `vertical-motion` agrees with what is drawn, while `last_visible_x` keeps the window's
   edge for extended backgrounds, `:align-to` stretches (which reach the edge without wrapping) and image clipping. A
   window narrower than N wraps at its edge.
+- **Windows that follow another's horizontal scroll** (`nidhogg-hscroll-of`, hscroll design §3.4(e)): a window whose
+  parameter `nidhogg-hscroll-of` is window W (drgnx's sticky card) gets W's hscroll, in pixels converted to its own
+  frame's columns, wherever W's hscroll changes: `set_window_hscroll` and auto-hscroll in `hscroll_window_tree`
+  (`nidhogg_hscroll_followers`, window.c). No Lisp runs per scroll, and a follower never auto-hscrolls on its own.
 - **On a terminal** (design 7.8, stage T) the strip is one column: a window with a `glitnir-ruler` and a right margin
   (`set-window-margins`) gets its margin's last column, `┃` over the rows the window shows (the ruler's `:band`
   colour) and `│` (`shadow`) elsewhere, `▐` in a mark's colour on the rows its marks fall on (a later mark over an

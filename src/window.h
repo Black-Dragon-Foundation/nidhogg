@@ -1225,6 +1225,9 @@ extern struct window *decode_live_window (Lisp_Object);
 extern struct window *decode_any_window (Lisp_Object);
 extern void mark_window_cursors_off (struct window *);
 extern bool window_wants_mode_line (struct window *);
+#ifdef HAVE_GLITNIR
+extern void nidhogg_hscroll_followers (struct window *);
+#endif
 extern bool window_wants_header_line (struct window *);
 extern bool window_wants_tab_line (struct window *);
 extern int window_internal_height (struct window *);

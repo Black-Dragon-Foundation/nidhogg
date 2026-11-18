@@ -16875,6 +16875,13 @@ hscroll_window_tree (Lisp_Object window)
 			 Qcurrent_line))
 		SET_FRAME_GARBAGED (XFRAME (w->frame));
 	    }
+#ifdef HAVE_GLITNIR
+	  /* A window following another's hscroll (`nidhogg-hscroll-of')
+	     takes that one's, never its own: its point moving does not
+	     scroll it.  */
+	  if (CONSP (assq_no_quit (Qnidhogg_hscroll_of, w->window_parameters)))
+	    w->suspend_auto_hscroll = true;
+#endif
 
 	  /* Remember window point.  */
 	  Fset_marker (w->old_pointm,
@@ -17035,6 +17042,9 @@ hscroll_window_tree (Lisp_Object window)
 		  b->prevent_redisplay_optimizations_p = true;
 		  w->hscroll = hscroll;
 		  hscrolled_p = true;
+#ifdef HAVE_GLITNIR
+		  nidhogg_hscroll_followers (w);
+#endif
 		}
 	    }
 	}

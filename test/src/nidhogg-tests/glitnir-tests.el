@@ -736,6 +736,29 @@ generation, and sets the frame's `glitnir--blocks' flag, so C lists the frame; e
           (clrhash glitnir--blocks-seen)
           (set-frame-parameter nil 'glitnir--blocks nil))))))
 
+(ert-deftest glitnir-hscroll-of-follows-set-window-hscroll ()
+  "A window whose `nidhogg-hscroll-of' is another follows that one's `set-window-hscroll' (in columns of the same
+width here), and stops following once the parameter is gone; a window without it is left alone."
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((lead (selected-window))
+           (card (split-window lead))
+           (other (split-window card))
+           (buf (generate-new-buffer " *hscroll-of*")))
+      (unwind-protect
+          (progn
+            (dolist (w (list lead card other)) (set-window-buffer w buf))
+            (set-window-parameter card 'nidhogg-hscroll-of lead)
+            (set-window-hscroll lead 17)
+            (should (= (window-hscroll card) 17))
+            (should (= (window-hscroll other) 0))
+            (set-window-hscroll lead 0)
+            (should (= (window-hscroll card) 0))
+            (set-window-parameter card 'nidhogg-hscroll-of nil)
+            (set-window-hscroll lead 9)
+            (should (= (window-hscroll card) 0)))
+        (kill-buffer buf)))))
+
 (ert-deftest glitnir-wrap-column-is-buffer-local ()
   "`nidhogg-wrap-column' is nil by default and buffer-local when set."
   (should (boundp 'nidhogg-wrap-column))
