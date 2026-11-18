@@ -585,7 +585,8 @@ pub trait ShellBackend {
 
     /// Root `root`'s tree as the compositor was given it: `frames` (the root's first; a surface not listed is hidden,
     /// and any that is not in the tree is ignored) composed whole, their chrome and shadows included, at their places,
-    /// in their stacking, with their alpha, popups on top.  The root's size, row by row, premultiplied.  For tests and
+    /// in their stacking, with their alpha, popups on top, each placed from the root's own corner (a popup root's
+    /// picture starts at the popup, not at its place in the toplevel).  The root's size, row by row, premultiplied.  For tests and
     /// captures: it costs presenting nothing, and `frames` must be what was published.  `composed` false: the same
     /// without Glitnir, the frames' own pixels, square and with no shadows.
     fn tree_snapshot(
