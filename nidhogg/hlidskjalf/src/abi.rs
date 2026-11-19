@@ -1,8 +1,10 @@
 //! The C ABI (`include/hlidskjalf.h`): the models by key, behind one lock.  Every entry point catches a panic and
 //! answers `HLID_E_PANIC`; the host calls them from its main thread only.
 
+use std::cell::Cell;
+use std::ops::{Deref, DerefMut};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use crate::{Fold, Mark, Model, RUNS, Run, Span, Stale};
 
@@ -36,6 +38,45 @@ pub struct HlidStats {
 
 static MODELS: LazyLock<Mutex<Vec<(u64, Model)>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
+thread_local! {
+    /// Whether this thread holds the models' lock: a second lock on the same thread would wait for itself.
+    static HELD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The models under the lock, marked held on this thread until dropped.
+struct Models(MutexGuard<'static, Vec<(u64, Model)>>);
+
+impl Drop for Models {
+    fn drop(&mut self) {
+        HELD.set(false);
+    }
+}
+
+impl Deref for Models {
+    type Target = Vec<(u64, Model)>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Models {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Take the models' lock.  A nested take on the same thread (a `with_model` closure that calls `with_model`, or an
+/// entry point, again) panics at once instead of waiting forever for itself, and with it every other caller.
+fn models() -> Models {
+    assert!(
+        !HELD.get(),
+        "with_model re-entered on the same thread: the models' lock is held here already"
+    );
+    let g = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    HELD.set(true);
+    Models(g)
+}
+
 fn guard(f: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(HLID_E_PANIC)
 }
@@ -43,13 +84,13 @@ fn guard(f: impl FnOnce() -> i32) -> i32 {
 /// KEY's model under the lock, for a Rust caller in the same process (the glue's minimap reads its rows), on the
 /// host's main thread as the C ABI is; `None` when KEY has no model.
 pub fn with_model<R>(key: u64, f: impl FnOnce(&mut Model) -> R) -> Option<R> {
-    let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut ms = models();
     ms.iter_mut().find(|(k, _)| *k == key).map(|(_, m)| f(m))
 }
 
 fn with(key: u64, f: impl FnOnce(&mut Model) -> i32) -> i32 {
     guard(|| {
-        let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ms = models();
         match ms.iter_mut().find(|(k, _)| *k == key) {
             Some((_, m)) => f(m),
             None => HLID_E_NONE,
@@ -110,7 +151,7 @@ pub unsafe extern "C" fn hlid_build(
             return HLID_E_ARG;
         };
         let tw = tab_width.clamp(1, 1000) as u16;
-        let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ms = models();
         match ms.iter_mut().find(|(k, _)| *k == key) {
             Some((_, m)) => {
                 m.set_text_kind(multibyte != 0, tw);
@@ -193,7 +234,7 @@ pub unsafe extern "C" fn hlid_widest(
 #[unsafe(no_mangle)]
 pub extern "C" fn hlid_drop(key: u64) -> i32 {
     guard(|| {
-        let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ms = models();
         ms.retain(|(k, _)| *k != key);
         HLID_OK
     })
