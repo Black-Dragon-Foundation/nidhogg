@@ -267,9 +267,9 @@ lines and the text outside a narrowing left out."
           (should (= (nidhogg-lines-widest b) (max 5 cjk))))
       (kill-buffer b))))
 
-(ert-deftest lines/search-counts-as-how-many-does ()
-  "The minimap search (X1): the hits of a literal or a regexp in the subset are `how-many''s, with or without case
-folding, over a text whose gap lies inside a line; their positions are `re-search-forward''s; a query outside the
+(ert-deftest lines/search-counts-the-non-empty-matches ()
+  "The minimap search (X1): the hits of a literal or a regexp in the subset are its non-empty matches (`how-many'
+counts empty ones too: \"x*\" matches at every position), with or without case folding, over a text whose gap lies inside a line; their positions are `re-search-forward''s; a query outside the
 subset is nil (Lisp's), an edit starts the scan over, and the current hit's index counts the hits before it."
   (skip-unless (lines-tests--built-p))
   (lines-tests--with (b (concat (mapconcat (lambda (i) (format "\tfoo(%d) Foo bar.baz ÿ foo\n" i)) (number-sequence 1 3000) "")
@@ -277,8 +277,14 @@ subset is nil (Lisp's), an edit starts the scan over, and the current hit's inde
     ;; the gap inside a line
     (goto-char 50) (insert "foo") (delete-char -3)
     (let ((count (lambda (q fold)
-                   (let ((case-fold-search fold))
-                     (save-excursion (how-many q (point-min) (point-max))))))
+                   (let ((case-fold-search fold) (n 0))
+                     (save-excursion
+                       (goto-char (point-min))
+                       (while (and (not (eobp)) (re-search-forward q nil t))
+                         (if (/= (match-beginning 0) (match-end 0))
+                             (setq n (1+ n))
+                           (forward-char 1)))
+                       n))))
           (run (lambda (q &optional literal fold)
                  (let ((r (nidhogg-lines-search b q literal fold)))
                    (while (eq r 'running) (setq r (nidhogg-lines-search-step b)))
