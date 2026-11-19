@@ -709,3 +709,30 @@ fn hidden_ranges_keep_their_names_through_edits() {
     assert_eq!(p.m.hidden_in(1, 40), [(3, 3, Some("body".into()))]);
     p.check();
 }
+
+/// `with_model` nested on one thread (its closure calling it again) panics with a clear message instead of waiting
+/// for its own lock, which left every other caller waiting too; the lock is free again after.
+#[test]
+fn with_model_nested_on_one_thread_panics() {
+    use hlidskjalf::abi::{hlid_build, hlid_drop, with_model};
+    let key = 0x7265_656e;
+    let t = b"a\nb\n";
+    // SAFETY: T is readable for its length.
+    assert_eq!(
+        unsafe { hlid_build(key, 0, 8, t.as_ptr(), t.len(), std::ptr::null(), 0, 0) },
+        0
+    );
+    let r = std::panic::catch_unwind(|| with_model(key, |_| with_model(key, |m| m.generation())));
+    let msg = r.expect_err("a nested with_model panics");
+    let msg = msg
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| msg.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("with_model re-entered on the same thread"),
+        "{msg}"
+    );
+    assert!(with_model(key, |m| m.generation()).is_some());
+    assert_eq!(hlid_drop(key), 0);
+}
