@@ -640,6 +640,66 @@ tint on the line but not on TEXT, as drgnx's selection leaves a chip its face; (
       (should (equal (list 'left (glitnir-decor-gui--px g cx y)) '(left (255 128 0))))
       (should (equal (list 'right (glitnir-decor-gui--px g (1- ex) y)) '(right (255 128 0)))))))
 
+;; A box `:inside' another (the kit's key hint in a button, `.btn .k'): the button's ring runs on across the key, the
+;; key's ring is whole inside it, inset by the button's lines, around the key's pads (stretches) and text.
+(defun glitnir-decor-gui--key-in-button (inner &optional enable)
+  "Grab `ab' PAD `cd' PAD `ef' in a button face (orange 2 px ring) with PAD `cd' PAD in face INNER (PAD a 5 px
+stretch): (GRAB TOP ROW-H L R MX), device pixels: the row's top and height, the key's left and right ends, a column
+inside the key's text."
+  (let ((glitnir-enable (if (eq enable 'off) nil t))
+        (outer (glitnir-decor-gui--box-face "button" "#303060" "#ff8000"))
+        (pad (lambda (f) (propertize " " 'display '(space :width (5)) 'face f))))
+    (set-face-attribute outer nil :box '(:line-width (-2 . -2) :color "#ff8000" :corner-radius 4))
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (face-remap-add-relative 'default :background "#202020" :foreground "white")
+      (setq-local cursor-type nil truncate-lines t)
+      (let ((fo (glitnir-decor-gui--calibrate)))
+        (insert "\n\n" (propertize "ab" 'face outer) (funcall pad inner) (propertize "cd" 'face inner)
+                (funcall pad inner) (propertize "ef" 'face outer) "\n\n")
+        (goto-char 1)
+        (gui-runner-wait-settled)
+        (let* ((s (glitnir-decor-gui--scale)) (g (gui-runner-screen-grab))
+               (l (cdr (glitnir-decor-gui--at g 5 fo))) (c (cdr (glitnir-decor-gui--at g 6 fo)))
+               (r (cdr (glitnir-decor-gui--at g 9 fo))))
+          (list g (cdr l) (glitnir-decor-gui--dev s (line-pixel-height)) (car l) (car r)
+                (+ (car c) (glitnir-decor-gui--dev s (/ (frame-char-width) 2)))))))))
+
+(defun glitnir-decor-gui--key-face (&optional box)
+  "The key's face: the button's background, a blue 2 px ring `:inside', 4 px corners, as tall as its text; BOX replaces
+the ring's spec."
+  (let ((face (make-symbol "key")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :background "#303060" :foreground "white"
+                        :box (or box '(:line-width (-2 . -2) :color "#3080ff" :corner-radius 4 :inside t :fit text)))
+    face))
+
+(ert-deftest glitnir-decor-gui/a-box-inside-a-box-draws-both-rings ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; The button's ring has no sides at the key (its top and bottom lines run on across it); the key's ring is whole:
+  ;; its sides at the key's pads' outer ends, its top inside the button's top line.
+  (pcase-let* ((`(,g ,top ,h ,l ,r ,mx) (glitnir-decor-gui--key-in-button (glitnir-decor-gui--key-face)))
+               (line (glitnir-decor-gui--line 2))
+               (mid (+ top (/ h 2)))
+               (orange '(255 128 0)) (blue '(48 128 255)) (bg '(48 48 96)))
+    (should (equal (list 'button-top (glitnir-decor-gui--px g mx top)) (list 'button-top orange)))
+    (should (equal (list 'button-bottom (glitnir-decor-gui--px g mx (+ top h -1))) (list 'button-bottom orange)))
+    ;; just under the button's top line, above the letters' ink (`b' ends and `e' starts at the key's ends)
+    (should (equal (list 'no-side-before (glitnir-decor-gui--px g (1- l) (+ top line 1))) (list 'no-side-before bg)))
+    (should (equal (list 'no-side-after (glitnir-decor-gui--px g r (+ top line 1))) (list 'no-side-after bg)))
+    (should (equal (list 'key-left (glitnir-decor-gui--px g l mid)) (list 'key-left blue)))
+    (should (equal (list 'key-right (glitnir-decor-gui--px g (1- r) mid)) (list 'key-right blue)))
+    ;; the key's top: blue between the button's top line and the row's middle, never on the button's line
+    (should (cl-loop for y from (+ top line) below mid
+                     thereis (equal (glitnir-decor-gui--px g mx y) blue)))))
+
+(ert-deftest glitnir-decor-gui/a-box-inside-a-box-without-glitnir-is-the-plain-box ()
+  (skip-unless (featurep 'nidhogg-wayland))
+  ;; Without Glitnir drawing, `:inside' is accepted and changes nothing: the stock box, the key's own lines on its
+  ;; glyphs (as one run with the button's).
+  (pcase-let* ((`(,g ,top ,_ ,_ ,_ ,mx) (glitnir-decor-gui--key-in-button (glitnir-decor-gui--key-face) 'off)))
+    (should (equal (glitnir-decor-gui--px g mx top) '(48 128 255)))))
+
 (ert-deftest glitnir-decor-gui/adjacent-same-boxes-are-one-run ()
   (skip-unless (featurep 'nidhogg-wayland))
   ;; Two faces whose boxes are the same (colour and kind), side by side, are one run as in stock Emacs: no side

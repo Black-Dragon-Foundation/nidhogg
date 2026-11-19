@@ -201,6 +201,15 @@
     (set-face-attribute face nil :box '(:corner-radius 2.5 :open nil))
     (set-face-attribute face nil :box '(:corner-radius 0 :open (top bottom left right)))))
 
+;; :inside (a box drawn inside the enclosing boxed run's: a key's cap in a button) takes any value.
+(ert-deftest glitnir/box-key-inside-accepted ()
+  (skip-unless (featurep 'glitnir))
+  (let ((face (make-symbol "glitnir-box-inside-face")))
+    (custom-declare-face face nil "Test face.")
+    (set-face-attribute face nil :box '(:line-width -1 :color "blue" :corner-radius 4 :inside t :fit text))
+    (should (eq (plist-get (face-attribute face :box) :inside) t))
+    (set-face-attribute face nil :box '(:line-width 1 :inside nil))))
+
 (ert-deftest glitnir/box-keys-bad-values-signal ()
   (skip-unless (featurep 'glitnir))
   (dolist (box '((:corner-radius -1) (:corner-radius "6") (:open (diagonal)) (:open top)

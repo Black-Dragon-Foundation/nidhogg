@@ -4934,11 +4934,27 @@ face_at_pos (const struct it *it, enum lface_attribute_index attr_filter)
    in another (a search match inside the region) drew only its top and
    bottom.  Glitnir rings each box, so a box that differs in kind or
    colour from its neighbour's starts and ends a run of its own; boxes
-   that are the same still make one run.  */
+   that are the same still make one run.  A box `:inside' another (a
+   key's cap in a button) neither ends nor starts the enclosing run: the
+   enclosing ring runs on across it, and the inside ring is drawn whole
+   (glitnir-decor.c).  */
+static bool
+glitnir_box_inside_p (struct face *face)
+{
+  Lisp_Object box = face->lface[LFACE_BOX_INDEX];
+  for (; CONSP (box) && CONSP (XCDR (box)); box = XCDR (XCDR (box)))
+    if (EQ (XCAR (box), QCinside))
+      return !NILP (XCAR (XCDR (box)));
+  return false;
+}
+
 static bool
 glitnir_box_differs (struct face *face, struct face *other)
 {
   if (face->box == FACE_NO_BOX)
+    return false;
+  if (other->box != FACE_NO_BOX
+      && glitnir_box_inside_p (face) != glitnir_box_inside_p (other))
     return false;
   bool kind_differs = face->box != other->box;
   bool colour_differs = face->box_color != other->box_color;
