@@ -951,16 +951,14 @@ glitnir_hstrip_row (struct window *w, int i, bool desired)
   return first[i].enabled_p ? first + i : NULL;
 }
 
-/* Whether ROW of W is cut at the right edge: marked truncated, or its
-   glyphs reaching past the text area (a display string or stretch that
-   ends the line there is not marked: its newline overflows into the
-   fringe).  */
+/* Whether ROW of W is cut at the right edge: marked truncated.  A row
+   whose glyphs reach past the text area is always marked (display_line);
+   only one ending exactly at the edge is not, its newline overflowing
+   into the fringe, and nothing of it is cut.  */
 static bool
 glitnir_hstrip_row_cut (struct window *w, struct glyph_row *row)
 {
-  return (!row->mode_line_p
-	  && (row->truncated_on_right_p
-	      || row->pixel_width > window_box_width (w, TEXT_AREA)));
+  return !row->mode_line_p && row->truncated_on_right_p;
 }
 
 /* The widest row of W cut while the line model says its line fits in
