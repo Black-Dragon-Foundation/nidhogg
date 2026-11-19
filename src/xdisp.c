@@ -20270,11 +20270,12 @@ try_cursor_movement (Lisp_Object window, struct text_pos startp,
 	  if (must_scroll)
 	    ;
 	  else if (rc != CURSOR_MOVEMENT_SUCCESS
-	      && (MATRIX_ROW_PARTIALLY_VISIBLE_P (w, row)
 #ifdef HAVE_GLITNIR
-		  || glitnir_row_under_strip (w, row)
+	      && (MATRIX_ROW_PARTIALLY_VISIBLE_P (w, row)
+		  || glitnir_row_under_strip (w, row))
+#else
+	      && MATRIX_ROW_PARTIALLY_VISIBLE_P (w, row)
 #endif
-		  )
 	      /* Make sure this isn't a header line nor a tab-line by
 		 any chance, since then MATRIX_ROW_PARTIALLY_VISIBLE_P
 		 might yield true.  */
@@ -20778,8 +20779,8 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
   /* Whether the horizontal strip shows, with the hscroll and the
      widths as they are now: the cursor's row check below reads it.  */
   glitnir_hstrip_window (w, false);
-#endif
 
+#endif
   /* When windows_or_buffers_changed is non-zero, we can't rely
      on the window end being valid, so set it to zero there.  */
   if (windows_or_buffers_changed)
@@ -21807,8 +21808,8 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
   /* The horizontal strip again, with the rows just made measured.  */
   if (!f->fonts_changed)
     glitnir_hstrip_window (w, true);
-#endif
 
+#endif
    if (WINDOW_HAS_VERTICAL_SCROLL_BAR (w) || WINDOW_HAS_HORIZONTAL_SCROLL_BAR (w))
     {
       if (WINDOW_HAS_VERTICAL_SCROLL_BAR (w))

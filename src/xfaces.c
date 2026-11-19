@@ -5524,8 +5524,8 @@ glitnir_face_with_foreground (struct frame *f, int face_id, Lisp_Object color)
   attrs[LFACE_FOREGROUND_INDEX] = color;
   return lookup_face (f, attrs);
 }
-#endif
 
+#endif
 
 /* Return the face id of the realized face for named face SYMBOL on
    frame F suitable for displaying ASCII characters, and use
