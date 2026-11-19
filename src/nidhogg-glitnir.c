@@ -26,9 +26,15 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include "lisp.h"
 #include "frame.h"
+#include "buffer.h"
+#include "dispextern.h"
+#include "window.h"
+#include "font.h"
+#ifdef HAVE_NIDHOGG_HISTORY
+#include "nidhogg-history.h"
+#endif
 #ifdef HAVE_NHWL
 #include "blockinput.h"
-#include "dispextern.h"
 #include "keyboard.h"
 #include "nhwlterm.h"
 #endif
@@ -619,9 +625,510 @@ microseconds.  For the decoration cost bench (PD R-D1).  */)
 #endif
 }
 
+/* The terminal's overview column and fold margin (design 7.8, stage T).
+   A tty frame has no compositor: a window's overview ruler
+   (glitnir--ruler, as glitnir--ruler-vector makes it) becomes its right
+   margin's last column, `┃' over the rows the window shows and `│'
+   elsewhere, with a `▐' in a mark's colour on the rows its marks fall
+   on (a later mark over an earlier one, as the strip draws them); its
+   fold arrows (glitnir--fold-arrows) become a `▸' in the folded colour
+   in its left margin's first column on each row that starts a folded
+   line (nh_lines_folded_at).  The window reserves the margins
+   (set-window-margins); without them nothing is drawn.
+
+   The cells are put in the frame's desired matrix once
+   build_frame_matrix has built it from the windows, every update, so
+   update_frame owns them: a row that was not redisplayed keeps the
+   current row's glyphs, and its cell is rewritten (the row then updated)
+   only when it changed, so insert/delete-line scrolling and the diff
+   against the current matrix stay correct.  A scroll costs no Lisp: the
+   vectors are resolved when the spec or the theme changes, and the
+   colours' faces are realized once, then found in the face cache.  */
+
+extern int glitnir_face_with_foreground (struct frame *, int, Lisp_Object);
+
+static intmax_t
+glitnir_tty_int (Lisp_Object v, ptrdiff_t i, intmax_t dflt)
+{
+  Lisp_Object x = i < ASIZE (v) ? AREF (v, i) : Qnil;
+  return (FIXNUMP (x) ? XFIXNUM (x)
+	  : FLOATP (x) ? (intmax_t) XFLOAT_DATA (x) : dflt);
+}
+
+/* POS (a marker into B or an integer) as a position, or -1.  */
+static ptrdiff_t
+glitnir_tty_pos (struct buffer *b, Lisp_Object pos)
+{
+  if (MARKERP (pos))
+    return XMARKER (pos)->buffer == b ? marker_position (pos) : -1;
+  return FIXNUMP (pos) ? XFIXNUM (pos) : -1;
+}
+
+/* POS's fraction of B's accessible part, as the strip measures it: by
+   visible lines with a line model, else by characters.  */
+static double
+glitnir_tty_frac (struct buffer *b, ptrdiff_t begv, ptrdiff_t span,
+		  ptrdiff_t pos)
+{
+#ifdef HAVE_NIDHOGG_HISTORY
+  double f;
+  if (nh_lines_ntracked && nh_lines_fraction (b, pos, &f))
+    return f;
+#endif
+  return (double) (clip_to_bounds (begv, pos, begv + span) - begv) / span;
+}
+
+/* The face for colour RGB (-1: none, BASE) on F.  */
+static int
+glitnir_tty_face (struct frame *f, intmax_t rgb, int base)
+{
+  if (rgb < 0)
+    return base;
+  char hex[8];
+  sprintf (hex, "#%06x", (unsigned) (rgb & 0xffffff));
+  return glitnir_face_with_foreground (f, base, build_string (hex));
+}
+
+/* Put C in FACE (C 0: a blank) at column X of frame row FR, when it is
+   not there already; the row is then updated.  WR is the window's
+   desired row that shares the frame row's glyphs, when enabled.  */
+static void
+glitnir_tty_put (struct frame *f, struct glyph_row *fr, struct glyph_row *wr,
+		 int x, int c, int face)
+{
+  if (x < 0 || x >= fr->used[TEXT_AREA])
+    return;
+  struct glyph *g = fr->glyphs[TEXT_AREA] + x;
+  struct glyph n = space_glyph;
+  if (c)
+    n.u.ch = c, n.face_id = face;
+  n.frame = f;
+  if (g->type == CHAR_GLYPH && g->u.ch == n.u.ch && g->face_id == n.face_id
+      && !g->padding_p)
+    return;
+  *g = n;
+  fr->enabled_p = true;
+  if (wr && wr->enabled_p)
+    wr->hash = row_hash (wr);
+}
+
+static void
+glitnir_tty_window (struct frame *f, struct window *w)
+{
+  if (!BUFFERP (w->contents) || !w->desired_matrix || !w->current_matrix)
+    return;
+  Lisp_Object window;
+  XSETWINDOW (window, w);
+  Lisp_Object r = Fwindow_parameter (window, Qglitnir__ruler);
+  Lisp_Object a = Fwindow_parameter (window, Qglitnir__fold_arrows);
+  bool ruler = VECTORP (r) && ASIZE (r) >= 11 && w->right_margin_cols > 0;
+  bool arrows = (VECTORP (a) && ASIZE (a) >= 7 && glitnir_tty_int (a, 0, 0) > 0
+		 && w->left_margin_cols > 0);
+#ifdef HAVE_NIDHOGG_HISTORY
+  arrows = arrows && nh_lines_ntracked;
+#else
+  arrows = false;
+#endif
+  if (!ruler && !arrows)
+    return;
+  struct buffer *b = XBUFFER (w->contents);
+  struct glyph_matrix *dm = w->desired_matrix, *cm = w->current_matrix;
+  struct glyph_matrix *m = w->must_be_updated_p ? dm : cm;
+  struct glyph_row *r0 = m->rows;
+  int first = m->tab_line_p + m->header_line_p;
+  int n = min (window_box_height (w) / max (1, FRAME_LINE_HEIGHT (f)),
+	       m->nrows - first);
+  if (n <= 0 || m->nrows <= 0)
+    return;
+  /* The columns in the window's rows: its right margin's last, its left
+     margin's first; never a vertical border's.  */
+  int last = (int) (r0->glyphs[RIGHT_MARGIN_AREA] - r0->glyphs[LEFT_MARGIN_AREA]
+		    + w->right_margin_cols - 1);
+  int width = (int) (r0->glyphs[LAST_AREA] - r0->glyphs[LEFT_MARGIN_AREA]);
+  if (last >= width - (WINDOW_RIGHTMOST_P (w) ? 0 : 1))
+    ruler = false;
+
+  int thumb_face = 0, track_face = 0;
+  int y0 = 0, y1 = 0;
+  bool hidden = false, spanned = false;
+  ptrdiff_t begv = BUF_BEGV (b), span = max (1, BUF_ZV (b) - begv);
+  intmax_t from = 0, length = 0, total = 0;
+  if (ruler)
+    {
+      intmax_t flags = glitnir_tty_int (r, 5, 0);
+      from = max (0, glitnir_tty_int (r, 8, 0));
+      length = max (0, glitnir_tty_int (r, 9, 0));
+      total = glitnir_tty_int (r, 10, 0);
+      spanned = total > 0;
+      if (spanned)
+	from = min (from, total), length = min (length, total - from);
+      ptrdiff_t start = clip_to_bounds (BUF_BEG (b), marker_position (w->start),
+					BUF_Z (b));
+      ptrdiff_t end = BUF_Z (b) - w->window_end_pos;
+      hidden = ((flags & 1) && start <= begv && end >= BUF_ZV (b)
+		&& (!spanned || (from == 0 && length >= total)));
+#define GLITNIR_TTY_ROW(pos)						\
+      ((int) ((spanned							\
+	       ? (from + glitnir_tty_frac (b, begv, span, pos) * length) / total \
+	       : glitnir_tty_frac (b, begv, span, pos))			\
+	      * n))
+      y0 = min (GLITNIR_TTY_ROW (start), n - 1);
+      y1 = min (max (y0 + 1, GLITNIR_TTY_ROW (end)), n);
+      track_face = lookup_derived_face (w, f, Qshadow, DEFAULT_FACE_ID, false);
+      if (track_face < 0)
+	track_face = DEFAULT_FACE_ID;
+      thumb_face = glitnir_tty_face (f, glitnir_tty_int (r, 3, -1),
+				     DEFAULT_FACE_ID);
+    }
+
+  /* Each row's cell: 0 the track, 1 the thumb, else the mark's index in
+     the ruler vector.  */
+  USE_SAFE_ALLOCA;
+  ptrdiff_t *cell;
+  SAFE_NALLOCA (cell, 1, n);
+  for (int y = 0; y < n; y++)
+    cell[y] = y >= y0 && y < y1;
+  if (ruler && !hidden)
+    for (ptrdiff_t i = 11; i < ASIZE (r); i++)
+      {
+	Lisp_Object mk = AREF (r, i);
+	if (!VECTORP (mk) || ASIZE (mk) < 5)
+	  continue;
+	ptrdiff_t pos = glitnir_tty_pos (b, AREF (mk, 0));
+	if (pos < 0)
+	  continue;
+	int my = clip_to_bounds (0, GLITNIR_TTY_ROW (pos), n - 1), my1 = my;
+	ptrdiff_t endpos = ASIZE (mk) > 7 ? glitnir_tty_pos (b, AREF (mk, 7)) : -1;
+	if (endpos > pos)
+	  my1 = clip_to_bounds (my, GLITNIR_TTY_ROW (endpos), n - 1);
+	for (int y = my; y <= my1; y++)
+	  cell[y] = i;
+      }
+#undef GLITNIR_TTY_ROW
+
+  int folded_face = (arrows
+		     ? glitnir_tty_face (f, glitnir_tty_int (a, 5, -1),
+					 DEFAULT_FACE_ID)
+		     : 0);
+  ptrdiff_t face_of = -1;
+  int mark_face = 0;
+  for (int y = 0; y < n; y++)
+    {
+      int wy = first + y;
+      struct glyph_row *fr = MATRIX_ROW (f->desired_matrix, m->matrix_y + wy);
+      struct glyph_row *wr = MATRIX_ROW (dm, wy);
+      if (!w->must_be_updated_p)
+	wr = NULL;
+      if (ruler)
+	{
+	  int x = m->matrix_x + last;
+	  if (hidden)
+	    glitnir_tty_put (f, fr, wr, x, 0, 0);
+	  else if (cell[y] == 0)
+	    glitnir_tty_put (f, fr, wr, x, 0x2502, track_face);
+	  else if (cell[y] == 1)
+	    glitnir_tty_put (f, fr, wr, x, 0x2503, thumb_face);
+	  else
+	    {
+	      if (face_of != cell[y])
+		{
+		  Lisp_Object mk = AREF (r, cell[y]);
+		  face_of = cell[y];
+		  mark_face = glitnir_tty_face (f, glitnir_tty_int (mk, 3, -1),
+						DEFAULT_FACE_ID);
+		}
+	      glitnir_tty_put (f, fr, wr, x, 0x2590, mark_face);
+	    }
+	}
+#ifdef HAVE_NIDHOGG_HISTORY
+      if (arrows)
+	{
+	  /* The row as it will show: the desired one when it was built,
+	     else the current one.  */
+	  struct glyph_row *row = wr && wr->enabled_p ? wr : MATRIX_ROW (cm, wy);
+	  bool folded = (row->enabled_p && row->displays_text_p
+			 && !MATRIX_ROW_CONTINUATION_LINE_P (row)
+			 && nh_lines_folded_at (b, MATRIX_ROW_START_CHARPOS (row)));
+	  int x = m->matrix_x;
+	  if (folded)
+	    glitnir_tty_put (f, fr, wr, x, 0x25b8, folded_face);
+	  else if (x < fr->used[TEXT_AREA]
+		   && fr->glyphs[TEXT_AREA][x].u.ch == 0x25b8)
+	    /* a fold opened on a row that was not redisplayed */
+	    glitnir_tty_put (f, fr, wr, x, 0, 0);
+	}
+#endif
+    }
+  SAFE_FREE ();
+}
+
+static void
+glitnir_tty_tree (struct frame *f, struct window *w)
+{
+  for (; w; w = NILP (w->next) ? NULL : XWINDOW (w->next))
+    if (WINDOWP (w->contents))
+      glitnir_tty_tree (f, XWINDOW (w->contents));
+    else
+      glitnir_tty_window (f, w);
+}
+
+/* Put the overview columns and fold margins of tty frame F's windows in
+   its desired matrix, just built (build_frame_matrix).  */
+void
+glitnir_tty_columns (struct frame *f)
+{
+  glitnir_tty_tree (f, XWINDOW (FRAME_ROOT_WINDOW (f)));
+}
+
+/* The horizontal strip (the window parameter glitnir--hstrip, as
+   glitnir--hstrip-vector makes it: [HEIGHT LANE INSET RADIUS LEAST RGB
+   OPACITY], device pixels): a thumb along the text's bottom HEIGHT
+   pixels, from the first text column (after the line numbers) to the
+   text area's right edge, while the window cuts lines (truncate-lines,
+   partial-width truncation or an hscroll) and something is wider than
+   the text.  It takes no space and never reflows.
+
+   What it stands for, WHOLE (pixels), is the largest of: the buffer's
+   widest line from the line model (nh_lines_widest, folded lines and
+   narrowing left out) plus 4 columns, so the thumb reaches a cursor
+   past the longest line's end; the rows shown that are cut while the
+   model says their line fits (display strings, inlay hints, images,
+   fold summaries), each walked once per (window, row start, buffer and
+   overlay modiffs, column width); and hscroll plus the text's width.
+   A row the model says is too wide is never walked, so a long line
+   costs nothing.  Without a model (none, not built, a density view, or
+   a buffer with long-line optimizations) nothing is walked: the strip
+   shows while a row is cut or the window is hscrolled, standing for
+   hscroll plus twice the text's width, open-ended.
+
+   It is worked out in redisplay_window, at its start (the cursor's row
+   check, cursor_row_fully_visible_p, reads whether it shows: a row
+   reaching into it counts as partly visible) and once its rows are
+   made (the cut rows measured).  nhwlterm.c draws the thumb from the
+   window's fields when the frame publishes, and gives the glue the
+   bottom LANE pixels to take presses on.  */
+
+/* Rows walked: window, row start, modiffs, column width, width.  */
+#define GLITNIR_HSTRIP_CACHE 64
+static struct
+{
+  EMACS_INT seq;
+  ptrdiff_t start;
+  modiff_count modiff;
+  int col, px;
+} glitnir_hstrip_cache[GLITNIR_HSTRIP_CACHE];
+static int glitnir_hstrip_next;
+
+/* Whether leaf window W, showing B, cuts its lines (init_iterator's
+   rule).  */
+static bool
+glitnir_hstrip_cuts (struct window *w, struct buffer *b)
+{
+  if (w->hscroll || !NILP (BVAR (b, truncate_lines)))
+    return true;
+  return !(WINDOW_FULL_WIDTH_P (w)
+	   || NILP (Vtruncate_partial_width_windows)
+	   || (FIXNUMP (Vtruncate_partial_width_windows)
+	       && (XFIXNUM (Vtruncate_partial_width_windows)
+		   <= WINDOW_TOTAL_COLS (w))));
+}
+
+/* Text row I of W (from its first): the desired row when DESIRED and it
+   was made, else the current one; NULL past the window's rows.  */
+static struct glyph_row *
+glitnir_hstrip_row (struct window *w, int i, bool desired)
+{
+  struct glyph_matrix *c = w->current_matrix, *d = w->desired_matrix;
+  if (!c)
+    return NULL;
+  struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (c);
+  if (first + i >= MATRIX_BOTTOM_TEXT_ROW (c, w))
+    return NULL;
+  if (desired && d && d->nrows == c->nrows)
+    {
+      struct glyph_row *r = MATRIX_FIRST_TEXT_ROW (d) + i;
+      if (r < MATRIX_BOTTOM_TEXT_ROW (d, w) && r->enabled_p)
+	return r;
+    }
+  return first[i].enabled_p ? first + i : NULL;
+}
+
+/* Whether ROW of W is cut at the right edge: marked truncated.  A row
+   whose glyphs reach past the text area is always marked (display_line);
+   only one ending exactly at the edge is not, its newline overflowing
+   into the fringe, and nothing of it is cut.  */
+static bool
+glitnir_hstrip_row_cut (struct window *w, struct glyph_row *row)
+{
+  return !row->mode_line_p && row->truncated_on_right_p;
+}
+
+/* The widest row of W cut while the line model says its line fits in
+   TEXT_PX at COL pixels a column, measured or as last measured.  */
+static int
+glitnir_hstrip_exceptions (struct window *w, struct buffer *b, int col,
+			   int text_px)
+{
+  int widest = 0;
+#ifdef HAVE_NIDHOGG_HISTORY
+  modiff_count modiff = BUF_MODIFF (b) + BUF_OVERLAY_MODIFF (b);
+  int bottom = window_text_bottom_y (w);
+  struct glyph_row *row;
+  for (int i = 0; (row = glitnir_hstrip_row (w, i, true)); i++)
+    {
+      if (row->y >= bottom)
+	break;
+      if (glitnir_hstrip_row_cut (w, row))
+	{
+	  ptrdiff_t start = CHARPOS (row->start.pos);
+	  uint32_t cols;
+	  /* The model says the line is too wide (or knows nothing):
+	     never walked.  */
+	  if (!nh_lines_cols_at (b, start, &cols)
+	      || (intmax_t) cols * col > text_px)
+	    continue;
+	  int px = -1;
+	  for (int k = 0; k < GLITNIR_HSTRIP_CACHE; k++)
+	    if (glitnir_hstrip_cache[k].seq == w->sequence_number
+		&& glitnir_hstrip_cache[k].start == start
+		&& glitnir_hstrip_cache[k].modiff == modiff
+		&& glitnir_hstrip_cache[k].col == col)
+	      {
+		px = glitnir_hstrip_cache[k].px;
+		break;
+	      }
+	  if (px < 0)
+	    {
+	      px = glitnir_line_width (w, row->start.pos);
+	      glitnir_hstrip_measures++;
+	      int k = glitnir_hstrip_next;
+	      glitnir_hstrip_cache[k].seq = w->sequence_number;
+	      glitnir_hstrip_cache[k].start = start;
+	      glitnir_hstrip_cache[k].modiff = modiff;
+	      glitnir_hstrip_cache[k].col = col;
+	      glitnir_hstrip_cache[k].px = px;
+	      glitnir_hstrip_next
+		= (glitnir_hstrip_next + 1) % GLITNIR_HSTRIP_CACHE;
+	    }
+	  widest = max (widest, px);
+	}
+      if (row->ends_at_zv_p)
+	break;
+    }
+#endif
+  return widest;
+}
+
+/* Whether a text row of W is cut (the made rows when DESIRED).  */
+static bool
+glitnir_hstrip_any_cut (struct window *w, bool desired)
+{
+  struct glyph_row *row;
+  for (int i = 0; (row = glitnir_hstrip_row (w, i, desired)); i++)
+    {
+      if (glitnir_hstrip_row_cut (w, row))
+	return true;
+      if (row->ends_at_zv_p)
+	break;
+    }
+  return false;
+}
+
+/* Work out leaf window W's horizontal strip into its fields: whether it
+   shows, and the whole it stands for.  MEASURE: W's rows were just made
+   (the end of redisplay_window); its cut rows are measured.  W's buffer
+   must be current; otherwise nothing changes.  */
+void
+glitnir_hstrip_window (struct window *w, bool measure)
+{
+  struct frame *f = XFRAME (w->frame);
+  if (!BUFFERP (w->contents) || XBUFFER (w->contents) != current_buffer)
+    return;
+  Lisp_Object window;
+  XSETWINDOW (window, w);
+  Lisp_Object v = (FRAME_WINDOW_P (f) && !MINI_WINDOW_P (w)
+		   ? Fwindow_parameter (window, Qglitnir__hstrip) : Qnil);
+  struct buffer *b = current_buffer;
+  int height = VECTORP (v) ? max (0, glitnir_tty_int (v, 0, 0)) : 0;
+  int whole = 0;
+  bool shown = false;
+  if (height > 0)
+    {
+      struct face *face
+	= FACE_FROM_ID_OR_NULL (f, lookup_basic_face (w, f, DEFAULT_FACE_ID));
+      int col = (face && face->font && face->font->space_width > 0
+		 ? face->font->space_width : FRAME_COLUMN_WIDTH (f));
+      w->glitnir_col_px = col;
+      int text_px = window_box_width (w, TEXT_AREA) - w->glitnir_lnum_px;
+      intmax_t hscroll_px = (intmax_t) w->hscroll * FRAME_COLUMN_WIDTH (f);
+      if (text_px > 0 && glitnir_hstrip_cuts (w, b))
+	{
+	  uint32_t cols = 0;
+	  bool model = false;
+#ifdef HAVE_NIDHOGG_HISTORY
+	  model = (!b->long_line_optimizations_p && nh_lines_ntracked
+		   && nh_lines_widest (b, &cols));
+#endif
+	  if (model)
+	    {
+	      if (measure)
+		w->glitnir_cut_px = glitnir_hstrip_exceptions (w, b, col,
+							       text_px);
+	      intmax_t m = max ((intmax_t) (cols + 4) * col,
+				(intmax_t) w->glitnir_cut_px);
+	      if (w->hscroll > 0)
+		m = max (m, hscroll_px + text_px);
+	      whole = min (m, INT_MAX / 2);
+	      shown = whole > text_px;
+	    }
+	  else
+	    {
+	      w->glitnir_cut_px = 0;
+	      whole = min (hscroll_px + 2 * (intmax_t) text_px, INT_MAX / 2);
+	      /* Before the rows are made, the last display's decision
+		 (the current matrix may hold rows of an earlier start).  */
+	      shown = (w->hscroll > 0
+		       || (measure ? glitnir_hstrip_any_cut (w, true)
+			   : w->glitnir_strip_px > 0));
+	    }
+	}
+      /* Right to left: the thumb mirrored (as the scroll bar's).  */
+      if (shown && measure)
+	{
+	  Lisp_Object dir = BVAR (b, bidi_paragraph_direction);
+	  w->glitnir_rtl
+	    = (!NILP (BVAR (b, bidi_display_reordering))
+	       && EQ (NILP (dir) ? Fcurrent_bidi_paragraph_direction (Qnil)
+		      : dir, Qright_to_left));
+	}
+    }
+  w->glitnir_whole_px = shown ? whole : 0;
+  w->glitnir_strip_px = shown ? height : 0;
+}
+
+DEFUN ("glitnir-hstrip-state", Fglitnir_hstrip_state, Sglitnir_hstrip_state,
+       0, 1, 0,
+       doc: /* The horizontal strip of WINDOW as its last redisplay worked it out.
+WINDOW defaults to the selected window.  A list (WHOLE HEIGHT LNUM COL
+CUT RTL): the pixels the strip stands for (0: no strip), its height
+while it shows, the line numbers' width, the default face's column
+width, the widest row measured that was cut while its line fits, and
+whether the thumb is mirrored.  For tests and `describe'.  */)
+  (Lisp_Object window)
+{
+  struct window *w = decode_live_window (window);
+  return list (make_fixnum (w->glitnir_whole_px),
+	       make_fixnum (w->glitnir_strip_px),
+	       make_fixnum (w->glitnir_lnum_px),
+	       make_fixnum (w->glitnir_col_px),
+	       make_fixnum (w->glitnir_cut_px),
+	       w->glitnir_rtl ? Qt : Qnil);
+}
+
 void
 syms_of_nidhogg_glitnir (void)
 {
+  DEFSYM (Qshadow, "shadow");
   DEFSYM (QCcorner_radius, ":corner-radius");
   DEFSYM (QCopen, ":open");
   /* :fit text: the box hugs the text's height (the font's ascent and
@@ -643,6 +1150,14 @@ syms_of_nidhogg_glitnir (void)
   defsubr (&Sglitnir__stacking);
   defsubr (&Sglitnir__chrome);
   defsubr (&Sglitnir__rechrome);
+  defsubr (&Sglitnir_hstrip_state);
+
+  DEFVAR_INT ("glitnir--hstrip-measures", glitnir_hstrip_measures,
+	      doc: /* How many rows the horizontal strip walked to measure.
+A row cut while its line fits is walked once per window, row start,
+buffer and overlay change and column width; a test sets this to 0 and
+reads it.  */);
+  glitnir_hstrip_measures = 0;
 
   DEFVAR_BOOL ("glitnir-enable", glitnir_enable,
 	       doc: /* Non-nil means Glitnir (the compositor) decorates graphical frames.
@@ -685,6 +1200,11 @@ The number of the reason in `try_window_id' (xdisp.c), for tests.  */);
   DEFSYM (Qglitnir__ruler, "glitnir--ruler");
   DEFSYM (Qglitnir__edges, "glitnir--edges");
   DEFSYM (Qglitnir__minimap, "glitnir--minimap");
+  DEFSYM (Qglitnir__fold_arrows, "glitnir--fold-arrows");
+  DEFSYM (Qglitnir__hstrip, "glitnir--hstrip");
+  /* The horizontal strip's press and drag: (glitnir-hstrip WINDOW
+     HSCROLL), a special event.  */
+  DEFSYM (Qglitnir_hstrip, "glitnir-hstrip");
 
 #ifdef HAVE_NIDHOGG_WORKERS
   syms_of_glitnir_images ();

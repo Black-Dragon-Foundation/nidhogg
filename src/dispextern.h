@@ -3720,6 +3720,9 @@ extern void x_y_to_column_row (struct window *, int, int, int *, int *);
 extern void note_mouse_highlight (struct frame *, int, int);
 #ifdef HAVE_GLITNIR
 extern void note_mouse_sensor_leave (struct frame *);
+/* nidhogg-glitnir.c: the horizontal strip.  */
+extern void glitnir_hstrip_window (struct window *, bool);
+extern int glitnir_line_width (struct window *, struct text_pos);
 #endif
 extern void gui_clear_window_mouse_face (struct window *);
 extern void cancel_mouse_face (struct frame *);

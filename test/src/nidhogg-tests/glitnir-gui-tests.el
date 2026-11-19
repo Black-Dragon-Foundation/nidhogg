@@ -1658,6 +1658,63 @@ shows."
       (nidhogg-lines-disable buf)
       (kill-buffer buf))))
 
+(defvar nidhogg-treesit-highlight-slice)
+
+(defconst glitnir-gui--dir (file-name-directory (or load-file-name buffer-file-name "")))
+
+;; Task 11e: a whole-text highlight pass colours the minimap from idle slices.
+(ert-deftest glitnir-gui/idle-highlight-slices-colour-the-minimap ()
+  "A refold of a text larger than one slice colours the minimap's first
+lines at once and the rest from the idle timer's slices; the minimap
+shows each slice's colours with no other change to the window."
+  (glitnir-gui--skip-unless-tree)
+  (let ((grammars (expand-file-name "fixtures/grammars-cache"
+                                    glitnir-gui--dir)))
+    (skip-unless (and (fboundp 'nidhogg-lines-enable) (fboundp 'nidhogg-treesit-refold)
+                      (file-exists-p (expand-file-name "libtree-sitter-c.so" grammars))))
+    (let ((buf (get-buffer-create "*glitnir-minimap-slices*")) (w (selected-window))
+          (treesit-extra-load-path (list grammars)))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (dotimes (i 300)
+                (insert (format "int f%d (void)\n{\n  return %d;\n}\n\n" i i)))
+              (nidhogg-lines-enable buf t))
+            (set-window-buffer w buf)
+            (set-window-start w (with-current-buffer buf
+                                  (save-excursion (goto-char (point-max)) (forward-line -20) (point))))
+            (set-window-parameter w 'glitnir-minimap
+                                  '(:width 120 :open t :fill ("#203040" . 1) :text ("#ff00ff" . 1)
+                                    :classes ((type . "#00ff00"))))
+            (let ((mm (glitnir-gui--minimap-rect w 120)) (green '(0 255 0)))
+              (with-current-buffer buf
+                (let ((p (treesit-parser-create 'c)) (nidhogg-treesit-highlight-slice 0))
+                  (treesit-parser-root-node p)
+                  (setq-local nidhogg-treesit-highlight-query
+                              (treesit-query-compile 'c "(primitive_type) @type"))
+                  (nidhogg-treesit-refold p)
+                  ;; the window shows the text's end: not coloured yet
+                  (should (= 0 (glitnir-gui--count-in (glitnir-gui--painted) mm green)))
+                  ;; slices from the idle timer, a line each, until the last line.  The runner's rows run inside
+                  ;; a timer, where Emacs is never idle (`current-idle-time' is nil), so the row fires the slice's
+                  ;; idle timer itself, as an idle period would: each slice must arm the next one
+                  (let ((deadline (+ (float-time) 60)))
+                    (while (and (not (nidhogg-lines-classes buf 1495)) (< (float-time) deadline))
+                      (let ((tm (seq-find (lambda (tm) (eq (timer--function tm) 'nidhogg-treesit--highlight-slice))
+                                          timer-idle-list)))
+                        (should tm)
+                        (timer-event-handler tm))
+                      (sit-for 0)))
+                  (should (nidhogg-lines-classes buf 1495))))
+              (sit-for 0.05)
+              (gui-runner-wait-settled)
+              (let ((after (glitnir-snapshot nil 'raw)))
+                (glitnir-gui--shot "minimap-slices")
+                (should (> (glitnir-gui--count-in after mm green) 10)))))
+        (set-window-parameter w 'glitnir-minimap nil)
+        (nidhogg-lines-disable buf)
+        (kill-buffer buf)))))
+
 (ert-deftest glitnir-gui/the-minimap-band-follows-a-scroll ()
   "The band over the lines the window shows moves with a scroll, with no Lisp of the minimap's in between: the same
 parameter, only the window's start changes."
@@ -1867,6 +1924,95 @@ uncovered)."
                                  3))
         (should (equal (glitnir-gui--pixel first inner) '(#x20 #x30 #x40)))))))
 
+(ert-deftest glitnir-gui/the-minimap-trail-flash-and-dwell-parts ()
+  "The trail draws a bar at the minimap's left edge on each visit's row, the newest strongest; a flash lights its row
+in the accent for 400 ms, then it is gone with no Lisp in between; a rest on the marks lane is one `dwell-marks'
+event, at most 80 ms after the dwell's 300 ms."
+  (glitnir-gui--with-hover-minimap '(:width 120 :open t :fill ("#203040" . 1) :text ("#203040" . 1)
+                                            :trail ("#ff0000" . 1) :trail-length 3 :accent "#00ff00")
+    (let* ((row-px (floor (+ 0.5 (* 2 (frame-scale-factor)))))
+           (pos (lambda (l) (with-current-buffer buf (save-excursion (goto-char (point-min)) (forward-line l) (point)))))
+           (row-rect (lambda (l w) (list (nth 0 mm) (+ (nth 1 mm) (* l row-px)) w row-px)))
+           (red (lambda (snap l) (glitnir-gui--count-where snap (funcall row-rect l row-px)
+                                                           (lambda (r g b) (and (> r 40) (< g 80) (< b 90))))))
+           (strength (lambda (snap l) (car (glitnir-gui--pixel snap (list (nth 0 mm) (+ (nth 1 mm) (* l row-px))))))))
+      ;; (a bar is as wide as a row is tall: 2 logical px)
+      (dolist (l '(5 10 30 50)) (nidhogg-lines-trail-note buf (funcall pos l)))
+      ;; (the trail is read at a publish: one comes with the window's redisplay)
+      (force-window-update w)
+      (redisplay t)
+      (should (gui-runner-wait (lambda () (> (funcall red (glitnir-snapshot nil 'raw) 50) 0)) 3))
+      (let ((snap (glitnir-snapshot nil 'raw)))
+        (should (> (funcall red snap 30) 0))
+        (should (> (funcall red snap 10) 0))
+        (should (= (funcall red snap 5) 0))
+        (should (> (funcall strength snap 50) (funcall strength snap 30) (funcall strength snap 10))))
+      (glitnir-gui--shot "minimap-trail")
+      ;; the flash: lit, then gone after 400 ms with no redisplay asked
+      (let ((green (lambda () (glitnir-gui--count-where (glitnir-snapshot nil 'raw) (funcall row-rect 80 (nth 2 mm))
+                                                        (lambda (r g b) (and (> g 120) (< r 80) (< b 90)))))))
+        (should (glitnir-minimap-flash w (funcall pos 80)))
+        (should (gui-runner-wait (lambda () (> (funcall green) 0)) 1))
+        (should (gui-runner-wait (lambda () (gui-runner-read-all) (= (funcall green) 0)) 2)))
+      (nidhogg-lines-trail-clear buf)
+      ;; the marks lane: the strip's 12 px at the outer edge
+      (let* ((seen nil) (at nil)
+             (glitnir-minimap-functions (list (lambda (kind &rest _) (push kind seen) (setq at (float-time)))))
+             (lane-x (- (+ (nth 0 mm) (nth 2 mm)) (round (* 6 (frame-scale-factor)))))
+             (t0 (float-time)))
+        (glitnir-gui--vp-to vp map lane-x mid)
+        (should (gui-runner-wait (lambda () (gui-runner-read-all) seen) 3))
+        (gui-runner-observe 0.5 #'gui-runner-read-all)
+        (should (equal seen '(dwell-marks)))
+        (should (<= (- at t0) (+ 0.3 0.08 0.05)))))))
+
+(ert-deftest glitnir-gui/the-minimap-search-hits-and-the-label-hover ()
+  "The line model's search (X1) draws each hit as a `:hit' bar at its column on its row, as many as `how-many'
+finds, the current hit ringed; the pointer onto a label is one `label-hover' event at its line (X7), off it one of
+nil."
+  (glitnir-gui--with-hover-minimap '(:width 120 :open t :fill ("#000000" . 1) :text ("#000000" . 1)
+                                            :hit ("#ff0000" . 1) :band ("#000000" . 0) :pin-kind 9
+                                            :pin ("#000000" . 0) :pin-names ["pinned"] :label-face default)
+    (let* ((row-px (floor (+ 0.5 (* 2 (frame-scale-factor)))))
+           (col-px (max 1 (floor (+ 0.5 (frame-scale-factor)))))
+           (at (lambda (l) (+ 1 (* 77 l))))
+           (rows (lambda (from n) (list (nth 0 mm) (+ (nth 1 mm) (* from row-px)) (nth 2 mm) (* n row-px))))
+           (red (lambda (r g b) (and (> r 150) (< g 60) (< b 60))))
+           (n (nidhogg-lines-search buf "kkkkk" t)))
+      (while (eq n 'running) (setq n (nidhogg-lines-search-step buf)))
+      (should (= n 168))
+      (should (= n (with-current-buffer buf (how-many "kkkkk" (point-min) (point-max)))))
+      ;; (the search redisplays the buffer's windows itself)
+      (redisplay)
+      (should (gui-runner-wait (lambda () (> (glitnir-gui--count-where (glitnir-snapshot nil 'raw) (funcall rows 10 1) red) 0))
+                               3))
+      (let ((snap (glitnir-snapshot nil 'raw)))
+        (glitnir-gui--shot "minimap-hits")
+        ;; the bars start at column 6, after the line number
+        (should (= (glitnir-gui--count-where snap (list (nth 0 mm) (+ (nth 1 mm) (* 10 row-px)) (* 6 col-px) row-px) red) 0))
+        (should (= (glitnir-gui--count-where snap (funcall rows 11 1) red) 0))
+        (should (= (glitnir-gui--count-where snap (funcall rows 12 20) red) 0)))
+      ;; the current hit: a ring 1 px outside its bar, into the next row
+      (nidhogg-lines-search-current buf (+ (funcall at 10) 6))
+      (redisplay)
+      (should (gui-runner-wait (lambda () (> (glitnir-gui--count-where (glitnir-snapshot nil 'raw) (funcall rows 11 1) red) 0))
+                               3))
+      ;; a label at line 20 (a pin there): the pointer onto it, along it, then off
+      (nidhogg-lines-set-marks buf 9 (list (vector (funcall at 20) (1- (funcall at 25)))))
+      (force-window-update w)
+      (redisplay t)
+      (gui-runner-observe 0.3 #'gui-runner-read-all)
+      (let* ((seen nil)
+             (glitnir-minimap-functions (list (lambda (kind _w pos) (when (eq kind 'label-hover) (push pos seen))))))
+        (glitnir-gui--vp-to vp map (+ (nth 0 mm) 30) (+ (nth 1 mm) (* 20 row-px) 3))
+        (gui-runner-observe 0.3 #'gui-runner-read-all)
+        (glitnir-gui--vp-to vp map (+ (nth 0 mm) 40) (+ (nth 1 mm) (* 20 row-px) 5))
+        (gui-runner-observe 0.3 #'gui-runner-read-all)
+        (glitnir-gui--vp-to vp map (+ (nth 0 mm) 30) (+ (nth 1 mm) (* 100 row-px)))
+        (gui-runner-observe 0.3 #'gui-runner-read-all)
+        (should (equal (reverse seen) (list (funcall at 20) nil))))
+      (nidhogg-lines-search buf nil))))
+
 (defun glitnir-gui--count-where (snap rect pred)
   "How many pixels of RECT (X Y W H) in SNAP satisfy PRED, called with R, G and B."
   (pcase-let ((`(,x ,y ,w ,h) rect) (n 0))
@@ -1878,7 +2024,8 @@ uncovered)."
 (ert-deftest glitnir-gui/the-minimap-labels-the-definitions-and-the-mark-sections ()
   "An open minimap with `:labels' draws the hub's definitions of its `:file' (Sjá's labels layer) at their lines, a
 nested one in `:sub', and the line model's MARK sections in `:mark', in capitals; with `marks-only' the definitions
-go, and without `:labels' nothing of them is drawn."
+go, and without `:labels' nothing of them is drawn.  A `:hunk-labels' label is drawn at its line in `:hunk', with
+either kind of labels."
   (glitnir-gui--skip-unless-tree)
   (skip-unless (fboundp 'nidhogg-lines-set-section-regexp))
   (let ((buf (glitnir-gui--text-buffer "*glitnir-minimap-labels*" 300)) (w (selected-window))
@@ -1910,10 +2057,12 @@ go, and without `:labels' nothing of them is drawn."
                        (red (lambda (r g b) (and (> r 180) (< g 80) (< b 80))))
                        (green (lambda (r g b) (and (< r 80) (> g 180) (< b 80))))
                        (yellow (lambda (r g b) (and (> r 180) (> g 180) (< b 80))))
+                       (cyan (lambda (r g b) (and (< r 80) (> g 180) (> b 180))))
                        (spec (lambda (labels)
                                `(:width 120 :open t :fill ("#203040" . 1) :text ("#203040" . 1)
                                         :labels ,labels :file ,file :label ("#ff0000" . 1) :sub ("#00ff00" . 1)
-                                        :accent ("#0000ff" . 1) :mark ("#ffff00" . 1) :label-face default))))
+                                        :accent ("#0000ff" . 1) :mark ("#ffff00" . 1) :label-face default
+                                        :hunk ("#00ffff" . 1) :hunk-labels [[101 "hunk 1 · +2 −0"]]))))
             (set-window-parameter w 'glitnir-minimap (funcall spec t))
             (let ((snap (glitnir-gui--painted)))
               (glitnir-gui--shot "minimap-labels")
@@ -1921,17 +2070,602 @@ go, and without `:labels' nothing of them is drawn."
               (should (> (glitnir-gui--count-where snap (funcall at 80) green) 3))
               (should (> (glitnir-gui--count-where snap (funcall at 40) yellow) 3))
               (should (> (glitnir-gui--count-where snap (funcall at 120) yellow) 3))
+              ;; a hunk label at its line, in `:hunk'
+              (should (> (glitnir-gui--count-where snap (funcall at 100) cyan) 3))
               ;; between them, only the surface
               (should (= 0 (glitnir-gui--count-where snap (funcall at 60) (lambda (r g _) (or (> r 180) (> g 180)))))))
             (set-window-parameter w 'glitnir-minimap (funcall spec 'marks-only))
             (let ((snap (glitnir-gui--painted)))
               (should (= 0 (glitnir-gui--count-where snap (funcall at 10) red)))
-              (should (> (glitnir-gui--count-where snap (funcall at 40) yellow) 3)))
+              (should (> (glitnir-gui--count-where snap (funcall at 40) yellow) 3))
+              (should (> (glitnir-gui--count-where snap (funcall at 100) cyan) 3)))
             (set-window-parameter w 'glitnir-minimap (funcall spec nil))
             (let ((snap (glitnir-gui--painted)))
-              (should (= 0 (glitnir-gui--count-where snap (funcall at 40) yellow))))))
+              (should (= 0 (glitnir-gui--count-where snap (funcall at 40) yellow)))
+              (should (= 0 (glitnir-gui--count-where snap (funcall at 100) cyan))))))
       (set-window-parameter w 'glitnir-minimap nil)
       (nidhogg-view-minimap 'forget file)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
+;; Task 12: fold arrows in the fringe, fold pills in the minimap.
+(defun glitnir-gui--fold-row (w pos)
+  "The device-pixel rectangle (X Y W H) of the left fringe of window W on the screen row of POS."
+  (pcase-let* ((`(,tx ,_ ,_ ,_) (window-inside-pixel-edges w))
+               (`(,_ ,wy ,_ ,_) (window-pixel-edges w))
+               (`(,_ ,y ,_ ,_ ,_ ,h) (pos-visible-in-window-p pos w t))
+               (lf (car (window-fringes w))))
+    (list (- tx lf) (+ wy y) lf (or h (frame-char-height)))))
+
+(defun glitnir-gui--extent-where (snap rect pred)
+  "The width from RECT's left to the rightmost pixel of RECT in SNAP satisfying PRED (0: none)."
+  (pcase-let ((`(,x ,y ,w ,h) rect) (far 0))
+    (cl-loop for yy from (max 0 y) below (+ y h) do
+             (cl-loop for xx from (max 0 x) below (+ x w) do
+                      (when (apply pred (glitnir-gui--pixel snap (list xx yy)))
+                        (setq far (max far (1+ (- xx x)))))))
+    far))
+
+(ert-deftest glitnir-gui/fold-arrows-and-pills-show-the-folds ()
+  "With `glitnir-fold-arrows' `always', a fold range's first line gets a chevron in the left fringe in `:colour', a
+folded one (its lines hidden in the line model) in `:folded', other lines none.  An open minimap with `:pill' draws a
+pill after the bar of the folded range's first line: the range's name when it has one, else `:pill-format''s count,
+wider."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-lines-set-folds))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-fold-arrows*" 300)) (w (selected-window))
+        (at (lambda (i) (+ 1 (* 77 i)))))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (set-window-fringes w (round (* 16 (frame-scale-factor))) nil)
+          (nidhogg-lines-enable buf t)
+          ;; folds on lines 5–8 and 10–15; lines 11–15 hidden as "zz"
+          (nidhogg-lines-set-folds buf 7 (list (list (funcall at 5) (1- (funcall at 9)) 0)
+                                              (list (funcall at 10) (1- (funcall at 16)) 0)))
+          (nidhogg-lines-set-hidden buf (list (list (1- (funcall at 11)) (1- (funcall at 16)) "zz")))
+          (let* ((lf (car (window-fringes w)))
+                 (red (lambda (r g b) (and (> r 180) (< g 80) (< b 80))))
+                 (green (lambda (r g b) (and (< r 80) (> g 180) (< b 80))))
+                 (cyan (lambda (r g b) (and (< r 80) (> g 180) (> b 180)))))
+            (set-window-parameter w 'glitnir-fold-arrows
+                                  `(:mode always :size ,(- lf 4) :inset 2 :colour ("#ff0000" . 1) :folded ("#00ff00" . 1)))
+            (force-window-update w)
+            (let ((snap (glitnir-gui--painted)))
+              (glitnir-gui--shot "fold-arrows")
+              (should (> (glitnir-gui--count-where snap (glitnir-gui--fold-row w (funcall at 5)) red) 3))
+              (should (= (glitnir-gui--count-where snap (glitnir-gui--fold-row w (funcall at 5)) green) 0))
+              (should (> (glitnir-gui--count-where snap (glitnir-gui--fold-row w (funcall at 10)) green) 3))
+              (should (= (glitnir-gui--count-where snap (glitnir-gui--fold-row w (funcall at 7))
+                                                   (lambda (r g b) (or (funcall red r g b) (funcall green r g b))))
+                         0)))
+            (set-window-parameter w 'glitnir-fold-arrows nil)
+            (pcase-let* ((s (frame-scale-factor))
+                         (row (floor (+ 0.5 (* 2 s))))
+                         (box (floor (+ 0.5 (* 13 s))))
+                         (mm (glitnir-gui--minimap-rect w 120))
+                         (line10 (list (nth 0 mm) (+ (nth 1 mm) (* 10 row)) (nth 2 mm) box))
+                         (spec `(:width 120 :open t :fill ("#203040" . 1) :text ("#203040" . 1)
+                                        :pill ("#00ffff" . 1) :label-face default)))
+              (set-window-parameter w 'glitnir-minimap spec)
+              (force-window-update w)
+              (let* ((snap (glitnir-gui--painted))
+                     (named (glitnir-gui--extent-where snap line10 cyan)))
+                (glitnir-gui--shot "fold-pill")
+                (should (> (glitnir-gui--count-where snap line10 cyan) 3))
+                ;; no fold pill but this one
+                (should (= 0 (glitnir-gui--count-where
+                              snap (list (nth 0 mm) (+ (nth 1 mm) (* 30 row)) (nth 2 mm) box) cyan)))
+                (nidhogg-lines-set-hidden buf (list (cons (1- (funcall at 11)) (1- (funcall at 16)))))
+                (force-window-update w)
+                (let ((counted (glitnir-gui--extent-where (glitnir-gui--painted) line10 cyan)))
+                  (should (> counted (+ named (* 8 s)))))))))
+      (set-window-parameter w 'glitnir-fold-arrows nil)
+      (set-window-parameter w 'glitnir-minimap nil)
+      (set-window-fringes w nil nil)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
+;; Tasks 13 and 17: heat layers and pinned regions in the minimap.
+(ert-deftest glitnir-gui/the-minimap-heat-and-pin-bands ()
+  "An open minimap with `:heat' colours each line's bar from Sjá's heat:NAME layer of its `:file': `:heat-high' at
+value 1000, `:heat-low' at 0, `:text' where no item is; a heat layer not pushed leaves the bars in `:text'.  A mark of
+`:pin-kind' with an end is a band over its lines in `:pin', its `:pin-names' label at its first line."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-lines-set-marks))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-minimap-heat*" 300)) (w (selected-window))
+        (file "/glitnir-gui/heat.el")
+        (at (lambda (i) (+ 1 (* 77 i)))))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (nidhogg-lines-enable buf t)
+          (nidhogg-view-push
+           (json-serialize
+            `((event . "view-model")
+              (data . ((minimap . ((file . ,file) (layer . "heat:blame") (version . 1)
+                                   (items . [[11 20 1000 "2 days ago"] [31 40 0]]))))))))
+          (pcase-let* ((s (frame-scale-factor))
+                       (row (floor (+ 0.5 (* 2 s))))
+                       (mm (glitnir-gui--minimap-rect w 120))
+                       (rows (lambda (from n) (list (nth 0 mm) (+ (nth 1 mm) (* from row)) (nth 2 mm) (* n row))))
+                       (red (lambda (r g b) (and (> r 180) (< g 80) (< b 80))))
+                       (blue (lambda (r g b) (and (< r 80) (< g 80) (> b 180))))
+                       (green (lambda (r g b) (and (< r 80) (> g 180) (< b 80))))
+                       (spec (lambda (heat)
+                               `(:width 120 :open t :fill ("#000000" . 1) :text ("#00ff00" . 1) :file ,file
+                                        :heat ,heat :heat-low ("#0000ff" . 1) :heat-high ("#ff0000" . 1)))))
+            (set-window-parameter w 'glitnir-minimap (funcall spec "blame"))
+            (let ((snap (glitnir-gui--painted)))
+              (glitnir-gui--shot "minimap-heat")
+              (should (> (glitnir-gui--count-where snap (funcall rows 10 10) red) 50))
+              (should (= (glitnir-gui--count-where snap (funcall rows 10 10) green) 0))
+              (should (> (glitnir-gui--count-where snap (funcall rows 30 10) blue) 50))
+              (should (> (glitnir-gui--count-where snap (funcall rows 50 10) green) 50))
+              (should (= (glitnir-gui--count-where snap (funcall rows 50 10) red) 0)))
+            (set-window-parameter w 'glitnir-minimap (funcall spec "coverage"))
+            (let ((snap (glitnir-gui--painted)))
+              (should (= (glitnir-gui--count-where snap (funcall rows 10 10) red) 0))
+              (should (> (glitnir-gui--count-where snap (funcall rows 10 10) green) 50)))
+            ;; a pin over lines 60–69, named
+            (nidhogg-lines-set-marks buf 9 (list (vector (funcall at 60) (1- (funcall at 70)))))
+            (set-window-parameter w 'glitnir-minimap
+                                  `(:width 120 :open t :fill ("#000000" . 1) :text ("#000000" . 1) :band ("#808080" . 0.5)
+                                           :pin-kind 9 :pin ("#00ffff" . 1) :pin-names ["pinned"] :label-face default))
+            (force-window-update w)
+            (let* ((snap (glitnir-gui--painted))
+                   ;; (the window's own band may lie over it: teal under half grey is still more green and blue than red)
+                   (teal (lambda (r g b) (and (< r 100) (> g (+ r 40)) (> b (+ r 40))))))
+              (glitnir-gui--shot "minimap-pin")
+              ;; the band covers its rows across the width; the label is at its first row; none past it
+              (should (> (glitnir-gui--count-where snap (funcall rows 60 10) teal) (* 4 (nth 2 mm))))
+              (should (= (glitnir-gui--count-where snap (funcall rows 80 10) teal) 0)))))
+      (set-window-parameter w 'glitnir-minimap nil)
+      (nidhogg-view-minimap 'forget file)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/the-density-strip-draws-the-hubs-buckets ()
+  "A `:density' minimap on a buffer with no line model draws the hub's density buckets of its `:file': the full rows
+brightest, an `:error' mark at the outer edge on a bucket with errors, the band at the window's fraction."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-view-push))
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-density*" 300)) (w (selected-window))
+        (file "/glitnir-gui/big.log"))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (should-not (and (fboundp 'nidhogg-lines-describe) (nidhogg-lines-describe buf)))
+          ;; 100 buckets: the first ten full, an error in bucket 50, the rest a tenth as full
+          (nidhogg-view-push
+           (json-serialize
+            `((event . "view-model")
+              (data . ((minimap . ((file . ,file) (layer . "density") (version . 1)
+                                   (items . ((buckets . ,(vconcat (mapcar (lambda (i) (vector (if (< i 10) 1000 100)
+                                                                                                (if (= i 50) 3 0) 0))
+                                                                          (number-sequence 0 99))))
+                                             (total . 100))))))))))
+          (set-window-parameter w 'glitnir-minimap
+                                `(:width 26 :open t :density t :file ,file :fill ("#000000" . 1) :text ("#ffffff" . 1)
+                                         :band ("#000000" . 0) :error "#ff0000"))
+          (pcase-let* ((mm (glitnir-gui--minimap-rect w 26))
+                       (`(,x ,y ,mw ,h) mm)
+                       (row (lambda (frac) (list x (+ y (round (* frac h))) (- mw (round (* 4 (frame-scale-factor)))) 1)))
+                       (snap (glitnir-gui--painted))
+                       (white (lambda (r g b) (and (> r 200) (> g 200) (> b 200))))
+                       (dim (lambda (r g b) (and (> r 10) (< r 60) (= r g b))))
+                       (red (lambda (r g b) (and (> r 200) (< g 60) (< b 60)))))
+            (glitnir-gui--shot "minimap-density")
+            (should (> (glitnir-gui--count-where snap (funcall row 0.05) white) 0))
+            (should (> (glitnir-gui--count-where snap (funcall row 0.3) dim) 0))
+            (should (= (glitnir-gui--count-where snap (funcall row 0.3) white) 0))
+            (should (> (glitnir-gui--count-where snap (list (+ x mw -3) (+ y (round (* 0.505 h))) 3 2) red) 0))))
+      (set-window-parameter w 'glitnir-minimap nil)
+      (nidhogg-view-minimap 'forget file)
+      (kill-buffer buf))))
+
+;; The horizontal strip (glitnir-hstrip): a thumb along the bottom of the text while the window cuts lines wider than
+;; it, worked out in C at each redisplay (glitnir-hstrip-state), drawn as a bar when the frame publishes.
+
+(defvar glitnir--hstrip-measures)
+
+(defun glitnir-gui--hstrip-spec ()
+  "A strip spec at the frame's scale: 12 logical px, its bottom 8 take presses, a 6 px green thumb, square."
+  (let ((s (frame-scale-factor)))
+    `(:height ,(round (* 12 s)) :lane ,(round (* 8 s)) :thumb-inset ,(round (* 3 s)) :radius 0
+              :least ,(round (* 24 s)) :band ("#00ff00" . 1))))
+
+(defun glitnir-gui--hstrip-buffer (name long)
+  "Buffer NAME: 100 lines of 20 columns, line 10 (from 0) LONG columns when LONG is non-nil."
+  (let ((b (get-buffer-create name)))
+    (with-current-buffer b
+      (erase-buffer)
+      (dotimes (i 100)
+        (insert (format "%5d %s\n" i (make-string (if (and long (= i 10)) (- long 6) 14) (+ ?a (% i 26))))))
+      (goto-char (point-min)))
+    b))
+
+(defmacro glitnir-gui--with-hstrip (long &rest body)
+  "Run BODY with BUF a `glitnir-gui--hstrip-buffer' (LONG, an expression of W, the selected window), shown in W
+with a line model, its lines cut, and the strip's spec."
+  (declare (indent 1))
+  `(let* ((w (selected-window)) (buf (glitnir-gui--hstrip-buffer "*glitnir-hstrip*" ,long)))
+     (glitnir-gui--skip-unless-tree)
+     (skip-unless (fboundp 'nidhogg-lines-enable))
+     (unwind-protect
+         (progn
+           (set-window-buffer w buf)
+           (set-window-start w 1)
+           (set-window-hscroll w 0)
+           (with-current-buffer buf (setq truncate-lines t))
+           (nidhogg-lines-enable buf t)
+           (set-window-parameter w 'glitnir-hstrip (glitnir-gui--hstrip-spec))
+           (redisplay t)
+           ,@body)
+       (set-window-parameter w 'glitnir-hstrip nil)
+       (set-window-hscroll w 0)
+       (when (fboundp 'nidhogg-lines-disable) (nidhogg-lines-disable buf))
+       (kill-buffer buf))))
+
+(defun glitnir-gui--hstrip-row (w)
+  "Window W's strip as (X0 Y X1), device pixels: its first text column, the middle of its thumb, the text's right edge."
+  (pcase-let ((`(,tx ,_ ,tx1 ,ty1) (window-inside-pixel-edges w)))
+    (list (+ tx (nth 2 (glitnir-hstrip-state w))) (- ty1 (round (* 6 (frame-scale-factor)))) tx1)))
+
+(defun glitnir-gui--green-p (r g b)
+  (and (> g 200) (< r 60) (< b 60)))
+
+(defun glitnir-gui--hstrip-thumb (w &optional snap)
+  "The thumb's painted (LEFT . RIGHT) device x in window W's strip row (across the whole window), or nil."
+  (pcase-let ((`(,_ ,y ,_) (glitnir-gui--hstrip-row w))
+              (`(,wx ,_ ,wx1 ,_) (window-pixel-edges w))
+              (snap (or snap (glitnir-gui--painted)))
+              (lo nil) (hi nil))
+    (cl-loop for x from (max 0 wx) below wx1 do
+             (when (apply #'glitnir-gui--green-p (glitnir-gui--pixel snap (list x y)))
+               (setq lo (or lo x) hi (1+ x))))
+    (and lo (cons lo hi))))
+
+(defun glitnir-gui--hstrip-expected (w)
+  "The thumb's (LEFT . RIGHT) as C places it from W's `glitnir-hstrip-state' and hscroll (no right to left)."
+  (pcase-let* ((`(,x0 ,_ ,x1) (glitnir-gui--hstrip-row w))
+               (`(,whole . ,_) (glitnir-hstrip-state w))
+               (len (- x1 x0))
+               (least (round (* 24 (frame-scale-factor))))
+               (thumb (min len (max least (floor (+ 0.5 (/ (* (float len) len) whole))))))
+               (range (- whole len))
+               (share (if (> range 0) (min 1.0 (/ (* (window-hscroll w) (frame-char-width)) (float range))) 0))
+               (tx (floor (+ 0.5 (* share (- len thumb))))))
+    (cons (+ x0 tx) (+ x0 tx thumb))))
+
+(defun glitnir-gui--near (a b &optional slack)
+  "Whether the (LEFT . RIGHT) pairs A and B agree within SLACK device pixels (default 1)."
+  (and a b (<= (abs (- (car a) (car b))) (or slack 1)) (<= (abs (- (cdr a) (cdr b))) (or slack 1))))
+
+(ert-deftest glitnir-gui/hstrip-shows-only-when-cut-text-overflows ()
+  "The strip shows while the window cuts lines and the widest line (the model's, plus 4 columns) is wider than the
+text: not while the lines wrap, not once the long line is gone, and while scrolled sideways (hscroll plus the text)."
+  (glitnir-gui--with-hstrip (* 3 (window-body-width w))
+    (let ((text (- (window-body-width w t) (nth 2 (glitnir-hstrip-state w))))
+          (col (nth 3 (glitnir-hstrip-state w))))
+      (glitnir-gui--shot "hstrip-shown")
+      (should (= (car (glitnir-hstrip-state w)) (* (+ (* 3 (window-body-width w)) 4) col)))
+      (should (glitnir-gui--hstrip-thumb w))
+      ;; wrapped: none
+      (with-current-buffer buf (setq truncate-lines nil))
+      (redisplay t)
+      (should (= 0 (car (glitnir-hstrip-state w))))
+      (should-not (glitnir-gui--hstrip-thumb w))
+      ;; cut, the long line made short: every line fits, none
+      (with-current-buffer buf
+        (setq truncate-lines t)
+        (goto-char (point-min)) (forward-line 10)
+        (delete-region (+ (point) 20) (pos-eol))
+        (goto-char (point-min)))
+      (redisplay t)
+      (should (= 0 (car (glitnir-hstrip-state w))))
+      (should-not (glitnir-gui--hstrip-thumb w))
+      ;; scrolled sideways: shown, standing for the hscroll plus the text
+      (set-window-hscroll w 5)
+      (redisplay t)
+      (should (= (car (glitnir-hstrip-state w)) (+ (* 5 (frame-char-width)) text)))
+      (should (glitnir-gui--hstrip-thumb w)))))
+
+(ert-deftest glitnir-gui/hstrip-thumb-follows-hscroll ()
+  "The thumb is the text's share of the widest line long, at least 24 logical px, at the hscroll's share of what lies
+beyond the text: at the left end at hscroll 0, at the right end past the line's end.  A scroll resolves no spec."
+  (glitnir-gui--with-hstrip (* 3 (window-body-width w))
+    (let ((resolves 0))
+      (advice-add 'glitnir--hstrip-vector :before (lambda (&rest _) (cl-incf resolves)) '((name . gui-hstrip)))
+      (unwind-protect
+          (pcase-let ((`(,x0 ,_ ,x1) (glitnir-gui--hstrip-row w)))
+            (let ((at0 (glitnir-gui--hstrip-thumb w)))
+              (should (glitnir-gui--near at0 (glitnir-gui--hstrip-expected w)))
+              (should (<= (abs (- (car at0) x0)) 1))
+              ;; the thumb's length: the text's share
+              (should (< (abs (- (- (cdr at0) (car at0))
+                                 (/ (* (float (- x1 x0)) (- x1 x0)) (car (glitnir-hstrip-state w)))))
+                         2)))
+            (dolist (h (list (window-body-width w) (* 2 (window-body-width w))))
+              (set-window-hscroll w h)
+              (let ((at (glitnir-gui--hstrip-thumb w)))
+                (glitnir-gui--shot (format "hstrip-at-%d" h))
+                (should (glitnir-gui--near at (glitnir-gui--hstrip-expected w)))
+                (should (> (car at) x0))))
+            ;; past the end: at the right end, inside the text
+            (set-window-hscroll w (* 4 (window-body-width w)))
+            (should (<= (abs (- (cdr (glitnir-gui--hstrip-thumb w)) x1)) 1))
+            (should (= resolves 0)))
+        (advice-remove 'glitnir--hstrip-vector 'gui-hstrip)))))
+
+(ert-deftest glitnir-gui/hstrip-spans-text-not-fringe-or-numbers ()
+  "With line numbers on the strip starts at the first text column, where the line's first glyph is drawn, and ends at
+the text area's right edge: the thumb never reaches into the numbers or the fringe."
+  (glitnir-gui--with-hstrip (* 3 (window-body-width w))
+    (with-current-buffer buf (display-line-numbers-mode 1))
+    (redisplay t)
+    (pcase-let* ((lnum (nth 2 (glitnir-hstrip-state w)))
+                 (`(,tx ,_ ,tx1 ,_) (window-inside-pixel-edges w)))
+      (should (> lnum 0))
+      (should (= lnum (car (posn-x-y (posn-at-point (window-start w) w)))))
+      (should (<= (abs (- (car (glitnir-gui--hstrip-thumb w)) (+ tx lnum))) 1))
+      (glitnir-gui--shot "hstrip-numbers")
+      (set-window-hscroll w (* 4 (window-body-width w)))
+      (let ((at (glitnir-gui--hstrip-thumb w)))
+        (should (<= (abs (- (cdr at) tx1)) 1))
+        (should (<= (cdr at) tx1))
+        (should (>= (car at) (+ tx lnum)))))))
+
+(ert-deftest glitnir-gui/hstrip-sees-display-strings-at-hscroll-0 ()
+  "Rows cut while the model says their line fits are measured, so the strip shows for them at hscroll 0: a line with a
+wide `after-string', then a fold summary (a hidden range's `display' string).  Each such row is walked once per change
+of the buffer; a redisplay with no change walks none."
+  (glitnir-gui--with-hstrip nil
+    (should (= 0 (car (glitnir-hstrip-state w))))
+    (let* ((text (- (window-body-width w t) (nth 2 (glitnir-hstrip-state w))))
+           (wide (propertize " " 'display `(space :width (,(+ text 300)))))
+           (line-end (lambda (n) (with-current-buffer buf (save-excursion (goto-char (point-min)) (forward-line n) (pos-eol)))))
+           (ov (with-current-buffer buf (make-overlay (funcall line-end 5) (funcall line-end 5)))))
+      (setq glitnir--hstrip-measures 0)
+      (overlay-put ov 'after-string wide)
+      (redisplay t)
+      (glitnir-gui--shot "hstrip-after-string")
+      (should (>= (car (glitnir-hstrip-state w)) (+ text 300)))
+      (should (glitnir-gui--hstrip-thumb w))
+      (should (>= glitnir--hstrip-measures 1))
+      (let ((n glitnir--hstrip-measures))
+        (force-window-update w)
+        (redisplay t)
+        (should (= glitnir--hstrip-measures n)))
+      (delete-overlay ov)
+      (redisplay t)
+      (should (= 0 (car (glitnir-hstrip-state w))))
+      ;; a fold summary: lines 21 to 30 hidden behind a display string wider than the text (literal text: a display
+      ;; string's own `display' properties are not followed)
+      (let ((fold (with-current-buffer buf (make-overlay (funcall line-end 20) (funcall line-end 30)))))
+        (nidhogg-lines-set-hidden buf (list (cons (funcall line-end 20) (funcall line-end 30))))
+        (overlay-put fold 'display (concat " ... " (make-string (+ 2 (ceiling (+ text 300) (frame-char-width))) ?x)))
+        (redisplay t)
+        (glitnir-gui--shot "hstrip-fold-summary")
+        (should (>= (car (glitnir-hstrip-state w)) (+ text 300)))
+        (should (glitnir-gui--hstrip-thumb w))
+        (delete-overlay fold)
+        (nidhogg-lines-set-hidden buf nil)))))
+
+(ert-deftest glitnir-gui/point-on-the-last-row-is-fully-visible ()
+  "While the strip shows, the row under it counts as partly visible: point moved onto it scrolls the window one row
+(with `scroll-conservatively', as for a partly shown last row), and point's row then ends above the strip."
+  (glitnir-gui--with-hstrip (* 3 (window-body-width w))
+    (let* ((scroll-conservatively 101)
+           (strip (nth 1 (glitnir-hstrip-state w)))
+           (body (window-body-height w t))
+           (lh (car (window-line-height 0 w)))
+           ;; rows spaced so the last whole row ends under the strip (the gap below it less than the strip)
+           (_ (with-current-buffer buf
+                (setq line-spacing (cl-loop for ls from 0 below lh
+                                            when (< (mod body (+ lh ls)) strip) return ls))))
+           (_ (redisplay t))
+           (vpos (cl-loop for v from 0
+                          for (h _ y) = (window-line-height v w)
+                          when (> (+ y h) (- body strip)) return v))
+           (target (with-current-buffer buf (save-excursion (goto-char (window-start w)) (forward-line vpos) (point)))))
+      (should (> strip 0))
+      (should (> vpos 0))
+      (should (= 0 (nth 3 (window-line-height vpos w))))
+      (with-selected-window w (goto-char target))
+      (redisplay t)
+      (glitnir-gui--shot "hstrip-last-row")
+      (pcase-let* ((row (cdr (posn-actual-col-row (posn-at-point target w))))
+                   (`(,h ,_ ,y) (window-line-height row w)))
+        (should (<= (+ y h) (- body strip))))
+      (should (= 2 (with-current-buffer buf (line-number-at-pos (window-start w))))))))
+
+(ert-deftest glitnir-gui/a-click-on-the-last-row-places-point ()
+  "Only the strip's bottom 8 px take presses: a press 10 px above the text's bottom, on the last row's text over the
+strip, reaches Emacs as a click there, which places point on that row."
+  (glitnir-gui--with-hstrip (* 3 (window-body-width w))
+    (let ((vp (glitnir-gui--vp-start)) (evs nil))
+      (unwind-protect
+          (pcase-let* ((map (glitnir-gui--vp-calibrate vp))
+                       (`(,tx ,_ ,_ ,ty1) (window-inside-pixel-edges w))
+                       (`(,wx ,wy ,_ ,_) (window-pixel-edges w))
+                       (x (+ tx (round (* 30 (frame-scale-factor)))))
+                       (y (- ty1 (round (* 10 (frame-scale-factor)))))
+                       (want (posn-point (posn-at-x-y (- x wx) (- y wy) w))))
+            (should (> (nth 1 (glitnir-hstrip-state w)) 0))
+            (glitnir-gui--vp-to vp map x y)
+            (gui-runner-read-all)
+            (process-send-string vp "press\nrelease\n")
+            (should (gui-runner-wait (lambda () (gui-runner-read-all (lambda (e) (push e evs)))
+                                       (cl-find-if (lambda (e) (eq (car-safe e) 'mouse-1)) evs))
+                                     3))
+            (let ((click (cl-find-if (lambda (e) (eq (car-safe e) 'mouse-1)) evs)))
+              (should (eq (posn-window (event-start click)) w))
+              (with-selected-window w (mouse-set-point click))
+              (should (= (with-current-buffer buf (line-number-at-pos (window-point w)))
+                         (with-current-buffer buf (line-number-at-pos want))))
+              (should (= 0 (window-hscroll w)))))
+        (delete-process vp)))))
+
+(ert-deftest glitnir-gui/hstrip-press-lands-on-the-thumb-s2 ()
+  "A press on the strip's lane scrolls the window so the thumb centres on the pointer, through the `glitnir-hstrip'
+event; a drag moves it along; the release sends nothing.  Run at scale 2 too: the lane and the thumb in device px."
+  (glitnir-gui--with-hstrip (* 3 (window-body-width w))
+    (let ((vp (glitnir-gui--vp-start)) (seen nil))
+      (unwind-protect
+          (pcase-let* ((map (glitnir-gui--vp-calibrate vp))
+                       (`(,x0 ,_ ,x1) (glitnir-gui--hstrip-row w))
+                       (`(,_ ,_ ,_ ,ty1) (window-inside-pixel-edges w))
+                       (y (- ty1 (round (* 3 (frame-scale-factor)))))
+                       (col (frame-char-width))
+                       (centre (lambda () (let ((at (glitnir-gui--hstrip-thumb w))) (/ (+ (car at) (cdr at)) 2.0)))))
+            (advice-add 'glitnir-hstrip-event :before (lambda (e) (push (nth 2 e) seen)) '((name . gui-hstrip)))
+            (dolist (frac '(0.5 0.8))
+              (let ((x (+ x0 (round (* frac (- x1 x0))))) (n (length seen)))
+                (glitnir-gui--vp-to vp map x y)
+                (process-send-string vp "press\nrelease\n")
+                (should (gui-runner-wait (lambda () (gui-runner-read-all) (> (length seen) n)) 3))
+                (gui-runner-observe 0.1 #'gui-runner-read-all)
+                (glitnir-gui--shot (format "hstrip-press-%s" frac))
+                (should (> (window-hscroll w) 0))
+                (should (<= (abs (- (funcall centre) x)) (+ col 1)))))
+            ;; a drag from the thumb's centre to the left end: the window back at its left
+            (let ((x (round (funcall centre))))
+              (glitnir-gui--vp-to vp map x y)
+              (process-send-string vp "press\n")
+              (gui-runner-observe 0.1 #'gui-runner-read-all)
+              (glitnir-gui--vp-to vp map (+ x0 2) y)
+              (gui-runner-observe 0.1 #'gui-runner-read-all)
+              (process-send-string vp "release\n")
+              (should (gui-runner-wait (lambda () (gui-runner-read-all) (= 0 (window-hscroll w))) 3))))
+        (advice-remove 'glitnir-hstrip-event 'gui-hstrip)
+        (delete-process vp)))))
+
+(ert-deftest glitnir-gui/hstrip-without-a-model ()
+  "Without a line model nothing is measured: the strip shows while a shown row is cut, standing for the hscroll plus
+twice the text (a thumb half the strip at hscroll 0); with no row cut and no hscroll, none."
+  (glitnir-gui--skip-unless-tree)
+  (let* ((w (selected-window)) (buf (glitnir-gui--hstrip-buffer "*glitnir-hstrip-nomodel*" (* 3 (window-body-width w)))))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (with-current-buffer buf (setq truncate-lines t))
+          (set-window-parameter w 'glitnir-hstrip (glitnir-gui--hstrip-spec))
+          (setq glitnir--hstrip-measures 0)
+          (redisplay t)
+          (should-not (and (fboundp 'nidhogg-lines-describe) (nidhogg-lines-describe buf)))
+          (pcase-let* ((`(,x0 ,_ ,x1) (glitnir-gui--hstrip-row w))
+                       (text (- x1 x0)))
+            (should (= (car (glitnir-hstrip-state w)) (* 2 text)))
+            (let ((at (glitnir-gui--hstrip-thumb w)))
+              (glitnir-gui--shot "hstrip-no-model")
+              (should (<= (abs (- (car at) x0)) 1))
+              (should (<= (abs (- (- (cdr at) (car at)) (/ text 2))) 1)))
+            ;; the long line scrolled out of view (point with it, so it stays out): no row cut, no strip
+            (let ((l20 (with-current-buffer buf (save-excursion (goto-char (point-min)) (forward-line 20) (point)))))
+              (set-window-point w l20)
+              (set-window-start w l20))
+            (redisplay t)
+            (glitnir-gui--shot "hstrip-no-model-none")
+            (should (= 0 (car (glitnir-hstrip-state w))))
+            (glitnir-gui--painted)
+            (should (= 0 (car (glitnir-hstrip-state w))))
+            (should-not (glitnir-gui--hstrip-thumb w))
+            (set-window-hscroll w 3)
+            (redisplay t)
+            (should (= (car (glitnir-hstrip-state w)) (+ (* 3 (frame-char-width)) (* 2 text))))
+            (should (= glitnir--hstrip-measures 0))))
+      (set-window-parameter w 'glitnir-hstrip nil)
+      (set-window-hscroll w 0)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/hstrip-drag-1mb-line ()
+  "Dragging along a 1 MB minified line (long-line optimizations on): no step's redisplay takes over 50 ms and no row
+is walked to be measured; the strip stands for the hscroll plus twice the text."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-lines-enable))
+  (let* ((w (selected-window)) (buf (get-buffer-create "*glitnir-hstrip-1mb*")) (slow nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (erase-buffer)
+            (insert (apply #'concat (make-list 80000 "var a=1;b=2;")) "\n")
+            (goto-char (point-min))
+            (setq truncate-lines t))
+          (nidhogg-lines-enable buf t)
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (set-window-parameter w 'glitnir-hstrip (glitnir-gui--hstrip-spec))
+          (redisplay t)
+          (should (with-current-buffer buf (long-line-optimizations-p)))
+          (setq glitnir--hstrip-measures 0)
+          (dolist (h (number-sequence 0 1040000 52000))
+            (set-window-hscroll w h)
+            (let ((t0 (float-time)))
+              (redisplay t)
+              (let ((dt (- (float-time) t0)))
+                (when (> dt 0.05) (push (cons h dt) slow)))))
+          (should-not slow)
+          (should (= glitnir--hstrip-measures 0))
+          (should (> (car (glitnir-hstrip-state w)) (* 1040000 (frame-char-width)))))
+      (set-window-parameter w 'glitnir-hstrip nil)
+      (set-window-hscroll w 0)
+      (nidhogg-lines-disable buf)
+      (kill-buffer buf))))
+
+(ert-deftest glitnir-gui/hstrip-under-the-minimap ()
+  "An open minimap (not sticky) covers the strip's right end: scrolled to the end, the thumb shows left of the minimap
+and none of it inside."
+  (glitnir-gui--with-hstrip (* 3 (window-body-width w))
+    (unwind-protect
+        (progn
+          (set-window-parameter w 'glitnir-minimap '(:width 120 :open t :fill ("#203040" . 1) :text ("#ff00ff" . 1)))
+          ;; just at the end: the thumb a third of the strip, at its right end
+          (pcase-let ((`(,x0 ,_ ,x1) (glitnir-gui--hstrip-row w)))
+            (set-window-hscroll w (ceiling (- (car (glitnir-hstrip-state w)) (- x1 x0)) (frame-char-width))))
+          (pcase-let* ((`(,mx ,_ ,mw ,_) (glitnir-gui--minimap-rect w 120))
+                       (`(,_ ,y ,x1) (glitnir-gui--hstrip-row w))
+                       (snap (glitnir-gui--painted)))
+            (glitnir-gui--shot "hstrip-under-minimap")
+            (should (= (+ mx mw) x1))
+            (should (= 0 (glitnir-gui--count-where snap (list mx y mw 1) #'glitnir-gui--green-p)))
+            (should (> (glitnir-gui--count-where snap (list (- mx 20) y 20 1) #'glitnir-gui--green-p) 10))))
+      (set-window-parameter w 'glitnir-minimap nil))))
+
+(ert-deftest glitnir-gui/the-minimap-band-with-wrap-spans-the-logical-lines-shown ()
+  "With lines wrapping the minimap keeps a row per logical line, and its band spans the logical lines shown, whole
+rows: from the window's first line to its last, far fewer than the screen rows."
+  (glitnir-gui--skip-unless-tree)
+  (skip-unless (fboundp 'nidhogg-lines-enable))
+  (let* ((w (selected-window))
+         (buf (get-buffer-create "*glitnir-minimap-wrap*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (erase-buffer)
+            (dotimes (i 200) (insert (format "%5d %s\n" i (make-string (* 3 (window-body-width w)) ?x))))
+            (goto-char (point-min))
+            (setq truncate-lines nil))
+          (nidhogg-lines-enable buf t)
+          (set-window-buffer w buf)
+          (set-window-start w 1)
+          (set-window-parameter w 'glitnir-minimap
+                                '(:width 120 :open t :fill ("#203040" . 1) :text ("#203040" . 1) :band ("#00ffff" . 1)))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,mx ,my ,_ ,mh) (glitnir-gui--minimap-rect w 120))
+                       (row-px (floor (+ 0.5 (* 2 (frame-scale-factor)))))
+                       (lines (with-current-buffer buf
+                                (- (line-number-at-pos (window-end w t)) (line-number-at-pos (window-start w)))))
+                       (cyan (lambda (r g b) (and (< r 60) (> g 200) (> b 200))))
+                       (band (glitnir-gui--count-where snap (list (+ mx 5) my 1 mh) cyan)))
+            (glitnir-gui--shot "minimap-band-wrap")
+            (should (< lines (/ (window-body-height w) 2)))
+            (should (<= (* lines row-px) band (* (+ lines 2) row-px)))))
+      (set-window-parameter w 'glitnir-minimap nil)
       (nidhogg-lines-disable buf)
       (kill-buffer buf))))
 

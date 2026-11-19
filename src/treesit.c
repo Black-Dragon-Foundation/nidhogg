@@ -31,6 +31,8 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifdef HAVE_NIDHOGG_HISTORY
 #include "nidhogg-history.h"
 #include <hlidskjalf.h>
+#include <time.h>
+#include "window.h"
 #endif
 
 #if HAVE_TREE_SITTER
@@ -1995,7 +1997,7 @@ treesit_call_after_change_functions (Lisp_Object parser, Lisp_Object ranges)
 }
 
 #ifdef HAVE_NIDHOGG_HISTORY
-static void nh_ts_publish_folds (Lisp_Object, Lisp_Object);
+static void nh_ts_publish_folds (Lisp_Object, Lisp_Object, bool);
 #endif
 /* Parse the buffer.  We don't parse until we have to.  When we have to,
    we call this function to parse and update the tree.  Return the
@@ -2087,7 +2089,7 @@ treesit_ensure_parsed (Lisp_Object parser)
 
   Lisp_Object ranges = treesit_get_affected_ranges (tree, new_tree, parser);
 #ifdef HAVE_NIDHOGG_HISTORY
-  nh_ts_publish_folds (parser, ranges);
+  nh_ts_publish_folds (parser, ranges, false);
 #endif
   treesit_call_after_change_functions (parser, ranges);
   ts_tree_delete (tree);
@@ -2527,13 +2529,13 @@ nh_ts_predicates_hold (TSQuery *q, const TSQueryMatch *m, struct buffer *buf,
 }
 
 /* Run QUERIES (a list of compiled queries of PARSER's language, in
-   order) over PARSER's tree in each of RANGES, char ranges of PARSER's
+   order) over PARSER's tree in the char range BEG..END of PARSER's
    buffer, and replace the line model KEY's tree-sitter folds (source 0)
    there with their `@fold' captures, or (CLASSES) the lines' class runs
    there with their highlight captures.  */
 static void
-nh_ts_run (Lisp_Object parser, Lisp_Object ranges, Lisp_Object queries,
-	   uint64_t key, bool classes)
+nh_ts_run_range (Lisp_Object parser, ptrdiff_t beg, ptrdiff_t end,
+		 Lisp_Object queries, uint64_t key, bool classes)
 {
   struct buffer *buf = XBUFFER (XTS_PARSER (parser)->buffer);
   TSNode root = ts_tree_root_node (XTS_PARSER (parser)->tree);
@@ -2541,79 +2543,85 @@ nh_ts_run (Lisp_Object parser, Lisp_Object ranges, Lisp_Object queries,
   hlid_fold *v = NULL;
   hlid_span *w = NULL;
   ptrdiff_t cap = 0;
-  for (Lisp_Object l = ranges; CONSP (l); l = XCDR (l))
+  ptrdiff_t bb = buf_charpos_to_bytepos (buf, beg);
+  ptrdiff_t eb = buf_charpos_to_bytepos (buf, end);
+  if (classes)
     {
-      ptrdiff_t beg = XFIXNUM (XCAR (XCAR (l)));
-      ptrdiff_t end = XFIXNUM (XCDR (XCAR (l)));
-      ptrdiff_t bb = buf_charpos_to_bytepos (buf, beg);
-      ptrdiff_t eb = buf_charpos_to_bytepos (buf, end);
-      if (classes)
-	{
-	  /* whole lines: the model replaces the runs of every line the
-	     range touches, so every capture on them is wanted */
-	  ptrdiff_t lo = max (vbeg, BUF_BEGV_BYTE (buf));
-	  ptrdiff_t hi = min (XTS_PARSER (parser)->visible_end,
-			      BUF_ZV_BYTE (buf));
-	  bb = clip_to_bounds (lo, bb, hi);
-	  eb = clip_to_bounds (bb, eb, hi);
-	  while (bb > lo && BUF_FETCH_BYTE (buf, bb - 1) != '\n')
-	    bb--;
-	  while (eb < hi && BUF_FETCH_BYTE (buf, eb) != '\n')
-	    eb++;
-	  beg = buf_bytepos_to_charpos (buf, bb);
-	  end = buf_bytepos_to_charpos (buf, eb);
-	}
-      ptrdiff_t n = 0;
-      for (Lisp_Object ql = queries; CONSP (ql); ql = XCDR (ql))
-	{
-	  Lisp_Object query = XCAR (ql);
-	  Lisp_Object signal_symbol, signal_data;
-	  TSQuery *q = treesit_ensure_query_compiled (query, &signal_symbol,
-						      &signal_data);
-	  if (!q)
-	    continue;
-	  TSQueryCursor *cursor = treesit_ensure_query_cursor (query);
-	  ts_query_cursor_set_byte_range (cursor, bb - vbeg, eb - vbeg);
-	  ts_query_cursor_exec (cursor, q, root);
-	  TSQueryMatch m;
-	  while (ts_query_cursor_next_match (cursor, &m))
-	    if (nh_ts_predicates_hold (q, &m, buf, vbeg))
-	    for (uint16_t i = 0; i < m.capture_count; i++)
-	      {
-		uint32_t len;
-		const char *name
-		  = ts_query_capture_name_for_id (q, m.captures[i].index, &len);
-		int kind = (classes ? nh_lines_class_of (name, len)
-			    : nh_ts_fold_kind (name, len));
-		if (classes ? kind == 0 : kind < 0)
-		  continue;
-		TSNode node = m.captures[i].node;
-		uint64_t nb = buf_bytepos_to_charpos (buf,
-						      ts_node_start_byte (node)
-						      + vbeg);
-		uint64_t ne = buf_bytepos_to_charpos (buf,
-						      ts_node_end_byte (node)
-						      + vbeg);
-		if (n == cap && classes)
-		  w = xpalloc (w, &cap, 1, -1, sizeof *w);
-		else if (n == cap)
-		  v = xpalloc (v, &cap, 1, -1, sizeof *v);
-		if (classes)
-		  w[n++] = (hlid_span) { .beg = nb, .end = ne, .class_ = kind };
-		else
-		  v[n++] = (hlid_fold) { .beg = nb, .end = ne, .kind = kind };
-	      }
-	  /* Lisp's own captures of this query set their range themselves;
-	     leave the cursor whole all the same.  */
-	  ts_query_cursor_set_byte_range (cursor, 0, UINT32_MAX);
-	}
-      if (classes)
-	hlid_replace_classes (key, beg, end, w, n);
-      else
-	hlid_replace_folds (key, 0, beg, end, v, n);
+      /* whole lines: the model replaces the runs of every line the
+	 range touches, so every capture on them is wanted */
+      ptrdiff_t lo = max (vbeg, BUF_BEGV_BYTE (buf));
+      ptrdiff_t hi = min (XTS_PARSER (parser)->visible_end,
+			  BUF_ZV_BYTE (buf));
+      bb = clip_to_bounds (lo, bb, hi);
+      eb = clip_to_bounds (bb, eb, hi);
+      while (bb > lo && BUF_FETCH_BYTE (buf, bb - 1) != '\n')
+	bb--;
+      while (eb < hi && BUF_FETCH_BYTE (buf, eb) != '\n')
+	eb++;
+      beg = buf_bytepos_to_charpos (buf, bb);
+      end = buf_bytepos_to_charpos (buf, eb);
     }
+  ptrdiff_t n = 0;
+  for (Lisp_Object ql = queries; CONSP (ql); ql = XCDR (ql))
+    {
+      Lisp_Object query = XCAR (ql);
+      Lisp_Object signal_symbol, signal_data;
+      TSQuery *q = treesit_ensure_query_compiled (query, &signal_symbol,
+						  &signal_data);
+      if (!q)
+	continue;
+      TSQueryCursor *cursor = treesit_ensure_query_cursor (query);
+      ts_query_cursor_set_byte_range (cursor, bb - vbeg, eb - vbeg);
+      ts_query_cursor_exec (cursor, q, root);
+      TSQueryMatch m;
+      while (ts_query_cursor_next_match (cursor, &m))
+	if (nh_ts_predicates_hold (q, &m, buf, vbeg))
+	for (uint16_t i = 0; i < m.capture_count; i++)
+	  {
+	    uint32_t len;
+	    const char *name
+	      = ts_query_capture_name_for_id (q, m.captures[i].index, &len);
+	    int kind = (classes ? nh_lines_class_of (name, len)
+			: nh_ts_fold_kind (name, len));
+	    if (classes ? kind == 0 : kind < 0)
+	      continue;
+	    TSNode node = m.captures[i].node;
+	    uint64_t nb = buf_bytepos_to_charpos (buf,
+						  ts_node_start_byte (node)
+						  + vbeg);
+	    uint64_t ne = buf_bytepos_to_charpos (buf,
+						  ts_node_end_byte (node)
+						  + vbeg);
+	    if (n == cap && classes)
+	      w = xpalloc (w, &cap, 1, -1, sizeof *w);
+	    else if (n == cap)
+	      v = xpalloc (v, &cap, 1, -1, sizeof *v);
+	    if (classes)
+	      w[n++] = (hlid_span) { .beg = nb, .end = ne, .class_ = kind };
+	    else
+	      v[n++] = (hlid_fold) { .beg = nb, .end = ne, .kind = kind };
+	  }
+      /* Lisp's own captures of this query set their range themselves;
+	 leave the cursor whole all the same.  */
+      ts_query_cursor_set_byte_range (cursor, 0, UINT32_MAX);
+    }
+  if (classes)
+    hlid_replace_classes (key, beg, end, w, n);
+  else
+    hlid_replace_folds (key, 0, beg, end, v, n);
   xfree (v);
   xfree (w);
+}
+
+/* nh_ts_run_range over each of RANGES, char ranges of PARSER's
+   buffer.  */
+static void
+nh_ts_run (Lisp_Object parser, Lisp_Object ranges, Lisp_Object queries,
+	   uint64_t key, bool classes)
+{
+  for (Lisp_Object l = ranges; CONSP (l); l = XCDR (l))
+    nh_ts_run_range (parser, XFIXNUM (XCAR (XCAR (l))),
+		     XFIXNUM (XCDR (XCAR (l))), queries, key, classes);
 }
 
 /* Buffer BUFFER's queries in buffer-local SYM (a compiled query or a
@@ -2646,18 +2654,131 @@ nh_ts_whole (Lisp_Object parser)
   return list1 (Fcons (make_fixnum (beg), make_fixnum (end)));
 }
 
+/* Whole-text highlight passes in slices (Task 11e).  Each entry of
+   nh_ts_hl_pending is (PARSER . MARKER), MARKER at the start of the
+   first line of PARSER's buffer still to colour; edits shift it, and a
+   parse's publish colours its own changed lines at once.  A slice
+   colours whole lines for at most `nidhogg-treesit-highlight-slice'
+   seconds (at least one line), sized by the last chunk's time per byte;
+   the idle timer nh_ts_hl_timer runs the next.  */
+static Lisp_Object nh_ts_hl_pending, nh_ts_hl_timer;
+static double nh_ts_hl_ns_per_byte;
+
+static int64_t
+nh_ts_hl_now (void)
+{
+  struct timespec t;
+  clock_gettime (CLOCK_MONOTONIC, &t);
+  return t.tv_sec * (int64_t) 1000000000 + t.tv_nsec;
+}
+
+/* A slice's budget in ns: `nidhogg-treesit-highlight-slice'.  */
+static int64_t
+nh_ts_hl_budget (void)
+{
+  double s = (NUMBERP (Vnidhogg_treesit_highlight_slice)
+	      ? XFLOATINT (Vnidhogg_treesit_highlight_slice) : 0.004);
+  return s > 0 ? min (s, 3600) * 1e9 : 0;
+}
+
+/* Forget ENTRY of nh_ts_hl_pending, its marker unchained.  */
+static void
+nh_ts_hl_drop (Lisp_Object entry)
+{
+  Fset_marker (XCDR (entry), Qnil, Qnil);
+  nh_ts_hl_pending = Fdelq (entry, nh_ts_hl_pending);
+}
+
+/* Run the next slice when Emacs is idle, unless it is due already.  */
+static void
+nh_ts_hl_arm (void)
+{
+  if (!NILP (nh_ts_hl_timer) && !NILP (Fmemq (nh_ts_hl_timer, Vtimer_idle_list)))
+    return;
+  nh_ts_hl_timer = safe_calln (Qrun_with_idle_timer, make_fixnum (0), Qnil,
+			       Qnidhogg_treesit__highlight_slice);
+}
+
+/* Colour PARSER's lines from MARKER on until DEADLINE (ns); true when
+   nothing is left (also when the parser, its buffer, model or query
+   went).  */
+static bool
+nh_ts_hl_step (Lisp_Object parser, Lisp_Object marker, int64_t deadline)
+{
+  struct Lisp_TS_Parser *p = XTS_PARSER (parser);
+  if (p->deleted || !BUFFER_LIVE_P (XBUFFER (p->buffer)) || !p->tree)
+    return true;
+  struct buffer *buf = XBUFFER (p->buffer);
+  uint64_t key = nh_lines_model (buf);
+  Lisp_Object hl
+    = nh_ts_query_of (Qnidhogg_treesit_highlight_query, p->buffer, parser);
+  if (!key || NILP (hl))
+    return true;
+  ptrdiff_t lo = max (p->visible_beg, BUF_BEGV_BYTE (buf));
+  ptrdiff_t hi = min (p->visible_end, BUF_ZV_BYTE (buf));
+  ptrdiff_t bb = clip_to_bounds (lo, marker_byte_position (marker), hi);
+  while (bb > lo && BUF_FETCH_BYTE (buf, bb - 1) != '\n')
+    bb--;
+  while (bb < hi)
+    {
+      int64_t t0 = nh_ts_hl_now ();
+      ptrdiff_t want = (nh_ts_hl_ns_per_byte > 0 && deadline > t0
+			? (deadline - t0) / 2 / nh_ts_hl_ns_per_byte : 0);
+      ptrdiff_t eb = bb + min (want, hi - bb);
+      while (eb < hi && BUF_FETCH_BYTE (buf, eb) != '\n')
+	eb++;
+      nh_ts_run_range (parser, buf_bytepos_to_charpos (buf, bb),
+		       buf_bytepos_to_charpos (buf, eb), hl, key, true);
+      int64_t t1 = nh_ts_hl_now ();
+      nh_ts_hl_ns_per_byte = (double) (t1 - t0) / (eb - bb + 1);
+      bb = min (eb + 1, hi);
+      set_marker_both (marker, p->buffer, buf_bytepos_to_charpos (buf, bb), bb);
+      if (t1 >= deadline)
+	break;
+    }
+  return bb >= hi;
+}
+
+/* Colour PARSER's whole accessible text: its first slice now, the rest
+   from the idle timer.  */
+static void
+nh_ts_hl_queue (Lisp_Object parser)
+{
+  struct Lisp_TS_Parser *p = XTS_PARSER (parser);
+  struct buffer *buf = XBUFFER (p->buffer);
+  ptrdiff_t lo = max (p->visible_beg, BUF_BEGV_BYTE (buf));
+  Lisp_Object entry = Fassq (parser, nh_ts_hl_pending);
+  if (NILP (entry))
+    {
+      entry = Fcons (parser, build_marker (buf, buf_bytepos_to_charpos (buf, lo), lo));
+      nh_ts_hl_pending = Fcons (entry, nh_ts_hl_pending);
+    }
+  else
+    set_marker_both (XCDR (entry), p->buffer, buf_bytepos_to_charpos (buf, lo), lo);
+  if (nh_ts_hl_step (parser, XCDR (entry),
+		     nh_ts_hl_now () + nh_ts_hl_budget ()))
+    nh_ts_hl_drop (entry);
+  else
+    nh_ts_hl_arm ();
+}
+
 /* At PARSER's publish: run its buffer's fold query
    (`nidhogg-treesit-fold-query') and highlight query
    (`nidhogg-treesit-highlight-query'), when they are of PARSER's
    language, over the new tree in each of RANGES, the publish's changed
    ranges: the captured nodes replace the line model's tree-sitter folds
    (source 0) and its lines' class runs there (design sections 7.2 and
-   7.4); a range's highlights cover its whole lines.  Classes the model
-   refused while its lines were built run over the whole tree.  Ranges outside the accessible region are not
+   7.4); a range's highlights cover its whole lines.  With WHOLE (RANGES
+   the whole tree), and for classes the model refused while its lines
+   were built, the highlights run over the whole text in slices
+   (nh_ts_hl_queue).  Ranges outside the accessible region are not
    touched: they stay until a parse over them.  */
 static void
-nh_ts_publish_folds (Lisp_Object parser, Lisp_Object ranges)
+nh_ts_publish_folds (Lisp_Object parser, Lisp_Object ranges, bool whole)
 {
+  /* a pass that waited for this parse goes on */
+  if (CONSP (nh_ts_hl_pending) && !NILP (Fassq (parser, nh_ts_hl_pending)))
+    nh_ts_hl_arm ();
   if (!nh_lines_ntracked || NILP (ranges))
     return;
   Lisp_Object buffer = XTS_PARSER (parser)->buffer;
@@ -2672,9 +2793,51 @@ nh_ts_publish_folds (Lisp_Object parser, Lisp_Object ranges)
     return;
   if (!NILP (folds))
     nh_ts_run (parser, ranges, folds, key, false);
-  if (!NILP (hl))
-    nh_ts_run (parser, hlid_classes_missed (key) ? nh_ts_whole (parser)
-	       : ranges, hl, key, true);
+  if (NILP (hl))
+    return;
+  if (!whole)
+    nh_ts_run (parser, ranges, hl, key, true);
+  if (whole || hlid_classes_missed (key))
+    nh_ts_hl_queue (parser);
+}
+
+DEFUN ("nidhogg-treesit--highlight-slice", Fnidhogg_treesit__highlight_slice,
+       Snidhogg_treesit__highlight_slice, 0, 0, 0,
+       doc: /* Colour more lines of the whole-text highlight passes left.
+A refold (`nidhogg-treesit-refold') colours a buffer's lines in slices
+of at most `nidhogg-treesit-highlight-slice' seconds each (at least one
+line), the first at once and the rest from an idle timer that runs this.
+A pass whose parser's tree waits for a parse waits for it (the parse
+arms the timer again).  Returns non-nil when lines are left.  */)
+  (void)
+{
+  int64_t deadline = nh_ts_hl_now () + nh_ts_hl_budget ();
+  bool more = false, ran = false;
+  for (Lisp_Object l = nh_ts_hl_pending; CONSP (l); )
+    {
+      Lisp_Object entry = XCAR (l);
+      l = XCDR (l);
+      struct Lisp_TS_Parser *p = XTS_PARSER (XCAR (entry));
+      if (!p->deleted && BUFFER_LIVE_P (XBUFFER (p->buffer)) && p->need_reparse)
+	continue;
+      /* at least one step a slice */
+      if (more || (ran && nh_ts_hl_now () >= deadline))
+	{
+	  more = true;
+	  break;
+	}
+      /* No redisplay flag: a timer that ran is followed by a redisplay
+	 (wait_reading_process_output), and every redisplay publishes,
+	 the minimap taken from the line model again.  */
+      ran = true;
+      if (nh_ts_hl_step (XCAR (entry), XCDR (entry), deadline))
+	nh_ts_hl_drop (entry);
+      else
+	more = true;
+    }
+  if (more)
+    nh_ts_hl_arm ();
+  return more ? Qt : Qnil;
 }
 
 DEFUN ("nidhogg-treesit-refold", Fnidhogg_treesit_refold,
@@ -2684,8 +2847,10 @@ The captures replace the line model's tree-sitter folds and its lines'
 class runs in the parser's accessible region
 (`nidhogg-treesit-fold-query' and `nidhogg-treesit-highlight-query' say
 how), as a parse's publish does over its changed ranges.  For a query
-set after the buffer was parsed, and after the narrowing went.  Returns
-nil.  */)
+set after the buffer was parsed, and after the narrowing went.  The
+folds replace at once; the classes of a text larger than one slice of
+`nidhogg-treesit-highlight-slice' seconds are coloured in slices on an
+idle timer (`nidhogg-treesit--highlight-slice').  Returns nil.  */)
   (Lisp_Object parser)
 {
   treesit_check_parser (parser);
@@ -2693,7 +2858,7 @@ nil.  */)
   treesit_ensure_parsed (parser);
   if (!XTS_PARSER (parser)->tree)
     return Qnil;
-  nh_ts_publish_folds (parser, nh_ts_whole (parser));
+  nh_ts_publish_folds (parser, nh_ts_whole (parser), true);
   return Qnil;
 }
 
@@ -5793,7 +5958,24 @@ as `nidhogg-treesit-fold-query'.  A line keeps six runs.  Nothing runs for a buf
 (`nidhogg-lines-enable').  Buffer-local; nil runs nothing.  */);
   Vnidhogg_treesit_highlight_query = Qnil;
   Fmake_variable_buffer_local (Qnidhogg_treesit_highlight_query);
+  DEFVAR_LISP ("nidhogg-treesit-highlight-slice",
+	       Vnidhogg_treesit_highlight_slice,
+	       doc: /* Seconds a slice of a whole-text highlight pass may take.
+A refold, or a model that missed its classes while its lines were built,
+runs the highlight query (`nidhogg-treesit-highlight-query') over the
+whole text in slices of whole lines, each at most this long (but at
+least one line), the first at once and the rest when Emacs is idle; a
+parse's own changed lines are coloured at its publish all the same.  */);
+  Vnidhogg_treesit_highlight_slice = make_float (0.004);
+  DEFSYM (Qrun_with_idle_timer, "run-with-idle-timer");
+  DEFSYM (Qnidhogg_treesit__highlight_slice,
+	  "nidhogg-treesit--highlight-slice");
+  staticpro (&nh_ts_hl_pending);
+  nh_ts_hl_pending = Qnil;
+  staticpro (&nh_ts_hl_timer);
+  nh_ts_hl_timer = Qnil;
   defsubr (&Snidhogg_treesit_refold);
+  defsubr (&Snidhogg_treesit__highlight_slice);
 #endif
   DEFSYM (Qtreesit_node_p, "treesit-node-p");
   DEFSYM (Qtreesit_compiled_query_p, "treesit-compiled-query-p");

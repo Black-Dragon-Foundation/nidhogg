@@ -1251,6 +1251,31 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
 - **The scroll bar** (the `glitnir-ruler` strip) measures visible lines when the window's text has a model: lines
   hidden with `nidhogg-lines-set-hidden` do not count, so a mark keeps its place when the strip widens into the
   minimap. Without a model it measures characters, as before.
+- **The widest line** (`nidhogg-lines-widest`, the horizontal strip's measure): the widest visible line of the
+  accessible part, in columns (tabs to `tab-width` stops, other characters at their `char-width-table` width), kept per
+  chunk as edits happen and cached per buffer. A buffer whose `tab-width` changed, or a new `char-width-table`, builds
+  the lines again; a table changed in place is taken with `(nidhogg-lines-widest BUFFER t)`.
+- **The horizontal strip** (the window parameter `glitnir-hstrip`, hscroll design §3.1): a thumb drawn over the text's
+  bottom `:height` pixels, from the first text column (after the line numbers) to the text area's right edge, while
+  the window cuts lines (`truncate-lines`, partial-width truncation or an hscroll) and something is wider than the
+  text. It takes no space. It stands for the widest line (`nidhogg-lines-widest`, plus 4 columns), the shown rows cut
+  while their line fits (display strings, inlay hints, fold summaries: each walked once per row, buffer change and
+  column width; `glitnir--hstrip-measures` counts the walks) and hscroll plus the text. Without a model, or with
+  long-line optimizations, nothing is walked: it shows while a row is cut or the window is scrolled, standing for
+  hscroll plus twice the text. C works it out in `redisplay_window` (`glitnir_hstrip_window`, `src/nidhogg-glitnir.c`;
+  `glitnir-hstrip-state` reads it): while it shows, `cursor_row_fully_visible_p` counts a row reaching into it as
+  partly visible, so point never rests under it. A press on its bottom `:lane` pixels scrolls the window so the thumb
+  centres on the pointer, a drag follows it once a frame, through the glue's minimap pointer code and the special event
+  `(glitnir-hstrip WINDOW HSCROLL)` (`glitnir-hstrip-event` calls `set-window-hscroll`); presses above the lane are the
+  text's. Right to left the thumb is mirrored. Not on a terminal.
+- **On a terminal** (design 7.8, stage T) the strip is one column: a window with a `glitnir-ruler` and a right margin
+  (`set-window-margins`) gets its margin's last column, `┃` over the rows the window shows (the ruler's `:band`
+  colour) and `│` (`shadow`) elsewhere, `▐` in a mark's colour on the rows its marks fall on (a later mark over an
+  earlier one); one with `glitnir-fold-arrows` and a left margin gets `▸` (its `:folded` colour) in that margin's first
+  column on each row starting a folded line. C puts the cells in the frame's desired matrix after
+  `build_frame_matrix` (`glitnir_tty_columns`, `src/nidhogg-glitnir.c`), so `update_frame` owns them: insert/delete
+  line scrolling and the diff stay right, a row not redisplayed is updated only when its cell changed, and a scroll
+  runs no Lisp.
 - **Tree-sitter folds** (source 0): a buffer's `nidhogg-treesit-fold-query` (buffer-local, a compiled query) runs in C
   at each parse's publish (`treesit_ensure_parsed`'s tail, before the after-change functions), over that parse's
   changed ranges only. Its `@fold` / `@fold.KIND` nodes replace the source-0 ranges touching each range, widened to
@@ -1264,7 +1289,10 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
   their `face` text properties where redisplay fontifies (after `fontification-functions`, within 4096 characters),
   or through `nidhogg-lines-take-faces`. An edit clears the runs of the lines it rewrites until the next parse or
   fontification colours them again. Runs refused while the lines were built make the next parse run the query over
-  the whole tree. `glitnir-minimap`'s `:classes` gives each class a colour; a tab-indented line's runs and bar are in
+  the whole text. A whole-text pass (that, or `nidhogg-treesit-refold`) runs in slices of whole lines, each at most
+  `nidhogg-treesit-highlight-slice` seconds (default 0.004, at least one line): the first at once, the rest from an
+  idle timer (`nidhogg-treesit--highlight-slice`), each going on from where the last stopped; a parse meanwhile still
+  colours its own changed lines at its publish, and a pass whose tree waits for a parse goes on after it. `glitnir-minimap`'s `:classes` gives each class a colour; a tab-indented line's runs and bar are in
   columns.
 - **Hub folds** (source 1, a buffer with no parser of its own): the hub's `folds` layer of a file (Sjá's minimap layers,
   sent while a connection watches the file) becomes the model's source-1 ranges, whole lines, once per layer version:
@@ -1275,7 +1303,7 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
   `nidhogg-lines-next-mark`, `nidhogg-lines-counts`; folds by source: `nidhogg-lines-set-folds`, `nidhogg-lines-folds`,
   `nidhogg-lines-fold-at`; `nidhogg-lines-set-hidden`; `nidhogg-lines-trail-note`, `nidhogg-lines-trail`;
   `nidhogg-lines-classes` (a line's runs), `nidhogg-lines-take-faces`; `nidhogg-lines-take-hub-folds`; `nidhogg-treesit-refold` (the fold and
-  highlight queries over a parser's whole tree);
+  highlight queries over a parser's whole tree, the highlights in slices);
   `nidhogg-lines-describe` → `(:lines :chars :chunks :marks :folds :hidden :bytes :edits :state :rebuilds)`. The feature
   is `nidhogg-lines`.
 - Tests: `test/src/nidhogg-tests/lines-tests.el` (det; in `check-subset.txt`): every change site keeps the lines with

@@ -38,6 +38,7 @@ along with Nidhogg.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "lisp.h"
 #include "buffer.h"
 #include "coding.h"
+#include "window.h"
 #include "nidhogg-history.h"
 
 #include <hlidskjalf.h>
@@ -69,6 +70,47 @@ nh_lines_find (struct buffer_text *text)
   return NULL;
 }
 
+/* The char-width-table the line model's character widths were last
+   taken from, and those widths: ranges (first, last, width) of the
+   characters past ASCII whose width is not 1.  */
+static Lisp_Object nh_lines_widths_of;
+static uint32_t *nh_lines_widths;
+static ptrdiff_t nh_lines_widths_len, nh_lines_widths_cap;
+
+static void
+nh_lines_width_range (Lisp_Object arg, Lisp_Object key, Lisp_Object val)
+{
+  if (!FIXNUMP (val))
+    return;
+  int w = sanitize_char_width (XFIXNUM (val));
+  EMACS_INT from = CONSP (key) ? XFIXNUM (XCAR (key)) : XFIXNUM (key);
+  EMACS_INT to = CONSP (key) ? XFIXNUM (XCDR (key)) : XFIXNUM (key);
+  if (w == 1 || to < 0x80)
+    return;
+  if (nh_lines_widths_cap - nh_lines_widths_len < 3)
+    nh_lines_widths = xpalloc (nh_lines_widths, &nh_lines_widths_cap, 3, -1,
+			       sizeof *nh_lines_widths);
+  nh_lines_widths[nh_lines_widths_len++] = max (from, 0x80);
+  nh_lines_widths[nh_lines_widths_len++] = to;
+  nh_lines_widths[nh_lines_widths_len++] = w;
+}
+
+/* Send `char-width-table' to the line model when it holds another table
+   than the one sent last, or when FORCE (the table changed in place):
+   the models built with the old widths are built again when next
+   asked for their widest line.  */
+static void
+nh_lines_widths_sync (bool force)
+{
+  if (!force && EQ (Vchar_width_table, nh_lines_widths_of))
+    return;
+  nh_lines_widths_of = Vchar_width_table;
+  nh_lines_widths_len = 0;
+  if (CHAR_TABLE_P (Vchar_width_table))
+    map_char_table (nh_lines_width_range, Qnil, Vchar_width_table, Qnil);
+  hlid_set_widths (nh_lines_widths, nh_lines_widths_len / 3);
+}
+
 /* Build B's lines from its whole text (BEG..Z, narrowing ignored), on a
    thread of their own when the text is large and BACKGROUND.  */
 static void
@@ -79,12 +121,12 @@ nh_lines_build (struct buffer *b, struct nh_lines_text *t, bool background)
   size_t n1 = gpt - BEG_BYTE;
   const unsigned char *p2 = BUF_GAP_END_ADDR (b);
   size_t n2 = z - gpt;
-  Lisp_Object tw = BVAR (b, tab_width);
   bool bg = background && FIXNATP (Vnidhogg_lines_sync_limit)
 	    && n1 + n2 >= XFIXNAT (Vnidhogg_lines_sync_limit);
+  nh_lines_widths_sync (false);
   if (hlid_build (nh_lines_key (b->text),
 		  !NILP (BVAR (b, enable_multibyte_characters)),
-		  FIXNATP (tw) ? min (XFIXNAT (tw), 1000) : 8,
+		  SANE_TAB_WIDTH (b),
 		  n1 ? p1 : NULL, n1, n2 ? p2 : NULL, n2, bg)
       != HLID_OK)
     emacs_abort ();
@@ -219,6 +261,49 @@ nh_lines_fraction (struct buffer *b, ptrdiff_t pos, double *out)
   if (r == HLID_STALE)
     nh_lines_build (b, t, true);
   return r == HLID_OK;
+}
+
+/* The columns of the widest visible line in B's accessible part into
+   *COLS (the horizontal strip's measure); false when B has no model or
+   its lines are being built.  Lines built with another tab width or
+   other character widths are built again first.  */
+bool
+nh_lines_widest (struct buffer *b, uint32_t *cols)
+{
+  struct nh_lines_text *t = nh_lines_find (b->text);
+  if (!t)
+    return false;
+  nh_lines_widths_sync (false);
+  uint64_t key = nh_lines_key (b->text);
+  int r = hlid_widest (key, (uintptr_t) b, BUF_BEGV (b), BUF_ZV (b),
+		       SANE_TAB_WIDTH (b), cols);
+  if (r == HLID_STALE)
+    {
+      nh_lines_build (b, t, true);
+      r = hlid_widest (key, (uintptr_t) b, BUF_BEGV (b), BUF_ZV (b),
+		       SANE_TAB_WIDTH (b), cols);
+    }
+  return r == HLID_OK;
+}
+
+/* Whether POS's visible line in B is folded (a fold starts on it, the
+   lines after it hidden), for the terminal's fold margin; false when B
+   has no model.  */
+bool
+nh_lines_folded_at (struct buffer *b, ptrdiff_t pos)
+{
+  struct nh_lines_text *t = nh_lines_find (b->text);
+  return t && hlid_folded_at (nh_lines_key (b->text), pos) == HLID_OK;
+}
+
+/* The display width in columns of POS's line in B into *COLS, for the
+   horizontal strip's rows cut while their line fits; false when B has
+   no model or it is not built.  */
+bool
+nh_lines_cols_at (struct buffer *b, ptrdiff_t pos, uint32_t *cols)
+{
+  struct nh_lines_text *t = nh_lines_find (b->text);
+  return t && hlid_cols_at (nh_lines_key (b->text), pos, cols) == HLID_OK;
 }
 
 static struct buffer *
@@ -526,6 +611,26 @@ the lines are being built.  This is the scroll bar's measure.  */)
 	 == HLID_OK ? make_float (f) : Qnil;
 }
 
+DEFUN ("nidhogg-lines-widest", Fnidhogg_lines_widest,
+       Snidhogg_lines_widest, 0, 2, 0,
+       doc: /* The columns of the widest visible line in BUFFER's accessible part.
+Lines hidden with `nidhogg-lines-set-hidden' do not count.  A tab reaches
+the next `tab-width' stop, another control character takes 2 columns and
+any other character its `char-width-table' width.  nil while the lines
+are being built.  The model takes `char-width-table' again when the
+variable holds another table, or with REFRESH non-nil (after the table
+was changed in place), and builds the lines again when the widths or
+`tab-width' changed.  This is the horizontal strip's measure.  */)
+  (Lisp_Object buffer, Lisp_Object refresh)
+{
+  struct buffer *b = nh_lines_buffer (buffer);
+  nh_lines_key_of (buffer);
+  if (!NILP (refresh))
+    nh_lines_widths_sync (true);
+  uint32_t cols;
+  return nh_lines_widest (b, &cols) ? make_fixnum (cols) : Qnil;
+}
+
 DEFUN ("nidhogg-lines-set-marks", Fnidhogg_lines_set_marks,
        Snidhogg_lines_set_marks, 3, 3, 0,
        doc: /* Replace the marks of KIND in BUFFER's line model with MARKS.
@@ -681,31 +786,59 @@ that holds POS.  */)
 
 DEFUN ("nidhogg-lines-set-hidden", Fnidhogg_lines_set_hidden,
        Snidhogg_lines_set_hidden, 2, 2, 0,
-       doc: /* Tell BUFFER's line model which ranges are hidden: RANGES, a list of (BEG . END).
+       doc: /* Tell BUFFER's line model which ranges are hidden: RANGES, a list of (BEG . END) or (BEG END NAME).
 A line whose start lies after BEG and at or before END is hidden: the
-scroll bar and the minimap leave it out.  */)
+scroll bar and the minimap leave it out.  NAME, a string or nil, is a
+named fold's name: the minimap's fold pill on the range's first line
+shows it instead of the count of lines hidden.  */)
   (Lisp_Object buffer, Lisp_Object ranges)
 {
   uint64_t key = nh_lines_key_of (buffer);
   ptrdiff_t n = list_length (ranges), i = 0;
   USE_SAFE_ALLOCA;
   uint64_t *v;
+  const uint8_t **names;
+  size_t *lens;
   SAFE_NALLOCA (v, 2, max (n, 1));
+  SAFE_NALLOCA (names, 1, max (n, 1));
+  SAFE_NALLOCA (lens, 1, max (n, 1));
+  /* The names encoded first: their data must not move before the call.  */
+  Lisp_Object encoded = Qnil;
   for (Lisp_Object l = ranges; CONSP (l); l = XCDR (l))
     {
       Lisp_Object r = XCAR (l);
       CHECK_CONS (r);
-      v[i++] = nh_lines_pos (XCAR (r));
-      v[i++] = nh_lines_pos (XCDR (r));
+      Lisp_Object name = Qnil;
+      if (CONSP (XCDR (r)))
+	{
+	  v[i++] = nh_lines_pos (XCAR (r));
+	  v[i++] = nh_lines_pos (XCAR (XCDR (r)));
+	  name = CONSP (XCDR (XCDR (r))) ? XCAR (XCDR (XCDR (r))) : Qnil;
+	  if (!NILP (name))
+	    CHECK_STRING (name);
+	}
+      else
+	{
+	  v[i++] = nh_lines_pos (XCAR (r));
+	  v[i++] = nh_lines_pos (XCDR (r));
+	}
+      encoded = Fcons (NILP (name) ? Qnil : ENCODE_UTF_8 (name), encoded);
     }
-  hlid_set_hidden (key, v, i / 2);
+  encoded = Fnreverse (encoded);
+  ptrdiff_t k = 0;
+  for (Lisp_Object e = encoded; CONSP (e); e = XCDR (e), k++)
+    {
+      names[k] = STRINGP (XCAR (e)) ? SDATA (XCAR (e)) : NULL;
+      lens[k] = STRINGP (XCAR (e)) ? SBYTES (XCAR (e)) : 0;
+    }
+  hlid_set_hidden_named (key, v, names, lens, i / 2);
   SAFE_FREE ();
   return Qnil;
 }
 
 DEFUN ("nidhogg-lines-trail-note", Fnidhogg_lines_trail_note,
        Snidhogg_lines_trail_note, 2, 2, 0,
-       doc: /* Note a visit to POS on BUFFER's trail (the last 20 visited lines).  */)
+       doc: /* Note a visit to POS on BUFFER's trail (the last 64 visited lines).  */)
   (Lisp_Object buffer, Lisp_Object pos)
 {
   hlid_trail_note (nh_lines_key_of (buffer), nh_lines_pos (pos));
@@ -717,13 +850,122 @@ DEFUN ("nidhogg-lines-trail", Fnidhogg_lines_trail, Snidhogg_lines_trail,
        doc: /* BUFFER's trail: the positions visited, newest first, one per line.  */)
   (Lisp_Object buffer)
 {
-  uint64_t key = nh_lines_key_of (buffer), v[32];
+  uint64_t key = nh_lines_key_of (buffer), v[64];
   size_t n = 0;
-  hlid_trail (key, v, 32, &n);
+  hlid_trail (key, v, 64, &n);
   Lisp_Object out = Qnil;
-  for (size_t i = min (n, 32); i > 0; i--)
+  for (size_t i = min (n, 64); i > 0; i--)
     out = Fcons (make_uint (v[i - 1]), out);
   return out;
+}
+
+DEFUN ("nidhogg-lines-trail-clear", Fnidhogg_lines_trail_clear,
+       Snidhogg_lines_trail_clear, 1, 1, 0,
+       doc: /* Forget BUFFER's trail.  */)
+  (Lisp_Object buffer)
+{
+  hlid_trail_clear (nh_lines_key_of (buffer));
+  return Qnil;
+}
+
+/* Step B's search (model KEY) for up to 4 ms: its answer as
+   `nidhogg-lines-search-step' gives it.  New hits redisplay B.  */
+static Lisp_Object
+nh_lines_search_answer (struct buffer *b, uint64_t key)
+{
+  ptrdiff_t gpt = BUF_GPT_BYTE (b), z = BUF_Z_BYTE (b);
+  const unsigned char *p1 = BUF_BEG_ADDR (b);
+  size_t n1 = gpt - BEG_BYTE;
+  const unsigned char *p2 = BUF_GAP_END_ADDR (b);
+  size_t n2 = z - gpt;
+  int32_t state = 0;
+  uint64_t count = 0;
+  if (hlid_search_step (key, n1 ? p1 : NULL, n1, n2 ? p2 : NULL, n2,
+			4 * 1000 * 1000, &state, &count) != HLID_OK
+      || state == 0)
+    return Qnil;
+  if (count > 0 || state == 2)
+    bset_redisplay (b);
+  return (state == 1 ? Qrunning : state == 3 ? Qfallback
+	  : make_uint (count));
+}
+
+DEFUN ("nidhogg-lines-search", Fnidhogg_lines_search,
+       Snidhogg_lines_search, 2, 4, 0,
+       doc: /* Search BUFFER's whole text for QUERY, for the minimap (design X1).
+QUERY is an Emacs regexp, or with LITERAL plain text; CASE-FOLD folds
+case (ASCII only: a query with other letters is not taken).  The scan
+runs in slices of 4 ms: this call makes the first, and
+`nidhogg-lines-search-step' the next ones.  The answer is that of
+`nidhogg-lines-search-step', or nil when the query is outside the subset
+the line model carries (syntax classes such as \\w or \\_<, back
+references, a negated bracket, anything that matches a newline): Lisp
+searches it itself.  QUERY nil ends the search.  Empty matches are not
+hits (`how-many' counts them).  An edit starts the scan over.  */)
+  (Lisp_Object buffer, Lisp_Object query, Lisp_Object literal,
+   Lisp_Object case_fold)
+{
+  struct buffer *b = nh_lines_buffer (buffer);
+  uint64_t key = nh_lines_key_of (buffer);
+  if (NILP (query))
+    {
+      hlid_search (key, NULL, 0, 0);
+      bset_redisplay (b);
+      return Qnil;
+    }
+  CHECK_STRING (query);
+  uint32_t flags = (NILP (literal) ? 0 : 1) | (NILP (case_fold) ? 0 : 2);
+  if (hlid_search (key, SDATA (query), SBYTES (query), flags) != HLID_OK)
+    return Qnil;
+  return nh_lines_search_answer (b, key);
+}
+
+DEFUN ("nidhogg-lines-search-step", Fnidhogg_lines_search_step,
+       Snidhogg_lines_search_step, 1, 1, 0,
+       doc: /* Scan on for BUFFER's search for up to 4 ms.
+Return `running' while there is more to scan, the number of hits when
+the scan is done, `fallback' when the text holds what the line model
+cannot read (Lisp searches it), or nil with no search.  */)
+  (Lisp_Object buffer)
+{
+  return nh_lines_search_answer (nh_lines_buffer (buffer),
+				 nh_lines_key_of (buffer));
+}
+
+DEFUN ("nidhogg-lines-search-hits", Fnidhogg_lines_search_hits,
+       Snidhogg_lines_search_hits, 1, 3, 0,
+       doc: /* BUFFER's search hits starting from BEG to before END, as (POS . END).
+BEG and END default to the text's ends; at most 65536 are given.  */)
+  (Lisp_Object buffer, Lisp_Object beg, Lisp_Object end)
+{
+  uint64_t key = nh_lines_key_of (buffer);
+  uint64_t a = NILP (beg) ? 0 : nh_lines_pos (beg);
+  uint64_t z = NILP (end) ? UINT64_MAX : nh_lines_pos (end);
+  size_t n = 0;
+  hlid_search_hits (key, a, z, NULL, 0, &n);
+  n = min (n, 65536);
+  uint64_t *v = xmalloc (max (n, 1) * 2 * sizeof *v);
+  size_t got = 0;
+  hlid_search_hits (key, a, z, v, n, &got);
+  Lisp_Object out = Qnil;
+  for (size_t i = min (n, got); i > 0; i--)
+    out = Fcons (Fcons (make_uint (v[2 * i - 2]), make_uint (v[2 * i - 1])),
+		 out);
+  xfree (v);
+  return out;
+}
+
+DEFUN ("nidhogg-lines-search-current", Fnidhogg_lines_search_current,
+       Snidhogg_lines_search_current, 2, 2, 0,
+       doc: /* Make the search hit at POS in BUFFER the current one (nil: none).
+The minimap draws it with a ring.  Return how many hits start before
+POS (so the hit at POS is that plus one of the count).  */)
+  (Lisp_Object buffer, Lisp_Object pos)
+{
+  uint64_t key = nh_lines_key_of (buffer), index = 0;
+  hlid_search_current (key, NILP (pos) ? 0 : nh_lines_pos (pos), &index);
+  bset_redisplay (nh_lines_buffer (buffer));
+  return make_uint (index);
 }
 
 DEFUN ("nidhogg-lines-set-section-regexp", Fnidhogg_lines_set_section_regexp,
@@ -853,6 +1095,9 @@ nil builds every model at once, on the main thread.  */);
   Vnidhogg_lines_sync_limit = make_fixnum (1024 * 1024);
 
   defsubr (&Snidhogg_lines_enable);
+  defsubr (&Snidhogg_lines_widest);
+  nh_lines_widths_of = Qnil;
+  staticpro (&nh_lines_widths_of);
   defsubr (&Snidhogg_lines_disable);
   defsubr (&Snidhogg_lines_line);
   defsubr (&Snidhogg_lines_classes);
@@ -869,6 +1114,13 @@ nil builds every model at once, on the main thread.  */);
   defsubr (&Snidhogg_lines_set_hidden);
   defsubr (&Snidhogg_lines_trail_note);
   defsubr (&Snidhogg_lines_trail);
+  defsubr (&Snidhogg_lines_trail_clear);
+  defsubr (&Snidhogg_lines_search);
+  defsubr (&Snidhogg_lines_search_step);
+  defsubr (&Snidhogg_lines_search_hits);
+  defsubr (&Snidhogg_lines_search_current);
+  DEFSYM (Qrunning, "running");
+  DEFSYM (Qfallback, "fallback");
   defsubr (&Snidhogg_lines_set_section_regexp);
   defsubr (&Snidhogg_lines_sections);
   defsubr (&Snidhogg_lines_set_fold_sources);

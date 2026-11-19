@@ -1798,7 +1798,7 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
     /// The minimaps' part of the header: the flags, the record's layout and the entry points.
     #[test]
     fn minimap_header_matches() {
-        use nhglue::ffi::{nhg_minimap_count, nhg_minimap_sync};
+        use nhglue::ffi::{nhg_minimap_count, nhg_minimap_flash, nhg_minimap_sync};
         use nhglue::minimap::*;
         type M = NhgMinimap;
         let rows: &[(&str, i64)] = &[
@@ -1850,19 +1850,167 @@ PROTO (nhg_edges_count, int32_t (NhgDisplay *, uint64_t));";
             ("offsetof (M, sub_rgb)", offset_of!(M, sub_rgb) as i64),
             ("offsetof (M, accent_rgb)", offset_of!(M, accent_rgb) as i64),
             ("offsetof (M, mark_rgb)", offset_of!(M, mark_rgb) as i64),
+            ("offsetof (M, class_rgb)", offset_of!(M, class_rgb) as i64),
+            ("offsetof (M, hunk_rgb)", offset_of!(M, hunk_rgb) as i64),
+            ("offsetof (M, hunks)", offset_of!(M, hunks) as i64),
+            ("offsetof (M, hunks_len)", offset_of!(M, hunks_len) as i64),
+            (
+                "sizeof (NhgMinimapHunk)",
+                size_of::<NhgMinimapHunk>() as i64,
+            ),
+            (
+                "offsetof (NhgMinimapHunk, text)",
+                offset_of!(NhgMinimapHunk, text) as i64,
+            ),
+            (
+                "offsetof (NhgMinimapHunk, len)",
+                offset_of!(NhgMinimapHunk, len) as i64,
+            ),
             ("NHG_MINIMAP_LABELS_ALL", NHG_MINIMAP_LABELS_ALL.into()),
             ("NHG_MINIMAP_LABELS_MARKS", NHG_MINIMAP_LABELS_MARKS.into()),
+            ("offsetof (M, pill_rgb)", offset_of!(M, pill_rgb) as i64),
+            (
+                "offsetof (M, pill_format)",
+                offset_of!(M, pill_format) as i64,
+            ),
+            (
+                "offsetof (M, pill_format_len)",
+                offset_of!(M, pill_format_len) as i64,
+            ),
+            ("offsetof (M, number)", offset_of!(M, number) as i64),
+            ("offsetof (M, number_len)", offset_of!(M, number_len) as i64),
+            ("offsetof (M, arrows)", offset_of!(M, arrows) as i64),
+            ("offsetof (M, fringe)", offset_of!(M, fringe) as i64),
+            ("offsetof (M, arrow_size)", offset_of!(M, arrow_size) as i64),
+            (
+                "offsetof (M, arrow_inset)",
+                offset_of!(M, arrow_inset) as i64,
+            ),
+            ("offsetof (M, arrow_rgb)", offset_of!(M, arrow_rgb) as i64),
+            (
+                "offsetof (M, arrow_opacity)",
+                offset_of!(M, arrow_opacity) as i64,
+            ),
+            ("offsetof (M, folded_rgb)", offset_of!(M, folded_rgb) as i64),
+            (
+                "offsetof (M, folded_opacity)",
+                offset_of!(M, folded_opacity) as i64,
+            ),
+            ("offsetof (M, rows)", offset_of!(M, rows) as i64),
+            ("offsetof (M, rows_len)", offset_of!(M, rows_len) as i64),
+            ("sizeof (NhgMinimapRow)", size_of::<NhgMinimapRow>() as i64),
+            (
+                "offsetof (NhgMinimapRow, pos)",
+                offset_of!(NhgMinimapRow, pos) as i64,
+            ),
+            (
+                "offsetof (NhgMinimapRow, y)",
+                offset_of!(NhgMinimapRow, y) as i64,
+            ),
+            (
+                "offsetof (NhgMinimapRow, h)",
+                offset_of!(NhgMinimapRow, h) as i64,
+            ),
+            ("offsetof (M, heat)", offset_of!(M, heat) as i64),
+            ("offsetof (M, heat_len)", offset_of!(M, heat_len) as i64),
+            (
+                "offsetof (M, heat_low_rgb)",
+                offset_of!(M, heat_low_rgb) as i64,
+            ),
+            (
+                "offsetof (M, heat_low_opacity)",
+                offset_of!(M, heat_low_opacity) as i64,
+            ),
+            (
+                "offsetof (M, heat_high_rgb)",
+                offset_of!(M, heat_high_rgb) as i64,
+            ),
+            (
+                "offsetof (M, heat_high_opacity)",
+                offset_of!(M, heat_high_opacity) as i64,
+            ),
+            ("offsetof (M, pin_kind)", offset_of!(M, pin_kind) as i64),
+            ("offsetof (M, pin_rgb)", offset_of!(M, pin_rgb) as i64),
+            ("offsetof (M, pins)", offset_of!(M, pins) as i64),
+            ("offsetof (M, pins_len)", offset_of!(M, pins_len) as i64),
+            (
+                "sizeof (NhgMinimapName)",
+                size_of::<NhgMinimapName>() as i64,
+            ),
+            (
+                "offsetof (NhgMinimapName, text)",
+                offset_of!(NhgMinimapName, text) as i64,
+            ),
+            (
+                "offsetof (NhgMinimapName, len)",
+                offset_of!(NhgMinimapName, len) as i64,
+            ),
+            ("NHG_MINIMAP_NONE", NHG_MINIMAP_NONE.into()),
+            ("NHG_ARROWS_HOVER", NHG_ARROWS_HOVER.into()),
+            ("NHG_ARROWS_ALWAYS", NHG_ARROWS_ALWAYS.into()),
+            ("offsetof (M, trail_rgb)", offset_of!(M, trail_rgb) as i64),
+            (
+                "offsetof (M, trail_opacity)",
+                offset_of!(M, trail_opacity) as i64,
+            ),
+            (
+                "offsetof (M, trail_length)",
+                offset_of!(M, trail_length) as i64,
+            ),
+            ("NHG_MINIMAP_DWELL_MARKS", NHG_MINIMAP_DWELL_MARKS.into()),
+            ("NHG_MINIMAP_DWELL_LABEL", NHG_MINIMAP_DWELL_LABEL.into()),
+            ("NHG_MINIMAP_SELECT_START", NHG_MINIMAP_SELECT_START.into()),
+            (
+                "NHG_MINIMAP_SELECT_EXTEND",
+                NHG_MINIMAP_SELECT_EXTEND.into(),
+            ),
+            ("NHG_MINIMAP_SELECT_END", NHG_MINIMAP_SELECT_END.into()),
+            ("NHG_MINIMAP_LABEL_HOVER", NHG_MINIMAP_LABEL_HOVER.into()),
+            ("offsetof (M, hit_rgb)", offset_of!(M, hit_rgb) as i64),
+            (
+                "offsetof (M, hit_opacity)",
+                offset_of!(M, hit_opacity) as i64,
+            ),
+            (
+                "offsetof (M, chunk_start)",
+                offset_of!(M, chunk_start) as i64,
+            ),
+            (
+                "offsetof (M, chunk_bytes)",
+                offset_of!(M, chunk_bytes) as i64,
+            ),
+            ("offsetof (M, file_bytes)", offset_of!(M, file_bytes) as i64),
+            ("offsetof (M, error_rgb)", offset_of!(M, error_rgb) as i64),
+            (
+                "offsetof (M, warning_rgb)",
+                offset_of!(M, warning_rgb) as i64,
+            ),
+            ("NHG_MINIMAP_DENSITY", NHG_MINIMAP_DENSITY.into()),
+            ("NHG_MINIMAP_DWELL_BUCKET", NHG_MINIMAP_DWELL_BUCKET.into()),
+            ("NHG_MINIMAP_HSTRIP", NHG_MINIMAP_HSTRIP.into()),
+            (
+                "offsetof (M, hstrip_lane)",
+                offset_of!(M, hstrip_lane) as i64,
+            ),
+            (
+                "offsetof (M, hstrip_thumb)",
+                offset_of!(M, hstrip_thumb) as i64,
+            ),
+            ("offsetof (M, hstrip_rtl)", offset_of!(M, hstrip_rtl) as i64),
+            ("offsetof (M, hstrip_max)", offset_of!(M, hstrip_max) as i64),
         ];
         let decls = "\
 #define PROTO(f, t) _Static_assert (__builtin_types_compatible_p (__typeof__ (f), t), #f)
 typedef NhgMinimap M;
 PROTO (nhg_minimap_sync, int32_t (NhgDisplay *, uint64_t, uint64_t, const NhgMinimap *, size_t));
 PROTO (nhg_minimap_count, int32_t (NhgDisplay *, uint64_t));
+PROTO (nhg_minimap_flash, int32_t (NhgDisplay *, uint64_t, uint64_t, uint64_t));
 PROTO (nhg_minimap_set_label_render, void (NhgLabelRender));
 PROTO (nhg_label_raster, int32_t (uint64_t, uint32_t, const uint8_t *, size_t, uint32_t, uint32_t *, int32_t, int32_t, int32_t *, int32_t *));";
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, *const M, usize) -> i32 =
             nhg_minimap_sync;
         let _: unsafe extern "C" fn(*mut NhgDisplay, u64) -> i32 = nhg_minimap_count;
+        let _: unsafe extern "C" fn(*mut NhgDisplay, u64, u64, u64) -> i32 = nhg_minimap_flash;
         let _: extern "C" fn(Option<NhgLabelRender>) = nhg_minimap_set_label_render;
         let _: unsafe extern "C" fn(
             u64,

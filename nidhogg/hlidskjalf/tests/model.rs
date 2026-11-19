@@ -149,6 +149,184 @@ fn marks_shift_on_edit() {
 }
 
 #[test]
+fn widest_follows_edits() {
+    let mut p = Pair::new("ab\nabcdef\nx\n", false);
+    let zv = p.text.len() as u64 + 1;
+    assert_eq!(p.m.widest(1, 1, zv), Some(6));
+    // line 3 grows past line 2, then line 2 goes
+    p.edit(11, 1, "0123456789");
+    assert_eq!(p.m.widest(1, 1, p.text.len() as u64 + 1), Some(10));
+    p.edit(4, 7, "");
+    assert_eq!(p.m.widest(1, 1, p.text.len() as u64 + 1), Some(10));
+    p.edit(4, 10, "y");
+    assert_eq!(p.m.widest(1, 1, p.text.len() as u64 + 1), Some(2));
+    p.check();
+}
+
+/// A line's own width, at any position on it: the strip's measured rows are only those whose line fits.
+#[test]
+fn cols_at_is_the_lines_width() {
+    let mut p = Pair::new("ab\n\tabcdef\nx\n", false);
+    assert_eq!(p.m.cols_at(1), Some(2));
+    assert_eq!(p.m.cols_at(4), Some(14));
+    assert_eq!(p.m.cols_at(10), Some(14));
+    assert_eq!(p.m.cols_at(12), Some(1));
+    p.edit(12, 1, "0123");
+    assert_eq!(p.m.cols_at(13), Some(4));
+    p.check();
+}
+
+#[test]
+fn widest_counts_tabs_and_wide() {
+    use hlidskjalf::index::{LineIndex, Widths, parse_with};
+    // CJK ideographs 2 wide, a combining accent 0
+    let w = Widths::new(1, vec![(0x4e00, 0x9fff, 2), (0x300, 0x36f, 0)]);
+    let text = "\tab\nx\ty\na\u{4e2d}\u{6587}b\ne\u{301}\n\x01\n";
+    let l = parse_with(&[text.as_bytes()], true, 8, false, &w);
+    let cols: Vec<u32> = l.iter().map(|l| l.cols).collect();
+    assert_eq!(cols, [10, 9, 6, 1, 2]);
+    assert_eq!(LineIndex::new(l).widest(0, 4, &[]), 10);
+    // a tab width of 4
+    assert_eq!(parse_with(&[b"x\ty\n"], true, 4, false, &w)[0].cols, 5);
+    // a unibyte text's bytes past ASCII show as \NNN; an eight-bit character (a raw byte in a multibyte text) as the
+    // table says
+    assert_eq!(parse_with(&[b"a\xff\n"], false, 8, false, &w)[0].cols, 5);
+    let raw = Widths::new(2, vec![(0x3f_ff80, 0x3f_ffff, 4)]);
+    assert_eq!(
+        parse_with(&[b"a\xc1\xbf\n"], true, 8, false, &raw)[0].cols,
+        5
+    );
+}
+
+/// The memory budget (`lines-memory`): a line with its width is at most 40 bytes.
+#[test]
+fn a_line_stays_within_40_bytes() {
+    assert!(std::mem::size_of::<hlidskjalf::Line>() <= 40);
+}
+
+#[test]
+fn a_1mb_ascii_line_looks_up_no_width() {
+    use hlidskjalf::index::lookups;
+    let line = "x".repeat(1 << 20) + "\n";
+    let before = lookups();
+    let mut p = Pair::new(&line, false);
+    let t = std::time::Instant::now();
+    for i in 0..20 {
+        p.edit(1000 + i, 0, "y");
+    }
+    eprintln!(
+        "lines-type-1mb-line: {:?} per keystroke (cols on)",
+        t.elapsed() / 20
+    );
+    assert_eq!(lookups(), before);
+    assert_eq!(
+        p.m.widest(1, 1, p.text.len() as u64 + 1),
+        Some((1 << 20) + 20)
+    );
+}
+
+#[test]
+fn widest_skips_hidden_and_narrowed() {
+    // line 2 is the widest; line 4 the next
+    let mut p = Pair::new("a\nxxxxxxxxxx\nb\nyyyyy\nc\n", false);
+    let zv = p.text.len() as u64 + 1;
+    assert_eq!(p.m.widest(1, 1, zv), Some(10));
+    // fold line 1 over line 2: hidden from the end of line 1 to the end of line 2
+    p.m.set_hidden(&[(2, 13)]);
+    assert_eq!(p.m.widest(1, 1, zv), Some(5));
+    // another fold: line 4 hidden, line 2 back
+    p.m.set_hidden(&[(15, 21)]);
+    assert_eq!(p.m.widest(1, 1, zv), Some(10));
+    p.m.set_hidden(&[]);
+    // narrowed to lines 3 to 5 (the narrowing starts at line 3's start, ends in line 5)
+    assert_eq!(p.m.widest(1, 14, 22), Some(5));
+    assert_eq!(p.m.widest(1, 16, 22), Some(5));
+    assert_eq!(p.m.widest(1, 22, 23), Some(1));
+}
+
+/// Twenty thousand lines over several chunks, line I `I % 50` characters wide, and ranges hiding the line after
+/// every tenth.
+fn many() -> (Pair, Vec<(u64, u64)>) {
+    let text: String = (0..20_000).map(|i| "z".repeat(i % 50) + "\n").collect();
+    let p = Pair::new(&text, false);
+    let mut starts = vec![1u64];
+    for l in text.lines() {
+        starts.push(starts.last().unwrap() + l.len() as u64 + 1);
+    }
+    // from the end of each tenth line to the end of the next
+    let hidden: Vec<(u64, u64)> = (0..2000)
+        .map(|k| {
+            let l = k * 10;
+            (starts[l + 1] - 1, starts[l + 2] - 1)
+        })
+        .collect();
+    (p, hidden)
+}
+
+#[test]
+fn widest_edit_is_local() {
+    let (mut p, hidden) = many();
+    p.m.set_hidden(&hidden);
+    let z = p.text.len() as u64 + 1;
+    assert_eq!(p.m.widest(1, 1, z), Some(49));
+    let scanned = p.m.widest_scanned();
+    assert!(scanned >= 19_000, "{scanned}");
+    // a keystroke on one line (the first, empty) walks only its chunk again
+    p.edit(1, 0, "w");
+    assert_eq!(p.m.widest(1, 1, p.text.len() as u64 + 1), Some(49));
+    let after = p.m.widest_scanned() - scanned;
+    assert!(after > 0 && after <= 4096, "{after}");
+    // no hidden lines: the chunks' maxima, no walk
+    p.m.set_hidden(&[]);
+    let s0 = p.m.widest_scanned();
+    p.edit(1, 0, &"w".repeat(60));
+    assert_eq!(p.m.widest(1, 1, p.text.len() as u64 + 1), Some(61));
+    assert_eq!(p.m.widest_scanned(), s0);
+}
+
+#[test]
+fn widest_cache_per_buffer() {
+    let (mut p, _) = many();
+    // two buffers on the text, narrowed differently (each narrowing ends inside a chunk, so its ends are walked)
+    let (a, b) = ((1, 3000), (5000, 90_000));
+    let wa = p.m.widest(1, a.0, a.1);
+    let wb = p.m.widest(2, b.0, b.1);
+    assert!(wa.is_some() && wb.is_some());
+    let s = p.m.widest_scanned();
+    for _ in 0..3 {
+        assert_eq!(p.m.widest(1, a.0, a.1), wa);
+        assert_eq!(p.m.widest(2, b.0, b.1), wb);
+    }
+    assert_eq!(p.m.widest_scanned(), s);
+    // an edit drops both
+    p.edit(10, 0, "q");
+    p.m.widest(1, a.0, a.1);
+    assert!(p.m.widest_scanned() > s);
+}
+
+#[test]
+fn a_folded_line_starts_a_fold_whose_lines_are_hidden() {
+    let mut p = Pair::new("fn a() {\n  x\n  y\n}\nfn b() {\n  z\n}\n", false);
+    let f = |beg, end| Fold {
+        beg,
+        end,
+        kind: 1,
+        depth: 0,
+        source: 0,
+    };
+    p.m.set_folds(3, &[f(1, 19), f(20, 33)], 100);
+    assert!(!p.m.folded_at(1));
+    // fn a's body hidden: from its first line's end to its last line's
+    p.m.set_hidden(&[(9, 19)]);
+    assert!(p.m.folded_at(1));
+    assert!(p.m.folded_at(5));
+    assert!(!p.m.folded_at(20));
+    assert!(!p.m.folded_at(30));
+    p.m.set_hidden(&[]);
+    assert!(!p.m.folded_at(1));
+}
+
+#[test]
 fn fold_table_shift() {
     let mut p = Pair::new("fn a() {\n  x\n  y\n}\nfn b() {\n  z\n}\n", false);
     let f = |beg, end| Fold {
@@ -502,4 +680,59 @@ fn class_spans_become_runs_on_their_lines() {
     assert!(!b.m.take_classes_missed());
     assert!(!p.m.take_classes_missed());
     p.check();
+}
+
+/// Named hidden ranges (F4, M5): each range's first line, the lines it hides and its name, kept through edits before
+/// them; a range an edit empties goes with its name.
+#[test]
+fn hidden_ranges_keep_their_names_through_edits() {
+    // ten lines of "nn\n": line i starts at 3i + 1
+    let text: String = (0..10).map(|i| format!("{i:02}\n")).collect();
+    let mut p = Pair::new(&text, false);
+    // lines 2–3 hidden after line 1 (unnamed), lines 6–8 after line 5 as "body"
+    p.m.set_hidden_named(&[(18, 27, Some("body")), (6, 12, None)]);
+    let got = p.m.hidden_in(1, 31);
+    assert_eq!(
+        got,
+        [(1, 2, None), (5, 3, Some("body".into()))],
+        "sorted by start"
+    );
+    assert_eq!(p.m.hidden_in(7, 31).len(), 1, "from a position on");
+    // a line inserted at the top: both move down a line, names kept
+    p.edit(1, 0, "xx\n");
+    assert_eq!(
+        p.m.hidden_in(1, 34),
+        [(2, 2, None), (6, 3, Some("body".into()))]
+    );
+    // the unnamed range's text deleted: it goes, the name stays with its range
+    p.edit(7, 9, "");
+    assert_eq!(p.m.hidden_in(1, 40), [(3, 3, Some("body".into()))]);
+    p.check();
+}
+
+/// `with_model` nested on one thread (its closure calling it again) panics with a clear message instead of waiting
+/// for its own lock, which left every other caller waiting too; the lock is free again after.
+#[test]
+fn with_model_nested_on_one_thread_panics() {
+    use hlidskjalf::abi::{hlid_build, hlid_drop, with_model};
+    let key = 0x7265_656e;
+    let t = b"a\nb\n";
+    // SAFETY: T is readable for its length.
+    assert_eq!(
+        unsafe { hlid_build(key, 0, 8, t.as_ptr(), t.len(), std::ptr::null(), 0, 0) },
+        0
+    );
+    let r = std::panic::catch_unwind(|| with_model(key, |_| with_model(key, |m| m.generation())));
+    let msg = r.expect_err("a nested with_model panics");
+    let msg = msg
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| msg.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("with_model re-entered on the same thread"),
+        "{msg}"
+    );
+    assert!(with_model(key, |m| m.generation()).is_some());
+    assert_eq!(hlid_drop(key), 0);
 }

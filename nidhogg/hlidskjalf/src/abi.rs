@@ -1,8 +1,10 @@
 //! The C ABI (`include/hlidskjalf.h`): the models by key, behind one lock.  Every entry point catches a panic and
 //! answers `HLID_E_PANIC`; the host calls them from its main thread only.
 
+use std::cell::Cell;
+use std::ops::{Deref, DerefMut};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use crate::{Fold, Mark, Model, RUNS, Run, Span, Stale};
 
@@ -36,6 +38,45 @@ pub struct HlidStats {
 
 static MODELS: LazyLock<Mutex<Vec<(u64, Model)>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
+thread_local! {
+    /// Whether this thread holds the models' lock: a second lock on the same thread would wait for itself.
+    static HELD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The models under the lock, marked held on this thread until dropped.
+struct Models(MutexGuard<'static, Vec<(u64, Model)>>);
+
+impl Drop for Models {
+    fn drop(&mut self) {
+        HELD.set(false);
+    }
+}
+
+impl Deref for Models {
+    type Target = Vec<(u64, Model)>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Models {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Take the models' lock.  A nested take on the same thread (a `with_model` closure that calls `with_model`, or an
+/// entry point, again) panics at once instead of waiting forever for itself, and with it every other caller.
+fn models() -> Models {
+    assert!(
+        !HELD.get(),
+        "with_model re-entered on the same thread: the models' lock is held here already"
+    );
+    let g = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    HELD.set(true);
+    Models(g)
+}
+
 fn guard(f: impl FnOnce() -> i32) -> i32 {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(HLID_E_PANIC)
 }
@@ -43,13 +84,13 @@ fn guard(f: impl FnOnce() -> i32) -> i32 {
 /// KEY's model under the lock, for a Rust caller in the same process (the glue's minimap reads its rows), on the
 /// host's main thread as the C ABI is; `None` when KEY has no model.
 pub fn with_model<R>(key: u64, f: impl FnOnce(&mut Model) -> R) -> Option<R> {
-    let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut ms = models();
     ms.iter_mut().find(|(k, _)| *k == key).map(|(_, m)| f(m))
 }
 
 fn with(key: u64, f: impl FnOnce(&mut Model) -> i32) -> i32 {
     guard(|| {
-        let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ms = models();
         match ms.iter_mut().find(|(k, _)| *k == key) {
             Some((_, m)) => f(m),
             None => HLID_E_NONE,
@@ -110,7 +151,7 @@ pub unsafe extern "C" fn hlid_build(
             return HLID_E_ARG;
         };
         let tw = tab_width.clamp(1, 1000) as u16;
-        let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ms = models();
         match ms.iter_mut().find(|(k, _)| *k == key) {
             Some((_, m)) => {
                 m.set_text_kind(multibyte != 0, tw);
@@ -122,11 +163,78 @@ pub unsafe extern "C" fn hlid_build(
     })
 }
 
+/// Make the N ranges at RANGES (3N values: first, last, width; the characters whose width is not 1, Emacs's
+/// `char-width-table`) the current character widths.  Models keep theirs until built again: `hlid_widest` says
+/// HLID_STALE for one built with others.
+///
+/// # Safety
+/// RANGES must be readable for 3N values unless N is 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_set_widths(ranges: *const u32, n: usize) -> i32 {
+    if ranges.is_null() && n > 0 {
+        return HLID_E_ARG;
+    }
+    guard(|| {
+        // SAFETY: checked; the caller promises 3N readable values.
+        let r = if n == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(ranges, 3 * n) }
+        };
+        crate::set_widths(
+            r.as_chunks::<3>()
+                .0
+                .iter()
+                .map(|t| (t[0], t[1], t[2].min(255) as u8))
+                .collect(),
+        );
+        HLID_OK
+    })
+}
+
+/// The columns of the widest visible line of BUFFER's accessible part BEGV..ZV into *OUT (`Model::widest`):
+/// HLID_STALE when the lines were built with another TAB_WIDTH or older character widths (the host builds them
+/// again), HLID_BUILDING while they are built.
+///
+/// # Safety
+/// OUT must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_widest(
+    key: u64,
+    buffer: u64,
+    begv: u64,
+    zv: u64,
+    tab_width: u32,
+    out: *mut u32,
+) -> i32 {
+    if out.is_null() {
+        return HLID_E_ARG;
+    }
+    let current = crate::widths().generation;
+    with(key, |m| {
+        let s = state(m);
+        if s != HLID_OK {
+            return s;
+        }
+        if m.built_with() != (tab_width.clamp(1, 1000) as u16, current) {
+            return HLID_STALE;
+        }
+        match m.widest(buffer, begv, zv) {
+            // SAFETY: checked non-null; the caller promises it is writable.
+            Some(c) => unsafe {
+                *out = c;
+                HLID_OK
+            },
+            None => HLID_BUILDING,
+        }
+    })
+}
+
 /// Forget KEY's model.
 #[unsafe(no_mangle)]
 pub extern "C" fn hlid_drop(key: u64) -> i32 {
     guard(|| {
-        let mut ms = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ms = models();
         ms.retain(|(k, _)| *k != key);
         HLID_OK
     })
@@ -465,6 +573,37 @@ pub unsafe extern "C" fn hlid_fold_at(key: u64, pos: u64, out: *mut Fold) -> i32
     })
 }
 
+/// The display width in columns of POS's line (`Model::cols_at`) into OUT: HLID_OK, or HLID_NOTHING before a build.
+///
+/// # Safety
+/// OUT must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_cols_at(key: u64, pos: u64, out: *mut u32) -> i32 {
+    if out.is_null() {
+        return HLID_E_ARG;
+    }
+    with(key, |m| match m.cols_at(pos) {
+        // SAFETY: checked non-null; the caller promises it is writable.
+        Some(c) => unsafe {
+            *out = c;
+            HLID_OK
+        },
+        None => HLID_NOTHING,
+    })
+}
+
+/// Whether POS's visible line is folded (`Model::folded_at`): HLID_OK when it is, HLID_NOTHING when not.
+#[unsafe(no_mangle)]
+pub extern "C" fn hlid_folded_at(key: u64, pos: u64) -> i32 {
+    with(key, |m| {
+        if m.folded_at(pos) {
+            HLID_OK
+        } else {
+            HLID_NOTHING
+        }
+    })
+}
+
 /// KEY's hidden ranges: N (BEG, END) pairs at RANGES (2N positions).
 ///
 /// # Safety
@@ -487,11 +626,182 @@ pub unsafe extern "C" fn hlid_set_hidden(key: u64, ranges: *const u64, n: usize)
     })
 }
 
+/// KEY's hidden ranges with names: N (BEG, END) pairs at RANGES (2N positions), and for each range a name of
+/// `LENS[i]` bytes of UTF-8 at `NAMES[i]` (a null name, or one not in UTF-8: none).  NAMES and LENS may both be null.
+///
+/// # Safety
+/// RANGES must be readable for 2N positions unless N is 0; NAMES and LENS, when not null, for N entries each, and each
+/// name not null for its length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_set_hidden_named(
+    key: u64,
+    ranges: *const u64,
+    names: *const *const u8,
+    lens: *const usize,
+    n: usize,
+) -> i32 {
+    if (ranges.is_null() && n > 0) || names.is_null() != lens.is_null() {
+        return HLID_E_ARG;
+    }
+    // SAFETY: checked; the caller promises 2N readable positions and N names and lengths.
+    let (r, nm, ln) = if n == 0 {
+        (&[][..], &[][..], &[][..])
+    } else if names.is_null() {
+        (
+            unsafe { std::slice::from_raw_parts(ranges, 2 * n) },
+            &[][..],
+            &[][..],
+        )
+    } else {
+        unsafe {
+            (
+                std::slice::from_raw_parts(ranges, 2 * n),
+                std::slice::from_raw_parts(names, n),
+                std::slice::from_raw_parts(lens, n),
+            )
+        }
+    };
+    let named: Vec<(u64, u64, Option<&str>)> = r
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let name = nm.get(i).filter(|q| !q.is_null()).and_then(|&q| {
+                // SAFETY: the caller promises LENS[i] readable bytes at a name that is not null.
+                std::str::from_utf8(unsafe { std::slice::from_raw_parts(q, ln[i]) }).ok()
+            });
+            (p[0], p[1], name)
+        })
+        .collect();
+    with(key, |m| {
+        m.set_hidden_named(&named);
+        HLID_OK
+    })
+}
+
 /// Note a visit to POS on KEY's trail.
 #[unsafe(no_mangle)]
 pub extern "C" fn hlid_trail_note(key: u64, pos: u64) -> i32 {
     with(key, |m| {
         m.trail_note(pos);
+        HLID_OK
+    })
+}
+
+/// Forget KEY's trail.
+#[unsafe(no_mangle)]
+pub extern "C" fn hlid_trail_clear(key: u64) -> i32 {
+    with(key, |m| {
+        m.trail_clear();
+        HLID_OK
+    })
+}
+
+/// Search KEY's text for the LEN bytes of QUERY (UTF-8; FLAGS 1: literal, 2: case folded), or for nothing (QUERY null):
+/// `HLID_OK` with a scan to step, `HLID_NOTHING` when the query is outside the subset Rust carries (no search then).
+///
+/// # Safety
+/// QUERY is null or readable for LEN bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_search(key: u64, query: *const u8, len: usize, flags: u32) -> i32 {
+    let q = if query.is_null() {
+        None
+    } else {
+        // SAFETY: readable for LEN bytes (the caller's promise).
+        match std::str::from_utf8(unsafe { std::slice::from_raw_parts(query, len) }) {
+            Ok(q) => Some(q),
+            Err(_) => return HLID_E_ARG,
+        }
+    };
+    with(key, |m| {
+        let started = m.search_start(q.map(|q| (q, flags & 1 != 0, flags & 2 != 0)));
+        if started || q.is_none() {
+            HLID_OK
+        } else {
+            HLID_NOTHING
+        }
+    })
+}
+
+/// Step KEY's search for up to BUDGET-NS through its whole text (P1, N1 then P2, N2): *STATE becomes 0 (no search),
+/// 1 (running), 2 (done) or 3 (the text is Lisp's to search) and *COUNT the hits so far.
+///
+/// # Safety
+/// P1 and P2 are readable for N1 and N2 bytes (null when 0); STATE and COUNT are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_search_step(
+    key: u64,
+    p1: *const u8,
+    n1: usize,
+    p2: *const u8,
+    n2: usize,
+    budget_ns: u64,
+    state: *mut i32,
+    count: *mut u64,
+) -> i32 {
+    if state.is_null() || count.is_null() {
+        return HLID_E_ARG;
+    }
+    // SAFETY: passed through from the caller's promise.
+    let Some(t) = (unsafe { parts(p1, n1, p2, n2) }) else {
+        return HLID_E_ARG;
+    };
+    with(key, |m| {
+        let st = m.search_step(&t, std::time::Duration::from_nanos(budget_ns));
+        // SAFETY: checked non-null.
+        unsafe {
+            *state = st.map_or(0, |s| s as i32);
+            *count = m.search().map_or(0, |s| s.count());
+        }
+        HLID_OK
+    })
+}
+
+/// KEY's search hits starting in [BEG, END) into OUT as (POS, END) pairs (at most CAP pairs), their number into *N.
+///
+/// # Safety
+/// OUT is writable for 2 × CAP positions unless CAP is 0; N is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_search_hits(
+    key: u64,
+    beg: u64,
+    end: u64,
+    out: *mut u64,
+    cap: usize,
+    n: *mut usize,
+) -> i32 {
+    if n.is_null() || (out.is_null() && cap > 0) {
+        return HLID_E_ARG;
+    }
+    with(key, |m| {
+        let hits = m.search().map_or(&[][..], |s| s.hits(beg, end));
+        for (k, h) in hits.iter().take(cap).enumerate() {
+            // SAFETY: k < CAP, 2 × CAP writable.
+            unsafe {
+                *out.add(2 * k) = h.pos;
+                *out.add(2 * k + 1) = h.end;
+            }
+        }
+        // SAFETY: checked non-null.
+        unsafe { *n = hits.len() };
+        HLID_OK
+    })
+}
+
+/// Make the hit at POS KEY's current one (0: none), drawn with a ring; *INDEX becomes how many hits start before POS.
+///
+/// # Safety
+/// INDEX is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hlid_search_current(key: u64, pos: u64, index: *mut u64) -> i32 {
+    if index.is_null() {
+        return HLID_E_ARG;
+    }
+    with(key, |m| {
+        m.search_set_current((pos > 0).then_some(pos));
+        // SAFETY: checked non-null.
+        unsafe { *index = m.search().map_or(0, |s| s.index(pos) as u64) };
         HLID_OK
     })
 }

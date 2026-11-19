@@ -3607,6 +3607,13 @@ syms_of_nhwlfns (void)
   DEFSYM (Qnhwl_minimap_click, "click");
   DEFSYM (Qnhwl_minimap_drag, "drag");
   DEFSYM (Qnhwl_minimap_dwell, "dwell");
+  DEFSYM (Qnhwl_minimap_dwell_marks, "dwell-marks");
+  DEFSYM (Qnhwl_minimap_dwell_label, "dwell-label");
+  DEFSYM (Qnhwl_minimap_select_start, "select-start");
+  DEFSYM (Qnhwl_minimap_select_extend, "select-extend");
+  DEFSYM (Qnhwl_minimap_select_end, "select-end");
+  DEFSYM (Qnhwl_minimap_label_hover, "label-hover");
+  DEFSYM (Qnhwl_minimap_dwell_bucket, "dwell-bucket");
   defsubr (&Snhwl__session_open);
   defsubr (&Snhwl__session_remove);
 

@@ -943,6 +943,10 @@ int32_t nhg_edges_count (NhgDisplay *d, uint64_t frame);
 #define NHG_MINIMAP_LEFT  2   /* on the text's left edge */
 #define NHG_MINIMAP_REDUCED_MOTION 4   /* the pointer's open and close are final in their first frame */
 #define NHG_MINIMAP_NESTING 8   /* each fold range of the model a faint band behind its bars, by depth */
+#define NHG_MINIMAP_NONE 16   /* the record is for the fold arrows alone: no minimap is drawn */
+#define NHG_MINIMAP_DENSITY 32 /* a density strip (state C): the hub's buckets of FILE, no line model */
+#define NHG_ARROWS_HOVER 1    /* fold arrows: shown while the pointer is over the left fringe (folded ones always) */
+#define NHG_ARROWS_ALWAYS 2   /* fold arrows: always shown */
 #define NHG_MINIMAP_LABELS_ALL 1     /* labels: the hub's definitions of FILE and the MARK sections */
 #define NHG_MINIMAP_LABELS_MARKS 2   /* labels: the MARK sections alone */
 
@@ -955,7 +959,32 @@ int32_t nhg_edges_count (NhgDisplay *d, uint64_t frame);
    it on its own timers and the frame clock.  LABELS (NHG_MINIMAP_LABELS_*, 0: none) draws names over it: FILE's
    definitions (FILE_LEN bytes of UTF-8, the key of the hub's labels in Sjá; null: none) and the line model's MARK
    sections, rendered by the label renderer in face LABEL_FACE of frame HOST, in LABEL_RGB (a definition), SUB_RGB (a
-   nested one), ACCENT_RGB (the one under the pointer) and MARK_RGB (a MARK section, with a hairline above).  */
+   nested one), ACCENT_RGB (the one under the pointer) and MARK_RGB (a MARK section, with a hairline above).  With
+   LABELS, HUNKS (HUNKS_LEN of them, sorted by line; null: none) are Lisp's hunk labels ("hunk 2 · +4 −2"), each drawn
+   at its line's start in HUNK_RGB (-1: none) and placed before the definitions, as a MARK section is.  */
+/* One hunk label: its line (from 1) and its text, LEN bytes of UTF-8 (at most 256 are drawn).  */
+typedef struct
+{
+  uint64_t line;
+  const uint8_t *text;
+  size_t len;
+} NhgMinimapHunk;
+
+/* A name: LEN bytes of UTF-8 at TEXT.  */
+typedef struct
+{
+  const uint8_t *text;
+  size_t len;
+} NhgMinimapName;
+
+/* A row of the window's current matrix that is a line's first screen row: the line's start position, the row's top
+   and height (as CLIP).  */
+typedef struct
+{
+  uint64_t pos;
+  int32_t y, h;
+} NhgMinimapRow;
+
 typedef struct
 {
   uint64_t seq;
@@ -981,6 +1010,71 @@ typedef struct
   /* Each display class's bar 0xRRGGBB (-1: TEXT_RGB's), at TEXT_OPACITY: the line model's class runs (1 keyword ...
      15 special; 0 is text).  */
   int32_t class_rgb[16];
+  int32_t hunk_rgb;
+  const NhgMinimapHunk *hunks;
+  size_t hunks_len;
+  /* Fold pills (design M5): PILL_RGB (-1: none), and PILL_FORMAT (PILL_FORMAT_LEN bytes of UTF-8 with one %d, the
+     lines hidden; null: "⋯ %d folded"): a dashed pill after the bar of each hidden range's first line, its name (from
+     nidhogg-lines-set-hidden) instead when it has one; with labels off too.  */
+  int32_t pill_rgb;
+  const uint8_t *pill_format;
+  size_t pill_format_len;
+  /* This window's number (NUMBER_LEN bytes of UTF-8; null: none), shown at its band's top-right in another window's
+     minimap of the same text.  */
+  const uint8_t *number;
+  size_t number_len;
+  /* Fold arrows (design F1, the window parameter glitnir-fold-arrows): ARROWS NHG_ARROWS_* (0: none), FRINGE the left
+     fringe (as CLIP), the chevron's box ARROW_SIZE at ARROW_INSET from the fringe's inner edge (device pixels), an open
+     fold's and a folded one's 0xRRGGBB (-1: none) at their opacities, and ROWS (ROWS_LEN) the matrix rows that start a
+     line.  */
+  uint32_t arrows;
+  NhgRect fringe;
+  uint32_t arrow_size, arrow_inset;
+  int32_t arrow_rgb;
+  float arrow_opacity;
+  int32_t folded_rgb;
+  float folded_opacity;
+  const NhgMinimapRow *rows;
+  size_t rows_len;
+  /* Heat (design X3): HEAT (HEAT_LEN bytes of UTF-8; null: none) names Sjá's layer heat:HEAT of FILE; while it exists
+     each line's bar is one colour, mixed between HEAT_LOW (value 0) and HEAT_HIGH (1000) 0xRRGGBB at their opacities,
+     a line with no item in TEXT_RGB.  */
+  const uint8_t *heat;
+  size_t heat_len;
+  int32_t heat_low_rgb;
+  float heat_low_opacity;
+  int32_t heat_high_rgb;
+  float heat_high_opacity;
+  /* Pinned regions (design X5): the line model's marks of kind PIN_KIND (-1: none) with an end, each a band over its
+     rows in PIN_RGB (-1: none) at BAND_OPACITY, and the n-th of PINS (PINS_LEN, in buffer order) its label.  */
+  int32_t pin_kind;
+  int32_t pin_rgb;
+  const NhgMinimapName *pins;
+  size_t pins_len;
+  /* The trail (design M4): TRAIL_RGB (-1: none) at TRAIL_OPACITY, a 2 logical px bar at the minimap's left edge on the
+     rows of the line model's newest TRAIL_LENGTH (1 to 64) visits, fading to 15 % for the oldest drawn.  */
+  int32_t trail_rgb;
+  float trail_opacity;
+  uint32_t trail_length;
+  /* The search's hits (design X1, the line model's `nidhogg-lines-search'): HIT_RGB (-1: none) at HIT_OPACITY, a bar
+     at each hit's column as long as the hit, the current hit ringed.  */
+  int32_t hit_rgb;
+  float hit_opacity;
+  /* A density strip (NHG_MINIMAP_DENSITY, state C; KEY 0): the buffer's text is CHUNK_BYTES of the file's FILE_BYTES
+     from byte CHUNK_START; rows holding errors (else warnings) get a mark in ERROR_RGB (WARNING_RGB), -1: none.  */
+  uint64_t chunk_start;
+  uint64_t chunk_bytes;
+  uint64_t file_bytes;
+  int32_t error_rgb;
+  int32_t warning_rgb;
+  /* The horizontal strip (design 21b, glitnir-hstrip): HSTRIP_LANE the bottom band of it that takes presses (as CLIP;
+     empty: no strip), HSTRIP_THUMB its thumb's length (device pixels), HSTRIP_RTL nonzero when the thumb is mirrored,
+     HSTRIP_MAX the most columns the window scrolls to.  A press there is an NHG_MINIMAP_HSTRIP centring the thumb on
+     the pointer; a drag sends one a frame.  */
+  NhgRect hstrip_lane;
+  uint32_t hstrip_thumb;
+  uint32_t hstrip_rtl;
+  uint64_t hstrip_max;
 } NhgMinimap;
 
 /* The label renderer: TEXT (LEN bytes of UTF-8) in face FACE of frame HOST at PX100 / 100 device pixels, in 0xRRGGBB
@@ -1007,6 +1101,11 @@ int32_t nhg_minimap_sync (NhgDisplay *d, uint64_t window, uint64_t frame, const 
 /* How many of FRAME's windows have a minimap layer (while it is not 0, C lists the frame's minimaps at each
    publish).  */
 int32_t nhg_minimap_count (NhgDisplay *d, uint64_t frame);
+
+/* Light Emacs window SEQ's row of position POS in FRAME's minimap in its accent for 400 ms, fading on the frame clock
+   (lit, then gone, with reduced motion); the frame is published.  Returns 1, or 0 when the window has no minimap
+   revealed.  */
+int32_t nhg_minimap_flash (NhgDisplay *d, uint64_t frame, uint64_t seq, uint64_t pos);
 
 /* Layout legs.  Emacs window W_SEQ of FRAME (WINDOW its shell window, a top-level's) has the layout leg vector V, N
    floats as glitnir--leg-vector gave them (lisp/glitnir.el's glitnir--leg-slots; N 0 for none).  A new capture number
@@ -1148,6 +1247,14 @@ typedef struct { int32_t x, y, id; } NhgTouchPoint;
 #define NHG_MINIMAP_CLICK     1   /* DX: the window start that centres the row clicked */
 #define NHG_MINIMAP_DRAG      2   /* DX: the same for the row dragged to */
 #define NHG_MINIMAP_DWELL     3   /* DX: the start of the row the pointer rests on */
+#define NHG_MINIMAP_DWELL_MARKS 4 /* a dwell on the marks lane (the strip's width at the outer edge): as _DWELL */
+#define NHG_MINIMAP_DWELL_LABEL 5 /* a dwell on a label: DX the label line's start */
+#define NHG_MINIMAP_SELECT_START 6 /* a Shift-press: a line selection from the row starting at DX */
+#define NHG_MINIMAP_SELECT_EXTEND 7 /* the selection's row changed while held: DX its start */
+#define NHG_MINIMAP_SELECT_END 8 /* the release: DX the last row's start */
+#define NHG_MINIMAP_LABEL_HOVER 9 /* the label under the pointer changed: DX its line's start, 0 for none */
+#define NHG_MINIMAP_DWELL_BUCKET 10 /* a dwell on a density strip: DX the bucket's index */
+#define NHG_MINIMAP_HSTRIP    11  /* the horizontal strip's press or drag step: DX the hscroll in columns */
 #define NHG_SETTLE_REPORT     1   /* every shown frame presented again, or 2 s passed: run `reconnected' */
 #define NHG_SETTLE_MONITORS   2   /* the monitor list differs from before the loss (ids aside) */
 #define NHG_SETTLE_FOCUS_OUT  4   /* no keyboard enter 1 s after the report: *WINDOW loses the focus */

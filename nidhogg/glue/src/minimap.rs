@@ -129,7 +129,132 @@ pub struct NhgMinimap {
     pub mark_rgb: i32,
     /// Each display class's bar 0xRRGGBB (-1: `text_rgb`'s), at `text_opacity`: the line model's class runs.
     pub class_rgb: [i32; CLASSES],
+    /// The hunk labels' 0xRRGGBB (-1: none), and the labels, `hunks_len` of them sorted by line (null: none): drawn
+    /// with `labels` on, each at its line's start, placed as a MARK section is.
+    pub hunk_rgb: i32,
+    pub hunks: *const NhgMinimapHunk,
+    pub hunks_len: usize,
+    /// The fold pills' 0xRRGGBB (-1: none) and their text's format, `pill_format_len` bytes of UTF-8 with one `%d`
+    /// (the lines hidden; null: [`PILL_FORMAT`]): each hidden range of the model gets a dashed pill after its first
+    /// line's bar, its name instead when it has one, placed as a MARK section is, with labels off too (design M5).
+    pub pill_rgb: i32,
+    pub pill_format: *const u8,
+    pub pill_format_len: usize,
+    /// This window's number, `number_len` bytes of UTF-8 (null: none): another window's minimap on the same text shows
+    /// it at the top-right of this window's outlined band (design M8).
+    pub number: *const u8,
+    pub number_len: usize,
+    /// Fold arrows (design F1): `NHG_ARROWS_*` (0: none); the left fringe (same coordinates as `clip`); the chevron's
+    /// box and its inset from the fringe's inner edge (device px); an open fold's and a folded one's 0xRRGGBB (-1:
+    /// none) at their opacities; and the rows of the window's matrix that start a line, `rows_len` of them.
+    pub arrows: u32,
+    pub fringe: NhgRect,
+    pub arrow_size: u32,
+    pub arrow_inset: u32,
+    pub arrow_rgb: i32,
+    pub arrow_opacity: f32,
+    pub folded_rgb: i32,
+    pub folded_opacity: f32,
+    pub rows: *const NhgMinimapRow,
+    pub rows_len: usize,
+    /// The heat layer (design X3): its name, `heat_len` bytes of UTF-8 (null: no heat), Sjá's layer `heat:NAME` of
+    /// `file`; the ramp's colours at 0 and at 1000, 0xRRGGBB (-1: none) at their opacities.  While the layer exists each
+    /// line's bar is one colour mixed between them by its value, a line with no item in the bars' colour.
+    pub heat: *const u8,
+    pub heat_len: usize,
+    pub heat_low_rgb: i32,
+    pub heat_low_opacity: f32,
+    pub heat_high_rgb: i32,
+    pub heat_high_opacity: f32,
+    /// Pinned regions (design X5): the line model's mark kind of pins (-1: none), their 0xRRGGBB (-1: none), and their
+    /// names in buffer order, `pins_len` of them: each pin mark with an end a band over its rows at `band_opacity`, its
+    /// name at its first row, placed as a MARK section is, with labels off too.
+    pub pin_kind: i32,
+    pub pin_rgb: i32,
+    pub pins: *const NhgMinimapName,
+    pub pins_len: usize,
+    /// The trail (design M4): its 0xRRGGBB (-1: none) at its opacity, and how many of the model's visits are drawn
+    /// (1 to 64): a 2 logical px bar at the minimap's left edge on each visit's row, the newest at the opacity, fading to
+    /// [`TRAIL_FADE`] of it for the oldest drawn.
+    pub trail_rgb: i32,
+    pub trail_opacity: f32,
+    pub trail_length: u32,
+    /// The minimap search's hits (design X1, `hlidskjalf::search`): 0xRRGGBB (-1: none) at its opacity, a bar at each
+    /// hit's column as long as the hit (at least 2 logical px), the current hit ringed.
+    pub hit_rgb: i32,
+    pub hit_opacity: f32,
+    /// A density strip (`NHG_MINIMAP_DENSITY`, design M7 / state C): the buffer's text is CHUNK-BYTES of the file's
+    /// FILE-BYTES from byte CHUNK-START (the whole file: 0 and its size); errors and warnings in their colours (-1: not
+    /// drawn).
+    pub chunk_start: u64,
+    pub chunk_bytes: u64,
+    pub file_bytes: u64,
+    pub error_rgb: i32,
+    pub warning_rgb: i32,
+    /// The horizontal strip (design 21b, the window parameter `glitnir-hstrip`): the bottom band of it that takes
+    /// presses (same coordinates as `clip`; empty: no strip), its thumb's length (device px), whether the thumb is
+    /// mirrored (right to left), and the most columns the window scrolls to (the thumb at the far end).  A press there
+    /// scrolls the window so the thumb centres on the pointer, a drag follows it, one [`NHG_MINIMAP_HSTRIP`] per frame.
+    pub hstrip_lane: NhgRect,
+    pub hstrip_thumb: u32,
+    pub hstrip_rtl: u32,
+    pub hstrip_max: u64,
 }
+
+/// The oldest trail bar's share of the trail's opacity.
+pub const TRAIL_FADE: f32 = 0.15;
+/// A trail bar's width, logical px.
+pub const TRAIL_W: f64 = 2.0;
+/// A jump flash's length (design M9): the row lit in the accent, fading over it (with reduced motion lit, then gone).
+pub const FLASH_NS: u64 = 400_000_000;
+
+/// A name as C gives it: `len` bytes of UTF-8.  Layout equals `NhgMinimapName`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NhgMinimapName {
+    pub text: *const u8,
+    pub len: usize,
+}
+
+/// A row of a window's current matrix that is a line's first screen row: the line's start position, and the row's
+/// top and height (same coordinates as `clip`).  Layout equals `NhgMinimapRow`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NhgMinimapRow {
+    pub pos: u64,
+    pub y: i32,
+    pub h: i32,
+}
+
+/// [`NhgMinimap::arrows`]: shown while the pointer is over the window's left fringe (folded lines always).
+pub const NHG_ARROWS_HOVER: u32 = 1;
+/// [`NhgMinimap::arrows`]: always shown.
+pub const NHG_ARROWS_ALWAYS: u32 = 2;
+/// [`NhgMinimap::flags`]: the record is for the fold arrows alone (no minimap is drawn).
+pub const NHG_MINIMAP_NONE: u32 = 16;
+/// The record is a density strip (state C): the hub's buckets of `file` (Sjá's `density` layer), no line model.
+pub const NHG_MINIMAP_DENSITY: u32 = 32;
+
+/// A fold pill's text when C gives no format.
+pub const PILL_FORMAT: &str = "⋯ %d folded";
+/// A fold pill's room around its text (logical px), its gap after the bar, and its dash and gap.
+pub const PILL_PAD: f64 = 3.0;
+pub const PILL_GAP: f64 = 4.0;
+pub const PILL_DASH: f64 = 2.0;
+
+/// One hunk label as C gives it.  Layout equals `NhgMinimapHunk`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NhgMinimapHunk {
+    /// Its line, from 1.
+    pub line: u64,
+    /// Its text, `len` bytes of UTF-8; at most [`HUNK_TEXT_MAX`] are drawn.
+    pub text: *const u8,
+    pub len: usize,
+}
+
+/// The longest hunk label text drawn, in bytes (cut at a character boundary).
+pub const HUNK_TEXT_MAX: usize = 256;
 
 impl Default for NhgMinimap {
     fn default() -> Self {
@@ -161,6 +286,48 @@ impl Default for NhgMinimap {
             accent_rgb: -1,
             mark_rgb: -1,
             class_rgb: [-1; CLASSES],
+            hunk_rgb: -1,
+            hunks: std::ptr::null(),
+            hunks_len: 0,
+            pill_rgb: -1,
+            pill_format: std::ptr::null(),
+            pill_format_len: 0,
+            number: std::ptr::null(),
+            number_len: 0,
+            arrows: 0,
+            fringe: NhgRect::default(),
+            arrow_size: 0,
+            arrow_inset: 0,
+            arrow_rgb: -1,
+            arrow_opacity: 0.0,
+            folded_rgb: -1,
+            folded_opacity: 0.0,
+            rows: std::ptr::null(),
+            rows_len: 0,
+            heat: std::ptr::null(),
+            heat_len: 0,
+            heat_low_rgb: -1,
+            heat_low_opacity: 0.0,
+            heat_high_rgb: -1,
+            heat_high_opacity: 0.0,
+            pin_kind: -1,
+            pin_rgb: -1,
+            pins: std::ptr::null(),
+            pins_len: 0,
+            trail_rgb: -1,
+            trail_opacity: 0.0,
+            trail_length: 0,
+            hit_rgb: -1,
+            hit_opacity: 0.0,
+            chunk_start: 0,
+            chunk_bytes: 0,
+            file_bytes: 0,
+            error_rgb: -1,
+            warning_rgb: -1,
+            hstrip_lane: NhgRect::default(),
+            hstrip_thumb: 0,
+            hstrip_rtl: 0,
+            hstrip_max: 0,
         }
     }
 }
@@ -173,6 +340,76 @@ impl NhgMinimap {
         }
         // SAFETY: C passes `file_len` readable bytes, valid for the publish this record is part of.
         std::str::from_utf8(unsafe { std::slice::from_raw_parts(self.file, self.file_len) }).ok()
+    }
+
+    /// UTF-8 text C gives at `p` for `len` bytes, when it is some.
+    fn text_at(p: *const u8, len: usize) -> Option<&'static str> {
+        if p.is_null() || len == 0 {
+            return None;
+        }
+        // SAFETY: C passes `len` readable bytes, valid for the publish the record is part of (the lifetime is the
+        // caller's to keep within it).
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, len) }).ok()
+    }
+
+    /// The fold pills' format.
+    fn pill_format(&self) -> &str {
+        Self::text_at(self.pill_format, self.pill_format_len).unwrap_or(PILL_FORMAT)
+    }
+
+    /// The window's number.
+    fn number(&self) -> Option<&str> {
+        Self::text_at(self.number, self.number_len)
+    }
+
+    /// Sjá's heat layer name (`heat:NAME`), when there is heat and a file.
+    fn heat_layer(&self) -> Option<String> {
+        self.file_name()?;
+        Self::text_at(self.heat, self.heat_len).map(|h| format!("heat:{h}"))
+    }
+
+    /// The pins' names, in buffer order (a name not in UTF-8 is empty).
+    fn pin_names(&self) -> Vec<&str> {
+        if self.pins.is_null() || self.pins_len == 0 {
+            return Vec::new();
+        }
+        // SAFETY: C passes `pins_len` records, each with `len` readable bytes, valid for the publish.
+        let ps = unsafe { std::slice::from_raw_parts(self.pins, self.pins_len) };
+        ps.iter()
+            .map(|p| Self::text_at(p.text, p.len).unwrap_or(""))
+            .collect()
+    }
+
+    /// The matrix rows that start a line.
+    fn line_rows(&self) -> &[NhgMinimapRow] {
+        if self.rows.is_null() || self.rows_len == 0 {
+            return &[];
+        }
+        // SAFETY: C passes `rows_len` records, valid for the publish this record is part of.
+        unsafe { std::slice::from_raw_parts(self.rows, self.rows_len) }
+    }
+
+    /// The hunk labels, (line from 1, text) in the order C gives them (by line); a text not in UTF-8 is left out.
+    fn hunk_labels(&self) -> Vec<(u64, &str)> {
+        if self.hunks.is_null() || self.hunks_len == 0 {
+            return Vec::new();
+        }
+        // SAFETY: C passes `hunks_len` records, each with `len` readable bytes, valid for the publish this record is
+        // part of.
+        let hs = unsafe { std::slice::from_raw_parts(self.hunks, self.hunks_len) };
+        hs.iter()
+            .filter(|h| !h.text.is_null())
+            .filter_map(|h| {
+                // SAFETY: as above, `len` readable bytes at `text`.
+                let t = unsafe { std::slice::from_raw_parts(h.text, h.len) };
+                let t = std::str::from_utf8(t).ok()?;
+                let mut end = t.len().min(HUNK_TEXT_MAX);
+                while !t.is_char_boundary(end) {
+                    end -= 1;
+                }
+                Some((h.line, &t[..end]))
+            })
+            .collect()
     }
 }
 
@@ -335,6 +572,62 @@ fn sprite(
     cache.get_or_render(key, || render_sprite(e, text, rgb, px100, cap_w, cap_h))
 }
 
+/// A fold pill's sprite: TEXT rendered in RGB at PX100, `pad` device px of room each side, in a dashed outline one px
+/// wide in RGB (dashes of `dash` px), at most CAP_W × H; from CACHE, else built.
+#[allow(clippy::too_many_arguments)]
+fn pill(
+    cache: &mut SpriteCache,
+    e: &NhgMinimap,
+    text: &str,
+    rgb: u32,
+    px100: u32,
+    cap_w: i32,
+    h: i32,
+    pad: i32,
+    dash: i32,
+) -> Option<Sprite> {
+    let inner_w = cap_w - 2 * pad;
+    if inner_w <= 0 || h <= 2 {
+        return None;
+    }
+    let (tw, th, tpx) = sprite(cache, e, text, rgb, px100, inner_w, h - 2)?;
+    let key: SpriteKey = (
+        format!("\u{1}pill\u{1}{text}").into(),
+        rgb,
+        px100,
+        cap_w,
+        e.label_face,
+    );
+    cache.get_or_render(key, || {
+        let (w, hh) = (tw as i32 + 2 * pad, h);
+        let mut buf = vec![0u32; (w * hh) as usize];
+        let line = 0xff00_0000 | rgb;
+        let on = |i: i32| (i / dash.max(1)) % 2 == 0;
+        for x in 0..w {
+            if on(x) {
+                buf[x as usize] = line;
+                buf[((hh - 1) * w + x) as usize] = line;
+            }
+        }
+        for y in 0..hh {
+            if on(y) {
+                buf[(y * w) as usize] = line;
+                buf[(y * w + w - 1) as usize] = line;
+            }
+        }
+        let top = ((hh - th as i32) / 2).max(1);
+        for y in 0..(th as i32).min(hh - 1 - top) {
+            for x in 0..tw as i32 {
+                let v = tpx[(y as u32 * tw + x as u32) as usize];
+                if v != 0 {
+                    buf[((top + y) * w + pad + x) as usize] = v;
+                }
+            }
+        }
+        Some((w as u32, hh as u32, buf.into()))
+    })
+}
+
 /// Ask C's renderer for TEXT's sprite.
 fn render_sprite(
     e: &NhgMinimap,
@@ -455,6 +748,7 @@ fn row(l: &Line) -> Row {
         end: at(l.len.saturating_sub(1)).max(indent + 1),
         class: 0,
         runs,
+        heat: None,
     }
 }
 
@@ -464,6 +758,7 @@ struct Stamp {
     key: u64,
     generation: u64,
     first: u64,
+    heat: Option<Heat>,
     spec: TileSpec,
 }
 
@@ -480,12 +775,61 @@ struct Window {
     accent: Option<usize>,
     /// The pieces last given to a shell that shows the minimap on layers of its own (`minimap_layers`).
     given: crate::minimap_layers::Given,
+    /// The fold arrows' fringe (root px) and mode at the last publish, and their layer as last given.
+    arrows: Option<(Rect, u32)>,
+    arrows_applied: Option<(u32, Arc<Minimap>)>,
+    /// A jump flash: the position lit and when it started; whether the window's minimap has reduced motion.
+    flash: Option<(u64, u64)>,
+    reduced: bool,
+    /// Each label box's line start (as `boxes`).
+    box_pos: Vec<u64>,
+    /// The horizontal strip at the last publish.
+    hstrip: Option<HStrip>,
+}
+
+/// A window's horizontal strip at its last publish (root device px): the lane that takes presses, the thumb's length,
+/// the most columns, mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HStrip {
+    lane: Rect,
+    thumb: i32,
+    max: u64,
+    rtl: bool,
+}
+
+impl HStrip {
+    fn of(e: &NhgMinimap, origin: (i32, i32)) -> Option<HStrip> {
+        let lane = Rect::new(
+            e.hstrip_lane.x.saturating_add(origin.0),
+            e.hstrip_lane.y.saturating_add(origin.1),
+            e.hstrip_lane.w,
+            e.hstrip_lane.h,
+        );
+        (!lane.is_empty()).then_some(HStrip {
+            lane,
+            thumb: i32::try_from(e.hstrip_thumb)
+                .unwrap_or(i32::MAX)
+                .min(lane.w),
+            max: e.hstrip_max,
+            rtl: e.hstrip_rtl != 0,
+        })
+    }
+
+    /// The hscroll (columns) that centres the thumb on the pointer's `x`.
+    fn cols_at(&self, x: f64) -> u64 {
+        let span = f64::from((self.lane.w - self.thumb).max(1));
+        let k = ((x - f64::from(self.lane.x) - f64::from(self.thumb) / 2.0) / span).clamp(0.0, 1.0);
+        let k = if self.rtl { 1.0 - k } else { k };
+        (k * self.max as f64).round() as u64
+    }
 }
 
 /// Where a window's minimap was at its last publish (root device px), for the pointer.
 #[derive(Debug, Clone, Copy)]
 struct Geom {
     key: u64,
+    /// On the text's left edge.
+    left: bool,
     rect: Rect,
     /// The part revealed.
     shown: Rect,
@@ -493,6 +837,37 @@ struct Geom {
     offset: u64,
     row_px: u32,
     rows: Rows,
+    /// A density strip's: its buckets, and the fraction of the file each buffer position maps to.
+    density: Option<DensityGeom>,
+}
+
+/// Where a density strip's rows (1 px each) fall in the file and in the buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DensityGeom {
+    buckets: u64,
+    begv: u64,
+    zv: u64,
+    chunk_start: u64,
+    chunk_bytes: u64,
+    file_bytes: u64,
+    /// The characters the window shows.
+    shown: u64,
+}
+
+impl DensityGeom {
+    /// The file fraction (0 to 1) of buffer position `pos`.
+    fn frac_of(&self, pos: u64) -> f64 {
+        let span = self.zv.saturating_sub(self.begv).max(1) as f64;
+        let local = (pos.saturating_sub(self.begv) as f64 / span).clamp(0.0, 1.0);
+        (self.chunk_start as f64 + local * self.chunk_bytes as f64) / self.file_bytes.max(1) as f64
+    }
+
+    /// The buffer position of file fraction `f` (clamped to the chunk).
+    fn pos_of(&self, f: f64) -> u64 {
+        let byte = f * self.file_bytes as f64 - self.chunk_start as f64;
+        let local = (byte / self.chunk_bytes.max(1) as f64).clamp(0.0, 1.0);
+        self.begv + (local * self.zv.saturating_sub(self.begv) as f64).round() as u64
+    }
 }
 
 /// The pointer over one window's minimap: opened by it, the reveal's leg, the deadlines, inside or dragging.
@@ -509,11 +884,23 @@ struct Hover {
     dwell_at: Option<u64>,
     /// The pointer is over the revealed minimap (Emacs was sent a `LEAVE`).
     inside: bool,
-    /// The left button went down on the minimap and is held.
+    /// The left button went down on the minimap and is held; with Shift (a line selection).
     drag: bool,
+    select: bool,
+    /// The label line last sent as hovered (`NHG_MINIMAP_LABEL_HOVER`).
+    label: Option<u64>,
     /// The row under the pointer (from the minimap's row 0), and the pointer's y (root px).
     row: Option<u64>,
     y: Option<f64>,
+    /// The pointer is over the window's left fringe (the fold arrows show in `NHG_ARROWS_HOVER`).
+    fringe: bool,
+    /// The pointer's x (root px) over the minimap.
+    x: Option<f64>,
+    /// The left button went down on the horizontal strip's lane and is held; the hscroll last sent, and one waiting
+    /// for its frame (the columns, and when it is due).
+    hdrag: bool,
+    hsent: Option<u64>,
+    hpending: Option<(u64, u64)>,
 }
 
 impl Hover {
@@ -550,6 +937,7 @@ impl Hover {
                 .map(|t| t + OPEN_DELAY_NS),
             self.close_at,
             self.dwell_at,
+            self.hpending.map(|(_, t)| t),
         ]
         .into_iter()
         .flatten()
@@ -564,6 +952,24 @@ pub const NHG_MINIMAP_PUBLISH: i32 = 0;
 pub const NHG_MINIMAP_CLICK: i32 = 1;
 pub const NHG_MINIMAP_DRAG: i32 = 2;
 pub const NHG_MINIMAP_DWELL: i32 = 3;
+/// A dwell on the marks lane (the ruler strip's width at the minimap's outer edge), at the row's position.
+pub const NHG_MINIMAP_DWELL_MARKS: i32 = 4;
+/// A dwell on a label, at the label's line start.
+pub const NHG_MINIMAP_DWELL_LABEL: i32 = 5;
+/// A Shift-press on the minimap starts a line selection (design X2): DX the row's start; a row change while it is held
+/// extends it; the release ends it.  Without Shift a press is a click and a drag scrolls.
+pub const NHG_MINIMAP_SELECT_START: i32 = 6;
+pub const NHG_MINIMAP_SELECT_EXTEND: i32 = 7;
+pub const NHG_MINIMAP_SELECT_END: i32 = 8;
+/// The label under the pointer changed (design X7): DX its line's start, 0 for none.
+pub const NHG_MINIMAP_LABEL_HOVER: i32 = 9;
+/// A dwell on a density strip: DX the bucket's index (design M7's bucket peek).
+pub const NHG_MINIMAP_DWELL_BUCKET: i32 = 10;
+/// The horizontal strip's press or a drag step (design 21b): DX the window's new hscroll in columns.  A drag sends at
+/// most one a frame ([`STEP_NS`]); the release sends none.
+pub const NHG_MINIMAP_HSTRIP: i32 = 11;
+/// The most hits drawn in a minimap.
+pub const HITS_DRAWN: usize = 4096;
 
 /// What the pointer did to a frame's minimaps: whether the event is the minimap's (Emacs never sees it), whether
 /// Emacs is sent a `LEAVE` first, whether the frame is to be published, and the events for Lisp: (code, window, pos).
@@ -619,15 +1025,30 @@ impl Minimaps {
 
     /// A pointer leg runs: the frame is published again at its next frame.
     pub fn animating(&self) -> bool {
-        self.windows.values().any(|w| w.hover.leg.is_some())
+        self.windows
+            .values()
+            .any(|w| w.hover.leg.is_some() || (w.flash.is_some() && !w.reduced))
     }
 
-    /// The earliest deadline of the frame's minimaps.
+    /// The earliest deadline of the frame's minimaps (a flash's end among them).
     pub fn deadline(&self) -> Option<u64> {
         self.windows
             .values()
-            .filter_map(|w| w.hover.deadline())
+            .flat_map(|w| [w.hover.deadline(), w.flash.map(|(_, t)| t + FLASH_NS)])
+            .flatten()
             .min()
+    }
+
+    /// Light window `seq`'s row of `pos` for [`FLASH_NS`] from `now` (design M9); false when the window has no minimap
+    /// revealed.
+    pub fn flash(&mut self, seq: u64, pos: u64, now: u64) -> bool {
+        match self.windows.get_mut(&seq) {
+            Some(w) if w.applied.as_ref().is_some_and(|(_, _, m)| m.reveal_px > 0) => {
+                w.flash = Some((pos, now));
+                true
+            }
+            _ => false,
+        }
     }
 
     /// When the shell's timer is due for the frame's minimaps, at `now`: the earliest deadline, or the next step of a
@@ -642,6 +1063,28 @@ impl Minimaps {
         self.last = at;
         let mut r = Reply::default();
         for (seq, w) in &mut self.windows {
+            // the fold arrows' fringe: never swallowed (Emacs's fringe clicks fold), a publish on the way in and out
+            if let Some((fringe, mode)) = w.arrows {
+                let on = at.is_some_and(|(x, y)| within(&fringe, x, y));
+                if on != w.hover.fringe {
+                    w.hover.fringe = on;
+                    r.publish |= mode == NHG_ARROWS_HOVER;
+                }
+            }
+            // a drag on the horizontal strip: the thumb follows the pointer, a step waiting for the frame
+            if w.hover.hdrag {
+                r.swallow = true;
+                if let (Some(hs), Some((x, _))) = (w.hstrip, at) {
+                    let c = hs.cols_at(x);
+                    let h = &mut w.hover;
+                    match h.hpending {
+                        _ if h.hsent == Some(c) => h.hpending = None,
+                        Some((_, due)) => h.hpending = Some((c, due)),
+                        None => h.hpending = Some((c, now + STEP_NS)),
+                    }
+                }
+                continue;
+            }
             let Some(g) = w.geom else {
                 continue;
             };
@@ -661,17 +1104,38 @@ impl Minimaps {
                 });
                 let row = row.map(|v| v.min(g.rows.total.saturating_sub(1)));
                 h.y = at.map(|(_, y)| y);
-                // the label under the pointer changed: drawn again in the accent
-                if accent_of(&w.boxes, h.y) != w.accent {
+                h.x = at.map(|(x, _)| x);
+                // the label under the pointer changed: drawn again in the accent, and told once
+                let k = accent_of(&w.boxes, h.y);
+                if k != w.accent {
                     r.publish = true;
+                }
+                let label = k.and_then(|k| w.box_pos.get(k).copied());
+                if label != h.label {
+                    h.label = label;
+                    r.events
+                        .push((NHG_MINIMAP_LABEL_HOVER, *seq, label.unwrap_or(0)));
                 }
                 if row != h.row {
                     h.row = row;
                     h.dwell_at = Some(now + DWELL_NS);
+                    // a drag step centres the row; a Shift selection extends to the row's own line
+                    let select = h.select;
                     if h.drag
-                        && let Some(p) = row.and_then(|v| start_pos(&g, v))
+                        && let Some(p) = row.and_then(|v| {
+                            if select {
+                                row_pos(&g, v)
+                            } else {
+                                start_pos(&g, v)
+                            }
+                        })
                     {
-                        r.events.push((NHG_MINIMAP_DRAG, *seq, p));
+                        let code = if h.select {
+                            NHG_MINIMAP_SELECT_EXTEND
+                        } else {
+                            NHG_MINIMAP_DRAG
+                        };
+                        r.events.push((code, *seq, p));
                     }
                 }
                 continue;
@@ -683,6 +1147,9 @@ impl Minimaps {
                 h.dwell_at = None;
                 if w.accent.is_some() {
                     r.publish = true;
+                }
+                if h.label.take().is_some() {
+                    r.events.push((NHG_MINIMAP_LABEL_HOVER, *seq, 0));
                 }
             }
             if on_strip {
@@ -700,8 +1167,42 @@ impl Minimaps {
 
     /// A button at root px (`x`, `y`): the left one's press on a revealed minimap is a click (the window scrolls there)
     /// and starts a drag, its release ends it; every button on the minimap is the minimap's.
-    pub fn button(&mut self, x: f64, y: f64, left: bool, press: bool, now: u64) -> Reply {
+    pub fn button(
+        &mut self,
+        x: f64,
+        y: f64,
+        left: bool,
+        press: bool,
+        shift: bool,
+        now: u64,
+    ) -> Reply {
         let mut r = self.motion(Some((x, y)), now);
+        // the horizontal strip's lane, under no minimap: a press scrolls so the thumb centres on the pointer and
+        // starts a drag; the release ends it, sending what waits
+        let on_minimap = self.windows.values().any(|w| w.hover.inside);
+        for (seq, w) in &mut self.windows {
+            let h = &mut w.hover;
+            if left && !press && h.hdrag {
+                h.hdrag = false;
+                r.swallow = true;
+                if let Some((c, _)) = h.hpending.take() {
+                    h.hsent = Some(c);
+                    r.events.push((NHG_MINIMAP_HSTRIP, *seq, c));
+                }
+            } else if left
+                && press
+                && !on_minimap
+                && let Some(hs) = w.hstrip
+                && within(&hs.lane, x, y)
+            {
+                let c = hs.cols_at(x);
+                h.hdrag = true;
+                h.hpending = None;
+                h.hsent = Some(c);
+                r.swallow = true;
+                r.events.push((NHG_MINIMAP_HSTRIP, *seq, c));
+            }
+        }
         for (seq, w) in &mut self.windows {
             let (Some(g), h) = (w.geom, &mut w.hover) else {
                 continue;
@@ -710,13 +1211,30 @@ impl Minimaps {
                 continue;
             }
             r.swallow = true;
+            // a click centres the row; a Shift selection starts or ends at the row's own line
+            let at = if (left && press && shift) || (left && !press && h.select) {
+                h.row.and_then(|v| row_pos(&g, v))
+            } else {
+                h.row.and_then(|v| start_pos(&g, v))
+            };
             if left && press {
                 h.drag = true;
-                if let Some(p) = h.row.and_then(|v| start_pos(&g, v)) {
-                    r.events.push((NHG_MINIMAP_CLICK, *seq, p));
+                h.select = shift;
+                let code = if shift {
+                    NHG_MINIMAP_SELECT_START
+                } else {
+                    NHG_MINIMAP_CLICK
+                };
+                if let Some(p) = at {
+                    r.events.push((code, *seq, p));
                 }
             } else if left {
                 h.drag = false;
+                if std::mem::take(&mut h.select)
+                    && let Some(p) = at
+                {
+                    r.events.push((NHG_MINIMAP_SELECT_END, *seq, p));
+                }
             }
         }
         r
@@ -729,7 +1247,18 @@ impl Minimaps {
             ..Reply::default()
         };
         for (seq, w) in &mut self.windows {
+            if w.flash.is_some_and(|(_, t)| t + FLASH_NS <= now) {
+                w.flash = None;
+                r.publish = true;
+            }
             let h = &mut w.hover;
+            if let Some((c, due)) = h.hpending
+                && due <= now
+            {
+                h.hpending = None;
+                h.hsent = Some(c);
+                r.events.push((NHG_MINIMAP_HSTRIP, *seq, c));
+            }
             if !h.open && h.strip_since.is_some_and(|t| t + OPEN_DELAY_NS <= now) {
                 h.open = true;
                 h.strip_since = None;
@@ -745,9 +1274,37 @@ impl Minimaps {
             if h.dwell_at.is_some_and(|t| t <= now) {
                 h.dwell_at = None;
                 if let (Some(g), Some(row), true) = (w.geom, h.row, h.inside)
+                    && let Some(d) = g.density
+                {
+                    // a density strip: the bucket under the pointer
+                    let b = row * d.buckets / g.rows.total.max(1);
+                    r.events.push((
+                        NHG_MINIMAP_DWELL_BUCKET,
+                        *seq,
+                        b.min(d.buckets.saturating_sub(1)),
+                    ));
+                } else if let (Some(g), Some(row), true) = (w.geom, h.row, h.inside)
                     && let Some(p) = pos_of_row(g.key, g.rows.first, row)
                 {
-                    r.events.push((NHG_MINIMAP_DWELL, *seq, p));
+                    // the marks lane at the outer edge, else a label, else the row
+                    let lane = g.strip.w.max(0);
+                    let outer = if g.left {
+                        g.rect.x
+                    } else {
+                        g.rect.x + g.rect.w - lane
+                    };
+                    let on_lane =
+                        h.x.is_some_and(|x| x >= f64::from(outer) && x < f64::from(outer + lane));
+                    let ev = if on_lane {
+                        (NHG_MINIMAP_DWELL_MARKS, p)
+                    } else if let Some(k) = accent_of(&w.boxes, h.y)
+                        && let Some(&lp) = w.box_pos.get(k)
+                    {
+                        (NHG_MINIMAP_DWELL_LABEL, lp)
+                    } else {
+                        (NHG_MINIMAP_DWELL, p)
+                    };
+                    r.events.push((ev.0, *seq, ev.1));
                 }
             }
         }
@@ -763,8 +1320,27 @@ fn accent_of(boxes: &[(i32, i32)], y: Option<f64>) -> Option<usize> {
         .position(|&(a, b)| y >= f64::from(a) && y < f64::from(b))
 }
 
+/// Where a label comes from: the hub's definitions, the model's MARK sections or Lisp's hunk labels (the last two
+/// placed before any definition).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Def,
+    Mark,
+    Hunk,
+    /// A fold pill (design M5): after its line's bar, at its column (logical columns from the minimap's left).
+    Pill(u32),
+    /// A pinned region's name (design X5).
+    Pin,
+}
+
 /// What [`labels`] gives: the sprites placed, the hairlines, each label's rows (top, bottom) and the accented one.
-type Labels = (Vec<LabelAt>, Vec<Band>, Vec<(i32, i32)>, Option<usize>);
+type Labels = (
+    Vec<LabelAt>,
+    Vec<Band>,
+    Vec<(i32, i32)>,
+    Option<usize>,
+    Vec<u64>,
+);
 
 /// The labels of window `e`'s minimap `p` over `rows` (each `row_px` tall) at scale `s`: the sprites placed, and the
 /// MARK sections' hairlines; `hover_y` the pointer's y (root px), whose label is in the accent; `back` the backing.
@@ -779,8 +1355,8 @@ fn labels(
     back: u32,
     cache: &mut SpriteCache,
 ) -> Labels {
-    let none = (Vec::new(), Vec::new(), Vec::new(), None);
-    if e.labels == 0 {
+    let none = (Vec::new(), Vec::new(), Vec::new(), None, Vec::new());
+    if e.labels == 0 && e.pill_rgb < 0 && (e.pin_kind < 0 || e.pin_rgb < 0) {
         return none;
     }
     let row = u64::from(row_px.max(1));
@@ -801,8 +1377,8 @@ fn labels(
     .flatten() else {
         return none;
     };
-    // (line, depth, mark, text)
-    let mut found: Vec<(u64, u32, bool, String)> = Vec::new();
+    // (line, depth, kind, text)
+    let mut found: Vec<(u64, u32, Kind, String)> = Vec::new();
     if e.labels == NHG_MINIMAP_LABELS_ALL
         && let Some(file) = e.file_name()
     {
@@ -814,21 +1390,60 @@ fn labels(
                     .take_while(|x| u64::from(x.0) <= lb.saturating_add(1))
                     .take(4096)
                 {
-                    found.push((u64::from(x.0) - 1, x.1, false, x.3.to_string()));
+                    found.push((u64::from(x.0) - 1, x.1, Kind::Def, x.3.to_string()));
                 }
             }
         });
     }
     let placed_rows = with_model(e.key, |m| {
-        let marks: Vec<(u64, String)> = m
-            .sections(pa, pb)
-            .iter()
-            .take(4096)
-            .map(|x| (x.pos, x.name.to_uppercase()))
-            .collect();
+        let marks: Vec<(u64, String)> = if e.labels == 0 {
+            Vec::new()
+        } else {
+            m.sections(pa, pb)
+                .iter()
+                .take(4096)
+                .map(|x| (x.pos, x.name.to_uppercase()))
+                .collect()
+        };
         for (pos, name) in marks {
             if let Some(l) = m.line_of(pos) {
-                found.push((l, 0, true, name));
+                found.push((l, 0, Kind::Mark, name));
+            }
+        }
+        // Lisp's hunk labels, the lines shown (none without their colour)
+        // the pins' names: the n-th pin by position gets the n-th name, at its first line
+        if e.pin_kind >= 0 && e.pin_rgb >= 0 {
+            let names = e.pin_names();
+            for (pos, name) in pins(m, e.pin_kind).into_iter().zip(names) {
+                if !name.is_empty()
+                    && pos.0 >= pa
+                    && pos.0 < pb
+                    && let Some(l) = m.line_of(pos.0)
+                {
+                    found.push((l, 0, Kind::Pin, name.to_owned()));
+                }
+            }
+        }
+        // the fold pills: each hidden range starting on a line shown, its name or the lines it hides
+        if e.pill_rgb >= 0 {
+            let lo = m.pos_of(la).unwrap_or(pa);
+            for (l, n, name) in m.hidden_in(lo, pb).into_iter().take(4096) {
+                let text = match name {
+                    Some(t) => t.to_string(),
+                    None => e.pill_format().replacen("%d", &n.to_string(), 1),
+                };
+                let end = m.index().map_or(0, |x| self::row(&x.line(l)).end);
+                found.push((l, 0, Kind::Pill(end), text));
+            }
+        }
+        for (line, text) in e
+            .hunk_labels()
+            .into_iter()
+            .filter(|_| e.hunk_rgb >= 0 && e.labels > 0)
+        {
+            let l = line.saturating_sub(1);
+            if line > 0 && l >= la && l <= lb {
+                found.push((l, 0, Kind::Hunk, text.to_owned()));
             }
         }
         let mut out = Vec::new();
@@ -847,12 +1462,12 @@ fn labels(
     let h = px(LABEL_H).max(1);
     let cands: Vec<Candidate> = placed_rows
         .iter()
-        .map(|(r, depth, mark, _)| Candidate {
+        .map(|(r, depth, kind, _)| Candidate {
             y: (i64::from(p.rect.y) + (*r * row) as i64 - p.offset as i64)
                 .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
             h: h as u32,
             depth: *depth,
-            mark: *mark,
+            mark: *kind != Kind::Def,
         })
         .collect();
     let chosen = place_labels(&cands, p.rect.y, p.rect.y + p.rect.h, px(1.0).max(1));
@@ -861,13 +1476,59 @@ fn labels(
         .map(|&i| (cands[i].y, cands[i].y + h))
         .collect();
     let accent = accent_of(&boxes, hover_y);
+    let box_pos: Vec<u64> = with_model(e.key, |m| {
+        chosen
+            .iter()
+            .map(|&i| {
+                m.visible_line(rows.first + placed_rows[i].0)
+                    .and_then(|l| m.pos_of(l))
+                    .unwrap_or(0)
+            })
+            .collect()
+    })
+    .unwrap_or_default();
     let mut out = Vec::new();
     let mut lines = Vec::new();
     for (k, &i) in chosen.iter().enumerate() {
-        let (_, depth, mark, text) = &placed_rows[i];
-        let rgb = if accent == Some(k) {
+        let (_, depth, kind, text) = &placed_rows[i];
+        if let Kind::Pill(end) = *kind {
+            let Ok(rgb) = u32::try_from(e.pill_rgb) else {
+                continue;
+            };
+            let x = p.rect.x + end as i32 * px(1.0).max(1) + px(PILL_GAP);
+            let cap_w = p.rect.x + p.rect.w - px(LABEL_RIGHT) - x;
+            let px100 = (MARK_PX * s * 100.0).round() as u32;
+            let dash = px(PILL_DASH).max(1);
+            if let Some((w, sh, spx)) = pill(
+                cache,
+                e,
+                text,
+                rgb & 0xff_ffff,
+                px100,
+                cap_w,
+                h,
+                px(PILL_PAD),
+                dash,
+            ) {
+                out.push(LabelAt {
+                    x,
+                    y: cands[i].y,
+                    w,
+                    h: sh,
+                    px: spx,
+                    back_argb: back,
+                });
+            }
+            continue;
+        }
+        let mark = *kind == Kind::Mark;
+        let rgb = if *kind == Kind::Pin {
+            e.pin_rgb
+        } else if accent == Some(k) {
             e.accent_rgb
-        } else if *mark {
+        } else if *kind == Kind::Hunk {
+            e.hunk_rgb
+        } else if mark {
             e.mark_rgb
         } else if *depth > 0 {
             e.sub_rgb
@@ -877,14 +1538,14 @@ fn labels(
         let Ok(rgb) = u32::try_from(rgb) else {
             continue;
         };
-        let indent = if *mark {
+        let indent = if *kind != Kind::Def {
             0
         } else {
             (*depth).min(LABEL_DEPTHS) as i32 * px(LABEL_INDENT)
         };
         let x = p.rect.x + px(LABEL_LEFT) + indent;
         let cap_w = p.rect.x + p.rect.w - px(LABEL_RIGHT) - x;
-        let size = if *mark { MARK_PX } else { LABEL_PX };
+        let size = if mark { MARK_PX } else { LABEL_PX };
         let px100 = (size * s * 100.0).round() as u32;
         if let Some((w, sh, spx)) = sprite(cache, e, text, rgb & 0xff_ffff, px100, cap_w, h) {
             out.push(LabelAt {
@@ -896,7 +1557,7 @@ fn labels(
                 back_argb: back,
             });
         }
-        if *mark && let Ok(m) = u32::try_from(e.mark_rgb) {
+        if mark && let Ok(m) = u32::try_from(e.mark_rgb) {
             lines.push(Band {
                 rect: Rect::new(
                     p.rect.x + px(LABEL_LEFT),
@@ -909,7 +1570,330 @@ fn labels(
             });
         }
     }
-    (out, lines, boxes, accent)
+    (out, lines, boxes, accent, box_pos)
+}
+
+/// Model `m`'s pins: the marks of kind `kind` with an end, (start, end) by position.
+fn pins(m: &mut glitnir::hlidskjalf::Model, kind: i32) -> Vec<(u64, u64)> {
+    let mut v: Vec<(u64, u64)> = m
+        .marks()
+        .iter()
+        .filter(|x| i32::from(x.kind) == kind && x.end > x.pos)
+        .map(|x| (x.pos, x.end))
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// The pin bands of window `e`'s minimap `p` over `rows`: each pin a band over its visible rows in the pin colour at the
+/// band's opacity.
+fn pin_bands(e: &NhgMinimap, rows: &Rows, p: &Placement, row_px: u32) -> Vec<Band> {
+    let Ok(rgb) = u32::try_from(e.pin_rgb) else {
+        return Vec::new();
+    };
+    if e.pin_kind < 0 {
+        return Vec::new();
+    }
+    let row = u64::from(row_px.max(1));
+    let fill = premultiplied(rgb & 0xff_ffff, e.band_opacity);
+    with_model(e.key, |m| {
+        let vis = |m: &mut glitnir::hlidskjalf::Model, pos: u64| -> Option<u64> {
+            let l = m.line_of(pos)?;
+            Some(m.visible_before(l)?.0)
+        };
+        let mut out = Vec::new();
+        for (a, z) in pins(m, e.pin_kind).into_iter().take(4096) {
+            let (Some(a), Some(z)) = (vis(m, a), vis(m, z.saturating_sub(1).max(a))) else {
+                continue;
+            };
+            let (a, z) = (
+                a.saturating_sub(rows.first),
+                z.saturating_sub(rows.first) + 1,
+            );
+            let y = i64::from(p.rect.y) + (a * row) as i64 - p.offset as i64;
+            out.push(Band {
+                rect: Rect::new(
+                    p.rect.x,
+                    y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                    p.rect.w,
+                    ((z.max(a + 1) - a) * row).min(i32::MAX as u64) as i32,
+                ),
+                fill_argb: fill,
+                line_argb: 0,
+            });
+        }
+        out
+    })
+    .unwrap_or_default()
+}
+
+/// The minimap row (from `rows.first`) of position `pos`, when its line is visible.
+fn row_of_pos(key: u64, rows: &Rows, pos: u64) -> Option<u64> {
+    with_model(key, |m| {
+        let l = m.line_of(pos)?;
+        match m.visible_before(l)? {
+            (v, false) if v >= rows.first => Some(v - rows.first),
+            _ => None,
+        }
+    })
+    .flatten()
+}
+
+/// Minimap `p`'s rectangle of row `r` (`row_px` tall), across its width.
+fn row_rect(p: &Placement, r: u64, row_px: u32) -> Rect {
+    let row = u64::from(row_px.max(1));
+    let y = i64::from(p.rect.y) + (r * row) as i64 - p.offset as i64;
+    Rect::new(
+        p.rect.x,
+        y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        p.rect.w,
+        row_px.max(1) as i32,
+    )
+}
+
+/// The trail's bars (design M4): `w_px` wide at minimap `p`'s left edge on the rows of the model's newest
+/// `trail_length` visits, the newest at the trail's opacity fading to [`TRAIL_FADE`] of it for the oldest drawn.
+fn trail_bars(e: &NhgMinimap, rows: &Rows, p: &Placement, row_px: u32, w_px: i32) -> Vec<Band> {
+    if e.trail_rgb < 0 || e.trail_length == 0 {
+        return Vec::new();
+    }
+    let n = e.trail_length.min(64) as usize;
+    let visits: Vec<u64> =
+        with_model(e.key, |m| m.trail().take(n).copied().collect()).unwrap_or_default();
+    let last = visits.len().saturating_sub(1).max(1) as f32;
+    visits
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &pos)| {
+            let r = row_of_pos(e.key, rows, pos)?;
+            let k = 1.0 - (1.0 - TRAIL_FADE) * i as f32 / last;
+            let mut rect = row_rect(p, r, row_px);
+            rect.w = w_px.min(p.rect.w);
+            Some(Band {
+                rect,
+                fill_argb: colour(e.trail_rgb, e.trail_opacity * k),
+                line_argb: 0,
+            })
+        })
+        .collect()
+}
+
+/// A density strip (design M7, state C) at `clip`, scale `s`: the hub's buckets of `e`'s file (Sjá's `density` layer)
+/// over the strip's height, a 1 px row each, its brightness the bytes under it against the fullest row's; a mark at
+/// the outer edge where a row holds errors (else warnings); the buckets not yet built outlined; the window's band at
+/// its file fraction.  No line model: the rows are pixels.
+fn density(e: &NhgMinimap, clip: Rect, s: f64, win: &mut Window, now: u64) -> Option<Minimap> {
+    let px = |logical: f64| (logical * s).round().max(1.0) as i32;
+    let left = e.flags & NHG_MINIMAP_LEFT != 0;
+    let w = px(f64::from(e.width)).clamp(0, clip.w.max(0));
+    let x = if left { clip.x } else { clip.x + clip.w - w };
+    let rect = Rect::new(x, clip.y, w, clip.h);
+    let h = rect.h.max(1) as u64;
+    let (buckets, total) =
+        glitnir::sja::minimap::with_layer(e.file_name()?, "density", |_, d| match d {
+            glitnir::sja::minimap::Data::Density { buckets, total } => {
+                Some((buckets.clone(), *total))
+            }
+            _ => None,
+        })
+        .flatten()
+        .unwrap_or_default();
+    let n = u64::from(total.max(1));
+    let built = buckets.len() as u64;
+    let g = DensityGeom {
+        buckets: n,
+        begv: e.begv,
+        zv: e.zv,
+        chunk_start: e.chunk_start,
+        chunk_bytes: e.chunk_bytes.max(1),
+        file_bytes: e.file_bytes.max(e.chunk_bytes).max(1),
+        shown: e.end.saturating_sub(e.start),
+    };
+    // each pixel row: the buckets under it
+    let rows: Vec<(u64, u32, u32)> = (0..h)
+        .map(|y| {
+            let (b0, b1) = (y * n / h, ((y + 1) * n / h).max(y * n / h + 1).min(built));
+            buckets
+                .get(b0 as usize..b1.max(b0) as usize)
+                .unwrap_or(&[])
+                .iter()
+                .fold((0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
+        })
+        .collect();
+    let most = rows.iter().map(|r| r.0).max().unwrap_or(0).max(1);
+    let reduced = e.flags & NHG_MINIMAP_REDUCED_MOTION != 0;
+    let hover = win.hover.reveal_at(now, reduced);
+    let frac = if e.flags & NHG_MINIMAP_OPEN != 0 {
+        1.0
+    } else {
+        hover
+    };
+    let reveal_px = (f64::from(rect.w.max(0)) * frac).round() as u32;
+    win.reduced = reduced;
+    win.boxes.clear();
+    win.box_pos.clear();
+    win.accent = None;
+    let mut bands = Vec::new();
+    if reveal_px > 0 {
+        let lane = px(3.0).min(rect.w);
+        let lane_x = if left { rect.x } else { rect.x + rect.w - lane };
+        for (y, &(bytes, errors, warnings)) in rows.iter().enumerate() {
+            let y = rect.y + y as i32;
+            if bytes > 0 {
+                let k = (bytes as f64 / most as f64) as f32;
+                bands.push(Band {
+                    rect: Rect::new(rect.x, y, rect.w, 1),
+                    fill_argb: colour(e.text_rgb, e.text_opacity * k),
+                    line_argb: 0,
+                });
+            }
+            let mark = if errors > 0 {
+                e.error_rgb
+            } else if warnings > 0 {
+                e.warning_rgb
+            } else {
+                -1
+            };
+            if mark >= 0 {
+                bands.push(Band {
+                    rect: Rect::new(lane_x, y, lane, 1),
+                    fill_argb: colour(mark, 1.0),
+                    line_argb: 0,
+                });
+            }
+        }
+        if built < n {
+            let y0 = (built * h).div_ceil(n) as i32;
+            bands.push(Band {
+                rect: Rect::new(rect.x, rect.y + y0, rect.w, rect.h - y0),
+                fill_argb: 0,
+                line_argb: colour(e.text_rgb, e.text_opacity),
+            });
+        }
+    }
+    let (f0, f1) = (g.frac_of(e.start), g.frac_of(e.end));
+    let top = (f0 * h as f64).round() as i32;
+    let band_h = (((f1 - f0) * h as f64).round() as i32).max(px(2.0));
+    let band = Rect::new(rect.x, rect.y + top, rect.w, band_h);
+    bands.push(Band {
+        rect: band,
+        fill_argb: colour(e.band_rgb, e.band_opacity),
+        line_argb: colour(e.band_rgb, (e.band_opacity * 2.0).min(1.0)),
+    });
+    let m = Minimap {
+        rect,
+        reveal_px,
+        left,
+        fill_argb: colour(e.fill_rgb, e.fill_opacity),
+        tiles: Vec::new().into(),
+        bands: bands.into(),
+        shades: Vec::new().into(),
+        labels: Vec::new().into(),
+    };
+    win.geom = Some(Geom {
+        key: 0,
+        left,
+        rect,
+        shown: m.shown(),
+        strip: Rect::new(
+            e.strip.x.saturating_add(clip.x - e.clip.x),
+            e.strip.y.saturating_add(clip.y - e.clip.y),
+            e.strip.w,
+            e.strip.h,
+        ),
+        offset: 0,
+        row_px: 1,
+        rows: Rows {
+            first: 0,
+            total: h,
+            shown: (top.max(0) as u64, (top + band_h).max(0) as u64),
+            generation: 0,
+        },
+        density: Some(g),
+    });
+    Some(m)
+}
+
+/// The search's hits (design X1) on the rows minimap `p` shows: a bar from each hit's column as long as the hit
+/// (`col_px` a column, at least `least_px`), clipped to the minimap; the current hit gets a ring 1 px outside it.
+fn hit_bars(
+    e: &NhgMinimap,
+    rows: &Rows,
+    p: &Placement,
+    row_px: u32,
+    col_px: u32,
+    least_px: u32,
+) -> Vec<Band> {
+    if e.hit_rgb < 0 {
+        return Vec::new();
+    }
+    let row = u64::from(row_px.max(1));
+    let r0 = rows.first + p.offset / row;
+    let r1 = rows.first + (p.offset + p.rect.h.max(0) as u64) / row + 1;
+    // the hits on the lines shown (the model's lock is let go before each row is looked up)
+    let Some((hits, current)) = with_model(e.key, |m| {
+        let pa = m.visible_line(r0).and_then(|l| m.pos_of(l))?;
+        let pb = m
+            .visible_line(r1)
+            .and_then(|l| m.pos_of(l))
+            .unwrap_or(u64::MAX);
+        let s = m.search()?;
+        let hits: Vec<_> = s.hits(pa, pb).iter().take(HITS_DRAWN).copied().collect();
+        Some((hits, s.current()))
+    })
+    .flatten() else {
+        return Vec::new();
+    };
+    let fill = colour(e.hit_rgb, e.hit_opacity);
+    let ring = colour(e.hit_rgb, 1.0);
+    let right = i64::from(p.rect.x) + i64::from(p.rect.w);
+    let mut out = Vec::new();
+    for h in hits {
+        let Some(r) = row_of_pos(e.key, rows, h.pos) else {
+            continue;
+        };
+        let mut rect = row_rect(p, r, row_px);
+        let x = i64::from(p.rect.x) + i64::from(h.col) * i64::from(col_px);
+        if x >= right {
+            continue;
+        }
+        let w = (h.end.saturating_sub(h.pos).min(1 << 20) as i64 * i64::from(col_px))
+            .max(i64::from(least_px));
+        rect.x = x as i32;
+        rect.w = w.min(right - x) as i32;
+        out.push(Band {
+            rect,
+            fill_argb: fill,
+            line_argb: 0,
+        });
+        if current == Some(h.pos) {
+            out.push(Band {
+                rect: Rect::new(rect.x - 1, rect.y - 1, rect.w + 2, rect.h + 2),
+                fill_argb: 0,
+                line_argb: ring,
+            });
+        }
+    }
+    out
+}
+
+/// A heat layer as a window draws it: the layer's version and the ramp's ends and the plain bars' colour (premultiplied).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Heat {
+    version: u64,
+    low: u32,
+    high: u32,
+    plain: u32,
+}
+
+/// Premultiplied `low` and `high` mixed at `value` / 1000, channel by channel.
+pub fn heat_mix(low: u32, high: u32, value: u16) -> u32 {
+    let v = u32::from(value.min(1000));
+    let ch = |sh: u32| {
+        let (a, b) = ((low >> sh) & 0xff, (high >> sh) & 0xff);
+        ((a * (1000 - v) + b * v + 500) / 1000) << sh
+    };
+    ch(24) | ch(16) | ch(8) | ch(0)
 }
 
 /// The nesting shades of model `key` for the rows minimap `p` shows: a band per fold range of depth below
@@ -971,8 +1955,22 @@ fn shades(
     .unwrap_or_default()
 }
 
+/// The start of row `row`'s own line (a Shift selection's end there: no scroll).
+fn row_pos(g: &Geom, row: u64) -> Option<u64> {
+    if let Some(d) = g.density {
+        let f = row as f64 / g.rows.total.max(1) as f64;
+        return Some(d.pos_of(f).max(d.begv));
+    }
+    pos_of_row(g.key, g.rows.first, row)
+}
+
 /// The window start that puts row `row` in the middle of the window (a click or a drag step there).
 fn start_pos(g: &Geom, row: u64) -> Option<u64> {
+    if let Some(d) = g.density {
+        // the start that centres the fraction of the row
+        let f = row as f64 / g.rows.total.max(1) as f64;
+        return Some(d.pos_of(f).saturating_sub(d.shown / 2).max(d.begv));
+    }
     let shown = g.rows.shown.1.saturating_sub(g.rows.shown.0);
     pos_of_row(g.key, g.rows.first, row.saturating_sub(shown / 2))
 }
@@ -980,6 +1978,114 @@ fn start_pos(g: &Geom, row: u64) -> Option<u64> {
 /// The layer id of window `seq`'s minimap.
 pub fn minimap_id(seq: u64) -> u64 {
     seq | MINIMAP_TAG
+}
+
+/// The fold arrows' layer bit, beside [`MINIMAP_TAG`].
+pub const ARROWS_TAG: u64 = 1 << 57;
+
+/// The layer id of window `seq`'s fold arrows.
+pub fn arrows_id(seq: u64) -> u64 {
+    seq | MINIMAP_TAG | ARROWS_TAG
+}
+
+/// A chevron in a `size` px square box in `argb` (premultiplied): pointing down (an open fold), or right when `folded`.
+pub fn chevron(size: u32, folded: bool, argb: u32) -> Arc<[u32]> {
+    let n = size as usize;
+    let s = f64::from(size);
+    let pts = if folded {
+        [(0.35, 0.2), (0.65, 0.5), (0.35, 0.8)]
+    } else {
+        [(0.2, 0.35), (0.5, 0.65), (0.8, 0.35)]
+    };
+    let pts = pts.map(|(x, y)| (x * s, y * s));
+    let half = (s / 14.0).max(0.5) + 0.25;
+    let near = |px: f64, py: f64, a: (f64, f64), b: (f64, f64)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = (((px - a.0) * dx + (py - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        let (cx, cy) = (a.0 + t * dx - px, a.1 + t * dy - py);
+        (cx * cx + cy * cy).sqrt() <= half
+    };
+    let mut buf = vec![0u32; n * n];
+    for y in 0..n {
+        for x in 0..n {
+            let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
+            if near(cx, cy, pts[0], pts[1]) || near(cx, cy, pts[1], pts[2]) {
+                buf[y * n + x] = argb;
+            }
+        }
+    }
+    buf.into()
+}
+
+/// Window `e`'s fold arrows (design F1) with the layer origin `origin`: a chevron in its fringe on each matrix row that
+/// starts a line where a fold range starts, right-pointing in the folded colour when the range's lines are hidden; the
+/// open ones only while the pointer is over the fringe in `NHG_ARROWS_HOVER`.  `None` without arrows or a fringe.
+fn arrows(e: &NhgMinimap, origin: (i32, i32), win: &mut Window) -> Option<Minimap> {
+    let fringe = Rect::new(
+        e.fringe.x.saturating_add(origin.0),
+        e.fringe.y.saturating_add(origin.1),
+        e.fringe.w,
+        e.fringe.h,
+    );
+    if e.arrows == 0 || fringe.is_empty() || e.arrow_size == 0 {
+        win.arrows = None;
+        return None;
+    }
+    win.arrows = Some((fringe, e.arrows));
+    let shown_open = e.arrows == NHG_ARROWS_ALWAYS || win.hover.fringe;
+    let size = e.arrow_size.min(fringe.h.max(0) as u32);
+    let x = fringe.x + fringe.w - e.arrow_inset as i32 - size as i32;
+    let rows = e.line_rows();
+    let marks: Vec<(usize, bool)> = with_model(e.key, |m| {
+        let mut out = Vec::new();
+        for (i, r) in rows.iter().enumerate().take(4096) {
+            let Some(l) = m.line_of(r.pos) else {
+                continue;
+            };
+            let (Some(a), b) = (m.pos_of(l), m.pos_of(l + 1).unwrap_or(u64::MAX)) else {
+                continue;
+            };
+            if !m.folds(a, b).any(|f| f.beg >= a && f.beg < b) {
+                continue;
+            }
+            out.push((i, !m.hidden_in(a, b).is_empty()));
+        }
+        out
+    })
+    .unwrap_or_default();
+    let mut labels = Vec::new();
+    for (i, folded) in marks {
+        if !folded && !shown_open {
+            continue;
+        }
+        let (rgb, op) = if folded {
+            (e.folded_rgb, e.folded_opacity)
+        } else {
+            (e.arrow_rgb, e.arrow_opacity)
+        };
+        if rgb < 0 {
+            continue;
+        }
+        let r = rows[i];
+        labels.push(LabelAt {
+            x,
+            y: r.y.saturating_add(origin.1) + (r.h - size as i32) / 2,
+            w: size,
+            h: size,
+            px: chevron(size, folded, colour(rgb, op)),
+            back_argb: 0,
+        });
+    }
+    Some(Minimap {
+        rect: fringe,
+        reveal_px: fringe.w.max(0) as u32,
+        left: true,
+        fill_argb: 0,
+        tiles: Arc::from([]),
+        bands: Arc::from([]),
+        shades: Arc::from([]),
+        labels: labels.into(),
+    })
 }
 
 /// Model `key`'s rows for a window from `start` to `end` of the accessible part `begv`..`zv`; `None` while it has
@@ -1006,13 +2112,43 @@ pub fn rows_of(key: u64, start: u64, end: u64, begv: u64, zv: u64) -> Option<Row
 }
 
 /// Model `key`'s tile `t` for rows from `first`: [`TILE_ROWS`] visible rows rasterised.
-fn tile(key: u64, first: u64, t: u64, spec: &TileSpec) -> Arc<[u32]> {
-    let lines = with_model(key, |m| {
-        m.visible_rows(first + t * TILE_ROWS as u64, TILE_ROWS)
+fn tile(
+    key: u64,
+    first: u64,
+    t: u64,
+    spec: &TileSpec,
+    heat: Option<(&str, &str, Heat)>,
+) -> Arc<[u32]> {
+    let r0 = first + t * TILE_ROWS as u64;
+    let (lines, nums) = with_model(key, |m| {
+        let lines = m.visible_rows(r0, TILE_ROWS)?;
+        let nums: Vec<u64> = if heat.is_some() {
+            (0..lines.len() as u64)
+                .map(|i| m.visible_line(r0 + i).unwrap_or(u64::MAX))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Some((lines, nums))
     })
     .flatten()
     .unwrap_or_default();
-    let rows: Vec<Row> = lines.iter().map(row).collect();
+    let mut rows: Vec<Row> = lines.iter().map(row).collect();
+    if let Some((file, layer, h)) = heat {
+        glitnir::sja::minimap::with_layer(file, layer, |_, d| {
+            if let glitnir::sja::minimap::Data::Heat(v) = d {
+                for (r, &l) in rows.iter_mut().zip(&nums) {
+                    // lines count from 1 in Sjá: the last item starting at or before the line, when it reaches it
+                    let line = l.saturating_add(1);
+                    let i = v.partition_point(|x| u64::from(x.0) <= line);
+                    r.heat = Some(match i.checked_sub(1).map(|i| &v[i]) {
+                        Some(x) if u64::from(x.1) >= line => heat_mix(h.low, h.high, x.2),
+                        _ => h.plain,
+                    });
+                }
+            }
+        });
+    }
     raster(spec, &rows).into()
 }
 
@@ -1039,6 +2175,9 @@ fn minimap(
         e.clip.w,
         e.clip.h,
     );
+    if e.flags & NHG_MINIMAP_DENSITY != 0 {
+        return density(e, clip, s, win, now);
+    }
     let rows = rows_of(e.key, e.start, e.end, e.begv, e.zv)?;
     let row_px = px(f64::from(e.scale.clamp(1, 3)));
     let left = e.flags & NHG_MINIMAP_LEFT != 0;
@@ -1056,10 +2195,26 @@ fn minimap(
             colour(rgb, e.text_opacity)
         }),
     };
+    // the heat layer, while it exists: its version is part of what the tiles were drawn for
+    let layer = e.heat_layer();
+    let file = e.file_name().unwrap_or("");
+    let heat = layer.as_deref().and_then(|l| {
+        let version = glitnir::sja::minimap::with_layer(file, l, |v, d| {
+            matches!(d, glitnir::sja::minimap::Data::Heat(_)).then_some(v)
+        })
+        .flatten()?;
+        Some(Heat {
+            version,
+            low: colour(e.heat_low_rgb, e.heat_low_opacity),
+            high: colour(e.heat_high_rgb, e.heat_high_opacity),
+            plain: colour(e.text_rgb, e.text_opacity),
+        })
+    });
     let stamp = Stamp {
         key: e.key,
         generation: rows.generation,
         first: rows.first,
+        heat,
         spec,
     };
     if win.stamp != Some(stamp) {
@@ -1082,11 +2237,10 @@ fn minimap(
         let bottom = (p.offset + p.rect.h as u64).min(last_row_px);
         let (t0, t1) = (p.offset / tile_px, bottom.saturating_sub(1) / tile_px);
         for t in t0..=t1 {
-            let px = Arc::clone(
-                win.tiles
-                    .entry(t)
-                    .or_insert_with(|| tile(e.key, rows.first, t, &spec)),
-            );
+            let px = Arc::clone(win.tiles.entry(t).or_insert_with(|| {
+                let h = heat.and_then(|h| Some((file, layer.as_deref()?, h)));
+                tile(e.key, rows.first, t, &spec, h)
+            }));
             let h = (px.len() / spec.width.max(1) as usize) as u32;
             tiles.push(TileAt {
                 y: (i64::from(p.rect.y) + (t * tile_px) as i64 - p.offset as i64) as i32,
@@ -1111,14 +2265,41 @@ fn minimap(
         Vec::new()
     };
     let fill = colour(e.fill_rgb, e.fill_opacity);
-    let (labels, hairlines, boxes, accent) = if reveal_px > 0 {
+    let (labels, hairlines, boxes, accent, box_pos) = if reveal_px > 0 {
         labels(e, &rows, &p, row_px, s, win.hover.y, fill, sprites)
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), None)
+        (Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
     };
     win.boxes = boxes;
     win.accent = accent;
+    win.box_pos = box_pos;
+    win.reduced = reduced;
     let mut bands = hairlines;
+    if reveal_px > 0 {
+        bands.extend(pin_bands(e, &rows, &p, row_px));
+        bands.extend(trail_bars(e, &rows, &p, row_px, px(TRAIL_W) as i32));
+        bands.extend(hit_bars(e, &rows, &p, row_px, px(1.0), px(2.0)));
+    }
+    // a jump flash: its row in the accent, fading on the frame clock (with reduced motion lit, then gone)
+    if let Some((pos, t0)) = win.flash {
+        let age = now.saturating_sub(t0);
+        if age >= FLASH_NS {
+            win.flash = None;
+        } else if reveal_px > 0
+            && let Some(r) = row_of_pos(e.key, &rows, pos)
+        {
+            let k = if reduced {
+                1.0
+            } else {
+                1.0 - age as f32 / FLASH_NS as f32
+            };
+            bands.push(Band {
+                rect: row_rect(&p, r, row_px),
+                fill_argb: colour(e.accent_rgb, k),
+                line_argb: 0,
+            });
+        }
+    }
     bands.push(Band {
         rect: p.band,
         fill_argb: band,
@@ -1136,6 +2317,7 @@ fn minimap(
     };
     win.geom = Some(Geom {
         key: e.key,
+        left,
         rect: p.rect,
         shown: m.shown(),
         strip: Rect::new(
@@ -1147,6 +2329,7 @@ fn minimap(
         offset: p.offset,
         row_px,
         rows,
+        density: None,
     });
     Some(m)
 }
@@ -1169,8 +2352,14 @@ pub fn now_ns() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
-/// The frame's minimaps planned by [`plan`]: each window's by its `sequence_number`, the scale (×120) and the origin.
-type Planned = (BTreeMap<u64, Minimap>, u32, (i32, i32));
+/// The frame's minimaps planned by [`plan`]: each window's by its `sequence_number`, its fold arrows' likewise, the scale
+/// (×120) and the origin.
+type Planned = (
+    BTreeMap<u64, Minimap>,
+    BTreeMap<u64, Minimap>,
+    u32,
+    (i32, i32),
+);
 
 /// Frame `key`'s minimaps from C's `list` at `now`: each window's [`Minimap`] (the other windows on its text add
 /// their bands); `None` before the frame has a scale.
@@ -1182,12 +2371,23 @@ fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Opt
     }
     let mm = &mut f.minimaps;
     let mut planned: BTreeMap<u64, Minimap> = BTreeMap::new();
+    let mut arrows_planned: BTreeMap<u64, Minimap> = BTreeMap::new();
+    // a window not listed has no horizontal strip
+    for w in mm.windows.values_mut() {
+        w.hstrip = None;
+    }
     for e in list {
         if let Some(file) = e.file_name() {
             glitnir::minimap::take_hub_folds(e.key, file);
         }
         let win = mm.windows.entry(e.seq).or_default();
-        if let Some(m) = minimap(e, s120, origin, win, now, &mut mm.sprites) {
+        win.hstrip = HStrip::of(e, origin);
+        if let Some(a) = arrows(e, origin, win) {
+            arrows_planned.insert(e.seq, a);
+        }
+        if e.flags & NHG_MINIMAP_NONE != 0 {
+            win.geom = None;
+        } else if let Some(m) = minimap(e, s120, origin, win, now, &mut mm.sprites) {
             planned.insert(e.seq, m);
         }
     }
@@ -1201,12 +2401,39 @@ fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Opt
         };
         let line = colour(e.band_rgb, (e.band_opacity * 2.0).min(1.0));
         let mut bands = m.bands.to_vec();
-        for o in list.iter().filter(|o| o.key == e.key && o.seq != e.seq) {
+        let mut labels = m.labels.to_vec();
+        let s = f64::from(s120) / 120.0;
+        let px = |logical: f64| (logical * s).round() as i32;
+        for o in list.iter().filter(|o| {
+            o.key == e.key
+                && o.seq != e.seq
+                && o.flags & (NHG_MINIMAP_NONE | NHG_MINIMAP_DENSITY) == 0
+        }) {
             let Some(r) = rows_of(e.key, o.start, o.end, e.begv, e.zv) else {
                 continue;
             };
             let row = u64::from(g.row_px.max(1));
             let y = i64::from(g.rect.y) + (r.shown.0 * row) as i64 - g.offset as i64;
+            // its number at the band's top-right, in the label face and the band's colour (design M8)
+            if let (Some(n), Ok(rgb)) = (o.number(), u32::try_from(e.band_rgb))
+                && m.reveal_px > 0
+            {
+                let cap_w = (g.rect.w - px(LABEL_LEFT) - px(LABEL_RIGHT)).max(0);
+                let h = px(LABEL_H).max(1);
+                let px100 = (LABEL_PX * s * 100.0).round() as u32;
+                if let Some((w, sh, spx)) =
+                    sprite(&mut mm.sprites, e, n, rgb & 0xff_ffff, px100, cap_w, h)
+                {
+                    labels.push(LabelAt {
+                        x: g.rect.x + g.rect.w - px(LABEL_RIGHT) - w as i32,
+                        y: y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+                        w,
+                        h: sh,
+                        px: spx,
+                        back_argb: m.fill_argb,
+                    });
+                }
+            }
             bands.push(Band {
                 rect: Rect::new(
                     g.rect.x,
@@ -1220,13 +2447,14 @@ fn plan(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<Opt
             });
         }
         m.bands = bands.into();
+        m.labels = labels.into();
     }
-    Ok(Some((planned, s120, origin)))
+    Ok(Some((planned, arrows_planned, s120, origin)))
 }
 
 /// [`sync_at`] at `now` (the pointer's legs are read at it).
 pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -> Result<u32, i32> {
-    let Some((planned, s120, _)) = plan(b, key, list, now)? else {
+    let Some((planned, arrows_planned, s120, _)) = plan(b, key, list, now)? else {
         return Ok(0);
     };
     let s = f64::from(s120) / 120.0;
@@ -1254,15 +2482,43 @@ pub fn sync_at_time(b: &mut Backings, key: u64, list: &[NhgMinimap], now: u64) -
             sc.set_minimap(id, Some(Arc::clone(&m)))?;
             win.applied = Some((m.rect, s120, m));
         }
-        let gone: Vec<u64> = mm
-            .windows
-            .keys()
-            .filter(|q| !planned.contains_key(q))
-            .copied()
-            .collect();
-        for seq in gone {
-            sc.remove(minimap_id(seq));
-            mm.windows.remove(&seq);
+        for (seq, a) in &arrows_planned {
+            let win = mm.windows.get_mut(seq).expect("planned from it");
+            if let Some((q, old)) = &win.arrows_applied
+                && *q == s120
+                && **old == *a
+            {
+                continue;
+            }
+            let id = arrows_id(*seq);
+            sc.upsert(&LayerDesc {
+                id,
+                parent: key,
+                kind: LAYER_WINDOW,
+                rect: a.rect,
+                scale: s,
+                visible: 1,
+            })?;
+            let a = Arc::new(a.clone());
+            sc.set_minimap(id, Some(Arc::clone(&a)))?;
+            win.arrows_applied = Some((s120, a));
+        }
+        let seqs: Vec<u64> = mm.windows.keys().copied().collect();
+        for seq in seqs {
+            let (m, a) = (
+                planned.contains_key(&seq),
+                arrows_planned.contains_key(&seq),
+            );
+            let win = mm.windows.get_mut(&seq).expect("listed");
+            if !m && win.applied.take().is_some() {
+                sc.remove(minimap_id(seq));
+            }
+            if !a && win.arrows_applied.take().is_some() {
+                sc.remove(arrows_id(seq));
+            }
+            if !m && !a && win.hstrip.is_none() {
+                mm.windows.remove(&seq);
+            }
         }
         // the minimap layers on top of the frame's children, edges included
         let kids = sc.children(key).to_vec();
@@ -1291,11 +2547,12 @@ pub fn images_at(
     list: &[NhgMinimap],
     now: u64,
 ) -> Result<Option<Vec<CardImage>>, i32> {
-    let Some((planned, _, origin)) = plan(b, key, list, now)? else {
+    let Some((planned, _, _, origin)) = plan(b, key, list, now)? else {
         return Ok(None);
     };
     let mm = &mut b.frame_mut(key)?.minimaps;
-    mm.windows.retain(|q, _| planned.contains_key(q));
+    mm.windows
+        .retain(|q, w| planned.contains_key(q) || w.hstrip.is_some());
     let mut out = Vec::new();
     for (seq, m) in &planned {
         let win = mm.windows.get_mut(seq).expect("planned from it");
@@ -1435,6 +2692,7 @@ pub fn pointer(state: &mut Display, ev: &nhshell::event::Record) -> bool {
         return false;
     };
     let now = now_ns();
+    let shift = state.keyboard().mods & nhshell::event::NHSHELL_MOD_SHIFT != 0;
     let Ok(f) = state.backings.frame_mut(key) else {
         return false;
     };
@@ -1451,6 +2709,7 @@ pub fn pointer(state: &mut Display, ev: &nhshell::event::Record) -> bool {
                 y,
                 crate::pointer::button_code(p.button) == 0,
                 p.state & nhshell::event::NHSHELL_BUTTON_PRESSED != 0,
+                shift,
                 now,
             ),
             None => return false,
@@ -1460,6 +2719,30 @@ pub fn pointer(state: &mut Display, ev: &nhshell::event::Record) -> bool {
     apply(state, ev.window, ev.time_ns, &reply);
     rearm(state);
     reply.swallow
+}
+
+/// Light Emacs window `seq`'s row of `pos` in frame `frame`'s minimap (`glitnir-minimap-flash`), published at once and
+/// faded on the frame clock; false when the window has no minimap revealed.
+pub fn flash(state: &mut Display, frame: u64, seq: u64, pos: u64) -> bool {
+    let now = now_ns();
+    let Ok(f) = state.backings.frame_mut(frame) else {
+        return false;
+    };
+    if !f.minimaps.flash(seq, pos, now) {
+        return false;
+    }
+    let window = f.minimaps.shell_window;
+    apply(
+        state,
+        window,
+        now,
+        &Reply {
+            publish: true,
+            ..Reply::default()
+        },
+    );
+    rearm(state);
+    true
 }
 
 /// The shell's timer: every frame's due deadlines.
@@ -1502,6 +2785,7 @@ pub fn forget_all(b: &mut Backings) {
     for (_, f) in b.frames_mut() {
         for w in f.minimaps.windows.values_mut() {
             w.applied = None;
+            w.arrows_applied = None;
             w.given = Default::default();
         }
         f.minimaps.sent.clear();

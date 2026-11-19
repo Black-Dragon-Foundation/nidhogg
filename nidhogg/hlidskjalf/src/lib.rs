@@ -11,14 +11,16 @@
 pub mod abi;
 pub mod derived;
 pub mod index;
+pub mod search;
 pub mod sections;
 
 use std::collections::VecDeque;
 use std::thread::JoinHandle;
 
-pub use index::{BLANK, Line, LineIndex, RUNS, Run};
+pub use index::{BLANK, Line, LineIndex, RUNS, Run, Widths};
 use regex_lite::Regex;
 pub use sections::Section;
+use std::sync::{Arc, Mutex};
 
 /// The characters of a line that class runs cover (a minimap row is narrower).
 pub const CLASS_COLUMNS: u64 = 512;
@@ -57,7 +59,7 @@ pub struct Fold {
 }
 
 /// The trail's length (design §5.3, M4).
-pub const TRAIL: usize = 20;
+pub const TRAIL: usize = 64;
 
 /// An edit kept while the first build runs: START, OLD-END, NEW-END and the new text of its whole lines.
 struct Pending {
@@ -74,9 +76,37 @@ pub struct Stale;
 /// What the build thread hands back: the lines, the MARK sections and the headings found in them.
 type Built = (LineIndex, Vec<Section>, Vec<Section>);
 
+/// The host's current character widths (`hlid_set_widths`): a model's lines are built with the snapshot current then.
+static WIDTHS: Mutex<Option<Arc<Widths>>> = Mutex::new(None);
+
+/// The current character widths snapshot (all 1 until the host sends one).
+pub fn widths() -> Arc<Widths> {
+    WIDTHS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .clone()
+}
+
+/// Make RANGES (`(first, last, width)`, the characters whose width is not 1) the current widths; returns its
+/// generation.  Models built before keep theirs until they are built again.
+pub fn set_widths(ranges: Vec<(u32, u32, u8)>) -> u64 {
+    let mut w = WIDTHS.lock().unwrap_or_else(|e| e.into_inner());
+    let next = w.as_ref().map_or(0, |w| w.generation) + 1;
+    *w = Some(Arc::new(Widths::new(next, ranges)));
+    next
+}
+
+/// The most buffers whose widest line a model keeps (hscroll design §3.2: one entry per buffer).
+const WIDEST_KEPT: usize = 8;
+
 pub struct Model {
     multibyte: bool,
     tab_width: u16,
+    /// The character widths the lines were built with.
+    widths: Arc<Widths>,
+    /// The widest line per buffer: (buffer, generation, BEGV, ZV, columns), the latest first.
+    widest: Vec<(u64, u64, u64, u64, u32)>,
     idx: Option<LineIndex>,
     building: Option<(JoinHandle<Built>, Vec<Pending>)>,
     /// The MARK sections' expression, and the sections found with it (kept with the lines: built and edited with them).
@@ -100,9 +130,13 @@ pub struct Model {
     marks: Vec<Mark>,
     folds: Vec<Fold>,
     hidden: Vec<(u64, u64)>,
+    /// Each hidden range's name (a named fold's, F4), by the range's place in `hidden`.
+    hidden_names: Vec<Option<Box<str>>>,
     /// The hidden ranges as line ranges [a, b), merged, with the hidden lines before each (rebuilt on demand).
     hidden_lines: Option<Vec<(u64, u64, u64)>>,
     trail: VecDeque<u64>,
+    /// The minimap search's query and hits (design X1).
+    search: Option<search::Search>,
     pub edits: u64,
     /// Bumped by every change of the lines or of the hidden ones (what a drawing of the rows depends on).
     generation: u64,
@@ -114,6 +148,8 @@ impl Model {
         let mut m = Model {
             multibyte,
             tab_width,
+            widths: widths(),
+            widest: Vec::new(),
             idx: None,
             building: None,
             section_re: None,
@@ -130,8 +166,10 @@ impl Model {
             marks: Vec::new(),
             folds: Vec::new(),
             hidden: Vec::new(),
+            hidden_names: Vec::new(),
             hidden_lines: None,
             trail: VecDeque::new(),
+            search: None,
             edits: 0,
             generation: 0,
         };
@@ -143,14 +181,18 @@ impl Model {
     pub fn rebuild(&mut self, parts: &[&[u8]], background: bool) {
         self.generation += 1;
         self.text_gen += 1;
+        self.widths = widths();
         self.stale = false;
         self.hidden_lines = None;
+        if let Some(s) = &mut self.search {
+            s.restart();
+        }
         if background {
             let text: Vec<u8> = parts.concat();
-            let (mb, tw) = (self.multibyte, self.tab_width);
+            let (mb, tw, ws) = (self.multibyte, self.tab_width, self.widths.clone());
             let (re, hre) = (self.section_re.clone(), self.heading_re.clone());
             let h = std::thread::spawn(move || {
-                let idx = LineIndex::new(index::parse(&[&text], mb, tw, true));
+                let idx = LineIndex::new(index::parse_with(&[&text], mb, tw, true, &ws));
                 let found = re.map_or_else(Vec::new, |re| sections::scan(&re, &text, 1, mb));
                 let heads = hre.map_or_else(Vec::new, |re| sections::scan(&re, &text, 1, mb));
                 (idx, found, heads)
@@ -161,11 +203,12 @@ impl Model {
             self.building = Some((h, Vec::new()));
         } else {
             self.building = None;
-            self.idx = Some(LineIndex::new(index::parse(
+            self.idx = Some(LineIndex::new(index::parse_with(
                 parts,
                 self.multibyte,
                 self.tab_width,
                 true,
+                &self.widths,
             )));
             let text = parts.concat();
             let scan = |re: &Option<Regex>| match re {
@@ -265,12 +308,22 @@ impl Model {
             f.end = shift(f.end);
         }
         self.folds.retain(|f| f.beg < f.end);
+        // a hidden range the change cuts into hides other lines past it: every chunk's widest visible line again
+        let cut = self
+            .hidden
+            .iter()
+            .any(|r| (r.0 > start && r.0 < old_end) || (r.1 > start && r.1 < old_end));
         for r in &mut self.hidden {
             *r = (shift(r.0), shift(r.1));
         }
+        let mut keep = self.hidden.iter().map(|r| r.0 < r.1);
+        self.hidden_names.retain(|_| keep.next().unwrap_or(false));
         self.hidden.retain(|r| r.0 < r.1);
         for t in &mut self.trail {
             *t = shift(*t);
+        }
+        if let Some(s) = &mut self.search {
+            s.restart();
         }
         self.hidden_lines = None;
         self.poll(false);
@@ -290,6 +343,8 @@ impl Model {
         if r.is_err() {
             self.idx = None;
             self.stale = true;
+        } else if cut && let Some(idx) = self.idx.as_mut() {
+            idx.clear_visible();
         }
         r
     }
@@ -310,7 +365,7 @@ impl Model {
         let old_chars = idx.start_of(l1 + 1) - idx.start_of(l0);
         // the segment reaches the end of the text when its last line is the text's last
         let to_end = l1 + 1 == idx.lines();
-        let new = index::parse(seg, self.multibyte, self.tab_width, to_end);
+        let new = index::parse_with(seg, self.multibyte, self.tab_width, to_end, &self.widths);
         let new_chars: u64 = new.iter().map(|l| u64::from(l.len)).sum();
         if new_chars + old_end != old_chars + new_end {
             return Err(Stale);
@@ -658,6 +713,25 @@ impl Model {
             .filter(move |f| f.end > beg && f.beg < end)
     }
 
+    /// The display width in columns of POS's line (`Line::cols`), for the horizontal strip's rows that are cut while
+    /// their line fits; `None` before the first build.
+    pub fn cols_at(&mut self, pos: u64) -> Option<u32> {
+        let l = self.line_of(pos)?;
+        Some(self.index()?.line(l).cols)
+    }
+
+    /// Whether POS's visible line is folded: a fold starts on it and the lines after it, up to the next visible line,
+    /// are hidden (what a fold arrow shows pointing right, and the terminal's `▸`).
+    pub fn folded_at(&mut self, pos: u64) -> bool {
+        let Some(l) = self.line_of(pos) else {
+            return false;
+        };
+        let (Some(a), b) = (self.pos_of(l), self.pos_of(l + 1).unwrap_or(u64::MAX)) else {
+            return false;
+        };
+        self.folds(a, b).any(|f| f.beg >= a && f.beg < b) && !self.hidden_in(a, b).is_empty()
+    }
+
     /// The fold to toggle at POS: the largest one that starts on POS's line, else the innermost one holding POS.
     pub fn fold_at(&mut self, pos: u64) -> Option<Fold> {
         self.derive();
@@ -687,11 +761,79 @@ impl Model {
 
     /// The ranges an owner made invisible: a line whose start lies in (BEG, END] is hidden.
     pub fn set_hidden(&mut self, ranges: &[(u64, u64)]) {
-        let mut r: Vec<(u64, u64)> = ranges.iter().copied().filter(|r| r.0 < r.1).collect();
-        r.sort_unstable();
-        self.hidden = r;
+        let named: Vec<(u64, u64, Option<&str>)> =
+            ranges.iter().map(|&(b, e)| (b, e, None)).collect();
+        self.set_hidden_named(&named);
+    }
+
+    /// [`Model::set_hidden`] with a name for each range (a named fold's, or `None`): the minimap's fold pill shows it.
+    pub fn set_hidden_named(&mut self, ranges: &[(u64, u64, Option<&str>)]) {
+        let mut r: Vec<(u64, u64, Option<Box<str>>)> = ranges
+            .iter()
+            .filter(|r| r.0 < r.1)
+            .map(|&(b, e, n)| (b, e, n.map(Into::into)))
+            .collect();
+        r.sort_unstable_by_key(|x| (x.0, x.1));
+        self.hidden = r.iter().map(|x| (x.0, x.1)).collect();
+        self.hidden_names = r.into_iter().map(|x| x.2).collect();
         self.hidden_lines = None;
         self.generation += 1;
+        if let Some(idx) = self.idx.as_mut() {
+            idx.clear_visible();
+        }
+    }
+
+    /// The lines the widest line's queries have walked since the lines were built (the tests' locality measure).
+    pub fn widest_scanned(&mut self) -> u64 {
+        self.index().map_or(0, LineIndex::scanned)
+    }
+
+    /// The tab width and the character widths' generation the lines were built with: a host whose own differ builds
+    /// the lines again before it trusts [`Model::widest`].
+    pub fn built_with(&self) -> (u16, u64) {
+        (self.tab_width, self.widths.generation)
+    }
+
+    /// The columns of the widest visible line of BUFFER's accessible part BEGV..ZV (the folded lines left out), `None`
+    /// while the lines are built.  Kept per buffer until the lines or the hidden ones change, so a publish with no edit
+    /// asks nothing of the index; after an edit only the chunks it rewrote walk their lines.
+    pub fn widest(&mut self, buffer: u64, begv: u64, zv: u64) -> Option<u32> {
+        let generation = self.generation;
+        if let Some(i) = self.widest.iter().position(|e| e.0 == buffer) {
+            let e = self.widest[i];
+            if (e.1, e.2, e.3) == (generation, begv, zv) {
+                return Some(e.4);
+            }
+            self.widest.remove(i);
+        }
+        let first = self.line_of(begv)?;
+        let last = self.line_of(zv)?;
+        self.hidden_lines()?;
+        let (h, idx) = (self.hidden_lines.as_deref()?, self.idx.as_mut()?);
+        let cols = idx.widest(first, last, h);
+        self.widest.insert(0, (buffer, generation, begv, zv, cols));
+        self.widest.truncate(WIDEST_KEPT);
+        Some(cols)
+    }
+
+    /// The hidden ranges whose start lies in [BEG, END): each one's line (0-based, the line its start is on: the fold's
+    /// first line, which stays visible unless another range hides it), how many lines it hides, and its name.
+    pub fn hidden_in(&mut self, beg: u64, end: u64) -> Vec<(u64, u64, Option<Box<str>>)> {
+        self.poll(false);
+        let Some(idx) = self.idx.as_ref() else {
+            return Vec::new();
+        };
+        let a = self.hidden.partition_point(|r| r.0 < beg);
+        self.hidden[a..]
+            .iter()
+            .zip(&self.hidden_names[a..])
+            .take_while(|(r, _)| r.0 < end)
+            .filter_map(|(&(b, e), n)| {
+                let head = idx.line_at(b - 1);
+                let z = idx.line_at(e - 1) + 1;
+                (z > head + 1).then(|| (head, z - head - 1, n.clone()))
+            })
+            .collect()
     }
 
     /// A count bumped by every change of the lines or of the hidden ones: a drawing of the rows made at one
@@ -849,6 +991,42 @@ impl Model {
 
     pub fn trail(&self) -> impl Iterator<Item = &u64> {
         self.trail.iter()
+    }
+
+    /// Forget the trail.
+    pub fn trail_clear(&mut self) {
+        self.trail.clear();
+    }
+
+    // ---- the minimap search
+
+    /// Search for QUERY (`search::translate`'s arguments), or for nothing: false (and no search) when the query is
+    /// outside the subset Rust carries.
+    pub fn search_start(&mut self, query: Option<(&str, bool, bool)>) -> bool {
+        self.search = query.and_then(|(q, literal, fold)| search::Search::new(q, literal, fold));
+        self.search.is_some()
+    }
+
+    /// Scan on for up to BUDGET through the whole text in PARTS; `None` with no search.
+    pub fn search_step(
+        &mut self,
+        parts: &[&[u8]],
+        budget: std::time::Duration,
+    ) -> Option<search::State> {
+        let (mb, tw) = (self.multibyte, self.tab_width);
+        let s = self.search.as_mut()?;
+        Some(s.step(parts, mb, tw, budget))
+    }
+
+    pub fn search(&self) -> Option<&search::Search> {
+        self.search.as_ref()
+    }
+
+    /// The current hit (drawn with a ring), or none.
+    pub fn search_set_current(&mut self, pos: Option<u64>) {
+        if let Some(s) = &mut self.search {
+            s.set_current(pos);
+        }
     }
 
     /// The bytes the model holds.

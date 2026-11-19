@@ -116,7 +116,7 @@ C (`src/nidhogg-views.c`) builds the Lisp value; Sjá never sees a Lisp object, 
 | `SJA_HUB_LOST` | | nil |
 | `SJA_STATS` | | views, instances, bytes, panics, broken views |
 | `SJA_PUSH` | a whole `view-model` line | `(VIEW VERSION DECISION)`: 0 queue, 1 reset, 2 drop, 3 resync, 4 none (no instance of the view); nil when the line is not a `view-model` |
-|  | a `view-model` line whose data holds `minimap` (a file's hub layer: `labels`, `folds`, `heat:SOURCE` or `density`, its version and items; null items remove it) | nil: kept by file (`minimap.rs`), the newest version per layer, at most 64 files; a malformed layer is `SJA_E_ARG` and changes nothing |
+|  | a `view-model` line whose data holds `minimap` (a file's hub layer: `labels`, `folds`, `heat:SOURCE` (items `[first, last, value, fact?]`, the optional fact a text of at most 256 bytes) or `density`, its version and items; null items remove it) | nil: kept by file (`minimap.rs`), the newest version per layer, at most 64 files; a malformed layer is `SJA_E_ARG` and changes nothing |
 |  | a `view-model` line whose data holds `rows` | `(VIEW VERSION DECISION CLASS)`: 0 apply, 1 drop, 2 hold, 3 resync, 4 quiet (a resync outstanding), 5 broken, 6 paused; nil when no instance holds rows |
 | `SJA_DRAIN` | view, version or nil | `(APPLIED LAST VERSION)`: the models applied (up to the version, else all), the last status (0 applied, 1 dropped, 2 resync, 3 too-large, 4 broken), the stream's newest version or nil |
 | `SJA_NAMED` | view, version | nil: a row patch named that model version |

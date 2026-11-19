@@ -1143,6 +1143,20 @@ static ptrdiff_t nhwl_nminimaps, nhwl_minimaps_cap;
    nhwl_minimap_files_fix makes it a pointer, just before the sync.  */
 static char *nhwl_minimap_names;
 static ptrdiff_t nhwl_minimap_names_len, nhwl_minimap_names_cap;
+/* Their hunk labels, each TEXT an offset into the names and each
+   minimap's HUNKS an offset into these, until nhwl_minimap_files_fix.  */
+static NhgMinimapHunk *nhwl_minimap_hunks;
+static ptrdiff_t nhwl_minimap_hunks_len, nhwl_minimap_hunks_cap;
+/* The most hunk labels a minimap takes.  */
+#define NHWL_MINIMAP_HUNKS_MAX 4096
+/* The matrix rows that start a line, for the fold arrows: each
+   minimap's ROWS an offset into these until nhwl_minimap_files_fix.  */
+static NhgMinimapRow *nhwl_minimap_rows;
+static ptrdiff_t nhwl_minimap_rows_len, nhwl_minimap_rows_cap;
+/* The pins' names, each TEXT an offset into the names and each
+   minimap's PINS an offset into these, until nhwl_minimap_files_fix.  */
+static NhgMinimapName *nhwl_minimap_pins;
+static ptrdiff_t nhwl_minimap_pins_len, nhwl_minimap_pins_cap;
 
 #ifdef NHWL_WAYLAND
 extern int32_t nhwl_minimap_label_render (void *, int32_t, const uint8_t *,
@@ -1151,34 +1165,134 @@ extern int32_t nhwl_minimap_label_render (void *, int32_t, const uint8_t *,
 					  int32_t *, int32_t *);
 #endif
 
-/* Make each listed minimap's FILE offset a pointer into the copied names.  */
+/* Copy LEN bytes at DATA to the minimap names; their offset.  */
+static uintptr_t
+nhwl_minimap_name_copy (const unsigned char *data, size_t len)
+{
+  if (nhwl_minimap_names_cap - nhwl_minimap_names_len < (ptrdiff_t) len)
+    nhwl_minimap_names = xpalloc (nhwl_minimap_names, &nhwl_minimap_names_cap,
+				  len, -1, 1);
+  memcpy (nhwl_minimap_names + nhwl_minimap_names_len, data, len);
+  uintptr_t at = nhwl_minimap_names_len;
+  nhwl_minimap_names_len += len;
+  return at;
+}
+
+/* Make each listed minimap's FILE and hunk offsets pointers into the
+   copied names and hunks.  */
 static void
 nhwl_minimap_files_fix (void)
 {
+  for (ptrdiff_t i = 0; i < nhwl_minimap_hunks_len; i++)
+    nhwl_minimap_hunks[i].text
+      = (const uint8_t *) nhwl_minimap_names
+	+ (uintptr_t) nhwl_minimap_hunks[i].text;
+  for (ptrdiff_t i = 0; i < nhwl_minimap_pins_len; i++)
+    nhwl_minimap_pins[i].text
+      = (const uint8_t *) nhwl_minimap_names
+	+ (uintptr_t) nhwl_minimap_pins[i].text;
   for (ptrdiff_t i = 0; i < nhwl_nminimaps; i++)
-    if (nhwl_minimaps[i].file_len)
-      nhwl_minimaps[i].file
-	= (const uint8_t *) nhwl_minimap_names
-	  + (uintptr_t) nhwl_minimaps[i].file;
+    {
+      if (nhwl_minimaps[i].file_len)
+	nhwl_minimaps[i].file
+	  = (const uint8_t *) nhwl_minimap_names
+	    + (uintptr_t) nhwl_minimaps[i].file;
+      if (nhwl_minimaps[i].hunks_len)
+	nhwl_minimaps[i].hunks
+	  = nhwl_minimap_hunks + (uintptr_t) nhwl_minimaps[i].hunks;
+      if (nhwl_minimaps[i].pill_format_len)
+	nhwl_minimaps[i].pill_format
+	  = (const uint8_t *) nhwl_minimap_names
+	    + (uintptr_t) nhwl_minimaps[i].pill_format;
+      if (nhwl_minimaps[i].number_len)
+	nhwl_minimaps[i].number
+	  = (const uint8_t *) nhwl_minimap_names
+	    + (uintptr_t) nhwl_minimaps[i].number;
+      if (nhwl_minimaps[i].heat_len)
+	nhwl_minimaps[i].heat
+	  = (const uint8_t *) nhwl_minimap_names
+	    + (uintptr_t) nhwl_minimaps[i].heat;
+      if (nhwl_minimaps[i].pins_len)
+	nhwl_minimaps[i].pins
+	  = nhwl_minimap_pins + (uintptr_t) nhwl_minimaps[i].pins;
+      if (nhwl_minimaps[i].rows_len)
+	nhwl_minimaps[i].rows
+	  = nhwl_minimap_rows + (uintptr_t) nhwl_minimaps[i].rows;
+    }
+}
+
+/* A string slot I of vector V copied to the minimap names: its offset,
+   its length into *LEN (0: none).  */
+static uintptr_t
+nhwl_minimap_string (Lisp_Object v, ptrdiff_t i, size_t *len)
+{
+  *len = 0;
+  if (ASIZE (v) <= i || !STRINGP (AREF (v, i)) || SBYTES (AREF (v, i)) == 0)
+    return 0;
+  Lisp_Object u = ENCODE_UTF_8 (AREF (v, i));
+  *len = SBYTES (u);
+  return nhwl_minimap_name_copy (SDATA (u), *len);
+}
+
+/* Copy the rows of leaf window W's current matrix that are a line's
+   first screen row to the minimap rows: their offset, their count into
+   *N (at most 512).  */
+static uintptr_t
+nhwl_minimap_line_rows (struct window *w, size_t *n)
+{
+  uintptr_t at = nhwl_minimap_rows_len;
+  struct glyph_matrix *m = w->current_matrix;
+  *n = 0;
+  if (!m)
+    return at;
+  struct glyph_row *first = MATRIX_FIRST_TEXT_ROW (m);
+  struct glyph_row *bottom = MATRIX_BOTTOM_TEXT_ROW (m, w);
+  for (struct glyph_row *row = first;
+       row < bottom && row->enabled_p && *n < 512; row++)
+    {
+      if (!row->displays_text_p || MATRIX_ROW_CONTINUATION_LINE_P (row))
+	continue;
+      if (nhwl_minimap_rows_len == nhwl_minimap_rows_cap)
+	nhwl_minimap_rows = xpalloc (nhwl_minimap_rows, &nhwl_minimap_rows_cap,
+				     1, -1, sizeof *nhwl_minimap_rows);
+      nhwl_minimap_rows[nhwl_minimap_rows_len++] = (NhgMinimapRow) {
+	.pos = MATRIX_ROW_START_CHARPOS (row),
+	.y = WINDOW_TO_FRAME_PIXEL_Y (w, row->y),
+	.h = row->height,
+      };
+      (*n)++;
+    }
+  return at;
 }
 
 /* List leaf window W's minimap V (the window parameter glitnir--minimap,
    [FLAGS WIDTH SCALE FILL-RGB FILL-OPACITY TEXT-RGB TEXT-OPACITY
    BAND-RGB BAND-OPACITY LABELS FILE LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB
-   LABEL-FACE CLASS-RGB]) over its text area CLIP, when its buffer's
-   text has a line model; the glue reads the rows from the model.  R is
-   its ruler (glitnir--ruler): the pointer resting on that strip opens
-   the minimap.  */
+   LABEL-FACE CLASS-RGB HUNK-RGB HUNKS PILL-RGB PILL-FORMAT NUMBER], HUNKS
+   a vector of [LINE TEXT]) and its fold arrows A (glitnir--fold-arrows,
+   [MODE SIZE INSET RGB OPACITY FOLDED-RGB FOLDED-OPACITY]) over its
+   text area CLIP, when its buffer's text has a line model; the glue
+   reads the rows from the model.  Without V, a record for the arrows
+   alone.  R is its ruler (glitnir--ruler): the pointer resting on that
+   strip opens the minimap.  */
 static void
-nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
-		  NhgRect clip)
+nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object a,
+		  Lisp_Object r, NhgRect clip)
 {
 #ifdef HAVE_NIDHOGG_HISTORY
-  if (!VECTORP (v) || ASIZE (v) < 9 || !nh_lines_ntracked)
+  bool arrows = VECTORP (a) && ASIZE (a) >= 7 && nhwl_block_int (a, 0, 0) > 0;
+  if (!(VECTORP (v) && ASIZE (v) >= 9) && !arrows)
     return;
+  /* A density strip (state C) is for a text with no line model.  */
+  bool density = (VECTORP (v) && ASIZE (v) > 38
+		  && (nhwl_block_int (v, 0, 0) & NHG_MINIMAP_DENSITY));
+  if (!nh_lines_ntracked && !density)
+    return;
+  if (!VECTORP (v) || ASIZE (v) < 9)
+    v = make_vector (9, Qnil);
   struct buffer *b = XBUFFER (w->contents);
-  uint64_t key = nh_lines_model (b);
-  if (!key)
+  uint64_t key = density ? 0 : nh_lines_model (b);
+  if (!key && !density)
     return;
   ptrdiff_t start, end;
   nhwl_shown (w, b, &start, &end);
@@ -1201,7 +1315,13 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
   int32_t face = 0;
   uintptr_t file = 0;
   size_t file_len = 0;
-  if (ASIZE (v) >= 16 && nhwl_block_int (v, 9, 0) > 0)
+  bool pills = ASIZE (v) > 19 && nhwl_block_int (v, 19, -1) >= 0;
+  bool number = ASIZE (v) > 21 && STRINGP (AREF (v, 21));
+  bool heat = ASIZE (v) > 22 && STRINGP (AREF (v, 22));
+  bool pins = (ASIZE (v) > 28 && nhwl_block_int (v, 27, -1) >= 0
+	       && nhwl_block_int (v, 28, -1) >= 0);
+  if (ASIZE (v) >= 16
+      && (nhwl_block_int (v, 9, 0) > 0 || pills || number || pins))
     {
       static bool render_set;
       if (!render_set)
@@ -1213,26 +1333,86 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
 #endif
 	  render_set = true;
 	}
-      labels = nhwl_block_int (v, 9, 0);
+      labels = max (0, nhwl_block_int (v, 9, 0));
       face = (SYMBOLP (AREF (v, 15)) && !NILP (AREF (v, 15))
 	      ? lookup_named_face (NULL, f, AREF (v, 15), false) : -1);
       if (face < 0)
 	face = DEFAULT_FACE_ID;
-      Lisp_Object name = AREF (v, 10);
-      if (STRINGP (name) && SBYTES (name) > 0)
-	{
-	  Lisp_Object u = ENCODE_UTF_8 (name);
-	  file_len = SBYTES (u);
-	  if (nhwl_minimap_names_cap - nhwl_minimap_names_len
-	      < (ptrdiff_t) file_len)
-	    nhwl_minimap_names = xpalloc (nhwl_minimap_names,
-					  &nhwl_minimap_names_cap,
-					  file_len, -1, 1);
-	  memcpy (nhwl_minimap_names + nhwl_minimap_names_len, SDATA (u),
-		  file_len);
-	  file = nhwl_minimap_names_len;
-	  nhwl_minimap_names_len += file_len;
-	}
+    }
+  /* The file's name: the key of the hub's labels and heat in Sjá.  */
+  if ((labels || heat || density)
+      && STRINGP (AREF (v, 10)) && SBYTES (AREF (v, 10)) > 0)
+    {
+      Lisp_Object u = ENCODE_UTF_8 (AREF (v, 10));
+      file_len = SBYTES (u);
+      file = nhwl_minimap_name_copy (SDATA (u), file_len);
+    }
+  /* The hunk labels, with labels on: each [LINE TEXT] copied.  */
+  uintptr_t hunks = nhwl_minimap_hunks_len;
+  size_t hunks_len = 0;
+  Lisp_Object hv = labels && ASIZE (v) > 18 ? AREF (v, 18) : Qnil;
+  for (ptrdiff_t i = 0;
+       VECTORP (hv) && i < ASIZE (hv) && hunks_len < NHWL_MINIMAP_HUNKS_MAX;
+       i++)
+    {
+      Lisp_Object h = AREF (hv, i);
+      if (!VECTORP (h) || ASIZE (h) < 2 || !FIXNATP (AREF (h, 0))
+	  || !STRINGP (AREF (h, 1)))
+	continue;
+      Lisp_Object u = ENCODE_UTF_8 (AREF (h, 1));
+      if (nhwl_minimap_hunks_len == nhwl_minimap_hunks_cap)
+	nhwl_minimap_hunks = xpalloc (nhwl_minimap_hunks,
+				      &nhwl_minimap_hunks_cap, 1, -1,
+				      sizeof *nhwl_minimap_hunks);
+      nhwl_minimap_hunks[nhwl_minimap_hunks_len++] = (NhgMinimapHunk) {
+	.line = XFIXNAT (AREF (h, 0)),
+	.text = (const uint8_t *) nhwl_minimap_name_copy (SDATA (u),
+							  SBYTES (u)),
+	.len = SBYTES (u),
+      };
+      hunks_len++;
+    }
+  /* The pins' names: each copied.  */
+  uintptr_t pin_names = nhwl_minimap_pins_len;
+  size_t pins_len = 0;
+  Lisp_Object pv = pins && ASIZE (v) > 29 ? AREF (v, 29) : Qnil;
+  for (ptrdiff_t i = 0;
+       VECTORP (pv) && i < ASIZE (pv) && pins_len < NHWL_MINIMAP_HUNKS_MAX;
+       i++)
+    {
+      Lisp_Object u = (STRINGP (AREF (pv, i)) ? ENCODE_UTF_8 (AREF (pv, i))
+		       : empty_unibyte_string);
+      if (nhwl_minimap_pins_len == nhwl_minimap_pins_cap)
+	nhwl_minimap_pins = xpalloc (nhwl_minimap_pins,
+				     &nhwl_minimap_pins_cap, 1, -1,
+				     sizeof *nhwl_minimap_pins);
+      nhwl_minimap_pins[nhwl_minimap_pins_len++] = (NhgMinimapName) {
+	.text = (const uint8_t *) nhwl_minimap_name_copy (SDATA (u),
+							  SBYTES (u)),
+	.len = SBYTES (u),
+      };
+      pins_len++;
+    }
+  /* The heat layer's name.  */
+  size_t heat_len;
+  uintptr_t heat_at = nhwl_minimap_string (v, 22, &heat_len);
+  /* The pill's format and the window's number.  */
+  size_t pill_format_len, number_len;
+  uintptr_t pill_format = nhwl_minimap_string (v, 20, &pill_format_len);
+  uintptr_t number_at = nhwl_minimap_string (v, 21, &number_len);
+  /* The fold arrows: the left fringe and the rows that start a line.  */
+  NhgRect fringe = { 0, 0, 0, 0 };
+  size_t rows_len = 0;
+  uintptr_t rows = 0;
+  if (arrows)
+    {
+      /* The fringe is next to the text, or outside the left margin.  */
+      int fw = WINDOW_LEFT_FRINGE_WIDTH (w);
+      int fx = (clip.x - fw
+		- (WINDOW_HAS_FRINGES_OUTSIDE_MARGINS (w)
+		   ? WINDOW_LEFT_MARGIN_WIDTH (w) : 0));
+      fringe = (NhgRect) { fx, clip.y, fw, clip.h };
+      rows = nhwl_minimap_line_rows (w, &rows_len);
     }
 #define NHWL_MINIMAP_OPACITY(i) \
   (NUMBERP (AREF (v, i)) ? (float) XFLOATINT (AREF (v, i)) : 1.0f)
@@ -1244,7 +1424,8 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
     .end = max (start, end),
     .begv = BUF_BEGV (b),
     .zv = BUF_ZV (b),
-    .flags = nhwl_block_int (v, 0, 0),
+    .flags = (nhwl_block_int (v, 0, 0)
+	      | (NILP (AREF (v, 0)) ? NHG_MINIMAP_NONE : 0)),
     .width = max (0, nhwl_block_int (v, 1, 0)),
     .scale = max (1, nhwl_block_int (v, 2, 2)),
     .fill_rgb = nhwl_block_int (v, 3, -1),
@@ -1261,7 +1442,7 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
     .file_len = file_len,
     .label_rgb = labels ? nhwl_block_int (v, 11, -1) : -1,
     .sub_rgb = labels ? nhwl_block_int (v, 12, -1) : -1,
-    .accent_rgb = labels ? nhwl_block_int (v, 13, -1) : -1,
+    .accent_rgb = ASIZE (v) > 13 ? nhwl_block_int (v, 13, -1) : -1,
     .mark_rgb = labels ? nhwl_block_int (v, 14, -1) : -1,
   };
 #undef NHWL_MINIMAP_OPACITY
@@ -1271,7 +1452,136 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object r,
   for (int c = 0; c < 16; c++)
     m->class_rgb[c] = (VECTORP (classes) && c < ASIZE (classes)
 		       ? nhwl_block_int (classes, c, -1) : -1);
+  m->hunk_rgb = labels && ASIZE (v) > 17 ? nhwl_block_int (v, 17, -1) : -1;
+  m->hunks = (const NhgMinimapHunk *) hunks;
+  m->hunks_len = hunks_len;
+  m->pill_rgb = pills ? nhwl_block_int (v, 19, -1) : -1;
+  m->heat = (const uint8_t *) heat_at;
+  m->heat_len = heat_len;
+  if (heat_len)
+    {
+#define NHWL_MINIMAP_OPACITY(i) \
+  (NUMBERP (AREF (v, i)) ? (float) XFLOATINT (AREF (v, i)) : 1.0f)
+      m->heat_low_rgb = ASIZE (v) > 26 ? nhwl_block_int (v, 23, -1) : -1;
+      m->heat_low_opacity = ASIZE (v) > 26 ? NHWL_MINIMAP_OPACITY (24) : 0;
+      m->heat_high_rgb = ASIZE (v) > 26 ? nhwl_block_int (v, 25, -1) : -1;
+      m->heat_high_opacity = ASIZE (v) > 26 ? NHWL_MINIMAP_OPACITY (26) : 0;
+#undef NHWL_MINIMAP_OPACITY
+    }
+  else
+    m->heat_low_rgb = m->heat_high_rgb = -1;
+  m->trail_rgb = ASIZE (v) > 32 ? nhwl_block_int (v, 30, -1) : -1;
+  m->trail_opacity = (ASIZE (v) > 32 && NUMBERP (AREF (v, 31))
+		      ? XFLOATINT (AREF (v, 31)) : 0);
+  m->trail_length = (ASIZE (v) > 32
+		     ? min (64, max (0, nhwl_block_int (v, 32, 20))) : 0);
+  m->hit_rgb = ASIZE (v) > 34 ? nhwl_block_int (v, 33, -1) : -1;
+  m->hit_opacity = (ASIZE (v) > 34 && NUMBERP (AREF (v, 34))
+		    ? XFLOATINT (AREF (v, 34)) : 0);
+  if (density)
+    {
+      m->chunk_start = max (0, nhwl_block_int (v, 35, 0));
+      m->chunk_bytes = BUF_Z_BYTE (b) - BUF_BEG_BYTE (b);
+      m->file_bytes = (nhwl_block_int (v, 36, 0) > 0
+		       ? nhwl_block_int (v, 36, 0) : m->chunk_bytes);
+      m->error_rgb = nhwl_block_int (v, 37, -1);
+      m->warning_rgb = nhwl_block_int (v, 38, -1);
+    }
+  else
+    m->error_rgb = m->warning_rgb = -1;
+  m->pin_kind = pins ? nhwl_block_int (v, 27, -1) : -1;
+  m->pin_rgb = pins ? nhwl_block_int (v, 28, -1) : -1;
+  m->pins = (const NhgMinimapName *) pin_names;
+  m->pins_len = pins_len;
+  m->pill_format = (const uint8_t *) pill_format;
+  m->pill_format_len = pill_format_len;
+  m->number = (const uint8_t *) number_at;
+  m->number_len = number_len;
+  if (arrows)
+    {
+      m->arrows = nhwl_block_int (a, 0, 0);
+      m->fringe = fringe;
+      m->arrow_size = max (0, nhwl_block_int (a, 1, 0));
+      m->arrow_inset = max (0, nhwl_block_int (a, 2, 0));
+      m->arrow_rgb = nhwl_block_int (a, 3, -1);
+      m->arrow_opacity = NUMBERP (AREF (a, 4)) ? XFLOATINT (AREF (a, 4)) : 1.0f;
+      m->folded_rgb = nhwl_block_int (a, 5, -1);
+      m->folded_opacity = NUMBERP (AREF (a, 6)) ? XFLOATINT (AREF (a, 6)) : 1.0f;
+      m->rows = (const NhgMinimapRow *) rows;
+      m->rows_len = rows_len;
+    }
 #endif
+}
+
+/* List leaf window W's horizontal strip V (the parameter glitnir--hstrip,
+   [HEIGHT LANE INSET RADIUS LEAST RGB OPACITY], device pixels), its text
+   area CLIP: while W's redisplay found it showing
+   (glitnir_hstrip_window, nidhogg-glitnir.c), a thumb along the text's
+   bottom HEIGHT pixels from the first text column (after the line
+   numbers) to the text area's right edge, INSET in from its top and
+   bottom, RADIUS at the corners, at least LEAST long: as long as the
+   text's width is of the whole W stands for, placed at the hscroll's
+   share of what lies beyond, mirrored right to left.  No track, no
+   marks.  The glue gets the bottom LANE pixels to take presses on, the
+   thumb's length and the most columns, in W's minimap record (one with
+   no minimap when W has none).  */
+static void
+nhwl_hstrip_add (struct window *w, Lisp_Object v, NhgRect clip)
+{
+  int whole = w->glitnir_whole_px;
+  if (!VECTORP (v) || ASIZE (v) < 7 || whole <= 0)
+    return;
+  struct frame *f = XFRAME (w->frame);
+  int height = min (nhwl_block_int (v, 0, 0), clip.h);
+  int lane = clip_to_bounds (0, nhwl_block_int (v, 1, height), height);
+  int inset = clip_to_bounds (0, nhwl_block_int (v, 2, 0), (height - 1) / 2);
+  int radius = max (0, nhwl_block_int (v, 3, 0));
+  int x0 = clip.x + clip_to_bounds (0, w->glitnir_lnum_px, clip.w);
+  int len = clip.x + clip.w - x0;
+  if (height <= 0 || len <= 0)
+    return;
+  NhgRect strip = { x0, clip.y + clip.h - height, len, height };
+  int least = clip_to_bounds (1, nhwl_block_int (v, 4, 1), len);
+  int thumb = clip_to_bounds (least,
+			      (int) ((double) len * len / whole + 0.5), len);
+  double range = (double) whole - len;
+  double hscroll_px = (double) w->hscroll * FRAME_COLUMN_WIDTH (f);
+  double share = range > 0 ? min (1.0, hscroll_px / range) : 0;
+  int tx = (int) (share * (len - thumb) + 0.5);
+  if (w->glitnir_rtl)
+    tx = len - thumb - tx;
+  Lisp_Object op = AREF (v, 6);
+  nhwl_bar_add (w, strip,
+		(NhgRect) { x0 + tx, strip.y + inset, thumb,
+			    height - 2 * inset },
+		nhwl_block_int (v, 5, -1), NUMBERP (op) ? XFLOATINT (op) : 1.0f,
+		radius);
+  /* The glue's pointer seam: W's minimap record, or one of its own.  */
+  if (!(nhwl_nminimaps
+	&& nhwl_minimaps[nhwl_nminimaps - 1].seq == w->sequence_number))
+    {
+      if (nhwl_nminimaps == nhwl_minimaps_cap)
+	nhwl_minimaps = xpalloc (nhwl_minimaps, &nhwl_minimaps_cap, 1, -1,
+				 sizeof *nhwl_minimaps);
+      NhgMinimap *n = &nhwl_minimaps[nhwl_nminimaps++];
+      memset (n, 0, sizeof *n);
+      n->seq = w->sequence_number;
+      n->clip = clip;
+      n->flags = NHG_MINIMAP_NONE;
+      n->scale = 1;
+      n->fill_rgb = n->text_rgb = n->band_rgb = -1;
+      n->label_rgb = n->sub_rgb = n->accent_rgb = n->mark_rgb = -1;
+      n->hunk_rgb = n->pill_rgb = n->arrow_rgb = n->folded_rgb = -1;
+      n->heat_low_rgb = n->heat_high_rgb = n->pin_kind = n->pin_rgb = -1;
+      n->trail_rgb = n->hit_rgb = n->error_rgb = n->warning_rgb = -1;
+      for (int c = 0; c < 16; c++)
+	n->class_rgb[c] = -1;
+    }
+  NhgMinimap *m = &nhwl_minimaps[nhwl_nminimaps - 1];
+  m->hstrip_lane = (NhgRect) { x0, strip.y + height - lane, len, lane };
+  m->hstrip_thumb = thumb;
+  m->hstrip_rtl = w->glitnir_rtl;
+  m->hstrip_max = (uint64_t) ceil (max (0, range) / FRAME_COLUMN_WIDTH (f));
 }
 
 /* Where position POS of leaf window W's buffer is drawn, plus DX and
@@ -1444,14 +1754,41 @@ nhwl_minimap_action (struct frame *f, const NhgAction *a,
 					   (EMACS_INT) a->dy);
   if (NILP (window))
     return 0;
-  Lisp_Object kind = (a->code == NHG_MINIMAP_CLICK ? Qnhwl_minimap_click
-		      : a->code == NHG_MINIMAP_DRAG ? Qnhwl_minimap_drag
-		      : Qnhwl_minimap_dwell);
   struct input_event ie;
   EVENT_INIT (ie);
   ie.kind = NHWL_MINIMAP_EVENT;
-  ie.arg = list3 (kind, window, make_fixnum ((EMACS_INT) a->dx));
   XSETFRAME (ie.frame_or_window, f);
+  /* The horizontal strip's press or drag step: (glitnir-hstrip WINDOW
+     HSCROLL), HSCROLL in columns.  */
+  if (a->code == NHG_MINIMAP_HSTRIP)
+    {
+      ie.arg = list3 (Qglitnir_hstrip, window,
+		      make_fixnum (min ((EMACS_INT) a->dx,
+					MOST_POSITIVE_FIXNUM)));
+      kbd_buffer_store_event_hold (&ie, hold_quit);
+      return 1;
+    }
+  Lisp_Object kind = (a->code == NHG_MINIMAP_CLICK ? Qnhwl_minimap_click
+		      : a->code == NHG_MINIMAP_DRAG ? Qnhwl_minimap_drag
+		      : a->code == NHG_MINIMAP_DWELL_MARKS
+		      ? Qnhwl_minimap_dwell_marks
+		      : a->code == NHG_MINIMAP_DWELL_LABEL
+		      ? Qnhwl_minimap_dwell_label
+		      : a->code == NHG_MINIMAP_SELECT_START
+		      ? Qnhwl_minimap_select_start
+		      : a->code == NHG_MINIMAP_SELECT_EXTEND
+		      ? Qnhwl_minimap_select_extend
+		      : a->code == NHG_MINIMAP_SELECT_END
+		      ? Qnhwl_minimap_select_end
+		      : a->code == NHG_MINIMAP_LABEL_HOVER
+		      ? Qnhwl_minimap_label_hover
+		      : a->code == NHG_MINIMAP_DWELL_BUCKET
+		      ? Qnhwl_minimap_dwell_bucket
+		      : Qnhwl_minimap_dwell);
+  /* (a label hover of 0 is none) */
+  ie.arg = list3 (kind, window,
+		  (a->code == NHG_MINIMAP_LABEL_HOVER && a->dx == 0 ? Qnil
+		   : make_fixnum ((EMACS_INT) a->dx)));
   kbd_buffer_store_event_hold (&ie, hold_quit);
   return 1;
 }
@@ -1475,7 +1812,10 @@ nhwl_blocks_add (Lisp_Object window)
       Lisp_Object r = Fwindow_parameter (window, Qglitnir__ruler);
       Lisp_Object e = Fwindow_parameter (window, Qglitnir__edges);
       Lisp_Object mm = Fwindow_parameter (window, Qglitnir__minimap);
-      if ((!VECTORP (v) && !VECTORP (r) && !VECTORP (e) && !VECTORP (mm))
+      Lisp_Object fa = Fwindow_parameter (window, Qglitnir__fold_arrows);
+      Lisp_Object hs = Fwindow_parameter (window, Qglitnir__hstrip);
+      if ((!VECTORP (v) && !VECTORP (r) && !VECTORP (e) && !VECTORP (mm)
+	   && !VECTORP (fa) && !VECTORP (hs))
 	  || !BUFFERP (w->contents))
 	continue;
       int x, y, width, height;
@@ -1486,8 +1826,31 @@ nhwl_blocks_add (Lisp_Object window)
 	  nhwl_block_add (w, AREF (v, i), clip);
       nhwl_ruler_add (w, r, y, height);
       nhwl_edges_add (w, e, clip);
-      nhwl_minimap_add (w, mm, r, clip);
+      nhwl_minimap_add (w, mm, fa, r, clip);
+      nhwl_hstrip_add (w, hs, clip);
     }
+}
+
+DEFUN ("glitnir-minimap-flash", Fglitnir_minimap_flash,
+       Sglitnir_minimap_flash, 2, 2, 0,
+       doc: /* Light the row of POS in WINDOW's minimap for 400 ms (a jump's flash).
+The row is drawn in the minimap's `:accent', fading on the compositor's
+frame clock (with reduced motion: lit for 400 ms, then gone); no Lisp
+runs meanwhile.  Return t, or nil when WINDOW has no minimap open.  */)
+  (Lisp_Object window, Lisp_Object pos)
+{
+  struct window *w = decode_live_window (window);
+  CHECK_FIXNUM_COERCE_MARKER (pos);
+  struct frame *f = XFRAME (w->frame);
+  if (!FRAME_NHWL_P (f))
+    return Qnil;
+  struct nhwl_output *out = FRAME_NHWL_OUTPUT (f);
+  struct nhwl_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  if (!out->glitnir_id || !dpyinfo->glue)
+    return Qnil;
+  int32_t rc = NHG (nhg_minimap_flash (dpyinfo->glue, out->glitnir_id,
+				       w->sequence_number, XFIXNUM (pos)));
+  return rc > 0 ? Qt : Qnil;
 }
 
 DEFUN ("glitnir-edges-resolved", Fglitnir_edges_resolved,
@@ -1546,7 +1909,8 @@ nhwl_blocks_sync (struct frame *f)
 							    out->glitnir_id))) > 0))
     {
       nhwl_nblocks = nhwl_nedges = nhwl_nminimaps = 0;
-      nhwl_minimap_names_len = 0;
+      nhwl_minimap_names_len = nhwl_minimap_hunks_len = 0;
+      nhwl_minimap_rows_len = nhwl_minimap_pins_len = 0;
       nhwl_blocks_add (FRAME_ROOT_WINDOW (f));
       nhwl_glue_rc (dpyinfo,
 		    NHG (nhg_blocks_sync (dpyinfo->glue, out->window,
@@ -5834,6 +6198,7 @@ syms_of_nhwlterm (void)
 {
   defsubr (&Snhwl__bench_full_redraw);
   defsubr (&Sglitnir_edges_resolved);
+  defsubr (&Sglitnir_minimap_flash);
   defsubr (&Snhwl_presenter_stats);
   defsubr (&Snhwl_glue_panics);
   defsubr (&Snhwl__scroll_layers);

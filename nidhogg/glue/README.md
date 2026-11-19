@@ -330,7 +330,9 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   here.
 - **The minimap's labels** (design M1): with `labels`, the names of the hub's definitions of the window's `file`
   (Sjá's `labels` layer for that name, `sja::minimap`) and the model's MARK sections (in capitals, with a hairline
-  above), for the rows the minimap shows. Placed in the glitnir crate (`minimap::place_labels`): 13 logical px tall,
+  above), and Lisp's hunk labels (`hunks`, `[LINE TEXT]` of the spec's `:hunk-labels`, the text cut at 256 bytes; each
+  at its line's start in `hunk_rgb`, placed as a MARK section is, no hairline; none when `hunk_rgb` is -1), for the
+  rows the minimap shows. Placed in the glitnir crate (`minimap::place_labels`): 13 logical px tall,
   none overlapping another, a MARK section first, then by depth (a deeper one yields), then from the top. Each is a
   sprite C renders (`nhg_minimap_set_label_render`: Cairo in the label face, `glitnir-decor.c`), cached per frame
   (freed with it) by text, colour, size and room, at most 2048 (when full, the least recently used eighth goes); a
@@ -353,7 +355,40 @@ compositor uploads only the exposed rows. The glue decides; C passes facts.
   dragging a drag step, and 300 ms at rest on a row a dwell: `NHG_ACT_MINIMAP` with code `NHG_MINIMAP_CLICK`,
   `_DRAG` or `_DWELL`, `dx` the position (the window start that centres the row; the row's start for a dwell) and
   `dy` the window's sequence number, which C stores as a `glitnir-minimap` event. A reveal step is
-  `NHG_MINIMAP_PUBLISH`: C publishes the frame again, with no redisplay.
+  `NHG_MINIMAP_PUBLISH`: C publishes the frame again, with no redisplay. A dwell on the marks lane (the strip's width
+  at the minimap's outer edge) is `_DWELL_MARKS`, on a label `_DWELL_LABEL` at the label's line start. A Shift-press
+  is `_SELECT_START` (no click, no scroll), each row change while held `_SELECT_EXTEND`, the release `_SELECT_END`,
+  each at its row's start (design X2); the label under the pointer changing is one `_LABEL_HOVER` at its line's start
+  (0 for none, design X7).
+- **The minimap's other layers** (design F1, M4, M5, M8, M9, X3, X5): fold pills (`pill_rgb`: a dashed pill after
+  the bar of each hidden range's first line, its name from `nidhogg-lines-set-hidden` or `pill_format`'s count, placed
+  as a MARK section); another window's `number` at the top-right of its outlined band; heat (`heat`: Sjá's
+  `heat:NAME` layer of `file` recolours each tile row's bar on the ramp `heat_low`..`heat_high`, its version part of
+  the tiles' stamp); pins (marks of `pin_kind` with an end: a band at the band's opacity and the n-th of `pins` as a
+  label); the trail (`trail_rgb`: a 2 px bar on the rows of the model's newest `trail_length` visits, fading to 15 %);
+  a jump flash (`nhg_minimap_flash`: the row lit in the accent for 400 ms, faded on the frame clock); and the line
+  model's search hits (`hit_rgb`: a bar at each hit's column as long as the hit, at most 4096 drawn, the current hit
+  ringed).
+- **The density strip** (design M7, state C; `NHG_MINIMAP_DENSITY`, `minimap::density`): a record with no line model
+  (key 0) for a huge file: the hub's buckets of `file` (Sjá's `density` layer) over the strip's height, one 1 px row
+  per pixel, its brightness the bytes under it against the fullest row's, a mark at the outer edge in `error_rgb` (else
+  `warning_rgb`) where its buckets hold errors (warnings), the buckets not yet built outlined, and the window's band at
+  its fraction of the file: a buffer holding a chunk maps its positions into the file (`chunk_start`, `chunk_bytes`,
+  `file_bytes`). A dwell is `NHG_MINIMAP_DWELL_BUCKET` with the bucket's index; a click the start that centres the
+  fraction.
+- **The horizontal strip's pointer** (hscroll design §3.1, `glitnir-hstrip`): C draws the thumb as a block bar; the
+  record carries the strip's bottom band that takes presses (`hstrip_lane`, empty: none), the thumb's length, the most
+  columns and whether it is mirrored (`hstrip_rtl`). A window with no minimap gets a record of its own
+  (`NHG_MINIMAP_NONE`). A left press on the lane, with no minimap under the pointer, is `NHG_MINIMAP_HSTRIP` with the
+  hscroll in columns that centres the thumb on the pointer and starts a drag; the drag's steps wait for the frame
+  (`STEP_NS`) and only the last is sent; the release sends a step still waiting and nothing of its own. Motion and the
+  release during the drag are the strip's.
+- **Fold arrows** (design F1, the window parameter `glitnir-fold-arrows`): the record's `arrows` with the left
+  fringe and the matrix rows that start a line (`NhgMinimapRow`); a second layer per window, id
+  `sequence_number | MINIMAP_TAG | ARROWS_TAG`, over the fringe, a chevron sprite per row whose line starts a fold
+  range (right-pointing in the folded colour when the range's lines are hidden). In `NHG_ARROWS_HOVER` the open ones
+  show while the pointer is over the fringe; the pointer there is never swallowed. A record with `NHG_MINIMAP_NONE`
+  carries the arrows alone.
 - **Demotion:** at a publish, `nhg_layers_sync` demotes each layer whose window is gone or has another box, whose
   last full-window scroll is 2 s old, or every one at a scale or border change or when the frame is no longer an opaque root; a scroll with a new
   box demotes first. Demotion is `set_output (…, 0)` and the layer's removal, in that publish: Glitnir damages the

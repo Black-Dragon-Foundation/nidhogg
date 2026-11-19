@@ -7,7 +7,7 @@
 //! {"event": "view-model", "data": {"minimap": {"file": F, "layer": L, "version": N, "items": I}}}
 //! L = "labels"   I = [[line, depth, kind, text]]    depth 0 outermost
 //!   | "folds"    I = [[first, last, kind]]
-//!   | "heat:" S  I = [[first, last, value]]          value 0..=1000
+//!   | "heat:" S  I = [[first, last, value, fact?]]   value 0..=1000; fact: the line's text for peek and describe
 //!   | "density"  I = {"buckets": [[bytes, errors, warnings]], "total": n}
 //! I = null removes the layer.
 //! ```
@@ -33,8 +33,8 @@ pub enum Data {
     Labels(Vec<(u32, u32, Box<str>, Box<str>)>),
     /// (first line, last line, kind).
     Folds(Vec<(u32, u32, Box<str>)>),
-    /// (first line, last line, value 0..=1000).
-    Heat(Vec<(u32, u32, u16)>),
+    /// (first line, last line, value 0..=1000, the fact: an optional text such as "2 days ago · 9f3c21e …").
+    Heat(Vec<(u32, u32, u16, Option<Box<str>>)>),
     /// The buckets built, (bytes, errors, warnings) each, and how many there are in all.
     Density {
         buckets: Vec<(u64, u32, u32)>,
@@ -142,14 +142,24 @@ fn data(layer: &str, v: &Value) -> Option<Data> {
             })?,
             total: u32_of(v.get("total")?)?,
         },
-        l if l.starts_with("heat:") && l.len() > 5 => Data::Heat(items(v, |i| match i {
-            [a, b, x] => Some((
-                u32_of(a)?,
-                u32_of(b)?,
-                u16::try_from(x.as_u64()?).ok()?.min(1000),
-            )),
-            _ => None,
-        })?),
+        l if l.starts_with("heat:") && l.len() > 5 => Data::Heat({
+            let mut v = items(v, |i| {
+                let (a, b, x, fact) = match i {
+                    [a, b, x] => (a, b, x, None),
+                    [a, b, x, f] => (a, b, x, Some(text(f, LABEL_MAX)?)),
+                    _ => return None,
+                };
+                Some((
+                    u32_of(a)?,
+                    u32_of(b)?,
+                    u16::try_from(x.as_u64()?).ok()?.min(1000),
+                    fact,
+                ))
+            })?;
+            // looked up by line: sorted by the first line (the order of equal ones kept)
+            v.sort_by_key(|x| x.0);
+            v
+        }),
         _ => return None,
     })
 }
@@ -227,6 +237,20 @@ pub fn with_layer<R>(file: &str, layer: &str, f: impl FnOnce(u64, &Data) -> R) -
         let (v, d) = s.files.get(file)?.layers.get(layer)?;
         Some(f(*v, d))
     })
+}
+
+/// The value and fact of FILE's heat LAYER (a `heat:` name) at LINE (from 1): the last item starting at or before the
+/// line, when it reaches it (design M5's peek and describe); `None` for no such layer or no item there.
+pub fn heat_at(file: &str, layer: &str, line: u32) -> Option<(u16, Option<Box<str>>)> {
+    with_layer(file, layer, |_, d| match d {
+        Data::Heat(v) => {
+            let i = v.partition_point(|x| x.0 <= line).checked_sub(1)?;
+            let x = &v[i];
+            (x.1 >= line).then(|| (x.2, x.3.clone()))
+        }
+        _ => None,
+    })
+    .flatten()
 }
 
 /// FILE's layers by name, with their versions.

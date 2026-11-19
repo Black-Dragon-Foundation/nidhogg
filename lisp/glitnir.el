@@ -653,7 +653,10 @@ The vector goes into the window parameter `glitnir--ruler', which C
 reads when the frame publishes: the strip at the window's right inner
 edge, its marks at their position's fraction of the buffer (characters,
 as the scroll bar measures) and the band over the part shown.  Nothing
-is done per redisplay: a scroll moves the band in C."
+is done per redisplay: a scroll moves the band in C.  On a terminal the
+strip is the last column of the window's right margin, when it has one
+\(`set-window-margins'): `┃' over the rows shown, `│' elsewhere, `▐' in
+a mark's colour."
   (let ((spec (window-parameter window 'glitnir-ruler))
         (key (window-parameter window 'glitnir--ruler-key)))
     (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
@@ -768,23 +771,65 @@ model finds (`nidhogg-lines-set-section-regexp'); `marks-only', the MARK
 sections alone.  Their colours: `:label' (a definition), `:sub' (a
 nested one), `:accent' (the one under the pointer), `:mark' (a MARK
 section, in capitals with a hairline above); `:label-face' is the face
-whose font they are drawn in.  The vector is [FLAGS WIDTH SCALE FILL-RGB
+whose font they are drawn in.  With `:labels' on, `:hunk-labels' are
+Lisp's own labels, a vector of [LINE TEXT] sorted by LINE (from 1),
+TEXT at most 256 bytes (\"hunk 2 · +4 −2\"), each drawn at its line's
+start in `:hunk' (a colour as `:text') and placed before the
+definitions, as a MARK section is; send them again when they change.
+`:pill' (a colour as `:text') draws a dashed fold pill after the bar
+of each hidden range's first line (`nidhogg-lines-set-hidden'), with
+labels off too: the range's NAME when it has one, else `:pill-format'
+(a format with one %d, the lines hidden; default \"⋯ %d folded\").
+`:number' (a short string) is this window's number: another window's
+minimap of the same buffer shows it at the top-right of this window's
+outlined band, in `:label-face'.
+`:heat' (a layer's name such as \"blame\", or nil) colours each line's
+bar from Sjá's layer heat:NAME of `:file' while it exists: mixed
+between `:heat-low' (value 0) and `:heat-high' (1000), colours as
+`:text', a line with no value in `:text'; `:file' is sent with heat
+even with labels off.  `:pin-kind' (a mark kind of the line model,
+0 to 63) with `:pin' (a colour as `:text') draws each mark of that
+kind with an end as a band over its lines at `:band''s opacity, and
+the n-th of `:pin-names' (a vector of strings, in buffer order) as its
+label at its first line, with labels off too.  `:trail' (a colour as
+`:text') draws the line model's last `:trail-length' visits (1 to 64,
+default 20; `nidhogg-lines-trail-note') as 2 px bars at the minimap's
+left edge, the newest at `:trail''s opacity fading to 15 %.
+`glitnir-minimap-flash' lights a row in `:accent', with labels off too.
+`:hit' (a colour as `:text') draws the hits of the buffer's search
+\(`nidhogg-lines-search') as bars at their columns, the current one
+\(`nidhogg-lines-search-current') ringed.
+`:density' t makes it a density strip (state C) for a buffer with no
+line model: the hub's buckets of `:file' (Sjá's density layer), a 1 px
+row each, brightness the bytes under it in `:text', a mark at the outer
+edge in `:error' (or `:warning') where a row holds errors (warnings),
+the buckets not yet built outlined, the band at the window's fraction of
+the file; `:chunk' (START . FILE-BYTES) says the buffer holds the file's
+bytes from START of FILE-BYTES (nil: the whole file).
+The vector is [FLAGS WIDTH SCALE FILL-RGB
 FILL-OPACITY TEXT-RGB TEXT-OPACITY BAND-RGB BAND-OPACITY LABELS FILE
-LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE CLASS-RGB], CLASS-RGB a
-vector of 16 RGBs by class number (0, text, unused), FLAGS 1 for `:open', 2
-for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
-`:nesting', LABELS 0 (none), 1 (t) or 2 (`marks-only'), RGB -1 for none."
+LABEL-RGB SUB-RGB ACCENT-RGB MARK-RGB LABEL-FACE CLASS-RGB HUNK-RGB
+HUNKS PILL-RGB PILL-FORMAT NUMBER HEAT HEAT-LOW-RGB HEAT-LOW-OPACITY
+HEAT-HIGH-RGB HEAT-HIGH-OPACITY PIN-KIND PIN-RGB PIN-NAMES TRAIL-RGB
+TRAIL-OPACITY TRAIL-LENGTH HIT-RGB HIT-OPACITY CHUNK-START FILE-BYTES
+ERROR-RGB WARNING-RGB], CLASS-RGB a
+vector of 16 RGBs by class number (0, text, unused), HUNKS the
+`:hunk-labels' (nil with labels off), FLAGS 1 for `:open', 2
+for `:left', 4 for reduced motion (`glitnir-reduced-motion-p'), 8 for
+`:nesting' and 32 for `:density', LABELS 0 (none), 1 (t) or 2 (`marks-only'), RGB -1 for none."
   (let ((c (lambda (k) (glitnir--ruler-colour (plist-get spec k) frame))))
     (let ((fill (funcall c :fill)) (text (funcall c :text)) (band (funcall c :band))
           (labels (pcase (plist-get spec :labels) ('nil 0) ('marks-only 2) (_ 1)))
           (rgb (lambda (k) (or (car (funcall c k)) -1))))
       (vector (logior (if (plist-get spec :open) 1 0) (if (plist-get spec :left) 2 0)
-                      (if (glitnir--reduced-motion-p) 4 0) (if (plist-get spec :nesting) 8 0))
+                      (if (glitnir--reduced-motion-p) 4 0) (if (plist-get spec :nesting) 8 0)
+                      (if (plist-get spec :density) 32 0))
               (or (plist-get spec :width) 0) (or (plist-get spec :scale) 2)
               (if fill (car fill) -1) (if fill (cdr fill) 0)
               (if text (car text) -1) (if text (cdr text) 0)
               (if band (car band) -1) (if band (cdr band) 0)
-              labels (and (= labels 1) (plist-get spec :file))
+              labels (and (or (= labels 1) (plist-get spec :heat) (plist-get spec :density))
+                          (plist-get spec :file))
               (funcall rgb :label) (funcall rgb :sub) (funcall rgb :accent) (funcall rgb :mark)
               (plist-get spec :label-face)
               (let ((v (make-vector 16 -1)))
@@ -792,7 +837,22 @@ for `:left', 4 for reduced motion (`glitnir-reduced-motion-p') and 8 for
                   (when-let* ((tail (memq class glitnir-minimap-classes))
                               (c (glitnir--ruler-colour colour frame)))
                     (aset v (- 16 (length tail)) (car c))))
-                v)))))
+                v)
+              (funcall rgb :hunk)
+              (and (> labels 0) (plist-get spec :hunk-labels))
+              (funcall rgb :pill)
+              (and (plist-get spec :pill) (or (plist-get spec :pill-format) "⋯ %d folded"))
+              (plist-get spec :number)
+              (plist-get spec :heat)
+              (or (car (funcall c :heat-low)) -1) (or (cdr (funcall c :heat-low)) 0)
+              (or (car (funcall c :heat-high)) -1) (or (cdr (funcall c :heat-high)) 0)
+              (or (plist-get spec :pin-kind) -1) (funcall rgb :pin)
+              (plist-get spec :pin-names)
+              (funcall rgb :trail) (or (cdr (funcall c :trail)) 0)
+              (or (plist-get spec :trail-length) 20)
+              (funcall rgb :hit) (or (cdr (funcall c :hit)) 0)
+              (or (car (plist-get spec :chunk)) 0) (or (cdr (plist-get spec :chunk)) 0)
+              (funcall rgb :error) (funcall rgb :warning)))))
 
 (defun glitnir--recheck-minimap (window)
   "Resolve WINDOW's minimap when its `glitnir-minimap' or the theme changed.
@@ -811,11 +871,120 @@ set, so C lists the frame."
     (when (window-parameter window 'glitnir--minimap)
       (setq glitnir--blocks-any t))))
 
+;; Fold arrows: a window parameter `glitnir-fold-arrows' draws a chevron
+;; in the window's left fringe on each line that starts a fold range of
+;; the buffer's line model, from the matrix at publish (no overlays, no
+;; Lisp per scroll or hover).  Resolved into `glitnir--fold-arrows' only
+;; when it, or the theme, changed.  A click on the fringe reaches Lisp as
+;; Emacs's own `left-fringe' event.  On a terminal there is no fringe: a
+;; window with a left margin gets a `▸' in its first column on each row
+;; starting a folded line, the other arrows not shown.
+
+(defun glitnir--fold-arrows-vector (spec frame)
+  "Return fold arrows SPEC as the vector C reads, for FRAME, or nil for none.
+SPEC is a plist: `:mode' (`hover': shown while the pointer is over the
+window's left fringe, folded lines' always; `always'), `:size' (the
+chevron's square box) and `:inset' (from the fringe's inner edge to
+the box), device pixels; `:colour' (an open fold's chevron, pointing
+down) and `:folded' (a folded range's, pointing right: its following
+lines are hidden, `nidhogg-lines-set-hidden'), each a face, whose
+foreground is used, a colour name or (FACE-OR-COLOUR . OPACITY).  The
+vector is [MODE SIZE INSET RGB OPACITY FOLDED-RGB FOLDED-OPACITY], MODE
+1 for `hover' and 2 for `always', RGB -1 for none."
+  (let ((mode (pcase (plist-get spec :mode) ('always 2) ('hover 1) (_ 0)))
+        (open (glitnir--ruler-colour (plist-get spec :colour) frame))
+        (folded (glitnir--ruler-colour (plist-get spec :folded) frame)))
+    (and (> mode 0)
+         (vector mode (or (plist-get spec :size) 0) (or (plist-get spec :inset) 0)
+                 (if open (car open) -1) (if open (cdr open) 0)
+                 (if folded (car folded) -1) (if folded (cdr folded) 0)))))
+
+(defun glitnir--recheck-fold-arrows (window)
+  "Resolve WINDOW's fold arrows when its `glitnir-fold-arrows' or the theme changed.
+The vector goes into the window parameter `glitnir--fold-arrows', which
+C reads when the frame publishes; it sets the frame's flag that blocks
+set, so C lists the frame."
+  (let ((spec (window-parameter window 'glitnir-fold-arrows))
+        (key (window-parameter window 'glitnir--fold-arrows-key)))
+    (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
+                (and (null spec) (null key)))
+      (set-window-parameter window 'glitnir--fold-arrows-key (and spec (cons spec glitnir--card-generation)))
+      (let ((v (and spec (glitnir--fold-arrows-vector spec (window-frame window)))))
+        (unless (equal v (window-parameter window 'glitnir--fold-arrows))
+          (set-window-parameter window 'glitnir--fold-arrows v)
+          (force-window-update window))))
+    (when (window-parameter window 'glitnir--fold-arrows)
+      (setq glitnir--blocks-any t))))
+
+;; The horizontal strip: a window parameter `glitnir-hstrip' draws a
+;; thumb along the bottom of the window's text while it cuts lines wider
+;; than the text (`truncate-lines', or scrolled sideways), standing for
+;; the buffer's widest line (the line model's, `nidhogg-lines-widest',
+;; and rows cut while their line fits, measured).  It takes no space:
+;; it is drawn over the text's bottom, and while it shows point never
+;; rests on the row under it (the window scrolls a row).  C decides when
+;; it shows and places the thumb at every redisplay, with no Lisp; the
+;; spec is resolved into `glitnir--hstrip' only when it, or the theme,
+;; changed.  A press on its bottom `:lane' pixels, or a drag, reaches
+;; Lisp as a `glitnir-hstrip' special event.  No strip on a terminal.
+
+(defun glitnir--hstrip-vector (spec frame)
+  "Return horizontal strip SPEC as the vector C reads, for FRAME.
+SPEC is a plist, device pixels: `:height' (the strip, drawn over the
+text's bottom), `:lane' (its bottom pixels that take presses; the
+default the whole height), `:thumb-inset' (the thumb's inset from the
+strip's top and bottom), `:radius' (its corners), `:least' (its least
+length); `:band', the thumb's colour: a face, whose foreground is used,
+a colour name, or (FACE-OR-COLOUR . OPACITY).  The vector is [HEIGHT
+LANE INSET RADIUS LEAST RGB OPACITY], RGB -1 for none."
+  (let ((band (glitnir--ruler-colour (plist-get spec :band) frame))
+        (height (or (plist-get spec :height) 0)))
+    (vector height (or (plist-get spec :lane) height) (or (plist-get spec :thumb-inset) 0)
+            (or (plist-get spec :radius) 0) (or (plist-get spec :least) 1)
+            (if band (car band) -1) (if band (cdr band) 0))))
+
+(defun glitnir--recheck-hstrip (window)
+  "Resolve WINDOW's horizontal strip when its `glitnir-hstrip' or the theme changed.
+The vector goes into the window parameter `glitnir--hstrip', which C
+reads at each redisplay of WINDOW (whether the strip shows) and when the
+frame publishes (the thumb)."
+  (let ((spec (window-parameter window 'glitnir-hstrip))
+        (key (window-parameter window 'glitnir--hstrip-key)))
+    (unless (or (and (eq (car key) spec) (eq (cdr key) glitnir--card-generation))
+                (and (null spec) (null key)))
+      (set-window-parameter window 'glitnir--hstrip-key (and spec (cons spec glitnir--card-generation)))
+      (let ((v (and spec (glitnir--hstrip-vector spec (window-frame window)))))
+        (unless (equal v (window-parameter window 'glitnir--hstrip))
+          (set-window-parameter window 'glitnir--hstrip v)
+          (force-window-update window))))
+    (when (window-parameter window 'glitnir--hstrip)
+      (setq glitnir--blocks-any t))))
+
+(defun glitnir-hstrip-event (event)
+  "Handle EVENT, (glitnir-hstrip WINDOW HSCROLL): a press on WINDOW's horizontal
+strip, or a drag step.  Scroll WINDOW sideways to HSCROLL columns, which
+suspends auto-hscroll until point moves; WINDOW is not selected and
+point does not move."
+  (interactive "e")
+  (pcase-let ((`(,_ ,window ,hscroll) event))
+    (when (and (window-live-p window) (natnump hscroll))
+      (set-window-hscroll window hscroll))))
+
+(define-key special-event-map [glitnir-hstrip] #'glitnir-hstrip-event)
+
 (defvar glitnir-minimap-functions nil
   "Functions called with KIND, WINDOW and POS for each minimap event.
 KIND is `click' or `drag' (WINDOW was scrolled to start at POS, the
-start that centres the row) or `dwell' (the pointer rests on the row
-starting at POS, for a peek).")
+start that centres the row), `dwell' (the pointer rests on the row
+starting at POS, for a peek), `dwell-marks' (it rests on the marks lane,
+the ruler strip's width at the minimap's outer edge, on the row starting
+at POS: the problems card), `dwell-label' (it rests on a label, whose
+line starts at POS: describe), `select-start', `select-extend' and
+`select-end' (a Shift-drag selecting whole lines: from the row starting
+at POS, to the row starting at POS; no scroll) or `label-hover' (the
+label under the pointer changed: its line starts at POS, nil for none;
+sent once per change) or `dwell-bucket' (the pointer rests on a density
+strip's bucket POS, from 0).")
 
 (defun glitnir-minimap-event (event)
   "Handle EVENT, a `glitnir-minimap' event: scroll its window to a click or a
@@ -882,6 +1051,8 @@ This runs on every redisplay, so it walks the tree rather than building a window
         (glitnir--recheck-ruler window)
         (glitnir--recheck-edges window)
         (glitnir--recheck-minimap window)
+        (glitnir--recheck-fold-arrows window)
+        (glitnir--recheck-hstrip window)
         (when (window-parameter window 'glitnir--card) (setq any t)))
       (setq window (window-next-sibling window)))
     any))

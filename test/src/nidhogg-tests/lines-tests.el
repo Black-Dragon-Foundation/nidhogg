@@ -196,17 +196,129 @@ rebuilt it.  The buffer is killed after."
     (should (= (nidhogg-lines-fraction b 19) 0.0))
     (should (= (nidhogg-lines-fraction b (point-max)) 1.0))))
 
-(ert-deftest lines/trail-keeps-one-visit-per-line ()
-  "The trail is newest first, one per line, at most 20."
+(ert-deftest lines/a-named-hidden-range-hides-as-a-pair-does ()
+  "`nidhogg-lines-set-hidden' takes (BEG END NAME) beside (BEG . END): the same lines leave the measure; a NAME that
+is not a string or nil is an error."
   (skip-unless (lines-tests--built-p))
-  (lines-tests--with (b (make-string 40 ?\n))
+  (lines-tests--with (b (mapconcat (lambda (i) (format "%02d\n" i))
+                                   (number-sequence 0 9) ""))
+    (nidhogg-lines-set-hidden b '((3 18 "body") (21 . 24)))
+    (let ((named (nidhogg-lines-fraction b 25)))
+      (nidhogg-lines-set-hidden b '((3 . 18) (21 24 nil)))
+      (should (= (nidhogg-lines-fraction b 25) named))
+      (nidhogg-lines-set-hidden b '((3 . 18) (21 . 24)))
+      (should (= (nidhogg-lines-fraction b 25) named))
+      (nidhogg-lines-set-hidden b nil)
+      (should-not (= (nidhogg-lines-fraction b 25) named)))
+    (should-error (nidhogg-lines-set-hidden b '((3 18 body))) :type 'wrong-type-argument)))
+
+(ert-deftest lines/trail-keeps-one-visit-per-line ()
+  "The trail is newest first, one per line, at most 64; `nidhogg-lines-trail-clear' empties it."
+  (skip-unless (lines-tests--built-p))
+  (lines-tests--with (b (make-string 100 ?\n))
     (dolist (p '(1 5 2 5 9)) (nidhogg-lines-trail-note b p))
     (should (equal (nidhogg-lines-trail b) '(9 5 2 1)))
-    (dotimes (i 30) (nidhogg-lines-trail-note b (+ 10 i)))
-    (should (= (length (nidhogg-lines-trail b)) 20))
+    (dotimes (i 80) (nidhogg-lines-trail-note b (+ 10 i)))
+    (should (= (length (nidhogg-lines-trail b)) 64))
+    (should (= (car (last (nidhogg-lines-trail b))) 26))
     (goto-char 1)
     (insert "\n\n")
-    (should (= (car (nidhogg-lines-trail b)) 41))))
+    (should (= (car (nidhogg-lines-trail b)) 91))
+    (nidhogg-lines-trail-clear b)
+    (should-not (nidhogg-lines-trail b))))
+
+(ert-deftest lines/widest-counts-columns-without-folds-or-narrowing ()
+  "`nidhogg-lines-widest' is the widest visible line in columns: tabs to `tab-width' stops, characters at their
+`char-width-table' width (taken again when the table is another, or on REFRESH after an in-place change), folded
+lines and the text outside a narrowing left out."
+  (skip-unless (lines-tests--built-p))
+  (let ((cjk (string-width "中文字"))
+        (b (generate-new-buffer " *lines-widest*")))
+    (unwind-protect
+        (with-current-buffer b
+          (insert "ab\n\tx\n中文字\nshort\n")
+          (should (nidhogg-lines-enable b t))
+          (should (= (nidhogg-lines-widest b) (max 9 cjk)))
+          (setq tab-width 4)
+          (should (= (nidhogg-lines-widest b) (max 5 cjk)))
+          ;; another table: CJK 3 wide
+          (let ((char-width-table (copy-sequence char-width-table)))
+            (set-char-table-range char-width-table '(#x4e00 . #x9fff) 3)
+            (should (= (nidhogg-lines-widest b) 9)))
+          (should (= (nidhogg-lines-widest b) (max 5 cjk)))
+          ;; the same table changed in place: seen on REFRESH
+          (let ((old (aref char-width-table ?中)))
+            (unwind-protect
+                (progn
+                  (aset char-width-table ?中 6)
+                  (should (= (nidhogg-lines-widest b) (max 5 cjk)))
+                  (should (= (nidhogg-lines-widest b t) (+ 6 (string-width "文字")))))
+              (aset char-width-table ?中 old)
+              (nidhogg-lines-widest b t)))
+          ;; line 3 folded into line 2
+          (nidhogg-lines-set-hidden b '((6 . 10)))
+          (should (= (nidhogg-lines-widest b) 5))
+          (nidhogg-lines-set-hidden b nil)
+          (save-restriction
+            (narrow-to-region 11 17)
+            (should (= (nidhogg-lines-widest b) 5))
+            (narrow-to-region 1 4)
+            (should (= (nidhogg-lines-widest b) 5)))
+          (should (= (nidhogg-lines-widest b) (max 5 cjk))))
+      (kill-buffer b))))
+
+(ert-deftest lines/search-counts-the-non-empty-matches ()
+  "The minimap search (X1): the hits of a literal or a regexp in the subset are its non-empty matches (`how-many'
+counts empty ones too: \"x*\" matches at every position), with or without case folding, over a text whose gap lies inside a line; their positions are `re-search-forward''s; a query outside the
+subset is nil (Lisp's), an edit starts the scan over, and the current hit's index counts the hits before it."
+  (skip-unless (lines-tests--built-p))
+  (lines-tests--with (b (concat (mapconcat (lambda (i) (format "\tfoo(%d) Foo bar.baz ÿ foo\n" i)) (number-sequence 1 3000) "")
+                                "^x* (a) FOO\n"))
+    ;; the gap inside a line
+    (goto-char 50) (insert "foo") (delete-char -3)
+    (let ((count (lambda (q fold)
+                   (let ((case-fold-search fold) (n 0))
+                     (save-excursion
+                       (goto-char (point-min))
+                       (while (and (not (eobp)) (re-search-forward q nil t))
+                         (if (/= (match-beginning 0) (match-end 0))
+                             (setq n (1+ n))
+                           (forward-char 1)))
+                       n))))
+          (run (lambda (q &optional literal fold)
+                 (let ((r (nidhogg-lines-search b q literal fold)))
+                   (while (eq r 'running) (setq r (nidhogg-lines-search-step b)))
+                   r))))
+      (dolist (q '("foo" "f[aeiou]\\{2\\}" "\\(foo\\|bar\\)\\.?" "^\tfoo" "foo$" "([0-9]+)" "a.b"
+                   "x*" "^x\\*" "ÿ fo+"))
+        (should (equal (list q (funcall run q)) (list q (funcall count q nil)))))
+      (should (= (funcall run "foo" nil t) (funcall count "foo" t)))
+      ;; literal: "o." is in no line, though the regexp o. is in every one
+      (should (= (funcall run "o." t) (funcall count (regexp-quote "o.") nil) 0))
+      ;; the positions: `re-search-forward''s
+      (funcall run "\\(foo\\|bar\\)")
+      (should (equal (nidhogg-lines-search-hits b)
+                     (save-excursion
+                       (goto-char 1)
+                       (let ((case-fold-search nil) l)
+                         (while (re-search-forward "\\(foo\\|bar\\)" nil t)
+                           (push (cons (match-beginning 0) (match-end 0)) l))
+                         (nreverse l)))))
+      (dolist (q '("\\w+" "\\_<foo" "[^a]" "\\bfoo" "a\\{"))
+        (should-not (nidhogg-lines-search b q)))
+      ;; an edit: the scan starts over and finds the new text
+      (should (numberp (funcall run "qux")))
+      (should (= (funcall run "qux") 0))
+      (goto-char (point-max)) (insert "qux qux\n")
+      (should-not (nidhogg-lines-search-hits b))
+      (let ((r (nidhogg-lines-search-step b)))
+        (while (eq r 'running) (setq r (nidhogg-lines-search-step b)))
+        (should (eql r 2)))
+      (let ((first (car (nidhogg-lines-search-hits b))))
+        (should (= (nidhogg-lines-search-current b (cdr (cadr (nidhogg-lines-search-hits b)))) 2))
+        (should (= (nidhogg-lines-search-current b (car first)) 0)))
+      (should-not (nidhogg-lines-search b nil))
+      (should-not (nidhogg-lines-search-step b)))))
 
 (ert-deftest lines/swap-text-rebuilds ()
   "`buffer-swap-text' and `set-buffer-multibyte' read the text again."
@@ -488,6 +600,90 @@ replaces the runs of the lines it changed."
         (should (equal (nidhogg-lines-classes nil 0) '((0 3 1) (7 4 1))))
         (should-not (nidhogg-lines-classes nil 2)))
       (nidhogg-lines-disable))))
+
+(defvar nidhogg-treesit-highlight-slice)
+
+(defun lines-tests--many-functions (n)
+  "N small C functions, five lines each."
+  (mapconcat (lambda (i) (format "int f%d (void)\n{\n  return %d; /* c */\n}\n\n" i i))
+             (number-sequence 0 (1- n)) ""))
+
+(defun lines-tests--all-classes ()
+  "Every line's class runs in the current buffer."
+  (mapcar (lambda (l) (nidhogg-lines-classes nil l))
+          (number-sequence 0 (1- (count-lines (point-min) (point-max))))))
+
+(defun lines-tests--drain ()
+  "Run highlight slices until none is left; how many ran."
+  (let ((n 1))
+    (while (and (nidhogg-treesit--highlight-slice) (< n 100000))
+      (setq n (1+ n)))
+    n))
+
+;; Task 11e: a whole-text highlight pass runs in slices on an idle timer.
+(ert-deftest lines/a-whole-highlight-pass-runs-in-idle-slices ()
+  "A refold (or a model that missed its classes) colours its lines in
+slices of `nidhogg-treesit-highlight-slice' seconds, the first at once and
+the rest from an idle timer, each going on from where the last stopped.
+The result is the whole pass's; an edit meanwhile shifts where the next
+slice starts and its parse colours the changed lines at once; a killed
+buffer's pass is dropped."
+  (skip-unless (and (lines-tests--built-p) (fboundp 'nidhogg-lines-classes)
+                    (lines-tests--grammars)))
+  (let ((treesit-extra-load-path (list (lines-tests--grammars)))
+        (query "(primitive_type) @type (number_literal) @constant
+                (comment) @comment (identifier) @function")
+        whole)
+    ;; the whole pass, in one slice
+    (with-temp-buffer
+      (insert "/* top */\n" (lines-tests--many-functions 300))
+      (nidhogg-lines-enable nil t)
+      (let ((p (treesit-parser-create 'c))
+            (nidhogg-treesit-highlight-slice 60))
+        (treesit-parser-root-node p)
+        (setq-local nidhogg-treesit-highlight-query (treesit-query-compile 'c query))
+        (nidhogg-treesit-refold p)
+        (should-not (nidhogg-treesit--highlight-slice))
+        (setq whole (lines-tests--all-classes)))
+      (nidhogg-lines-disable))
+    (should (equal (nth 1496 whole) '((0 3 3) (4 4 2) (10 4 3))))
+    ;; slices of no time: a line each
+    (with-temp-buffer
+      (insert (lines-tests--many-functions 300))
+      (nidhogg-lines-enable nil t)
+      (let ((p (treesit-parser-create 'c))
+            (nidhogg-treesit-highlight-slice 0))
+        (treesit-parser-root-node p)
+        (setq-local nidhogg-treesit-highlight-query (treesit-query-compile 'c query))
+        (nidhogg-treesit-refold p)
+        (should (nidhogg-lines-classes nil 0))
+        (should-not (nidhogg-lines-classes nil 1495))
+        (should (seq-find (lambda (tm) (eq (timer--function tm) 'nidhogg-treesit--highlight-slice))
+                          timer-idle-list))
+        (dotimes (_ 20) (nidhogg-treesit--highlight-slice))
+        (should (nidhogg-lines-classes nil 7))
+        (should-not (nidhogg-lines-classes nil 1495))
+        ;; a line typed above where the slices are: the next slice goes on
+        ;; from the same text
+        (goto-char (point-min))
+        (insert "/* top */\n")
+        (treesit-parser-root-node p)
+        (should (equal (nidhogg-lines-classes nil 0) '((0 9 5))))
+        (should (> (lines-tests--drain) 1000))
+        (should (equal (lines-tests--all-classes) whole)))
+      (nidhogg-lines-disable))
+    ;; a killed buffer's pass is dropped
+    (let ((b (generate-new-buffer " lines-slices")))
+      (with-current-buffer b
+        (insert (lines-tests--many-functions 50))
+        (nidhogg-lines-enable nil t)
+        (let ((p (treesit-parser-create 'c))
+              (nidhogg-treesit-highlight-slice 0))
+          (treesit-parser-root-node p)
+          (setq-local nidhogg-treesit-highlight-query (treesit-query-compile 'c query))
+          (nidhogg-treesit-refold p)))
+      (kill-buffer b)
+      (should-not (nidhogg-treesit--highlight-slice)))))
 
 ;; Design section 7.2: buffers without a highlight query take their
 ;; classes from the faces fontification gives them.

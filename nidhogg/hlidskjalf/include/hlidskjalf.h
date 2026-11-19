@@ -64,6 +64,13 @@ int32_t hlid_line_of (uint64_t key, uint64_t pos, uint64_t *out);
 int32_t hlid_pos_of (uint64_t key, uint64_t line, uint64_t *out);
 int32_t hlid_fraction (uint64_t key, uint64_t pos, uint64_t begv,
 		       uint64_t zv, double *out);
+/* The character widths (Emacs's char-width-table): N ranges of 3 values
+   (first, last, width), the characters whose width is not 1.  */
+int32_t hlid_set_widths (const uint32_t *ranges, size_t n);
+/* The columns of the widest visible line of BUFFER's BEGV..ZV: HLID_STALE
+   when the lines were built with another TAB_WIDTH or older widths.  */
+int32_t hlid_widest (uint64_t key, uint64_t buffer, uint64_t begv,
+		     uint64_t zv, uint32_t tab_width, uint32_t *out);
 int32_t hlid_set_marks (uint64_t key, uint32_t kind, const hlid_mark *marks,
 			size_t n);
 int32_t hlid_next_mark (uint64_t key, uint64_t pos, uint64_t kinds,
@@ -80,8 +87,25 @@ int32_t hlid_line_runs (uint64_t key, uint64_t line, hlid_run *out, size_t *n);
 int32_t hlid_folds (uint64_t key, uint64_t beg, uint64_t end, hlid_fold *out,
 		    size_t cap, size_t *n);
 int32_t hlid_fold_at (uint64_t key, uint64_t pos, hlid_fold *out);
+/* HLID_OK when POS's visible line is folded (a fold starts on it, the lines
+   after it hidden), HLID_NOTHING when not.  */
+int32_t hlid_folded_at (uint64_t key, uint64_t pos);
+/* POS's line's display width in columns (tabs, wide characters) into
+   *OUT: HLID_OK, or HLID_NOTHING before a build.  */
+int32_t hlid_cols_at (uint64_t key, uint64_t pos, uint32_t *out);
 int32_t hlid_set_hidden (uint64_t key, const uint64_t *ranges, size_t n);
+/* As hlid_set_hidden, with a name for each range: LENS[I] bytes of UTF-8 at
+   NAMES[I] (null: none); NAMES and LENS may both be null.  */
+int32_t hlid_set_hidden_named (uint64_t key, const uint64_t *ranges,
+			       const uint8_t *const *names,
+			       const size_t *lens, size_t n);
 int32_t hlid_trail_note (uint64_t key, uint64_t pos);
+int32_t hlid_trail_clear (uint64_t key);
+int32_t hlid_search (uint64_t key, const uint8_t *query, size_t len, uint32_t flags);
+int32_t hlid_search_step (uint64_t key, const uint8_t *p1, size_t n1, const uint8_t *p2, size_t n2,
+			  uint64_t budget_ns, int32_t *state, uint64_t *count);
+int32_t hlid_search_hits (uint64_t key, uint64_t beg, uint64_t end, uint64_t *out, size_t cap, size_t *n);
+int32_t hlid_search_current (uint64_t key, uint64_t pos, uint64_t *index);
 int32_t hlid_trail (uint64_t key, uint64_t *out, size_t cap, size_t *n);
 int32_t hlid_describe (uint64_t key, hlid_stats *out);
 /* MARK sections: the expression (RE null: none), then the Ith section whose

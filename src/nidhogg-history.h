@@ -63,6 +63,9 @@ extern void nh_lines_change (struct buffer *b,
 extern void nh_lines_resync (struct buffer *b);
 extern void nh_lines_forget (struct buffer *b);
 extern bool nh_lines_fraction (struct buffer *b, ptrdiff_t pos, double *out);
+extern bool nh_lines_folded_at (struct buffer *b, ptrdiff_t pos);
+extern bool nh_lines_widest (struct buffer *b, uint32_t *cols);
+extern bool nh_lines_cols_at (struct buffer *b, ptrdiff_t pos, uint32_t *cols);
 extern uint64_t nh_lines_model (struct buffer *b);
 extern int nh_lines_class_of (const char *name, ptrdiff_t len);
 extern void nh_lines_take_faces (struct buffer *b, ptrdiff_t pos);

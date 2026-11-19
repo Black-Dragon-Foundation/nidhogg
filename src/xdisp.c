@@ -19452,6 +19452,19 @@ run_window_scroll_functions (Lisp_Object window, struct text_pos startp)
    A value of false means the caller should do scrolling
    as if point had gone off the screen.  */
 
+#ifdef HAVE_GLITNIR
+/* While W's horizontal strip shows, a row reaching into its band
+   counts as partly visible, so point never rests under the strip
+   (unless the row is taller than the space above the strip).  */
+static bool
+glitnir_row_under_strip (struct window *w, struct glyph_row *row)
+{
+  int above = window_text_bottom_y (w) - w->glitnir_strip_px;
+  return (w->glitnir_strip_px > 0 && !row->mode_line_p
+	  && MATRIX_ROW_BOTTOM_Y (row) > above && row->height < above);
+}
+
+#endif
 static bool
 cursor_row_fully_visible_p (struct window *w, bool force_p,
 			    bool current_matrix_p,
@@ -19493,6 +19506,10 @@ cursor_row_fully_visible_p (struct window *w, bool force_p,
   matrix = current_matrix_p ? w->current_matrix : w->desired_matrix;
   row = MATRIX_ROW (matrix, w->cursor.vpos);
 
+#ifdef HAVE_GLITNIR
+  if (w->cursor.vpos > 0 && glitnir_row_under_strip (w, row))
+    return false;
+#endif
   /* If the cursor row is not partially visible, there's nothing to do.  */
   if (!MATRIX_ROW_PARTIALLY_VISIBLE_P (w, row))
     return true;
@@ -20269,7 +20286,12 @@ try_cursor_movement (Lisp_Object window, struct text_pos startp,
 	  if (must_scroll)
 	    ;
 	  else if (rc != CURSOR_MOVEMENT_SUCCESS
+#ifdef HAVE_GLITNIR
+	      && (MATRIX_ROW_PARTIALLY_VISIBLE_P (w, row)
+		  || glitnir_row_under_strip (w, row))
+#else
 	      && MATRIX_ROW_PARTIALLY_VISIBLE_P (w, row)
+#endif
 	      /* Make sure this isn't a header line nor a tab-line by
 		 any chance, since then MATRIX_ROW_PARTIALLY_VISIBLE_P
 		 might yield true.  */
@@ -20466,6 +20488,24 @@ set_vertical_scroll_bar (struct window *w)
       (w, end - start, whole, start);
 }
 
+#ifdef HAVE_GLITNIR
+/* The width in pixels of the display line of window W that starts at
+   POS, its line number left out: walked to the line's end at an
+   unbounded x, for the horizontal strip's rows that are cut while
+   their line fits (nidhogg-glitnir.c).  W's buffer is current.  */
+int
+glitnir_line_width (struct window *w, struct text_pos pos)
+{
+  struct it it;
+  void *itdata = bidi_shelve_cache ();
+  init_iterator (&it, w, CHARPOS (pos), BYTEPOS (pos), NULL, DEFAULT_FACE_ID);
+  it.last_visible_x = INT_MAX;
+  move_it_in_display_line_to (&it, ZV, -1, MOVE_TO_POS);
+  int px = max (0, it.current_x - it.lnum_pixel_width);
+  bidi_unshelve_cache (itdata, false);
+  return px;
+}
+#endif
 
 void
 set_horizontal_scroll_bar (struct window *w)
@@ -20751,6 +20791,12 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
 
   specbind (Qinhibit_point_motion_hooks, Qt);
 
+#ifdef HAVE_GLITNIR
+  /* Whether the horizontal strip shows, with the hscroll and the
+     widths as they are now: the cursor's row check below reads it.  */
+  glitnir_hstrip_window (w, false);
+
+#endif
   /* When windows_or_buffers_changed is non-zero, we can't rely
      on the window end being valid, so set it to zero there.  */
   if (windows_or_buffers_changed)
@@ -21774,6 +21820,12 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
   ;
  finish_scroll_bars:
 
+#ifdef HAVE_GLITNIR
+  /* The horizontal strip again, with the rows just made measured.  */
+  if (!f->fonts_changed)
+    glitnir_hstrip_window (w, true);
+
+#endif
    if (WINDOW_HAS_VERTICAL_SCROLL_BAR (w) || WINDOW_HAS_HORIZONTAL_SCROLL_BAR (w))
     {
       if (WINDOW_HAS_VERTICAL_SCROLL_BAR (w))
@@ -26042,6 +26094,10 @@ maybe_produce_line_number (struct it *it)
 
   /* Record the width in pixels we need for the line number display.  */
   it->lnum_pixel_width = tem_it.current_x;
+#ifdef HAVE_GLITNIR
+  /* Where the horizontal strip starts.  */
+  it->w->glitnir_lnum_px = it->lnum_pixel_width;
+#endif
   /* Copy the produced glyphs into IT's glyph_row.  */
   struct glyph *g = scratch_glyph_row.glyphs[TEXT_AREA];
   struct glyph *e = g + scratch_glyph_row.used[TEXT_AREA];
@@ -26225,6 +26281,11 @@ display_line (struct it *it, int cursor_vpos)
       * FRAME_COLUMN_WIDTH (it->f);
 
   bool line_number_needed = should_produce_line_number (it);
+#ifdef HAVE_GLITNIR
+  /* No line numbers: the horizontal strip starts at the text's left.  */
+  if (!line_number_needed)
+    it->w->glitnir_lnum_px = 0;
+#endif
 
   /* Move over display elements that are not visible because we are
      hscrolled.  This may stop at an x-position < first_visible_x

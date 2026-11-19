@@ -689,6 +689,31 @@ fn the_hub_layer_lines_are_kept_by_file() {
         ])),
         "a nested label's depth"
     );
+    // a heat item's optional 4th element is its fact text (cut at LABEL_MAX bytes); a fact that is no string refuses the layer
+    let long = "x".repeat(300);
+    let heat = format!(
+        r#"{{"event":"view-model","data":{{"minimap":{{"file":"/r/a.rs","layer":"heat:age","version":1,"items":[[1,4,1000,"2 days ago · 9f3c21e"],[5,6,250],[7,7,0,"{long}"]]}}}}}}"#
+    );
+    assert_eq!(ok(SJA_PUSH, &[text(&heat)]), Ans::Nil);
+    assert_eq!(
+        sja::minimap::with_layer(file, "heat:age", |_, d| d.clone()),
+        Some(sja::minimap::Data::Heat(vec![
+            (1, 4, 1000, Some("2 days ago · 9f3c21e".into())),
+            (5, 6, 250, None),
+            (7, 7, 0, Some("x".repeat(sja::minimap::LABEL_MAX).into()))
+        ])),
+        "heat facts"
+    );
+    let bad_fact = r#"{"event":"view-model","data":{"minimap":{"file":"/r/a.rs","layer":"heat:age","version":2,"items":[[1,4,9,7]]}}}"#;
+    assert_eq!(
+        call_for_test(SJA_PUSH, &[text(bad_fact)]).err(),
+        Some(SJA_E_ARG)
+    );
+    assert_eq!(
+        sja::minimap::with_layer(file, "heat:age", |v, _| v),
+        Some(1),
+        "a refused heat layer changes nothing"
+    );
     // a late heat layer older than its removal stays out
     let late = r#"{"event":"view-model","data":{"minimap":{"file":"/r/a.rs","layer":"heat:blame","version":2,"items":[[1,2,5]]}}}"#;
     assert_eq!(ok(SJA_PUSH, &[text(late)]), Ans::Nil);

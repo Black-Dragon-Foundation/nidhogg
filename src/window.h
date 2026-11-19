@@ -472,6 +472,21 @@ struct window
     /* Z_BYTE - buffer position of the last glyph in the current matrix of W.
        Should be nonnegative, and only valid if window_end_valid is true.  */
     ptrdiff_t window_end_bytepos;
+#ifdef HAVE_GLITNIR
+    /* The horizontal strip (the parameter glitnir--hstrip,
+       nidhogg-glitnir.c): the line numbers' width at the last display
+       (0 without them), the window's default face's column width, the
+       widest measured row cut while its line fits (text pixels), the
+       whole width the strip stands for while it shows (0: no strip),
+       the strip's height while it shows, and whether the text runs
+       right to left.  */
+    int glitnir_lnum_px;
+    int glitnir_col_px;
+    int glitnir_cut_px;
+    int glitnir_whole_px;
+    int glitnir_strip_px;
+    bool_bf glitnir_rtl : 1;
+#endif
   } GCALIGNED_STRUCT;
 
 INLINE bool

@@ -5508,6 +5508,24 @@ face_with_height (struct frame *f, int face_id, int height)
   return face_id;
 }
 
+#ifdef HAVE_GLITNIR
+/* A face like the face FACE_ID on frame F with the foreground COLOR (a
+   colour name), for the terminal's overview column (nidhogg-glitnir.c):
+   a colour with no named face.  Realized once, then found in F's face
+   cache.  */
+int
+glitnir_face_with_foreground (struct frame *f, int face_id, Lisp_Object color)
+{
+  struct face *face = FACE_FROM_ID_OR_NULL (f, face_id);
+  if (!face)
+    return face_id;
+  Lisp_Object attrs[LFACE_VECTOR_SIZE];
+  memcpy (attrs, face->lface, sizeof attrs);
+  attrs[LFACE_FOREGROUND_INDEX] = color;
+  return lookup_face (f, attrs);
+}
+
+#endif
 
 /* Return the face id of the realized face for named face SYMBOL on
    frame F suitable for displaying ASCII characters, and use
