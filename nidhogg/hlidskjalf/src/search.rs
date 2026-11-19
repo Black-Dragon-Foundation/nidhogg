@@ -4,7 +4,7 @@
 //! (`re-search-forward` in idle slices), so the counts stay Emacs's own.  The subset never matches a newline, so the
 //! text is scanned a line at a time, each line its own haystack: `^` and `$` are the line's ends, as in Emacs.  A
 //! scan starts over when the text changes; its hits are positions (with the column a hit starts at, tabs expanded),
-//! kept sorted.  Empty matches are not hits (`how-many` does not count them).
+//! kept sorted.  Empty matches are not hits (`how-many` counts them).
 
 use regex_lite::{Regex, RegexBuilder};
 use std::time::{Duration, Instant};

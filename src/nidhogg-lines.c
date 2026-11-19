@@ -901,7 +901,7 @@ runs in slices of 4 ms: this call makes the first, and
 the line model carries (syntax classes such as \\w or \\_<, back
 references, a negated bracket, anything that matches a newline): Lisp
 searches it itself.  QUERY nil ends the search.  Empty matches are not
-hits, so the count is `how-many''s.  An edit starts the scan over.  */)
+hits (`how-many' counts them).  An edit starts the scan over.  */)
   (Lisp_Object buffer, Lisp_Object query, Lisp_Object literal,
    Lisp_Object case_fold)
 {
