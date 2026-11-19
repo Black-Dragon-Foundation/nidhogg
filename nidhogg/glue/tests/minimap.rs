@@ -1164,9 +1164,10 @@ mod minimap {
         let text = model(key, 100);
         let zv = text.len() as u64 + 1;
         let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        let at: Vec<u64> = [5, 10, 30, 50].into_iter().map(pos).collect();
         with_model(key, |m| {
-            for l in [5, 10, 30, 50] {
-                m.trail_note(pos(l));
+            for p in at {
+                m.trail_note(p);
             }
         });
         let mut b = Backings::default();
@@ -1291,12 +1292,13 @@ mod minimap {
         let text = model(key, 100);
         let zv = text.len() as u64 + 1;
         let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        let (p19, p25) = (pos(19), pos(25));
         with_model(key, |m| {
             m.set_marks(
                 9,
                 &[Mark {
-                    pos: pos(19),
-                    end: pos(25) - 1,
+                    pos: p19,
+                    end: p25 - 1,
                     lane: 0,
                     class: 0,
                     prio: 0,
@@ -1357,11 +1359,12 @@ mod minimap {
         let text = model(key, 100);
         let zv = text.len() as u64 + 1;
         let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        let p3 = pos(3);
         with_model(key, |m| {
             assert!(m.search_start(Some(("xxx", true, false))));
             m.search_step(&[text.as_slice()], std::time::Duration::from_secs(5));
             // the first hit of line 3 (3 spaces in) is the current one
-            m.search_set_current(Some(pos(3) + 3));
+            m.search_set_current(Some(p3 + 3));
         });
         let mut b = Backings::default();
         let f = frame(&mut b, 120);
@@ -1403,7 +1406,8 @@ mod minimap {
             .collect();
         assert_eq!(rings, [Rect::new(202, top + 5, 5, 4)]);
         // a hidden line's hits are not drawn
-        with_model(key, |m| m.set_hidden(&[(pos(3), pos(4))]));
+        let hidden = [(pos(3), pos(4))];
+        with_model(key, |m| m.set_hidden(&hidden));
         assert_eq!(
             get(&mut b, &e)
                 .iter()
@@ -1434,12 +1438,13 @@ mod minimap {
         let text = model(key, 100);
         let zv = text.len() as u64 + 1;
         let pos = |line| with_model(key, |m| m.pos_of(line)).flatten().unwrap();
+        let (p19, p25) = (pos(19), pos(25));
         with_model(key, |m| {
             m.set_marks(
                 9,
                 &[Mark {
-                    pos: pos(19),
-                    end: pos(25) - 1,
+                    pos: p19,
+                    end: p25 - 1,
                     lane: 0,
                     class: 0,
                     prio: 0,
