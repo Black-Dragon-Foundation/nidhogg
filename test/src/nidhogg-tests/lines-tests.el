@@ -300,9 +300,10 @@ subset is nil (Lisp's), an edit starts the scan over, and the current hit's inde
       (should (equal (nidhogg-lines-search-hits b)
                      (save-excursion
                        (goto-char 1)
-                       (let (l) (while (re-search-forward "\\(foo\\|bar\\)" nil t)
-                                  (push (cons (match-beginning 0) (match-end 0)) l))
-                            (nreverse l)))))
+                       (let ((case-fold-search nil) l)
+                         (while (re-search-forward "\\(foo\\|bar\\)" nil t)
+                           (push (cons (match-beginning 0) (match-end 0)) l))
+                         (nreverse l)))))
       (dolist (q '("\\w+" "\\_<foo" "[^a]" "\\bfoo" "a\\{"))
         (should-not (nidhogg-lines-search b q)))
       ;; an edit: the scan starts over and finds the new text
