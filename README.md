@@ -1346,6 +1346,24 @@ types). Emacs reads only presses, so Nidhogg's native shell (Wayland and Naglfar
 - Tests: `nidhogg/glue/tests/keys.rs` (`release_repeats_the_press`, the compose row) and the GUI row
   `nhwl-gui/key-release-and-repeat-events` (recorder).
 
+## A box inside a box
+
+Glitnir rings each face's box (`:corner-radius`, `:open`, `:fit text`, `:label`), and a box that differs from its
+neighbour's starts a run of its own, so a match inside the region gets its own sides. A key hint inside a button (the
+kit's `.btn .k`: a small ring inside the button's) needs more: the button's ring must not break where the key is
+(group `glitnir`, `HAVE_GLITNIR`).
+
+- `:inside t` in a face's `:box` plist: the box is drawn inside the enclosing boxed run, the face of the glyph just
+  before its run on the row (else just after it) when that face's box is not itself `:inside`. The enclosing ring runs
+  on across the key: its top and bottom lines are drawn over the key's glyphs, its sides and corners only at its own
+  ends (`glitnir_box_differs` leaves the two runs one). The key's own ring is whole around its run (its pads and its
+  text, one run across its glyph strings), inset by the enclosing lines, and `:fit text` and `:corner-radius` apply
+  to it as to any box.
+- Without an enclosing boxed run, or where Glitnir does not draw, `:inside` changes nothing: the plain box.
+- Files: `src/glitnir-decor.c` (`enclosing_box`, `draw_box_face`), `src/xdisp.c` (`glitnir_box_inside_p`),
+  `src/nidhogg-glitnir.c` (the key). Tests: `glitnir/box-key-inside-accepted`;
+  `glitnir-decor-gui/a-box-inside-a-box-draws-both-rings`, `…-without-glitnir-is-the-plain-box` (at scales 1 and 2).
+
 ## Mouse sensors
 
 `mouse-face` changes a face under the pointer, never text, so a control cannot change on hover (drgnx's ● of a file

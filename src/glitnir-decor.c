@@ -63,6 +63,8 @@ struct box_keys
   /* :fit text: the box is as tall as the text, not the row.  */
   bool fit_text;
   int fit_pad;			/* :fit (text . PAD): pixels above and below */
+  /* :inside t: the ring is drawn inside the enclosing boxed run's.  */
+  bool inside;
 };
 
 /* Read the decoration keys of face FACE's :box plist.  True when it has
@@ -96,8 +98,10 @@ box_keys (struct face *face, struct box_keys *k)
 	  if (k->fit_text && CONSP (val))
 	    k->fit_pad = min (XFIXNAT (XCDR (val)), 1000);
 	}
+      else if (EQ (key, QCinside))
+	k->inside = !NILP (val);
     }
-  return k->radius > 0 || k->fit_text
+  return k->radius > 0 || k->fit_text || k->inside
 	 || k->open_top || k->open_bottom || k->open_left || k->open_right;
 }
 
@@ -512,9 +516,9 @@ records_ring (struct frame *f, struct face *face, int x, int y, int w, int h,
    corners outside the arcs in the colour beneath, then the ring.  */
 
 static bool
-records_box (struct glyph_string *s, struct box_keys *k, int left_x,
-	     int top_y, int right_x, int bottom_y, int hwidth, int vwidth,
-	     bool left_p, bool right_p, XRectangle *clip)
+records_box (struct glyph_string *s, struct face *face, struct box_keys *k,
+	     int left_x, int top_y, int right_x, int bottom_y, int hwidth,
+	     int vwidth, bool left_p, bool right_p, XRectangle *clip)
 {
   struct frame *f = s->f;
   int x = left_x, y = top_y, w = right_x + 1 - left_x;
@@ -527,8 +531,8 @@ records_box (struct glyph_string *s, struct box_keys *k, int left_x,
   nhwl_cr *cr = nhwl_begin_cr_clip (f);
 
   nhwl_set_clip_rectangles (f, cr, clip, 1);
-  bool ht = s->face->box_horizontal_line_width > 0;
-  bool vt = s->face->box_vertical_line_width > 0;
+  bool ht = face->box_horizontal_line_width > 0;
+  bool vt = face->box_vertical_line_width > 0;
   unsigned long bgc = s->xgcv.background;
   if (k->open_top && ht)
     nhwl_fill_rectangle (f, bgc, x, y, w, hwidth, true);
@@ -548,7 +552,7 @@ records_box (struct glyph_string *s, struct box_keys *k, int left_x,
     nhwl_erase_corners_for_relief (f,
 				   glitnir_decor_colour_beneath (s, SIDE_RIGHT),
 				   x, y, w, h, rad, 0, tr << 3 | br);
-  records_ring (f, s->face, x, y, w, h, hwidth, vwidth, rad,
+  records_ring (f, face, x, y, w, h, hwidth, vwidth, rad,
 		tl | tr << 1 | br << 2 | bl << 3,
 		(!k->open_top | (right_p && !k->open_right) << 1
 		 | (!k->open_bottom) << 2 | (left_p && !k->open_left) << 3));
@@ -557,34 +561,32 @@ records_box (struct glyph_string *s, struct box_keys *k, int left_x,
 }
 #endif /* HAVE_NHMAC */
 
-/* The box of S with Glitnir's keys (nhwl_draw_glyph_string_box's hook);
-   false when S's face has none, and the stock box draws.  */
+/* The box of FACE (S's own, or the run enclosing S's) with the keys K on
+   the rectangle LEFT_X..RIGHT_X, TOP_Y..BOTTOM_Y (inclusive).  */
 
-bool
-glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
-			int right_x, int bottom_y, int hwidth, int vwidth,
-			bool left_p, bool right_p, XRectangle *clip)
+static bool
+draw_box_face (struct glyph_string *s, struct face *face, struct box_keys *k,
+	       int left_x, int top_y, int right_x, int bottom_y, int hwidth,
+	       int vwidth, bool left_p, bool right_p, XRectangle *clip)
 {
-  struct frame *f = s->f;
-  struct box_keys k;
-
-  if (!nhwl_glitnir_active_p (f) || !box_keys (s->face, &k))
-    return false;
-
   /* :fit text: from the font's ascent above the baseline to its descent
      below, its pad and the box's own lines outside that when they are
-     drawn outside; never more than the row.  */
-  if (k.fit_text && s->font)
+     drawn outside; never more than the row.  A stretch (a pad) has no
+     font of its own, and an enclosing run's box follows its own face's
+     font: the face's.  */
+  struct font *font = face == s->face && s->font ? s->font : face->font;
+  if (k->fit_text && font)
     {
-      int line = max (s->face->box_horizontal_line_width, 0) + k.fit_pad;
-      top_y = max (top_y, s->ybase - FONT_BASE (s->font) - line);
-      bottom_y = min (bottom_y, s->ybase + FONT_DESCENT (s->font) + line - 1);
+      int line = max (face->box_horizontal_line_width, 0) + k->fit_pad;
+      top_y = max (top_y, s->ybase - FONT_BASE (font) - line);
+      bottom_y = min (bottom_y, s->ybase + FONT_DESCENT (font) + line - 1);
     }
 
 #ifdef HAVE_NHMAC
-  return records_box (s, &k, left_x, top_y, right_x, bottom_y, hwidth, vwidth,
-		      left_p, right_p, clip);
+  return records_box (s, face, k, left_x, top_y, right_x, bottom_y, hwidth,
+		      vwidth, left_p, right_p, clip);
 #else
+  struct frame *f = s->f;
   cairo_t *cr = nhwl_begin_cr_clip (f);
   double sx = 1, sy = 1;
   cairo_surface_get_device_scale (cairo_get_target (cr), &sx, &sy);
@@ -596,11 +598,11 @@ glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
   double vw = glitnir_snap_line (vwidth, sx);
 
   /* Only true run ends are rounded, and not at an open side.  */
-  bool tl = left_p && !k.open_top && !k.open_left;
-  bool bl = left_p && !k.open_bottom && !k.open_left;
-  bool tr = right_p && !k.open_top && !k.open_right;
-  bool br = right_p && !k.open_bottom && !k.open_right;
-  double rad = fmin (k.radius, fmin (r.h / 2, r.w / 2));
+  bool tl = left_p && !k->open_top && !k->open_left;
+  bool bl = left_p && !k->open_bottom && !k->open_left;
+  bool tr = right_p && !k->open_top && !k->open_right;
+  bool br = right_p && !k->open_bottom && !k->open_right;
+  double rad = fmin (k->radius, fmin (r.h / 2, r.w / 2));
   double rtl = tl ? rad : 0, rbl = bl ? rad : 0;
   double rtr = tr ? rad : 0, rbr = br ? rad : 0;
 
@@ -610,15 +612,15 @@ glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
   /* Open sides: no line, but the band an outside line would cover gets the
      glyph string's background, which nhwl_draw_glyph_string_background and
      the text only paint inside that band.  */
-  bool ht = s->face->box_horizontal_line_width > 0;
-  bool vt = s->face->box_vertical_line_width > 0;
-  if (k.open_top && ht)
+  bool ht = face->box_horizontal_line_width > 0;
+  bool vt = face->box_vertical_line_width > 0;
+  if (k->open_top && ht)
     cairo_rectangle (cr, r.x, r.y, r.w, hw);
-  if (k.open_bottom && ht)
+  if (k->open_bottom && ht)
     cairo_rectangle (cr, r.x, r.y + r.h - hw, r.w, hw);
-  if (k.open_left && left_p && vt)
+  if (k->open_left && left_p && vt)
     cairo_rectangle (cr, r.x, r.y, vw, r.h);
-  if (k.open_right && right_p && vt)
+  if (k->open_right && right_p && vt)
     cairo_rectangle (cr, r.x + r.w - vw, r.y, vw, r.h);
   nhwl_set_cr_source_with_color (f, s->xgcv.background, true);
   cairo_fill (cr);
@@ -634,9 +636,9 @@ glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
     under[SIDE_LEFT] = glitnir_decor_colour_beneath (s, SIDE_LEFT);
   if (corners & 6)
     under[SIDE_RIGHT] = glitnir_decor_colour_beneath (s, SIDE_RIGHT);
-  int edges = ((!k.open_top) | (right_p && !k.open_right) << 1
-	       | (!k.open_bottom) << 2 | (left_p && !k.open_left) << 3);
-  if (kernel_box (cr, f, s->face, r, rad, hw, vw, edges, corners, under, 0,
+  int edges = ((!k->open_top) | (right_p && !k->open_right) << 1
+	       | (!k->open_bottom) << 2 | (left_p && !k->open_left) << 3);
+  if (kernel_box (cr, f, face, r, rad, hw, vw, edges, corners, under, 0,
 		  *clip))
     {
       nhwl_end_cr_clip (f);
@@ -654,11 +656,79 @@ glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
 	cairo_fill (cr);
       }
 
-  draw_ring (cr, f, s->face, &k, r, hw, vw, left_p, right_p, rtl, rtr, rbr, rbl);
+  draw_ring (cr, f, face, k, r, hw, vw, left_p, right_p, rtl, rtr, rbr, rbl);
 
   nhwl_end_cr_clip (f);
   return true;
 #endif
+}
+
+/* The run S belongs to (the glyphs of S's face around it on its row, one
+   run across its glyph strings: a key's pads and text) and the box that
+   encloses it: the face of the glyph just before the run, else just after
+   it, when that face has a box that is not itself `:inside'.  *FIRST_P and
+   *LAST_P: whether S starts and ends the run.  */
+
+static struct face *
+enclosing_box (struct glyph_string *s, bool *first_p, bool *last_p)
+{
+  struct glyph *area = s->row->glyphs[s->area];
+  struct glyph *end = area + s->row->used[s->area];
+  struct glyph *last = (s->cmp || s->img
+			? s->first_glyph : s->first_glyph + s->nchars - 1);
+  int id = s->first_glyph->face_id;
+  struct glyph *a = s->first_glyph, *b = last;
+
+  *first_p = a == area || a[-1].face_id != id;
+  *last_p = b + 1 >= end || b[1].face_id != id;
+  while (a > area && a[-1].face_id == id)
+    a--;
+  while (b + 1 < end && b[1].face_id == id)
+    b++;
+  struct glyph *nb[2] = { a > area ? a - 1 : NULL, b + 1 < end ? b + 1 : NULL };
+  for (int side = SIDE_LEFT; side <= SIDE_RIGHT; side++)
+    if (nb[side])
+      {
+	struct face *e = FACE_FROM_ID_OR_NULL (s->f, nb[side]->face_id);
+	struct box_keys ek;
+	if (e && e->box != FACE_NO_BOX
+	    && !(box_keys (e, &ek) && ek.inside))
+	  return e;
+      }
+  return NULL;
+}
+
+/* The box of S with Glitnir's keys (nhwl_draw_glyph_string_box's hook);
+   false when S's face has none, and the stock box draws.  A box `:inside'
+   another (a key's cap in a button): the enclosing run's ring first, its
+   top and bottom lines running on across S (its sides only where the run
+   ends), then S's own ring, whole around S's run and inset by the
+   enclosing lines.  */
+
+bool
+glitnir_decor_draw_box (struct glyph_string *s, int left_x, int top_y,
+			int right_x, int bottom_y, int hwidth, int vwidth,
+			bool left_p, bool right_p, XRectangle *clip)
+{
+  struct box_keys k;
+  bool first_p, last_p;
+  struct face *e;
+
+  if (!nhwl_glitnir_active_p (s->f) || !box_keys (s->face, &k))
+    return false;
+  if (!k.inside || !(e = enclosing_box (s, &first_p, &last_p)))
+    return draw_box_face (s, s->face, &k, left_x, top_y, right_x, bottom_y,
+			  hwidth, vwidth, left_p, right_p, clip);
+
+  struct box_keys ek;
+  box_keys (e, &ek);
+  int ehw = eabs (e->box_horizontal_line_width);
+  int evw = eabs (e->box_vertical_line_width);
+  draw_box_face (s, e, &ek, left_x, top_y, right_x, bottom_y, ehw, evw,
+		 left_p, right_p, clip);
+  return draw_box_face (s, s->face, &k, left_x + (left_p ? evw : 0),
+			top_y + ehw, right_x - (right_p ? evw : 0),
+			bottom_y - ehw, hwidth, vwidth, first_p, last_p, clip);
 }
 
 /* Repaint the corners of the rounded run end that the glyph on S's row
