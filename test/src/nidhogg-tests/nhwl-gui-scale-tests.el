@@ -392,5 +392,40 @@ failed so, at (240 1440 900) on a 2880x1800 output)."
       (should (equal (list (frame-pixel-width) (frame-pixel-height)) (list w h))))
     (nhwl-gui-scale--fill (round (* 120 (glitnir-gui--scale))) w h)))
 
+;;;; A window whose monitor changes scale (mutter)
+
+(defun nhwl-gui-scale--gdctl (scale)
+  "Put the session's mutter monitor (Meta-0) at SCALE, as a display settings change does; non-nil when it took."
+  (and (executable-find "gdctl")
+       (eq 0 (call-process "gdctl" nil nil nil "set" "--logical-monitor" "--primary" "--monitor" "Meta-0"
+                           "--scale" (number-to-string scale)))))
+
+(defun nhwl-gui-scale--monitor-at (scale)
+  "The monitor to SCALE, then the frame at it and settled; return the frame's logical size (WIDTH HEIGHT)."
+  (should (nhwl-gui-scale--gdctl scale))
+  (should (nhwl-gui--wait (lambda () (nhwl-gui--pump) (redisplay t)
+                            (< (abs (- (frame-scale-factor) scale)) 0.001))
+                          10))
+  (dotimes (_ 5) (nhwl-gui--pump) (redisplay t))
+  (gui-runner-wait-settled)
+  (list (/ (frame-pixel-width) (frame-scale-factor)) (/ (frame-pixel-height) (frame-scale-factor))))
+
+(ert-deftest nhwl-gui/a-monitor-scale-change-keeps-the-window-logical-size ()
+  "The session's monitor goes 1.25 → 2 → 1.25 under a windowed frame (`gdctl', as GNOME's display settings or a move
+to a monitor of another scale): the window keeps its size on the screen, its logical size, within a pixel at each
+step.  It kept its device pixels instead, so at 2 it showed at 1.25/2 of its size."
+  (skip-unless (and (nhwl-gui--live-p) (equal (glitnir-gui--compositor) "mutter") (executable-find "gdctl")
+                    (< (abs (- (frame-scale-factor) 1.25)) 0.001)))
+  (nhwl-gui--windowed)
+  (let ((before (nhwl-gui-scale--monitor-at 1.25)) at-2 back)
+    (unwind-protect
+        (setq at-2 (nhwl-gui-scale--monitor-at 2)
+              back (nhwl-gui-scale--monitor-at 1.25))
+      (nhwl-gui-scale--gdctl 1.25))
+    (glitnir-gui--say "monitor-scale-size: at 1.25 %S, at 2 %S, back %S logical px" before at-2 back)
+    (should-not (seq-remove (lambda (size) (and size (<= (abs (- (car size) (car before))) 1)
+                                                (<= (abs (- (cadr size) (cadr before))) 1)))
+                            (list at-2 back)))))
+
 (provide 'nhwl-gui-scale-tests)
 ;;; nhwl-gui-scale-tests.el ends here

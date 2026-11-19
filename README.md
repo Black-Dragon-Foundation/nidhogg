@@ -179,8 +179,9 @@ nidhogg/build.sh (--container DISTRO | --host) [--prefix DIR] [--jobs N] [--memo
   everything asked so far, whatever else was committed. The GUI runner's settle waits on it. `:shown` follows once the
   compositor has also used each shown window's newest commit (its frame callback is done): a request sent before then
   may meet the compositor's old state. A state request that changes nothing (leaving a maximized state the window is
-  not in) is not sent. `glitnir-snapshot` is one
-  frame's backing, without its child frames. Test primitives: `glitnir--draw-count` (the commits of a tree that showed
+  not in) is not sent. `glitnir-snapshot` is a
+  root's tree as the compositor was given it (child frames and popups at their places); a popup frame's, such as an
+  open menu's, starts at the popup's own corner. Test primitives: `glitnir--draw-count` (the commits of a tree that showed
   something), `glitnir--stacking` (a root's child frames bottom to top), `glitnir--chrome` (the chrome the shell holds
   for a frame, in device pixels), `nhwl--frame-states` (the fullscreen and maximized states of the compositor's last
   configure, its answer to the frame's `fullscreen` parameter), `nhwl--hold-configures` (leave the compositor's
@@ -1446,6 +1447,15 @@ Bugs of upstream Emacs that touch no Nidhogg feature are fixed in their own flag
   sharing one cache) found it missing meanwhile, and its own load failed (`file-missing "Renaming"`). The load now
   opens a private copy and deletes it once it is open; the shared file never moves. Row:
   `fixes/two-emacs-reloading-one-eln-never-lose-it` (two processes reload one `.eln` 400 times each).
+- **A terminal made small keeps its windows on it** (`src/window.c`, `resize_frame_windows`). With many windows,
+  each with a mode line and a header or tab line, a terminal shrunk below their minimum sizes made the frame resize
+  try normal and then `ignore` minimum sizes; both count those lines, so both failed and the windows kept their old
+  sizes, larger than the frame. Redisplay wrote past the frame and Emacs aborted (`cmcheckmagic`) or crashed. A third
+  try with safe sizes (one line, two columns; the safe minimum of `window-min-size`) now fits, as
+  `adjust_frame_size` never makes a terminal frame smaller than them. Below even the safe sizes the frame stays at
+  them, larger than the terminal, as upstream: what lies past the terminal's last line or column is not shown until it
+  grows. Rows: `fixes/a-shrunk-terminal-keeps-every-window-on-it` (36 windows, 120x40 → 30x8 → 120x40, aborts
+  without the fix) and `fixes/below-the-safe-sizes-the-frame-stays-at-them` (12 windows in 8 lines: a 14-line frame).
 
 ## Reporting issues
 

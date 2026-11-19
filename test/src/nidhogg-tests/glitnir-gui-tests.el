@@ -2730,6 +2730,63 @@ that close the menu last; a C-g closes it a second after the last step in any ca
     (should (consp (car got)))
     (should (>= (nth 0 (car got)) (floor (nth 1 (car got)))))))
 
+(defun glitnir-gui--first (snap rgb)
+  "The first device pixel (X . Y) of SNAP, a raw snapshot, in colour RGB, row by row, or nil."
+  (catch 'found
+    (dotimes (y (nth 1 snap))
+      (dotimes (x (nth 0 snap))
+        (when (equal (glitnir-gui--pixel snap (list x y)) rgb) (throw 'found (cons x y)))))
+    nil))
+
+(defun glitnir-gui--differ-at (a at-a b at-b w h)
+  "The pixels of the W x H rectangles at AT-A of the raw snapshot A and at AT-B of B, each (X . Y), that differ; a
+pixel outside either picture differs."
+  (let ((n 0))
+    (dotimes (y h)
+      (dotimes (x w)
+        (let ((xa (+ (car at-a) x)) (ya (+ (cdr at-a) y)) (xb (+ (car at-b) x)) (yb (+ (cdr at-b) y)))
+          (unless (and (< -1 xa (nth 0 a)) (< -1 ya (nth 1 a)) (< -1 xb (nth 0 b)) (< -1 yb (nth 1 b))
+                       (equal (glitnir-gui--pixel a (list xa ya)) (glitnir-gui--pixel b (list xb yb))))
+            (cl-incf n)))))
+    n))
+
+(ert-deftest glitnir-snapshot/popup-frame-is-its-own-picture ()
+  "`glitnir-snapshot' of a popup frame (an open menu, a tree of its own) is that popup's picture from its own corner:
+its native area, found by the menu's background, is the same pixels as where the root's picture shows the menu.  Red
+first: the popup was placed at its offset in its toplevel's tree, so its own picture started about 41 px in and was
+cut off."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let ((menu-spec (get 'nhwl-menu 'face-defface-spec)))
+    (unwind-protect
+        (let* ((root (selected-frame))
+               (got (progn
+                      (face-spec-set 'nhwl-menu '((t :background "#0000ff" :foreground "#ffffff")) 'face-defface-spec)
+                      (glitnir-gui--menu-steps
+                       '("M" ("P" ("One" . 1) ("Two" . 2) ("Three" . 3)))
+                       (list (cons 0.5 (lambda ()
+                                         (let* ((f (glitnir-gui--menu-frame 0))
+                                                (whole (progn (redisplay t) (gui-runner-wait-settled)
+                                                              (glitnir-snapshot root 'raw)))
+                                                (own (glitnir-snapshot f 'raw))
+                                                (in-whole (glitnir-gui--first whole '(0 0 255)))
+                                                (in-own (glitnir-gui--first own '(0 0 255)))
+                                                ;; the native area less 2 px all round (its rounded corners blend
+                                                ;; over what lies beneath)
+                                                (w (- (frame-pixel-width f) 4)) (h (- (frame-pixel-height f) 4)))
+                                           (prog1 (list :whole in-whole :own in-own :size (list (nth 0 own) (nth 1 own))
+                                                        :differ (and in-whole in-own
+                                                                     (glitnir-gui--differ-at
+                                                                      whole (cons (+ 2 (car in-whole)) (+ 2 (cdr in-whole)))
+                                                                      own (cons (+ 2 (car in-own)) (+ 2 (cdr in-own)))
+                                                                      w h)))
+                                             (push ?\C-g unread-command-events))))))))))
+          (ert-info ((format "%S" got))
+            (should (plist-get (car got) :whole))
+            (should (plist-get (car got) :own))
+            (should (equal 0 (plist-get (car got) :differ)))))
+      (face-spec-set 'nhwl-menu menu-spec 'face-defface-spec))))
+
 (ert-deftest nhwl-menu/rows-are-the-row-height ()
   "With `nhwl-menu-row-height' 30 every item row is 30 logical pixels tall."
   (skip-unless (featurep 'nidhogg-wayland))
@@ -2786,6 +2843,60 @@ least width of 223, rows 27 tall): no strip past the rows' right end or below th
                                      (push ?\C-g unread-command-events)))))))))
     (should (consp (car got)))
     (should (equal (nth 1 (car got)) (nth 0 (car got))))))
+
+(defvar nhwl-menu-selection-inset)
+(defvar nhwl-menu-selection-radius)
+(defvar nhwl-menu-row-padding)
+
+(ert-deftest nhwl-menu/selection-is-an-inset-rounded-block ()
+  "With `nhwl-menu-selection-inset' 4 and `nhwl-menu-selection-radius' 6, the selected row is filled from 4 logical
+pixels in to 4 short of the right edge: the inset shows the menu's own background, the middle the selection's."
+  (skip-unless (featurep 'nidhogg-wayland))
+  (require 'nhwl-menu)
+  (let ((menu-spec (get 'nhwl-menu 'face-defface-spec))
+        (sel-spec (get 'nhwl-menu-selected 'face-defface-spec)))
+    (unwind-protect
+        (let* ((nhwl-menu-selection-inset 4)
+               (nhwl-menu-selection-radius 6)
+               (nhwl-menu-row-height 30)
+               (nhwl-menu-row-padding '(40 . 40))
+               (got (progn
+                      (face-spec-set 'nhwl-menu '((t :background "#0000ff" :foreground "#ffffff")) 'face-defface-spec)
+                      (face-spec-set 'nhwl-menu-selected '((t :background "#ff0000")) 'face-defface-spec)
+                      (glitnir-gui--menu-steps
+                       '("M" ("P" ("One" . 1) ("Two" . 2)))
+                       (list (cons 0.5 (lambda () (push 'down unread-command-events) t))
+                             (cons 0.5 (lambda ()
+                                         (let* ((f (glitnir-gui--menu-frame 0))
+                                                (w (frame-root-window f))
+                                                (s (frame-scale-factor f))
+                                                (y (with-current-buffer (window-buffer w)
+                                                     (save-excursion
+                                                       (goto-char (point-min)) (forward-line 2)   ; title, separator, One
+                                                       (+ (cdr (posn-x-y (posn-at-point (point) w)))
+                                                          (round (* 15 s))))))
+                                                (snap (progn (redisplay t) (gui-runner-wait-settled)
+                                                             (glitnir-snapshot nil 'raw)))
+                                                (width (frame-pixel-width f))
+                                                ;; the root's picture, which holds the menu (a child frame's own
+                                                ;; picture starts at an offset and is cut): its first pixel in the
+                                                ;; menu's background is the menu's corner
+                                                (origin (catch 'found
+                                                          (dotimes (py (nth 1 snap))
+                                                            (dotimes (px (nth 0 snap))
+                                                              (when (equal (glitnir-gui--pixel snap (list px py)) '(0 0 255))
+                                                                (throw 'found (cons px py)))))
+                                                          (cons 0 0)))
+                                                (at (lambda (x) (glitnir-gui--pixel
+                                                                 snap (list (min (1- (nth 0 snap)) (+ (car origin) x))
+                                                                            (min (1- (nth 1 snap)) (+ (cdr origin) y)))))))
+                                           (prog1 (list (funcall at 1) (funcall at (round (* 20 s))) (funcall at (- width 2))
+                                                        :origin origin :snap (list (nth 0 snap) (nth 1 snap)))
+                                             (push ?\C-g unread-command-events))))))))))
+          (should (equal (list '((0 0 255) (255 0 0) (0 0 255)) (nth 1 got))
+                         (list (seq-take (nth 1 got) 3) (nth 1 got)))))
+      (face-spec-set 'nhwl-menu menu-spec 'face-defface-spec)
+      (face-spec-set 'nhwl-menu-selected sel-spec 'face-defface-spec))))
 
 (ert-deftest nhwl-menu/tall-menu-scrolls-at-75-percent ()
   "A menu of 100 items is at most 0.75 of its frame's height; End selects the last item and keeps it in view."

@@ -231,7 +231,10 @@ DEFUN ("glitnir-snapshot", Fglitnir_snapshot, Sglitnir_snapshot, 1, 2, 0,
        doc: /* Return the picture of FRAME's root frame.
 The whole tree as the compositor was given it: the root, its visible child
 frames and popups at their places and in their stacking, with their chrome,
-shadows and alpha, inside the root's surface.  With `glitnir-enable' nil,
+shadows and alpha, inside the root's surface.  A popup frame (an open
+menu) is a tree of its own: its picture is the popup's surface from its
+own corner, with the popups hanging from it, the same pixels the
+toplevel's picture shows there.  With `glitnir-enable' nil,
 the frames' own pixels: no chrome, no shadows, no scene.
 FORMAT is `png' (the default; the value is a unibyte string holding a PNG)
 or `raw' (the value is (WIDTH HEIGHT BYTES), BYTES a unibyte string of
