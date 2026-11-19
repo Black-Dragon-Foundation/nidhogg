@@ -1119,8 +1119,16 @@ impl Minimaps {
                 if row != h.row {
                     h.row = row;
                     h.dwell_at = Some(now + DWELL_NS);
+                    // a drag step centres the row; a Shift selection extends to the row's own line
+                    let select = h.select;
                     if h.drag
-                        && let Some(p) = row.and_then(|v| start_pos(&g, v))
+                        && let Some(p) = row.and_then(|v| {
+                            if select {
+                                row_pos(&g, v)
+                            } else {
+                                start_pos(&g, v)
+                            }
+                        })
                     {
                         let code = if h.select {
                             NHG_MINIMAP_SELECT_EXTEND
@@ -1203,7 +1211,12 @@ impl Minimaps {
                 continue;
             }
             r.swallow = true;
-            let at = h.row.and_then(|v| start_pos(&g, v));
+            // a click centres the row; a Shift selection starts or ends at the row's own line
+            let at = if (left && press && shift) || (left && !press && h.select) {
+                h.row.and_then(|v| row_pos(&g, v))
+            } else {
+                h.row.and_then(|v| start_pos(&g, v))
+            };
             if left && press {
                 h.drag = true;
                 h.select = shift;
@@ -1940,6 +1953,15 @@ fn shades(
     })
     .flatten()
     .unwrap_or_default()
+}
+
+/// The start of row `row`'s own line (a Shift selection's end there: no scroll).
+fn row_pos(g: &Geom, row: u64) -> Option<u64> {
+    if let Some(d) = g.density {
+        let f = row as f64 / g.rows.total.max(1) as f64;
+        return Some(d.pos_of(f).max(d.begv));
+    }
+    pos_of_row(g.key, g.rows.first, row)
 }
 
 /// The window start that puts row `row` in the middle of the window (a click or a drag step there).
