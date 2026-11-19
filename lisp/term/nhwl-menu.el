@@ -89,6 +89,20 @@ tall, inset from either end by half its height."
   :type '(choice (const :tag "One line" nil) natnum)
   :group 'nhwl-menu)
 
+(defcustom nhwl-menu-selection-inset nil
+  "How far the selected row's fill stays from the menu's sides, in logical pixels.
+Nil fills the whole row.  A number draws the fill as a block with
+`nhwl-menu-selection-radius' corners where Glitnir draws the menu
+\(`glitnir-blocks'), and the whole row elsewhere."
+  :type '(choice (const :tag "Whole row" nil) natnum)
+  :group 'nhwl-menu)
+
+(defcustom nhwl-menu-selection-radius 0
+  "The corner radius of the selected row's block, in logical pixels.
+See `nhwl-menu-selection-inset'."
+  :type 'natnum
+  :group 'nhwl-menu)
+
 (defcustom nhwl-menu-row-padding '(0 . 0)
   "The space before and after each row's text, (LEFT . RIGHT) in logical pixels.
 Zero leaves one space character."
@@ -345,6 +359,9 @@ item, and a cancelled menu (PATH nil) nil."
 (defvar-local nhwl-menu--rows nil
   "The vector of the rows drawn in this menu buffer.")
 
+(defvar-local nhwl-menu--width nil
+  "The pixel width of this menu buffer's rows.")
+
 (defvar-local nhwl-menu--index nil
   "The index of the selected row of this menu buffer, or nil.")
 
@@ -444,6 +461,7 @@ and an item row is `nhwl-menu-row-height' tall."
            (natural (+ pad-l mark-w label-w gap key-w arrow-w pad-r))
            (width (max natural (nhwl-menu--px nhwl-menu-min-width)))
            (keys-end (- width pad-r arrow-w)))
+      (setq nhwl-menu--width width)
       (mapc
        (lambda (row)
          (unless first (insert (if tiny (propertize "\n" 'face '(:height 1)) "\n")))
@@ -525,16 +543,46 @@ The row's help, if it has any, goes to the echo area."
                 (let ((message-log-max nil)) (message "%s" help)))
           (nhwl-menu--help-shown (setq nhwl-menu--help-shown nil)
                                  (message nil))))
-  (if index
-      (save-excursion
-        (goto-char (point-min))
-        (forward-line index)
-        (move-overlay nhwl-menu--overlay (line-beginning-position)
-                      (line-end-position))
-        ;; the window's point on the row: redisplay keeps it in view
-        (let ((window (get-buffer-window (current-buffer) t)))
-          (when window (set-window-point window (point)))))
-    (move-overlay nhwl-menu--overlay 1 1)))
+  (let ((window (get-buffer-window (current-buffer) t)))
+    (if index
+        (save-excursion
+          (goto-char (point-min))
+          (forward-line index)
+          (nhwl-menu--paint-selection window (line-beginning-position)
+                                      (line-end-position))
+          ;; the window's point on the row: redisplay keeps it in view
+          (when window (set-window-point window (point))))
+      (nhwl-menu--paint-selection window nil nil))))
+
+(declare-function glitnir-active-p "nidhogg-glitnir.c" (&optional frame))
+
+(defun nhwl-menu--paint-selection (window beg end)
+  "Show the selection over BEG..END of the menu buffer in WINDOW, none for nil BEG.
+With `nhwl-menu-selection-inset' and Glitnir drawing WINDOW's frame, a
+rounded `row' block (`glitnir-blocks') in the background of
+`nhwl-menu-selected', inset from either side, under an overlay that
+gives only its foreground; else the overlay covers the row in
+`nhwl-menu-selected'."
+  (let ((fill (and beg window nhwl-menu-selection-inset
+                   (fboundp 'glitnir-active-p)
+                   (glitnir-active-p (window-frame window))
+                   (face-background 'nhwl-menu-selected nil t))))
+    (move-overlay nhwl-menu--overlay (or beg 1) (or end 1))
+    (overlay-put nhwl-menu--overlay 'face
+                 (if fill
+                     (let ((fg (face-foreground 'nhwl-menu-selected nil t)))
+                       (and fg (list :foreground fg)))
+                   'nhwl-menu-selected))
+    (when window
+      (let ((spec (and fill
+                       (let ((inset (nhwl-menu--px nhwl-menu-selection-inset)))
+                         `((row ,beg ,end :x0 ,inset
+                                :x1 ,(- (or nhwl-menu--width (window-body-width window t))
+                                        inset)
+                                :radius ,(nhwl-menu--px nhwl-menu-selection-radius)
+                                :fill ,fill))))))
+        (unless (equal spec (window-parameter window 'glitnir-blocks))
+          (set-window-parameter window 'glitnir-blocks spec))))))
 
 (defun nhwl-menu--next (from step test)
   "The index of the first row after FROM in direction STEP that passes TEST.
@@ -646,11 +694,19 @@ With CENTER the frame is centred on the point of ANCHOR."
             (cons (cons depth frame) (assq-delete-all depth nhwl-menu--frames))))
     (let ((window (frame-root-window frame)))
       (set-window-buffer window buffer)
+      ;; a block of the menu this frame showed before
+      (set-window-parameter window 'glitnir-blocks nil)
       (set-window-point window 1)
       (set-window-start window 1)
       (set-window-fringes window 0 0)
       (set-window-margins window 0 0))
     (modify-frame-parameters frame nhwl-menu-frame-parameters)
+    ;; the frame's own background is the menu's: Glitnir fills a row
+    ;; block beneath the glyphs that show the frame's background, which
+    ;; the buffer's remapped `default' must then be
+    (let ((bg (face-background 'nhwl-menu nil t)))
+      (when (and bg (not (equal bg (frame-parameter frame 'background-color))))
+        (set-frame-parameter frame 'background-color bg)))
     ;; to the pixel: rounded to the frame's characters, a menu in a
     ;; proportional font gets a strip past its rows
     (let ((frame-resize-pixelwise t)) (fit-frame-to-buffer frame))

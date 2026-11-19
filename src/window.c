@@ -5163,6 +5163,26 @@ resize_frame_windows (struct frame *f, int size, bool horflag)
 	      window_resize_apply (r, horflag);
 	      window_pixel_to_total (r->frame, horflag ? Qt : Qnil);
 	    }
+#ifdef HAVE_NIDHOGG_FIXES
+	  else
+	    {
+	      /* Finally, try with "safe" minimum sizes: a window's mode,
+		 header and tab lines no longer count.  adjust_frame_size
+		 never makes the frame smaller than these (it asks
+		 `frame-windows-min-size' with `safe' on a terminal), so
+		 this fits.  Without it the windows kept their old sizes,
+		 larger than the frame, and redisplay wrote past the
+		 frame: on a terminal made small with many windows, Emacs
+		 aborted in cmcheckmagic or crashed.  */
+	      resize_root_window (root, delta, horflag ? Qt : Qnil, Qsafe, Qt);
+	      if (window_resize_check (r, horflag)
+		  && new_pixel_size == XFIXNUM (r->new_pixel))
+		{
+		  window_resize_apply (r, horflag);
+		  window_pixel_to_total (r->frame, horflag ? Qt : Qnil);
+		}
+	    }
+#endif
 	}
     }
 
