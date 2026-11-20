@@ -618,7 +618,10 @@ theme's generation would change it on every theme change."
 (defun glitnir--ruler-vector (spec frame)
   "Return ruler SPEC as the vector C reads, for FRAME.
 SPEC is a plist: `:width' (the strip's width), `:right' (its gap from
-the window's right inner edge), `:height' (a mark's least height), all
+the window's right inner edge), `:left' (non-nil: the strip is at the
+window's left inner edge instead, `:right' its gap from it; on a
+terminal the left margin's first column, the fold arrows then in its
+second), `:height' (a mark's least height), all
 device pixels; `:band' (the colour of the band over the part of the
 buffer the window shows: a face, whose foreground is used, a colour
 name, or (FACE-OR-COLOUR . OPACITY)); `:thumb-inset' (the band's
@@ -631,14 +634,14 @@ buffer position (a marker or an integer), the x range of its lane in
 the strip, its colour, as for `:band', and optionally its own height,
 corner radius and a position it runs down to (a run of changed lines).  The vector is [WIDTH RIGHT HEIGHT BAND-RGB BAND-OPACITY
 FLAGS INSET RADIUS FROM LENGTH TOTAL MARK...], FLAGS 1 for
-`:hide-short', TOTAL 0 without a span, each MARK [POS X0 X1 RGB OPACITY
+`:hide-short' and 2 for `:left', TOTAL 0 without a span, each MARK [POS X0 X1 RGB OPACITY
 HEIGHT RADIUS END] (HEIGHT 0: the strip's, END nil for none), RGB -1 for
 none."
   (let ((band (glitnir--ruler-colour (plist-get spec :band) frame))
         (span (plist-get spec :span)))
     (vconcat (vector (or (plist-get spec :width) 0) (or (plist-get spec :right) 0) (or (plist-get spec :height) 1)
                      (if band (car band) -1) (if band (cdr band) 0)
-                     (if (plist-get spec :hide-short) 1 0)
+                     (logior (if (plist-get spec :hide-short) 1 0) (if (plist-get spec :left) 2 0))
                      (or (plist-get spec :thumb-inset) 0) (or (plist-get spec :radius) 0)
                      (or (nth 0 span) 0) (or (nth 1 span) 0) (or (nth 2 span) 0))
              (mapcar (lambda (m)

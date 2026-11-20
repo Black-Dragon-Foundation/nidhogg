@@ -721,9 +721,13 @@ glitnir_tty_window (struct frame *f, struct window *w)
   XSETWINDOW (window, w);
   Lisp_Object r = Fwindow_parameter (window, Qglitnir__ruler);
   Lisp_Object a = Fwindow_parameter (window, Qglitnir__fold_arrows);
-  bool ruler = VECTORP (r) && ASIZE (r) >= 11 && w->right_margin_cols > 0;
+  /* A ruler with the left bit (2) of its FLAGS takes the left margin's
+     first column, and the fold arrows then its second.  */
+  bool left = VECTORP (r) && ASIZE (r) >= 11 && (glitnir_tty_int (r, 5, 0) & 2);
+  bool ruler = (VECTORP (r) && ASIZE (r) >= 11
+		&& (left ? w->left_margin_cols : w->right_margin_cols) > 0);
   bool arrows = (VECTORP (a) && ASIZE (a) >= 7 && glitnir_tty_int (a, 0, 0) > 0
-		 && w->left_margin_cols > 0);
+		 && w->left_margin_cols > (ruler && left ? 1 : 0));
 #ifdef HAVE_NIDHOGG_HISTORY
   arrows = arrows && nh_lines_ntracked;
 #else
@@ -745,7 +749,9 @@ glitnir_tty_window (struct frame *f, struct window *w)
   int last = (int) (r0->glyphs[RIGHT_MARGIN_AREA] - r0->glyphs[LEFT_MARGIN_AREA]
 		    + w->right_margin_cols - 1);
   int width = (int) (r0->glyphs[LAST_AREA] - r0->glyphs[LEFT_MARGIN_AREA]);
-  if (last >= width - (WINDOW_RIGHTMOST_P (w) ? 0 : 1))
+  if (left)
+    last = 0;
+  else if (last >= width - (WINDOW_RIGHTMOST_P (w) ? 0 : 1))
     ruler = false;
 
   int thumb_face = 0, track_face = 0;
@@ -849,7 +855,7 @@ glitnir_tty_window (struct frame *f, struct window *w)
 	  bool folded = (row->enabled_p && row->displays_text_p
 			 && !MATRIX_ROW_CONTINUATION_LINE_P (row)
 			 && nh_lines_folded_at (b, MATRIX_ROW_START_CHARPOS (row)));
-	  int x = m->matrix_x;
+	  int x = m->matrix_x + (ruler && left ? 1 : 0);
 	  if (folded)
 	    glitnir_tty_put (f, fr, wr, x, 0x25b8, folded_face);
 	  else if (x < fr->used[TEXT_AREA]

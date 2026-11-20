@@ -987,11 +987,26 @@ nhwl_bar_add (struct window *w, NhgRect clip, NhgRect rect, intmax_t rgb,
 /* The ruler vector's header: [WIDTH RIGHT HEIGHT BAND-RGB BAND-OPACITY
    FLAGS INSET RADIUS FROM LENGTH TOTAL], then its marks.  */
 enum { NHWL_RULER_HEAD = 11 };
-enum { NHWL_RULER_HIDE_SHORT = 1 };
+enum { NHWL_RULER_HIDE_SHORT = 1, NHWL_RULER_LEFT = 2 };
+
+/* The x of the strip WIDTH wide of leaf window W's ruler V: at the
+   window's right inner edge less V's RIGHT, or with FLAGS' left bit at
+   its left inner edge plus RIGHT (the minimap on the text's left).  */
+static int
+nhwl_ruler_x (struct window *w, Lisp_Object v, int width)
+{
+  int gap = nhwl_block_int (v, 1, 0);
+  if (ASIZE (v) > 5 && (nhwl_block_int (v, 5, 0) & NHWL_RULER_LEFT))
+    return (WINDOW_LEFT_EDGE_X (w) + WINDOW_LEFT_SCROLL_BAR_AREA_WIDTH (w)
+	    + gap);
+  return (WINDOW_RIGHT_EDGE_X (w) - WINDOW_RIGHT_DIVIDER_WIDTH (w)
+	  - WINDOW_RIGHT_SCROLL_BAR_AREA_WIDTH (w) - gap - width);
+}
 
 /* List the overview ruler V of leaf window W, whose text area spans
    TOP to TOP + HEIGHT: a strip WIDTH wide at the window's right inner
-   edge less RIGHT, standing for the whole of what the buffer shows.  It
+   edge less RIGHT (with FLAGS' left bit, its left inner edge plus
+   RIGHT), standing for the whole of what the buffer shows.  It
    is the window's scroll bar: the band (the thumb) over the part the
    window shows goes first, INSET in from either side of the strip with
    corners of RADIUS, then each mark at its position's fraction, at
@@ -1056,7 +1071,6 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
     return;
   struct buffer *b = XBUFFER (w->contents);
   int width = nhwl_block_int (v, 0, 0);
-  int right = nhwl_block_int (v, 1, 0);
   int least = max (1, (int) nhwl_block_int (v, 2, 1));
   intmax_t flags = nhwl_block_int (v, 5, 0);
   int inset = max (0, (int) nhwl_block_int (v, 6, 0));
@@ -1064,11 +1078,9 @@ nhwl_ruler_add (struct window *w, Lisp_Object v, int top, int height)
   intmax_t from = max (0, nhwl_block_int (v, 8, 0));
   intmax_t length = max (0, nhwl_block_int (v, 9, 0));
   intmax_t total = nhwl_block_int (v, 10, 0);
-  int x1 = (WINDOW_RIGHT_EDGE_X (w) - WINDOW_RIGHT_DIVIDER_WIDTH (w)
-	    - WINDOW_RIGHT_SCROLL_BAR_AREA_WIDTH (w) - right);
   if (width <= 0)
     return;
-  NhgRect strip = { x1 - width, top, width, height };
+  NhgRect strip = { nhwl_ruler_x (w, v, width), top, width, height };
   ptrdiff_t begv = BUF_BEGV (b), span = max (1, BUF_ZV (b) - begv);
   bool spanned = total > 0;
   if (spanned)
@@ -1300,10 +1312,7 @@ nhwl_minimap_add (struct window *w, Lisp_Object v, Lisp_Object a,
   if (VECTORP (r) && ASIZE (r) >= 2 && nhwl_block_int (r, 0, 0) > 0)
     {
       int width = nhwl_block_int (r, 0, 0);
-      int x1 = (WINDOW_RIGHT_EDGE_X (w) - WINDOW_RIGHT_DIVIDER_WIDTH (w)
-		- WINDOW_RIGHT_SCROLL_BAR_AREA_WIDTH (w)
-		- nhwl_block_int (r, 1, 0));
-      strip = (NhgRect) { x1 - width, clip.y, width, clip.h };
+      strip = (NhgRect) { nhwl_ruler_x (w, r, width), clip.y, width, clip.h };
     }
   if (nhwl_nminimaps == nhwl_minimaps_cap)
     nhwl_minimaps = xpalloc (nhwl_minimaps, &nhwl_minimaps_cap, 1, -1,

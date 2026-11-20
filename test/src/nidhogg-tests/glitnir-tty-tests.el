@@ -237,4 +237,84 @@ and a folded line gets a `▸' in the left margin."
       (kill-buffer buf)
       (delete-directory dir t))))
 
+;; A ruler on the left (`:left'): the left margin's first column, the fold arrow in its second.
+(ert-deftest glitnir-tty/a-left-ruler-is-the-left-margins-first-column ()
+  "With `:left' the ruler is the left margin's first column (its thumb and track there, none at the right edge), and a
+folded line's `▸' moves to the margin's second column."
+  (skip-unless (featurep 'glitnir-ruler))
+  (skip-unless (fboundp 'nidhogg-lines-set-hidden))
+  (skip-unless (file-exists-p (expand-file-name "e/eterm-direct" data-directory)))
+  (let* ((dir (make-temp-file "nh-gtty" t))
+         (ready (expand-file-name "ready" dir))
+         (state (expand-file-name "state" dir))
+         (step 0)
+         (form
+          `(progn
+             (setq display-hourglass nil)
+             (menu-bar-mode -1)
+             (set-terminal-coding-system 'utf-8)
+             (switch-to-buffer (get-buffer-create "t"))
+             (dotimes (i 200) (insert (format "line %03d\n" i)))
+             (goto-char 1)
+             (set-window-margins nil 2 0)
+             (set-window-parameter nil 'glitnir-ruler '(:left t :band "#00ff00"))
+             (defvar gtty-step 0)
+             (defun gtty-report ()
+               (redisplay)
+               (setq gtty-step (1+ gtty-step))
+               (write-region (prin1-to-string (list (window-start) (window-end nil t) (point-max)
+                                                    (window-body-height) 0 gtty-step))
+                             nil ,state nil 'silent))
+             (let ((m (make-sparse-keymap)))
+               (define-key m "s" (lambda () (interactive) (gtty-report)))
+               (define-key m "f" (lambda () (interactive)
+                                   (nidhogg-lines-enable nil t)
+                                   (nidhogg-lines-set-folds nil 0 '((91 145 1)))
+                                   (nidhogg-lines-set-hidden nil '((99 . 144)))
+                                   (overlay-put (make-overlay 99 144) 'invisible t)
+                                   (set-window-parameter nil 'glitnir-fold-arrows
+                                                         '(:mode always :folded "#ff00ff"))
+                                   (gtty-report)))
+               (push (list (cons t m)) emulation-mode-map-alists))
+             (run-with-timer 0.5 nil (lambda () (write-region "t" nil ,ready nil 'silent)))))
+         (buf (generate-new-buffer " *glitnir-tty*"))
+         (locale-coding-system 'utf-8))
+    (unwind-protect
+        (let ((press
+               (lambda (key)
+                 (setq step (1+ step))
+                 (with-current-buffer buf (term-send-raw-string key))
+                 (or (glitnir-tty-tests--wait
+                      (lambda () (let ((s (glitnir-tty-tests--read state))) (and (eql (nth 5 s) step) s)))
+                      10)
+                     (error "The child did not answer key %S" key)))))
+          (with-current-buffer buf
+            (term-mode)
+            (setq-local term-height 24 term-width 80)
+            (let ((term-term-name "eterm-direct"))
+              (term-exec buf "glitnir-tty" (expand-file-name invocation-name invocation-directory) nil
+                         (list "-nw" "-Q" "--eval" (prin1-to-string form))))
+            (term-char-mode))
+          (unless (glitnir-tty-tests--wait (lambda () (file-exists-p ready)) 30)
+            (error "The child's frame did not come up"))
+          (let* ((n (nth 3 (funcall press "s")))
+                 (col (lambda (x) (mapcar (lambda (y) (glitnir-tty-tests--kind (glitnir-tty-tests--cell buf y x)))
+                                          (number-sequence 0 (1- n))))))
+            (should (glitnir-tty-tests--wait (lambda () (memq 'thumb (funcall col 0))) 10))
+            (should (memq 'track (funcall col 0)))
+            (should-not (seq-some (lambda (k) (memq k '(thumb track))) (funcall col 79)))
+            ;; the text after the two margin columns
+            (should (string-match-p "\\`..line 000" (glitnir-tty-tests--text buf 0)))
+            (funcall press "f")
+            (should (glitnir-tty-tests--wait
+                     (lambda () (pcase (glitnir-tty-tests--cell buf 10 1)
+                                  (`(?▸ ,r ,g ,b) (and (> r 200) (> b 200) (< g 60)))))
+                     10))
+            ;; the ruler keeps its column on the folded row
+            (should (memq (glitnir-tty-tests--kind (glitnir-tty-tests--cell buf 10 0)) '(thumb track)))))
+      (let ((p (get-buffer-process buf)))
+        (when p (delete-process p)))
+      (kill-buffer buf)
+      (delete-directory dir t))))
+
 ;;; glitnir-tty-tests.el ends here

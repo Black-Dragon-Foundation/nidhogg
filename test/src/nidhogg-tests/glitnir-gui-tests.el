@@ -850,6 +850,30 @@ is cut by the rounding (its corner pixel is not the thumb's colour, the pixel tw
       (set-window-fringes w nil nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/a-left-ruler-is-at-the-windows-left-edge ()
+  "`:left': the strip is in the left fringe, `:right' in from the window's left inner edge, its thumb there; the right
+fringe has none of it."
+  (glitnir-gui--skip-unless-tree)
+  (let ((buf (glitnir-gui--text-buffer "*glitnir-ruler-left*" 1000)) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (set-window-buffer w buf)
+          (set-window-fringes w 16 16)
+          (set-window-start w 1)
+          (set-window-parameter w 'glitnir-ruler '(:width 12 :right 2 :height 4 :left t :band ("#0000ff" . 1)))
+          (pcase-let* ((snap (glitnir-gui--painted))
+                       (`(,left ,_ ,right ,_) (window-pixel-edges w))
+                       (`(,_ ,ty ,_ ,th) (window-inside-pixel-edges w))
+                       (x0 (+ left (window-scroll-bar-width w) 2))
+                       (blue (lambda (r g b) (and (< r 40) (< g 40) (> b 215)))))
+            (glitnir-gui--shot "ruler-left")
+            (should (equal (glitnir-gui--pixel snap (list (+ x0 6) (+ ty 4))) '(0 0 255)))
+            ;; the right fringe holds no thumb
+            (should (= 0 (glitnir-gui--count-where snap (list (- right 16) ty 16 (- th ty)) blue)))))
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (kill-buffer buf))))
+
 (ert-deftest glitnir-gui/a-ruler-mark-runs-to-its-end ()
   "A mark with an END (a run of changed lines) runs from its position down to END's: lines 1 to 500 of 1,000 fill the
 strip's top half in its lane, and nothing below."
