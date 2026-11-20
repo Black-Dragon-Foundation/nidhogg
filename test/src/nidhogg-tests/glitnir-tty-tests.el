@@ -240,7 +240,7 @@ and a folded line gets a `▸' in the left margin."
 ;; A ruler on the left (`:left'): the left margin's first column, the fold arrow in its second.
 (ert-deftest glitnir-tty/a-left-ruler-is-the-left-margins-first-column ()
   "With `:left' the ruler is the left margin's first column (its thumb and track there, none at the right edge), and a
-folded line's `▸' moves to the margin's second column."
+folded line's `▸' moves to the margin's second column.  `:hide-short' keeps it: 200 lines do not fit."
   (skip-unless (featurep 'glitnir-ruler))
   (skip-unless (fboundp 'nidhogg-lines-set-hidden))
   (skip-unless (file-exists-p (expand-file-name "e/eterm-direct" data-directory)))
@@ -257,7 +257,7 @@ folded line's `▸' moves to the margin's second column."
              (dotimes (i 200) (insert (format "line %03d\n" i)))
              (goto-char 1)
              (set-window-margins nil 2 0)
-             (set-window-parameter nil 'glitnir-ruler '(:left t :band "#00ff00"))
+             (set-window-parameter nil 'glitnir-ruler '(:left t :hide-short t :band "#00ff00"))
              (defvar gtty-step 0)
              (defun gtty-report ()
                (redisplay)

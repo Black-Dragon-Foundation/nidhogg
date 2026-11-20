@@ -768,10 +768,33 @@ glitnir_tty_window (struct frame *f, struct window *w)
       spanned = total > 0;
       if (spanned)
 	from = min (from, total), length = min (length, total - from);
+      /* What the rows show, from the matrix drawn (as the GUI's
+	 nhwl_shown): w->window_end_pos is not yet this redisplay's when
+	 the frame matrix is built, and a stale one read as the buffer's
+	 end hid a long buffer's column (hide-short).  */
       ptrdiff_t start = clip_to_bounds (BUF_BEG (b), marker_position (w->start),
 					BUF_Z (b));
-      ptrdiff_t end = BUF_Z (b) - w->window_end_pos;
-      hidden = ((flags & 1) && start <= begv && end >= BUF_ZV (b)
+      ptrdiff_t end = start;
+      bool at_zv = false;
+      for (int y = 0; y < n; y++)
+	{
+	  /* the row as it will show: the desired one when it was built,
+	     else the current one */
+	  struct glyph_row *row = MATRIX_ROW (dm, first + y);
+	  if (!w->must_be_updated_p || !row->enabled_p)
+	    row = MATRIX_ROW (cm, first + y);
+	  if (!row->enabled_p)
+	    break;
+	  if (y == 0)
+	    start = MATRIX_ROW_START_CHARPOS (row);
+	  end = MATRIX_ROW_END_CHARPOS (row);
+	  if (row->ends_at_zv_p || end >= BUF_ZV (b))
+	    {
+	      at_zv = true;
+	      break;
+	    }
+	}
+      hidden = ((flags & 1) && start <= begv && at_zv
 		&& (!spanned || (from == 0 && length >= total)));
 #define GLITNIR_TTY_ROW(pos)						\
       ((int) ((spanned							\
