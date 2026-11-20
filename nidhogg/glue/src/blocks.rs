@@ -179,17 +179,25 @@ pub fn plan(
             block.open_top = false;
             block.open_bottom = false;
         }
-        // a window's strip is a layer of its own: one clip a layer
-        let k = if b.flags & NHG_BLOCK_STRIP != 0 {
-            b.seq | STRIP_TAG
-        } else {
-            b.seq
-        };
+        // a window's strip is a layer of its own: one clip a layer.  Its bars come with their strips' clips (the
+        // scroll bar's, the horizontal strip's), each bar already inside its own, so the layer's clip covers them all:
+        // the last one's alone cut the scroll bar away under a horizontal strip
+        let strip = b.flags & NHG_BLOCK_STRIP != 0;
+        let k = if strip { b.seq | STRIP_TAG } else { b.seq };
         let e = out.entry(k).or_insert_with(|| (clip, Vec::new()));
-        e.0 = clip;
+        e.0 = if strip { cover(&e.0, &clip) } else { clip };
         e.1.push(block);
     }
     out
+}
+
+/// The smallest rectangle covering A and B.
+fn cover(a: &Rect, b: &Rect) -> Rect {
+    let x0 = a.x.min(b.x);
+    let y0 = a.y.min(b.y);
+    let x1 = (a.x + a.w).max(b.x + b.w);
+    let y1 = (a.y + a.h).max(b.y + b.h);
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
 /// Frame `key` is published with the blocks `blocks`: each window with blocks gets (or keeps) its block layer, those

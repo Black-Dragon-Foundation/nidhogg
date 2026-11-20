@@ -160,6 +160,55 @@ mod blocks {
         assert_eq!(s.blocks[0].kind, BlockKind::Bar);
     }
 
+    /// A window's scroll bar strip and its horizontal strip (both strip bars, each with its own clip) share the
+    /// window's strip layer: its clip covers both, so the later one's clip never cuts the other's bars away.
+    #[test]
+    fn the_strip_layer_covers_every_strip_bars_clip() {
+        use nhglue::backing::STRIP_TAG;
+        let mut b = Backings::default();
+        let (key, _v) = frame(&mut b, 120);
+        let ruler = NhgRect {
+            x: 200,
+            y: ROW,
+            w: 12,
+            h: 100,
+        };
+        let hstrip = NhgRect {
+            x: 10,
+            y: ROW + 90,
+            w: 180,
+            h: 10,
+        };
+        let bar = |clip: NhgRect, rect: NhgRect| NhgBlock {
+            clip,
+            rect,
+            ring_rgb: 0x00_00ff,
+            ..block(clip, NHG_BLOCK_BAR | NHG_BLOCK_STRIP)
+        };
+        let thumb = NhgRect {
+            x: 203,
+            y: ROW + 10,
+            w: 6,
+            h: 30,
+        };
+        let hthumb = NhgRect {
+            x: 40,
+            y: ROW + 93,
+            w: 50,
+            h: 4,
+        };
+        assert_eq!(
+            sync_at(&mut b, key, &[bar(ruler, thumb), bar(hstrip, hthumb)]),
+            Ok(1)
+        );
+        let (_, c) = commit(key);
+        let s = placed(&c, block_id(SEQ | STRIP_TAG)).expect("the strip's layer");
+        assert_eq!(s.blocks.len(), 2);
+        for r in [at(ruler), at(hstrip)] {
+            assert_eq!(s.rect.intersect(&r), r, "{:?} within {:?}", r, s.rect);
+        }
+    }
+
     /// A window with a ring and a ruler: the ruler's strip bars are a block layer of their own (`seq | STRIP_TAG`), whose
     /// clip is the strip, and the ring keeps its layer at the text area; neither cuts the other.
     #[test]

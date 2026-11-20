@@ -794,6 +794,34 @@ way, so nothing reflows), and no Lisp decides it: the same parameter, only the t
       (set-window-fringes w nil nil)
       (kill-buffer buf))))
 
+(ert-deftest glitnir-gui/the-ruler-shows-over-cut-lines ()
+  "With `:hide-short' and `truncate-lines', a buffer of 1,000 lines wider than the window runs past it: the thumb shows,
+with the horizontal strip as an editor has it and without (the two strips' bars share the window's strip layer, whose
+clip once was the last bar's, the horizontal strip's, cutting the scroll bar away)."
+  (glitnir-gui--skip-unless-tree "nhmac-ruler-hides-when-the-text-fits")
+  (let ((buf (get-buffer-create "*glitnir-ruler-cut*")) (w (selected-window)))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (erase-buffer)
+            (dotimes (i 1000) (insert (format "%5d %s\n" i (make-string 600 ?x))))
+            (setq truncate-lines t)
+            (goto-char 1))
+          (set-window-buffer w buf)
+          (set-window-fringes w nil 16)
+          (set-window-start w 1)
+          (set-window-parameter w 'glitnir-ruler
+                                '(:width 12 :right 2 :height 4 :hide-short t :band ("#0000ff" . 1)))
+          (ert-info ("without the horizontal strip")
+            (should (glitnir-gui--strip-has (glitnir-gui--painted) w '(0 0 255))))
+          (set-window-parameter w 'glitnir-hstrip (glitnir-gui--hstrip-spec))
+          (ert-info ("with the horizontal strip")
+            (should (glitnir-gui--strip-has (glitnir-gui--painted) w '(0 0 255)))))
+      (set-window-parameter w 'glitnir-hstrip nil)
+      (set-window-parameter w 'glitnir-ruler nil)
+      (set-window-fringes w nil nil)
+      (kill-buffer buf))))
+
 (ert-deftest glitnir-gui/the-ruler-hides-in-a-window-fitted-to-its-lines ()
   "A window whose body is exactly its buffer's lines (a header fitted to its text, the final newline's empty line
 below the last row) shows all there is: with `:hide-short' the strip draws nothing."
