@@ -317,4 +317,66 @@ folded line's `▸' moves to the margin's second column.  `:hide-short' keeps it
       (kill-buffer buf)
       (delete-directory dir t))))
 
+;; A window with a tab line: the ruler's column is read from a text row, not from the tab line's.
+(ert-deftest glitnir-tty/a-ruler-shows-in-a-window-with-a-tab-line ()
+  "In a window with a tab line (as drgnx's editors have) the ruler's column is drawn all the same: its thumb and
+track on the text rows below the tab line, none on the tab line itself.  The column's margin pointers and width were
+read from the window matrix's first row, the tab line's, whose margin areas are not a text row's."
+  (skip-unless (featurep 'glitnir-ruler))
+  (skip-unless (file-exists-p (expand-file-name "e/eterm-direct" data-directory)))
+  (let* ((dir (make-temp-file "nh-gtty" t))
+         (ready (expand-file-name "ready" dir))
+         (state (expand-file-name "state" dir))
+         (step 0)
+         (form
+          `(progn
+             (setq display-hourglass nil)
+             (menu-bar-mode -1)
+             (set-terminal-coding-system 'utf-8)
+             (switch-to-buffer (get-buffer-create "t"))
+             (setq-local tab-line-format " a tab line")
+             (dotimes (i 200) (insert (format "line %03d\n" i)))
+             (goto-char 1)
+             (set-window-margins nil 0 1)
+             (set-window-parameter nil 'glitnir-ruler '(:hide-short t :band "#00ff00"))
+             (defvar gtty-step 0)
+             (defun gtty-report ()
+               (redisplay)
+               (setq gtty-step (1+ gtty-step))
+               (write-region (prin1-to-string (list (window-start) (window-end nil t) (point-max)
+                                                    (window-body-height) 0 gtty-step))
+                             nil ,state nil 'silent))
+             (let ((m (make-sparse-keymap)))
+               (define-key m "s" (lambda () (interactive) (gtty-report)))
+               (push (list (cons t m)) emulation-mode-map-alists))
+             (run-with-timer 0.5 nil (lambda () (write-region "t" nil ,ready nil 'silent)))))
+         (buf (generate-new-buffer " *glitnir-tty*"))
+         (locale-coding-system 'utf-8))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (term-mode)
+            (setq-local term-height 24 term-width 80)
+            (let ((term-term-name "eterm-direct"))
+              (term-exec buf "glitnir-tty" (expand-file-name invocation-name invocation-directory) nil
+                         (list "-nw" "-Q" "--eval" (prin1-to-string form))))
+            (term-char-mode))
+          (unless (glitnir-tty-tests--wait (lambda () (file-exists-p ready)) 30)
+            (error "The child's frame did not come up"))
+          (with-current-buffer buf (term-send-raw-string "s"))
+          (let* ((s (glitnir-tty-tests--wait
+                     (lambda () (let ((s (glitnir-tty-tests--read state))) (and (eql (nth 5 s) 1) s))) 10))
+                 (n (nth 3 s))
+                 (col (lambda () (mapcar (lambda (y) (glitnir-tty-tests--kind (glitnir-tty-tests--cell buf (1+ y) 79)))
+                                         (number-sequence 0 (1- n))))))
+            (should (string-prefix-p " a tab line" (glitnir-tty-tests--text buf 0)))
+            ;; the tab line is row 0 of the screen, the text rows follow it
+            (should (glitnir-tty-tests--wait (lambda () (memq 'thumb (funcall col))) 10))
+            (should (memq 'track (funcall col)))
+            (should (string-prefix-p "line 000" (glitnir-tty-tests--text buf 1)))))
+      (let ((p (get-buffer-process buf)))
+        (when p (delete-process p)))
+      (kill-buffer buf)
+      (delete-directory dir t))))
+
 ;;; glitnir-tty-tests.el ends here

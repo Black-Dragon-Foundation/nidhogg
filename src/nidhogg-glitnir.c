@@ -738,12 +738,14 @@ glitnir_tty_window (struct frame *f, struct window *w)
   struct buffer *b = XBUFFER (w->contents);
   struct glyph_matrix *dm = w->desired_matrix, *cm = w->current_matrix;
   struct glyph_matrix *m = w->must_be_updated_p ? dm : cm;
-  struct glyph_row *r0 = m->rows;
   int first = m->tab_line_p + m->header_line_p;
   int n = min (window_box_height (w) / max (1, FRAME_LINE_HEIGHT (f)),
 	       m->nrows - first);
   if (n <= 0 || m->nrows <= 0)
     return;
+  /* The first text row, not the matrix's first: a tab line's or header
+     line's row has no margin areas to take the pointers from.  */
+  struct glyph_row *r0 = m->rows + first;
   /* The columns in the window's rows: its right margin's last, its left
      margin's first; never a vertical border's.  */
   int last = (int) (r0->glyphs[RIGHT_MARGIN_AREA] - r0->glyphs[LEFT_MARGIN_AREA]
