@@ -972,6 +972,12 @@ point does not move."
 
 (define-key special-event-map [glitnir-hstrip] #'glitnir-hstrip-event)
 
+;; Wrapping at a column: `nidhogg-wrap-column' (C, buffer-local) moves
+;; where a wrapped line continues; a change redisplays the buffer's
+;; windows, as `line-spacing' does.
+(when (boundp 'nidhogg-wrap-column)
+  (add-variable-watcher 'nidhogg-wrap-column (symbol-function 'set-buffer-redisplay)))
+
 (defvar glitnir-minimap-functions nil
   "Functions called with KIND, WINDOW and POS for each minimap event.
 KIND is `click' or `drag' (WINDOW was scrolled to start at POS, the

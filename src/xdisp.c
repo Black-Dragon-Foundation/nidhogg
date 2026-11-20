@@ -3242,6 +3242,27 @@ CHECK_WINDOW_END (struct window *w)
 		       Iterator initialization
  ***********************************************************************/
 
+#ifdef HAVE_GLITNIR
+/* The x at which IT wraps a line for `nidhogg-wrap-column' N: LNUM_PX
+   (the line numbers' width) plus N widths of a space in IT's base face,
+   from the first visible x; 0 when the lines are cut, N is not a
+   positive number, or the column is at or past last_visible_x (then
+   the line wraps at the window's edge).  */
+static int
+nidhogg_wrap_x (struct it *it, int lnum_px)
+{
+  if (it->line_wrap == TRUNCATE || !FIXNUMP (Vnidhogg_wrap_column)
+      || XFIXNUM (Vnidhogg_wrap_column) <= 0)
+    return 0;
+  struct face *face = FACE_FROM_ID_OR_NULL (it->f, it->base_face_id);
+  int col = (face && face->font && face->font->space_width > 0
+	     ? face->font->space_width : FRAME_COLUMN_WIDTH (it->f));
+  intmax_t x = (it->first_visible_x + (intmax_t) lnum_px
+		+ (intmax_t) XFIXNUM (Vnidhogg_wrap_column) * col);
+  return x < it->last_visible_x ? x : 0;
+}
+
+#endif
 /* Initialize IT for displaying current_buffer in window W, starting
    at character position CHARPOS.  CHARPOS < 0 means that no buffer
    position is specified which is useful when the iterator is assigned
@@ -3637,6 +3658,13 @@ init_iterator (struct it *it, struct window *w,
       reseat (it, it->current.pos, true);
     }
 
+#ifdef HAVE_GLITNIR
+  /* Wrapping at `nidhogg-wrap-column', the buffer's text only; the line
+     numbers' width is added where it is known
+     (maybe_produce_line_number).  */
+  it->wrap_x = (base_face_id == DEFAULT_FACE_ID && it->w
+		? nidhogg_wrap_x (it, 0) : 0);
+#endif
   CHECK_IT (it);
 }
 
@@ -10508,10 +10536,18 @@ move_it_in_display_line_to (struct it *it,
 	      if (/* Lines are continued.  */
 		  it->line_wrap != TRUNCATE
 		  && (/* And glyph doesn't fit on the line.  */
+#ifdef HAVE_GLITNIR
+		      new_x > IT_WRAP_X (it)
+#else
 		      new_x > it->last_visible_x
+#endif
 		      /* Or it fits exactly and we're on a window
 			 system frame.  */
+#ifdef HAVE_GLITNIR
+		      || (new_x == IT_WRAP_X (it)
+#else
 		      || (new_x == it->last_visible_x
+#endif
 			  && FRAME_WINDOW_P (it->f)
 			  && ((it->bidi_p && it->bidi_it.paragraph_dir == R2L)
 			      ? WINDOW_LEFT_FRINGE_WIDTH (it->w)
@@ -10523,8 +10559,16 @@ move_it_in_display_line_to (struct it *it,
 		      /* Or this is the second glyph to be produced
 			 beyond the confines of the line.  */
 		      || (i != 0
+#ifdef HAVE_GLITNIR
+			  && (x > IT_WRAP_X (it)
+#else
 			  && (x > it->last_visible_x
+#endif
+#ifdef HAVE_GLITNIR
+			      || (x == IT_WRAP_X (it)
+#else
 			      || (x == it->last_visible_x
+#endif
 				  && FRAME_WINDOW_P (it->f)
 				  && ((it->bidi_p
 				       && it->bidi_it.paragraph_dir == R2L)
@@ -10537,7 +10581,11 @@ move_it_in_display_line_to (struct it *it,
 			 the very first glyph doesn't fit on the line,
 			 e.g., a wide image.  */
 		      it->hpos == 0 + (it->lnum_width ? it->lnum_width + 2 : 0)
+#ifdef HAVE_GLITNIR
+		      || (new_x == IT_WRAP_X (it)
+#else
 		      || (new_x == it->last_visible_x
+#endif
 			  && FRAME_WINDOW_P (it->f)))
 		    {
 		      ++it->hpos;
@@ -10677,7 +10725,11 @@ move_it_in_display_line_to (struct it *it,
 		    {
 		      /* If we've found TO_X, go back there, as we now
 			 know the last word fits on this screen line.  */
+#ifdef HAVE_GLITNIR
+		      if ((op & MOVE_TO_X) && new_x == IT_WRAP_X (it)
+#else
 		      if ((op & MOVE_TO_X) && new_x == it->last_visible_x
+#endif
 			  && atx_it.sp >= 0)
 			{
 			  RESTORE_IT (it, &atx_it, atx_data);
@@ -16863,6 +16915,13 @@ hscroll_window_tree (Lisp_Object window)
 			 Qcurrent_line))
 		SET_FRAME_GARBAGED (XFRAME (w->frame));
 	    }
+#ifdef HAVE_GLITNIR
+	  /* A window following another's hscroll (`nidhogg-hscroll-of')
+	     takes that one's, never its own: its point moving does not
+	     scroll it.  */
+	  if (CONSP (assq_no_quit (Qnidhogg_hscroll_of, w->window_parameters)))
+	    w->suspend_auto_hscroll = true;
+#endif
 
 	  /* Remember window point.  */
 	  Fset_marker (w->old_pointm,
@@ -17023,6 +17082,9 @@ hscroll_window_tree (Lisp_Object window)
 		  b->prevent_redisplay_optimizations_p = true;
 		  w->hscroll = hscroll;
 		  hscrolled_p = true;
+#ifdef HAVE_GLITNIR
+		  nidhogg_hscroll_followers (w);
+#endif
 		}
 	    }
 	}
@@ -26095,8 +26157,12 @@ maybe_produce_line_number (struct it *it)
   /* Record the width in pixels we need for the line number display.  */
   it->lnum_pixel_width = tem_it.current_x;
 #ifdef HAVE_GLITNIR
-  /* Where the horizontal strip starts.  */
+  /* Where the horizontal strip starts, and where a line wraps for
+     `nidhogg-wrap-column': after the numbers, as wide as they are now
+     (their digits change).  */
   it->w->glitnir_lnum_px = it->lnum_pixel_width;
+  if (it->wrap_x > 0 || FIXNUMP (Vnidhogg_wrap_column))
+    it->wrap_x = nidhogg_wrap_x (it, it->lnum_pixel_width);
 #endif
   /* Copy the produced glyphs into IT's glyph_row.  */
   struct glyph *g = scratch_glyph_row.glyphs[TEXT_AREA];
@@ -26582,7 +26648,11 @@ display_line (struct it *it, int cursor_vpos)
       if (/* Not a newline.  */
 	  nglyphs > 0
 	  /* Glyphs produced fit entirely in the line.  */
+#ifdef HAVE_GLITNIR
+	  && (it->current_x < IT_WRAP_X (it)
+#else
 	  && (it->current_x < it->last_visible_x
+#endif
 	      /* Or a line or wrap prefix is in effect, and not
 		 truncating the glyph produced immediately after it
 		 would cause an infinite cycle.  */
@@ -26636,9 +26706,17 @@ display_line (struct it *it, int cursor_vpos)
 	      if (/* Lines are continued.  */
 		  it->line_wrap != TRUNCATE
 		  && (/* Glyph doesn't fit on the line.  */
+#ifdef HAVE_GLITNIR
+		      new_x > IT_WRAP_X (it)
+#else
 		      new_x > it->last_visible_x
+#endif
 		      /* Or it fits exactly on a window system frame.  */
+#ifdef HAVE_GLITNIR
+		      || (new_x == IT_WRAP_X (it)
+#else
 		      || (new_x == it->last_visible_x
+#endif
 			  && FRAME_WINDOW_P (it->f)
 			  && (row->reversed_p
 			      ? WINDOW_LEFT_FRINGE_WIDTH (it->w)
@@ -26650,8 +26728,16 @@ display_line (struct it *it, int cursor_vpos)
 		      /* Or this is the second glyph to be produced
 			 beyond the confines of the line.  */
 		      || (i != 0
+#ifdef HAVE_GLITNIR
+			  && (x > IT_WRAP_X (it)
+#else
 			  && (x > it->last_visible_x
+#endif
+#ifdef HAVE_GLITNIR
+			      || (x == IT_WRAP_X (it)
+#else
 			      || (x == it->last_visible_x
+#endif
 				  && FRAME_WINDOW_P (it->f)
 				  && (row->reversed_p
 				      ? WINDOW_LEFT_FRINGE_WIDTH (it->w)
@@ -26660,7 +26746,11 @@ display_line (struct it *it, int cursor_vpos)
 		  /* End of a continued line.  */
 
 		  if (it->hpos == 0 + (it->lnum_width ? it->lnum_width + 2 : 0)
+#ifdef HAVE_GLITNIR
+		      || (new_x == IT_WRAP_X (it)
+#else
 		      || (new_x == it->last_visible_x
+#endif
 			  && FRAME_WINDOW_P (it->f)
 			  && (row->reversed_p
 			      ? WINDOW_LEFT_FRINGE_WIDTH (it->w)
@@ -26734,8 +26824,16 @@ display_line (struct it *it, int cursor_vpos)
 			}
 		      else if (it->bidi_p)
 			RECORD_MAX_MIN_POS (it);
+#ifdef HAVE_GLITNIR
+		      /* Also when full at a wrap column, short of the
+			 window's edge.  */
+		      if (WINDOW_LEFT_MARGIN_WIDTH (it->w) > 0
+			  || WINDOW_RIGHT_MARGIN_WIDTH (it->w) > 0
+			  || IT_WRAP_X (it) < it->last_visible_x)
+#else
 		      if (WINDOW_LEFT_MARGIN_WIDTH (it->w) > 0
 			  || WINDOW_RIGHT_MARGIN_WIDTH (it->w) > 0)
+#endif
 			extend_face_to_end_of_line (it);
 		    }
 		  else if (CHAR_GLYPH_PADDING_P (*glyph)
@@ -26817,10 +26915,18 @@ display_line (struct it *it, int cursor_vpos)
 			   : WINDOW_RIGHT_FRINGE_WIDTH (it->w)) == 0)
 			produce_special_glyphs (it, IT_CONTINUATION,
 						it->bidi_it.paragraph_dir, false);
+#ifdef HAVE_GLITNIR
+		      it->continuation_lines_width += IT_WRAP_X (it);
+#else
 		      it->continuation_lines_width += it->last_visible_x;
+#endif
 		      row->ends_in_middle_of_char_p = true;
 		      row->continued_p = true;
+#ifdef HAVE_GLITNIR
+		      glyph->pixel_width = IT_WRAP_X (it) - x;
+#else
 		      glyph->pixel_width = it->last_visible_x - x;
+#endif
 		      it->starts_in_middle_of_char_p = true;
 		      if (WINDOW_LEFT_MARGIN_WIDTH (it->w) > 0
 			  || WINDOW_RIGHT_MARGIN_WIDTH (it->w) > 0)
@@ -39322,6 +39428,21 @@ If `word-wrap' is enabled, you might want to reduce the value of this.
 Don't set this to a non-nil value when `visual-line-mode' is
 turned on, as it could produce confusing results.  */);
   Vtruncate_partial_width_windows = make_fixnum (50);
+#ifdef HAVE_GLITNIR
+
+  DEFVAR_LISP ("nidhogg-wrap-column", Vnidhogg_wrap_column,
+	       doc: /* Column at which wrapped lines continue, or nil for the window's edge.
+When a positive integer N and the buffer's lines wrap (`truncate-lines'
+nil), a line continues after N columns (widths of a space in the
+window's default face, `text-scale' followed) from the text's start,
+after the line numbers; in a window narrower than that, at its edge.
+Only the decision to continue moves: `hl-line', the region and other
+backgrounds still reach the window's edge, `:align-to right' stretches
+to it, and images are clipped there.  Automatically buffer-local.  */);
+  Vnidhogg_wrap_column = Qnil;
+  DEFSYM (Qnidhogg_wrap_column, "nidhogg-wrap-column");
+  Fmake_variable_buffer_local (Qnidhogg_wrap_column);
+#endif
 
   DEFVAR_BOOL("word-wrap-by-category", word_wrap_by_category, doc: /*
     Non-nil means also wrap after characters of a certain category.

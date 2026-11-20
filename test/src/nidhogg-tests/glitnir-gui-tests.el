@@ -2669,6 +2669,258 @@ rows: from the window's first line to its last, far fewer than the screen rows."
       (nidhogg-lines-disable buf)
       (kill-buffer buf))))
 
+;; Wrapping at a column (`nidhogg-wrap-column'): a wrapped line continues after N columns, past the line numbers;
+;; only that decision moves (it->wrap_x), so fills, `:align-to right' and images still reach the window's edge.
+
+(defmacro glitnir-gui--with-wrap-column (n &rest body)
+  "Run BODY with BUF, shown in W (the selected window), a buffer whose `nidhogg-wrap-column' is N, lines wrapping by
+character; START the start of its line 0, 200 x's."
+  (declare (indent 1))
+  `(let* ((w (selected-window)) (buf (get-buffer-create "*glitnir-wrap-column*")) (start 1))
+     (glitnir-gui--skip-unless-tree)
+     (unwind-protect
+         (progn
+           (with-current-buffer buf
+             (erase-buffer)
+             (insert (make-string 200 ?x) "\n")
+             (dotimes (i 30) (insert (format "line %d\n" i)))
+             (goto-char (point-min))
+             (setq truncate-lines nil word-wrap nil)
+             (setq nidhogg-wrap-column ,n))
+           (set-window-buffer w buf)
+           (set-window-start w 1)
+           (redisplay t)
+           ,@body)
+       (kill-buffer buf))))
+
+(defun glitnir-gui--row-of (pos w)
+  "The y (window pixels) of the screen row POS is drawn on in W."
+  (nth 1 (pos-visible-in-window-p pos w t)))
+
+(defun glitnir-gui--motion-chars (w start)
+  "How many characters `vertical-motion' moves over from START to W's next screen line."
+  (with-selected-window w (save-excursion (goto-char start) (vertical-motion 1) (- (point) start))))
+
+(ert-deftest glitnir-gui/wrap-column-wraps-at-n ()
+  "With `nidhogg-wrap-column' 40 and line numbers on, a long line's first screen row holds 40 characters, the 40th
+starting at the numbers' width plus 39 columns; `vertical-motion' counts the rows as they are drawn.  Line numbers that
+grow wider (`display-line-numbers-width') move the edge with them."
+  (glitnir-gui--with-wrap-column 40
+    (with-current-buffer buf (display-line-numbers-mode 1))
+    (redisplay t)
+    (let ((col (frame-char-width))
+          (lnum (car (posn-x-y (posn-at-point start w)))))
+      (glitnir-gui--shot "wrap-column")
+      (should (> lnum 0))
+      (should (= (glitnir-gui--row-of (+ start 39) w) (glitnir-gui--row-of start w)))
+      (should (> (glitnir-gui--row-of (+ start 40) w) (glitnir-gui--row-of start w)))
+      (should (= (car (posn-x-y (posn-at-point (+ start 39) w))) (+ lnum (* 39 col))))
+      (should (= (glitnir-gui--motion-chars w start) 40))
+      ;; numbers wider (room for 8 digits, more than the window's rows need): still 40 characters, after them
+      (with-current-buffer buf
+        (setq-local display-line-numbers-width 8))
+      (force-window-update w)
+      (redisplay t)
+      (let ((wide (car (posn-x-y (posn-at-point start w)))))
+        (should (> wide lnum))
+        (should (= (glitnir-gui--motion-chars w start) 40))
+        (should (> (glitnir-gui--row-of (+ start 40) w) (glitnir-gui--row-of (+ start 39) w)))))))
+
+(ert-deftest glitnir-gui/wrap-column-a-wide-character-starts-the-next-row ()
+  "Under `nidhogg-wrap-column' 40 a character wider than a column that would straddle the column starts the next row
+whole: the first row holds 39 characters, and `vertical-motion' counts the same."
+  (glitnir-gui--with-wrap-column 40
+    (with-current-buffer buf
+      (goto-char (+ start 39))
+      (insert "中")
+      (goto-char (point-min)))
+    (redisplay t)
+    (let ((col (frame-char-width)))
+      (glitnir-gui--shot "wrap-column-wide")
+      (should (> (glitnir-gui--row-of (+ start 39) w) (glitnir-gui--row-of (+ start 38) w)))
+      ;; it is wider than a column (the next character, on its row, starts more than a column after it); the y is each
+      ;; glyph's top, which a fallback font's taller ascent moves within the row (by a pixel at scale 1)
+      (should (< (abs (- (glitnir-gui--row-of (+ start 40) w) (glitnir-gui--row-of (+ start 39) w)))
+                 (/ (frame-char-height) 2)))
+      (should (> (- (car (posn-x-y (posn-at-point (+ start 40) w)))
+                    (car (posn-x-y (posn-at-point (+ start 39) w))))
+                 col))
+      (should (= (glitnir-gui--motion-chars w start) 39)))))
+
+(ert-deftest glitnir-gui/narrow-window-wraps-at-edge ()
+  "A window narrower than `nidhogg-wrap-column' wraps at its edge, as with no column (line 0 made longer than the
+window first)."
+  (glitnir-gui--with-wrap-column 4000
+    (let ((long (+ 50 (window-body-width w))))
+      (with-current-buffer buf
+        (goto-char (point-min))
+        (insert (make-string long ?y))
+        (goto-char (point-min)))
+      (redisplay t)
+      (let ((at-col (glitnir-gui--motion-chars w start)))
+        (with-current-buffer buf (setq nidhogg-wrap-column nil))
+        (redisplay t)
+        (should (= at-col (glitnir-gui--motion-chars w start)))
+        (should (< at-col long))))))
+
+(ert-deftest glitnir-gui/hl-line-and-region-reach-the-edge-under-column ()
+  "Under a wrap column an extended background (`hl-line', the region, a diff's) still fills its row to the window's
+edge, past the column."
+  (glitnir-gui--with-wrap-column 40
+    (let ((ov (with-current-buffer buf
+                (let ((o (make-overlay (point-min) (save-excursion (goto-char (point-min)) (forward-line 1) (point)))))
+                  (overlay-put o 'face '(:background "#ff0000" :extend t))
+                  o))))
+      (ignore ov)
+      (pcase-let* ((snap (glitnir-gui--painted))
+                   (`(,_ ,ty ,tx1 ,_) (window-inside-pixel-edges w))
+                   (y (+ ty (glitnir-gui--row-of start w) 2))
+                   (red (lambda (r g b) (and (> r 200) (< g 60) (< b 60)))))
+        (glitnir-gui--shot "wrap-column-extend")
+        (should (apply red (glitnir-gui--pixel snap (list (- tx1 3) y))))))))
+
+(ert-deftest glitnir-gui/align-to-right-does-not-wrap-under-column ()
+  "Under a wrap column a `:align-to right' stretch reaches the window's edge on its own row, not wrapping at the
+column: the line stays one screen row and the stretch's background fills to the edge."
+  (glitnir-gui--with-wrap-column 40
+    (let (bol eol)
+      (with-current-buffer buf
+        (goto-char (point-max))
+        (setq bol (point))
+        (insert "abc" (propertize " " 'display '(space :align-to right) 'face '(:background "#0000ff")))
+        (setq eol (point))
+        (insert "\n")
+        (goto-char (point-min)))
+      (set-window-start w bol)
+      (pcase-let* ((snap (glitnir-gui--painted))
+                   (`(,_ ,ty ,tx1 ,_) (window-inside-pixel-edges w))
+                   (y (+ ty (glitnir-gui--row-of bol w) 2))
+                   (blue (lambda (r g b) (and (< r 60) (< g 60) (> b 200)))))
+        (glitnir-gui--shot "wrap-column-align-to")
+        (should (= (glitnir-gui--row-of eol w) (glitnir-gui--row-of bol w)))
+        (should (= (glitnir-gui--motion-chars w bol) (1+ (- eol bol))))
+        (should (apply blue (glitnir-gui--pixel snap (list (- tx1 3) y))))))))
+
+(ert-deftest glitnir-gui/image-wider-than-the-column-is-not-cut ()
+  "Under a wrap column an image wider than the column, alone on its row, is drawn whole up to the window's edge."
+  (glitnir-gui--with-wrap-column 20
+    (let* ((wpx (+ (* 20 (frame-char-width)) 100))
+           (ppm (concat (format "P6\n%d 20\n255\n" wpx) (apply #'unibyte-string (cl-loop repeat (* wpx 20) append '(255 0 255)))))
+           (img (create-image ppm 'pbm t)))
+      (should (< wpx (window-body-width w t)))
+      (with-current-buffer buf
+        (goto-char (point-max))
+        (insert-image img "i")
+        (insert "\n")
+        (goto-char (point-min)))
+      ;; point with it: else redisplay moves the start back to show point
+      (set-window-point w (with-current-buffer buf (- (point-max) 2)))
+      (set-window-start w (with-current-buffer buf (- (point-max) 2)))
+      (pcase-let* ((snap (glitnir-gui--painted))
+                   (`(,tx ,ty ,_ ,_) (window-inside-pixel-edges w))
+                   (y (+ ty 10))
+                   (magenta (lambda (r g b) (and (> r 200) (< g 60) (> b 200)))))
+        (glitnir-gui--shot "wrap-column-image")
+        (should (> (glitnir-gui--extent-where snap (list tx y (window-body-width w t) 1) magenta)
+                   (- wpx 2)))))))
+
+(ert-deftest glitnir-gui/click-right-of-the-edge-goes-to-row-end ()
+  "Under a wrap column a click right of the column on a continued row lands at that row's end, not on the next row."
+  (glitnir-gui--with-wrap-column 40
+    (pcase-let* ((`(,wx ,wy ,_ ,_) (window-pixel-edges w))
+                 (`(,tx ,ty ,tx1 ,_) (window-inside-pixel-edges w))
+                 (x (- (- tx1 20) wx))
+                 (y (- (+ ty (glitnir-gui--row-of start w) 2) wy))
+                 (p (posn-point (posn-at-x-y x y w))))
+      (ignore tx)
+      (should (memq (- p start) '(39 40))))))
+
+(ert-deftest glitnir-gui/r2l-under-column ()
+  "A right-to-left paragraph under a wrap column wraps after N characters too, its rows set against the window's
+right edge (the free space on the left): the row's 40 characters, a left-to-right run, end at that edge.  The line is
+reordered whole before it wraps, so the run's last characters take the first row and its first 40 the last: rows
+are checked by the positions they hold, not by `vertical-motion' from the line's start."
+  (glitnir-gui--with-wrap-column 40
+    (with-current-buffer buf (setq bidi-paragraph-direction 'right-to-left))
+    (redisplay t)
+    (let ((col (frame-char-width))
+          (tw (window-body-width w t)))
+      (glitnir-gui--shot "wrap-column-r2l")
+      (should (= (glitnir-gui--row-of (+ start 39) w) (glitnir-gui--row-of start w)))
+      (should (/= (glitnir-gui--row-of (+ start 40) w) (glitnir-gui--row-of start w)))
+      (should (= (glitnir-gui--row-of (+ start 79) w) (glitnir-gui--row-of (+ start 40) w)))
+      (should (/= (glitnir-gui--row-of (+ start 80) w) (glitnir-gui--row-of (+ start 40) w)))
+      (should (>= (car (posn-x-y (posn-at-point (+ start 39) w))) (- tw (* 2 col))))
+      (should (<= (car (posn-x-y (posn-at-point start w))) (- tw (* 39 col)))))))
+
+;; Horizontal scroll followers (`nidhogg-hscroll-of', hscroll design §3.4(e)): the sticky card's window follows its
+;; editor's hscroll, copied in C where the hscroll changes.
+
+(defmacro glitnir-gui--with-hscroll-follower (&rest body)
+  "Run BODY with LEAD (the selected window) and CARD (a window below it, following LEAD) on BUF: lines of 300
+characters whose column N is (format \"%03d\" N)-ish markers, truncated."
+  (declare (indent 0))
+  `(let ((buf (get-buffer-create "*glitnir-hscroll-of*")))
+     (glitnir-gui--skip-unless-tree)
+     (save-window-excursion
+       (delete-other-windows)
+       (unwind-protect
+           (let* ((lead (selected-window))
+                  (card (split-window lead)))
+             (with-current-buffer buf
+               (erase-buffer)
+               (dotimes (_ 20)
+                 (dotimes (i 30) (insert (format "%-10d" (* i 10))))
+                 (insert "\n"))
+               (setq truncate-lines t)
+               (goto-char (point-min)))
+             (set-window-buffer lead buf)
+             (set-window-buffer card buf)
+             (set-window-point card (with-current-buffer buf (point-min)))
+             (set-window-parameter card 'nidhogg-hscroll-of lead)
+             (redisplay t)
+             ,@body)
+         (kill-buffer buf)))))
+
+(defun glitnir-gui--first-column (w)
+  "The buffer column of the character drawn first on W's first text row."
+  (pcase-let* ((`(,wx ,wy ,_ ,_) (window-pixel-edges w))
+               (`(,tx ,ty ,_ ,_) (window-inside-pixel-edges w))
+               (p (posn-point (posn-at-x-y (+ (- tx wx) 1) (+ (- ty wy) 1) w))))
+    (with-current-buffer (window-buffer w) (save-excursion (goto-char p) (current-column)))))
+
+(ert-deftest glitnir-gui/hscroll-follower-follows-auto-hscroll ()
+  "Point moved past the window's right edge auto-hscrolls the editor; its follower gets the same hscroll in the same
+redisplay, its first drawn column the editor's, with no Lisp run for it."
+  (glitnir-gui--with-hscroll-follower
+    (with-selected-window lead
+      (goto-char (with-current-buffer buf (+ (point-min) 250))))
+    (redisplay t)
+    (glitnir-gui--shot "hscroll-of-auto")
+    (should (> (window-hscroll lead) 0))
+    (should (= (window-hscroll card) (window-hscroll lead)))
+    (should (= (glitnir-gui--first-column card) (glitnir-gui--first-column lead)))
+    ;; the follower's own point, at a line's start, does not scroll it back
+    (set-window-point card (with-current-buffer buf (save-excursion (goto-char (point-min)) (forward-line 3) (point))))
+    (redisplay t)
+    (should (= (window-hscroll card) (window-hscroll lead)))
+    ;; and back
+    (with-selected-window lead (goto-char (with-current-buffer buf (point-min))))
+    (redisplay t)
+    (should (= (window-hscroll lead) 0))
+    (should (= (window-hscroll card) 0))))
+
+(ert-deftest glitnir-gui/hscroll-follower-pixels-shift ()
+  "`set-window-hscroll' on the editor shifts the follower's drawn text by the same pixels: the follower's first drawn
+column is the editor's hscroll."
+  (glitnir-gui--with-hscroll-follower
+    (set-window-hscroll lead 40)
+    (redisplay t)
+    (glitnir-gui--shot "hscroll-of-set")
+    (should (= (window-hscroll card) 40))
+    (should (= (glitnir-gui--first-column card) 40))
+    (should (= (glitnir-gui--first-column lead) 40))))
+
 ;;; The shell's menus (nhwl-menu.el): the metrics a theme gives them and the submenu's tolerance
 
 (defvar nhwl-menu--frames)

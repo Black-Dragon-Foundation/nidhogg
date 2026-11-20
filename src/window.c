@@ -1306,10 +1306,60 @@ set_window_hscroll (struct window *w, EMACS_INT hscroll)
 
   w->hscroll = new_hscroll;
   w->suspend_auto_hscroll = true;
+#ifdef HAVE_GLITNIR
+  nidhogg_hscroll_followers (w);
+#endif
 
   return make_fixnum (new_hscroll);
 }
 
+#ifdef HAVE_GLITNIR
+/* Windows that follow another's horizontal scroll: a window whose
+   parameter `nidhogg-hscroll-of' is the window W (drgnx's sticky card,
+   in a child frame) gets W's hscroll in pixels, in its own frame's
+   columns, wherever W's hscroll changes (here, from set_window_hscroll,
+   and from auto-hscroll in hscroll_window_tree), with no Lisp.  */
+
+struct nidhogg_hscroll_leader
+{
+  Lisp_Object window;
+  intmax_t px;
+};
+
+static bool
+nidhogg_hscroll_follow (struct window *f, void *user)
+{
+  struct nidhogg_hscroll_leader *l = user;
+  Lisp_Object of = assq_no_quit (Qnidhogg_hscroll_of, f->window_parameters);
+  if (CONSP (of) && EQ (XCDR (of), l->window) && BUFFERP (f->contents))
+    {
+      int col = FRAME_COLUMN_WIDTH (WINDOW_XFRAME (f));
+      ptrdiff_t n = col > 0 ? (l->px + col / 2) / col : 0;
+      n = clip_to_bounds (0, n, min (MOST_POSITIVE_FIXNUM, PTRDIFF_MAX));
+      if (f->hscroll != n)
+	{
+	  XBUFFER (f->contents)->prevent_redisplay_optimizations_p = true;
+	  f->hscroll = n;
+	  wset_redisplay (f);
+	  fset_redisplay (WINDOW_XFRAME (f));
+	}
+      f->suspend_auto_hscroll = true;
+    }
+  return true;
+}
+
+void
+nidhogg_hscroll_followers (struct window *w)
+{
+  struct nidhogg_hscroll_leader l
+    = { make_lisp_ptr (w, Lisp_Vectorlike),
+	(intmax_t) w->hscroll * FRAME_COLUMN_WIDTH (WINDOW_XFRAME (w)) };
+  Lisp_Object tail, frame;
+  FOR_EACH_FRAME (tail, frame)
+    foreach_window (XFRAME (frame), nidhogg_hscroll_follow, &l);
+}
+
+#endif
 DEFUN ("set-window-hscroll", Fset_window_hscroll, Sset_window_hscroll, 2, 2, 0,
        doc: /* Set number of columns WINDOW is scrolled from left margin to NCOL.
 WINDOW must be a live window and defaults to the selected one.
@@ -9211,6 +9261,9 @@ syms_of_window (void)
   DEFSYM (Qscroll_up, "scroll-up");
   DEFSYM (Qscroll_down, "scroll-down");
   DEFSYM (Qscroll_command, "scroll-command");
+#ifdef HAVE_GLITNIR
+  DEFSYM (Qnidhogg_hscroll_of, "nidhogg-hscroll-of");
+#endif
 
   Fput (Qscroll_up, Qscroll_command, Qt);
   Fput (Qscroll_down, Qscroll_command, Qt);

@@ -181,7 +181,7 @@ and a folded line gets a `▸' in the left margin."
         (let ((press
                (lambda (key)
                  (setq step (1+ step))
-                 (term-send-raw-string key)
+                 (with-current-buffer buf (term-send-raw-string key))
                  (or (glitnir-tty-tests--wait
                       (lambda () (let ((s (glitnir-tty-tests--read state))) (and (eql (nth 5 s) step) s)))
                       10)

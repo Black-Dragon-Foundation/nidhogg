@@ -1268,6 +1268,17 @@ thousands of Lisp markers would slow every insertion, and a line number from Lis
   centres on the pointer, a drag follows it once a frame, through the glue's minimap pointer code and the special event
   `(glitnir-hstrip WINDOW HSCROLL)` (`glitnir-hstrip-event` calls `set-window-hscroll`); presses above the lane are the
   text's. Right to left the thumb is mirrored. Not on a terminal.
+- **Wrapping at a column** (`nidhogg-wrap-column`, buffer-local, hscroll design §3.3): a positive N makes a wrapped
+  line continue after N columns (a space's width in the window's default face) from the text's start, after the line
+  numbers. The iterator's `wrap_x` (set in `init_iterator`, and in `maybe_produce_line_number` with the numbers'
+  width as their digits change) is read only where `display_line` and `move_it_in_display_line_to` decide to
+  continue (`IT_WRAP_X`), so `vertical-motion` agrees with what is drawn, while `last_visible_x` keeps the window's
+  edge for extended backgrounds, `:align-to` stretches (which reach the edge without wrapping) and image clipping. A
+  window narrower than N wraps at its edge.
+- **Windows that follow another's horizontal scroll** (`nidhogg-hscroll-of`, hscroll design §3.4(e)): a window whose
+  parameter `nidhogg-hscroll-of` is window W (drgnx's sticky card) gets W's hscroll, in pixels converted to its own
+  frame's columns, wherever W's hscroll changes: `set_window_hscroll` and auto-hscroll in `hscroll_window_tree`
+  (`nidhogg_hscroll_followers`, window.c). No Lisp runs per scroll, and a follower never auto-hscrolls on its own.
 - **On a terminal** (design 7.8, stage T) the strip is one column: a window with a `glitnir-ruler` and a right margin
   (`set-window-margins`) gets its margin's last column, `┃` over the rows the window shows (the ruler's `:band`
   colour) and `│` (`shadow`) elsewhere, `▐` in a mark's colour on the rows its marks fall on (a later mark over an
