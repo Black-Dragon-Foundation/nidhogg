@@ -26808,8 +26808,16 @@ display_line (struct it *it, int cursor_vpos)
 			}
 		      else if (it->bidi_p)
 			RECORD_MAX_MIN_POS (it);
+#ifdef HAVE_GLITNIR
+		      /* Also when full at a wrap column, short of the
+			 window's edge.  */
+		      if (WINDOW_LEFT_MARGIN_WIDTH (it->w) > 0
+			  || WINDOW_RIGHT_MARGIN_WIDTH (it->w) > 0
+			  || IT_WRAP_X (it) < it->last_visible_x)
+#else
 		      if (WINDOW_LEFT_MARGIN_WIDTH (it->w) > 0
 			  || WINDOW_RIGHT_MARGIN_WIDTH (it->w) > 0)
+#endif
 			extend_face_to_end_of_line (it);
 		    }
 		  else if (CHAR_GLYPH_PADDING_P (*glyph)

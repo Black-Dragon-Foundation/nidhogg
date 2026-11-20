@@ -2704,7 +2704,7 @@ character; START the start of its line 0, 200 x's."
 (ert-deftest glitnir-gui/wrap-column-wraps-at-n ()
   "With `nidhogg-wrap-column' 40 and line numbers on, a long line's first screen row holds 40 characters, the 40th
 starting at the numbers' width plus 39 columns; `vertical-motion' counts the rows as they are drawn.  Line numbers that
-grow a digit move the edge with them."
+grow wider (`display-line-numbers-width') move the edge with them."
   (glitnir-gui--with-wrap-column 40
     (with-current-buffer buf (display-line-numbers-mode 1))
     (redisplay t)
@@ -2716,9 +2716,9 @@ grow a digit move the edge with them."
       (should (> (glitnir-gui--row-of (+ start 40) w) (glitnir-gui--row-of start w)))
       (should (= (car (posn-x-y (posn-at-point (+ start 39) w))) (+ lnum (* 39 col))))
       (should (= (glitnir-gui--motion-chars w start) 40))
-      ;; numbers a digit wider (lines from 1000): still 40 characters, after the wider numbers
+      ;; numbers wider (room for 8 digits, more than the window's rows need): still 40 characters, after them
       (with-current-buffer buf
-        (setq-local display-line-numbers-offset 1000))
+        (setq-local display-line-numbers-width 8))
       (force-window-update w)
       (redisplay t)
       (let ((wide (car (posn-x-y (posn-at-point start w)))))
@@ -2726,14 +2726,42 @@ grow a digit move the edge with them."
         (should (= (glitnir-gui--motion-chars w start) 40))
         (should (> (glitnir-gui--row-of (+ start 40) w) (glitnir-gui--row-of (+ start 39) w)))))))
 
+(ert-deftest glitnir-gui/wrap-column-a-wide-character-starts-the-next-row ()
+  "Under `nidhogg-wrap-column' 40 a character wider than a column that would straddle the column starts the next row
+whole: the first row holds 39 characters, and `vertical-motion' counts the same."
+  (glitnir-gui--with-wrap-column 40
+    (with-current-buffer buf
+      (goto-char (+ start 39))
+      (insert "中")
+      (goto-char (point-min)))
+    (redisplay t)
+    (let ((col (frame-char-width)))
+      (glitnir-gui--shot "wrap-column-wide")
+      (should (> (glitnir-gui--row-of (+ start 39) w) (glitnir-gui--row-of (+ start 38) w)))
+      ;; it is wider than a column (the next character, on its row, starts more than a column after it); the y is each
+      ;; glyph's top, which a fallback font's taller ascent moves within the row (by a pixel at scale 1)
+      (should (< (abs (- (glitnir-gui--row-of (+ start 40) w) (glitnir-gui--row-of (+ start 39) w)))
+                 (/ (frame-char-height) 2)))
+      (should (> (- (car (posn-x-y (posn-at-point (+ start 40) w)))
+                    (car (posn-x-y (posn-at-point (+ start 39) w))))
+                 col))
+      (should (= (glitnir-gui--motion-chars w start) 39)))))
+
 (ert-deftest glitnir-gui/narrow-window-wraps-at-edge ()
-  "A window narrower than `nidhogg-wrap-column' wraps at its edge, as with no column."
+  "A window narrower than `nidhogg-wrap-column' wraps at its edge, as with no column (line 0 made longer than the
+window first)."
   (glitnir-gui--with-wrap-column 4000
-    (let ((at-col (glitnir-gui--motion-chars w start)))
-      (with-current-buffer buf (setq nidhogg-wrap-column nil))
+    (let ((long (+ 50 (window-body-width w))))
+      (with-current-buffer buf
+        (goto-char (point-min))
+        (insert (make-string long ?y))
+        (goto-char (point-min)))
       (redisplay t)
-      (should (= at-col (glitnir-gui--motion-chars w start)))
-      (should (< at-col 200)))))
+      (let ((at-col (glitnir-gui--motion-chars w start)))
+        (with-current-buffer buf (setq nidhogg-wrap-column nil))
+        (redisplay t)
+        (should (= at-col (glitnir-gui--motion-chars w start)))
+        (should (< at-col long))))))
 
 (ert-deftest glitnir-gui/hl-line-and-region-reach-the-edge-under-column ()
   "Under a wrap column an extended background (`hl-line', the region, a diff's) still fills its row to the window's
@@ -2785,6 +2813,8 @@ column: the line stays one screen row and the stretch's background fills to the 
         (insert-image img "i")
         (insert "\n")
         (goto-char (point-min)))
+      ;; point with it: else redisplay moves the start back to show point
+      (set-window-point w (with-current-buffer buf (- (point-max) 2)))
       (set-window-start w (with-current-buffer buf (- (point-max) 2)))
       (pcase-let* ((snap (glitnir-gui--painted))
                    (`(,tx ,ty ,_ ,_) (window-inside-pixel-edges w))
@@ -2807,16 +2837,19 @@ column: the line stays one screen row and the stretch's background fills to the 
 
 (ert-deftest glitnir-gui/r2l-under-column ()
   "A right-to-left paragraph under a wrap column wraps after N characters too, its rows set against the window's
-right edge (the free space on the left): the row's 40 characters, a left-to-right run, end at that edge."
+right edge (the free space on the left): the row's 40 characters, a left-to-right run, end at that edge.  The line is
+reordered whole before it wraps, so the run's last characters take the first row and its first 40 the last: rows
+are checked by the positions they hold, not by `vertical-motion' from the line's start."
   (glitnir-gui--with-wrap-column 40
     (with-current-buffer buf (setq bidi-paragraph-direction 'right-to-left))
     (redisplay t)
     (let ((col (frame-char-width))
           (tw (window-body-width w t)))
       (glitnir-gui--shot "wrap-column-r2l")
-      (should (= (glitnir-gui--motion-chars w start) 40))
       (should (= (glitnir-gui--row-of (+ start 39) w) (glitnir-gui--row-of start w)))
-      (should (> (glitnir-gui--row-of (+ start 40) w) (glitnir-gui--row-of start w)))
+      (should (/= (glitnir-gui--row-of (+ start 40) w) (glitnir-gui--row-of start w)))
+      (should (= (glitnir-gui--row-of (+ start 79) w) (glitnir-gui--row-of (+ start 40) w)))
+      (should (/= (glitnir-gui--row-of (+ start 80) w) (glitnir-gui--row-of (+ start 40) w)))
       (should (>= (car (posn-x-y (posn-at-point (+ start 39) w))) (- tw (* 2 col))))
       (should (<= (car (posn-x-y (posn-at-point start w))) (- tw (* 39 col)))))))
 
