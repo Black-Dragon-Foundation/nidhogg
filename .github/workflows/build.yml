@@ -5,7 +5,7 @@ name: Nidhogg
 
 on:
   push:
-    branches: [nidhogg-31]
+    branches: [main, next]
     tags: ["v*-nidhogg.*"]
   pull_request:
   workflow_dispatch:
@@ -49,18 +49,18 @@ permissions:
   contents: read
   packages: read
 
-# Which runs write caches (README.md, "Caches"), within the repository's 10 GB: nidhogg-31 every one; a pull request
+# Which runs write caches (README.md, "Caches"), within the repository's 10 GB: main every one; a pull request
 # from a branch of this repository the small ones, the exact-key families (compiled Lisp, tarballs, configure's
 # checks, the pinned packages) and ccache, not the large prefix-restored ones (the native crates' 1.2 GB, Glitnir's
-# cargo targets), which it reads from nidhogg-31 anyway, and the pr-caches job keeps only its newest run's set; ci/*
+# cargo targets), which it reads from main anyway, and the pr-caches job keeps only its newest run's set; ci/*
 # branches, a fork's pull request and a tag none (they restore only), except scratch/ng-mac-rounds, the one branch every
-# macOS round is pushed to, which saves as nidhogg-31 does so that each round restores the last one's caches (GitHub shares
+# macOS round is pushed to, which saves as main does so that each round restores the last one's caches (GitHub shares
 # a cache only within its ref and with the default branch).  GitHub scopes a pull request's entries to its
-# merge ref (refs/pull/N/merge): only that pull request's later runs read them, never nidhogg-31 or another branch.
-# Every run reads its own ref's and nidhogg-31's.
+# merge ref (refs/pull/N/merge): only that pull request's later runs read them, never main or another branch.
+# Every run reads its own ref's and main's.
 env:
-  CACHE_SAVE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || github.ref == 'refs/heads/scratch/ng-mac-rounds')) }}
-  CACHE_SAVE_ALL: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/nidhogg-31' || github.ref == 'refs/heads/scratch/ng-mac-rounds') }}
+  CACHE_SAVE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/scratch/ng-mac-rounds')) }}
+  CACHE_SAVE_ALL: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/scratch/ng-mac-rounds') }}
 
 concurrency:
   group: nidhogg-${{ github.ref }}
@@ -68,7 +68,7 @@ concurrency:
 
 jobs:
   # What the change can affect (nidhogg/ci/changes.sh over nidhogg/ci/paths.txt): a pull request runs only those
-  # jobs, against a nidhogg-31 whose gate passed; every push, tag and dispatch that names nothing runs everything.
+  # jobs, against a main whose gate passed; every push, tag and dispatch that names nothing runs everything.
   # Anything uncertain runs everything.  The jobs below run unless it said false, so they run if it failed.
   changes:
     name: What the change can affect
@@ -155,7 +155,7 @@ jobs:
           echo "lanes=$(echo "$want" | tr ' ' '\n' | jq -Rnc '[inputs | select(length > 0)]')" | tee -a "$GITHUB_OUTPUT"
 
   # The prebuilt images the Linux jobs run in (images.yml, nidhogg/ci/image.sh): each one's digest, published here for
-  # a push to nidhogg-31 or a run by hand when its tag is missing; a pull request's run never publishes, and a job
+  # a push to main or next or a run by hand when its tag is missing; a pull request's run never publishes, and a job
   # whose image this left empty builds it for itself.  Not in the gate: it makes a cache, not a verdict.
   images:
     name: Images
@@ -290,7 +290,7 @@ jobs:
           persist-credentials: false
       # Caches are restored before the build and saved right after it (actions/cache/save), not at the end of the job: a
       # later failing step (the tarball test) keeps what the build produced.  A run reads its own branch's entries and
-      # nidhogg-31's (GitHub's scoping: never another branch's or a pull request's); which runs write which caches is
+      # main's (GitHub's scoping: never another branch's or a pull request's); which runs write which caches is
       # CACHE_SAVE and CACHE_SAVE_ALL above.  README.md, "Caches".
       - name: Source tree hash, compiled-Lisp inputs
         id: tree
@@ -337,11 +337,11 @@ jobs:
       # primitives' signatures, comp.c and the headers), the build image (gcc, libgccjit, the configuration), build.sh
       # (the configure flags) and the distro, so a change to a C body reuses it.  After make, build.sh's guard
       # (nidhogg/eln-guard.el) checks the restored .eln files against the new binary and builds the Lisp cold on a
-      # mismatch; build.sh also refuses an entry made by another gcc or configure line.  Never restored for nidhogg-31 or a
+      # mismatch; build.sh also refuses an entry made by another gcc or configure line.  Never restored for main or a
       # release tag: their Lisp is compiled cold, so what ships and what the pull requests restore was never restored.
       - name: Compiled Lisp (same Lisp side and ABI)
         id: lc
-        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/main' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
@@ -392,9 +392,9 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-${{ matrix.distro }}-gcc-${{ hashFiles(format('nidhogg/deps/{0}.build', matrix.distro)) }}-${{ github.run_id }}-${{ github.run_attempt }}
-      # nidhogg-31 saves its cold build's (it restores none); a run whose image was built here saves none (local-RUN)
+      # main saves its cold build's (it restores none); a run whose image was built here saves none (local-RUN)
       - name: Save compiled Lisp
-        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && !startsWith(steps.img.outputs.id, 'local-') && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && !startsWith(steps.img.outputs.id, 'local-') && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/main')) }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
@@ -405,7 +405,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/config-cache
           key: configure-${{ matrix.distro }}-${{ steps.img.outputs.id }}-${{ hashFiles('configure.ac', 'm4/**', 'build-aux/**', 'autogen.sh', 'nidhogg/version', 'nidhogg/build.sh') }}
-      # nidhogg-31 only (about 0.2 GB per distro; a pull request restores nidhogg-31's), pruned of cargo's incremental
+      # main only (about 0.2 GB per distro; a pull request restores main's), pruned of cargo's incremental
       # data; the entry names its commit only after a build that passed (build.sh)
       - name: Leave cargo's incremental data out of the cargo target
         if: ${{ always() && env.CACHE_SAVE_ALL == 'true' && steps.build.outcome == 'success' }}
@@ -509,7 +509,7 @@ jobs:
       # a dev build's compiled Lisp (its .elc and the preloaded files' .eln), keyed and guarded as the Linux jobs'
       - name: Compiled Lisp (same Lisp side and ABI)
         id: lc
-        if: ${{ github.ref != 'refs/heads/nidhogg-31' }}
+        if: ${{ github.ref != 'refs/heads/main' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
@@ -530,7 +530,7 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ccache-fedora-45-noglitnir-${{ hashFiles('nidhogg/deps/fedora-45.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save compiled Lisp
-        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && !startsWith(steps.img.outputs.id, 'local-') && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && !startsWith(steps.img.outputs.id, 'local-') && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/main')) }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache
@@ -624,7 +624,7 @@ jobs:
           # what configure's checks find: every installed build package's version, and the image (Xcode)
           echo "deps=$(sed 's/#.*//' nidhogg/deps/macos.build | { xargs brew list --versions 2>/dev/null || true; } | { cat; echo "$ImageOS-$ImageVersion"; } | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "rust=$(rustc -V | tr ' ()' '-__')" >> "$GITHUB_OUTPUT"
-      # Native compilation: nidhogg-31, tags, pull requests and by-hand runs on other branches build the release way
+      # Native compilation: main, tags, pull requests and by-hand runs on other branches build the release way
       # (every Lisp file compiled ahead of time, 1,600 .eln files, the better part of 20 minutes); a scratch/* dispatch,
       # which exists to run the rows, compiles only the preloaded Lisp natively and leaves the rest byte-compiled
       # (build.sh --native-preloaded: no JIT in the image either, so no compile starts under a timing row).  The .eln
@@ -644,11 +644,11 @@ jobs:
       # Two entries, as the workers lanes': the byte-compiled part keyed on the Lisp side and the C side's names
       # (lisp-key.sh --elc), so a change in a C body still finds it, and the .eln files keyed as the Linux jobs' (--abi;
       # the guard after make).  build.sh takes either only with its own stamp (compiler, architecture, mode, configure
-      # line) and discards .eln files the guard refuses.  Never restored for nidhogg-31 or a tag: a release builds its
+      # line) and discards .eln files the guard refuses.  Never restored for main or a tag: a release builds its
       # Lisp cold (byte code that folds a C function's result keeps the old body's result until the Lisp side changes)
       - name: Byte-compiled Lisp (same Lisp sources)
         id: lc
-        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' }}
+        if: ${{ steps.tb.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/main' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -716,7 +716,7 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ccache-macos-${{ runner.arch }}-${{ steps.tc.outputs.image }}-${{ hashFiles('nidhogg/deps/macos.build') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save byte-compiled Lisp
-        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && ((steps.lc.outcome == 'success' && steps.lc.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/main')) }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -724,7 +724,7 @@ jobs:
             ${{ runner.temp }}/lisp-cache/stamp
           key: lisp-macos-${{ runner.arch }}-${{ steps.tc.outputs.v }}-${{ runner.temp }}-elc-${{ steps.tree.outputs.elc }}-${{ hashFiles('nidhogg/build.sh') }}
       - name: Save native-compiled Lisp
-        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && ((steps.ln.outcome == 'success' && steps.ln.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31')) }}
+        if: ${{ always() && env.CACHE_SAVE == 'true' && steps.build.outcome == 'success' && ((steps.ln.outcome == 'success' && steps.ln.outputs.cache-hit != 'true') || (steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/main')) }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/lisp-cache/obj
@@ -834,14 +834,14 @@ jobs:
           echo "v=$(brew list --versions gcc libgccjit | tr ' \n' '--')" >> "$GITHUB_OUTPUT"
           echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
           echo "deps=$(sed 's/#.*//' nidhogg/deps/macos.build | { xargs brew list --versions 2>/dev/null || true; } | { cat; echo "$ImageOS-$ImageVersion"; } | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      # The byte-compiled Lisp is the app job's entry (the same key, saved by nidhogg-31's release build): build.sh
+      # The byte-compiled Lisp is the app job's entry (the same key, saved by main's release build): build.sh
       # takes it for this dev build's different stamp (NIDHOGG_BUILD_LISP_CACHE_ELC: the compiler and architecture
       # must agree, the .eln files are not taken), and make then finds the .elc current (the restored files are newer
-      # than every source).  Not restored for nidhogg-31 or a tag, as the app job's.  The .eln files are this build's
+      # than every source).  Not restored for main or a tag, as the app job's.  The .eln files are this build's
       # own: the preloaded ones.
       - name: Byte-compiled Lisp (the app job's entry)
         id: lc
-        if: ${{ !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/nidhogg-31' }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && github.ref != 'refs/heads/main' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -1170,7 +1170,7 @@ jobs:
       # the commit it was built from (set-mtimes.sh --since), and only when all three checks passed: a red check may
       # have left a target unbuilt, which would then pass for HEAD's.  Otherwise the name it was restored with stays
       # (or none), so the next run's diff also covers what this one did not build.  A pull request does not save this
-      # 1.2 GB entry: it restores nidhogg-31's by prefix.
+      # 1.2 GB entry: it restores main's by prefix.
       - name: Leave cargo's incremental data out of the cache
         if: ${{ !cancelled() && env.CACHE_SAVE == 'true' && github.event_name != 'pull_request' && steps.recorder.outcome != 'skipped' }}
         env:
@@ -1641,7 +1641,7 @@ jobs:
           if-no-files-found: ignore
 
   # A pull request's cache budget: once the saving jobs are done, the entries an earlier run of this pull request saved
-  # are deleted, so its scope holds one run's set (about 0.6-0.9 GB) beside nidhogg-31's.  Housekeeping: not in the
+  # are deleted, so its scope holds one run's set (about 0.6-0.9 GB) beside main's.  Housekeeping: not in the
   # gate, and a cancelled run (a newer push) leaves it to the newer run.
   pr-caches:
     name: The pull request keeps one run's caches

@@ -36,8 +36,11 @@ for upstreaming.
 ## Branches and the patch series
 
 - `emacs-31` is an exact mirror of upstream's `emacs-31`; it is never committed to.
-- `nidhogg-31` is the series, rebased onto the upstream release tag (`emacs-31.1` for the first release).
-- Every commit on `emacs-31.1..nidhogg-31` has a subject starting `nidhogg: `.
+- `main` is the series, rebased onto the upstream release tag (`emacs-31.1` for the first release). `next` is the
+  integration line for the next release, a long-running effort is `line/<topic>`, release staging is `rel/<version>`,
+  one task or fix `task/<plan>-<n>` or `fix/<topic>`, CI and throwaway runs `ci/<id>` and `scratch/<id>`. The old
+  series branch `nidhogg-31` is frozen (tag `nidhogg-31-pre-6`).
+- Every commit on `emacs-31.1..main` has a subject starting `nidhogg: `.
 - Files only Nidhogg owns live under `nidhogg/`, `.github/` and `README.md`, so rebases do not conflict.
 - C patches sit behind `--with-nidhogg-<feature>` configure flags. The identity patch is unconditional.
 - Each flag group has commits with subjects starting `nidhogg: <group>:` (groups: `glitnir`, `watchdog`, `workers`, `shell`, `history`, `keys`, `fixes`; the stack order is watchdog, then workers, then glitnir, and the check is
@@ -57,8 +60,8 @@ for upstreaming.
 
 ```bash
 git fetch upstream emacs-31 tag emacs-31.2 --no-tags   # and fast-forward the emacs-31 mirror
-git tag v31.1-nidhogg.N nidhogg-31                       # the old series stays reachable (already tagged at release)
-git rebase --onto emacs-31.2 emacs-31.1 nidhogg-31
+git tag v31.1-nidhogg.N main                             # the old series stays reachable (already tagged at release)
+git rebase --onto emacs-31.2 emacs-31.1 main
 echo 31.2-nidhogg.1 > nidhogg/version                    # amend into the tree commit
 bash nidhogg/test/tree-test.sh emacs-31.2
 ```
@@ -325,14 +328,14 @@ for a deadlock.
 
 ## CI and releases
 
-`.github/workflows/build.yml` runs on pushes to `nidhogg-31`, `v*-nidhogg.*` tags, pull requests and by hand
+`.github/workflows/build.yml` runs on pushes to `main` and `next`, `v*-nidhogg.*` tags, pull requests and by hand
 (`drgnx_ref` input: the drgnx branch, tag or commit under test). The definition of drgnx's tiers comes from the commit
 pinned in the `drgnx` job (`uses: …/drgnx-tiers.yml@COMMIT`, which takes no expression; bump it by hand to a drgnx
 commit whose own CI is green). The suite it checks out, without the input, is chosen by the `pin` job:
 
 - a release tag (`v*-nidhogg.*`): that pinned commit, so a release is tested against a fixed drgnx;
-- every other build (pull requests, by-hand and scratch runs, `nidhogg-31`): the head of drgnx's integration branch,
-  named on one line of `nidhogg/ci/drgnx-line` (`rel7-next` while drgnx's next release is unreleased), so Nidhogg is
+- every other build (pull requests, by-hand and scratch runs, `main`, `next`): the head of drgnx's integration branch,
+  named on one line of `nidhogg/ci/drgnx-line` (drgnx's `next` while drgnx's next release is unreleased), so Nidhogg is
   tested against drgnx's current line, never an old release. That branch must be pushed: a missing one fails the `pin`
   job, never the pin instead. Move the file to the next line when a release round starts.
 
@@ -365,7 +368,7 @@ post AppKit events and read the shell's counters through those hooks.
   (`FILE # reason`); a row whose file is gone fails the check. Every test file has a class, so a file with neither a
   class line nor an exempt row fails it.
 - `tree`: `tree-test.sh`, `ci-test.sh` and `check-rerun-test.sh` (full history and tags).
-- Pull requests land by fast-forwarding their base (`nidhogg-31`) to the head, so a pull request's run tests the head:
+- Pull requests land by fast-forwarding their base (`main` or `next`) to the head, so a pull request's run tests the head:
   every job checks out `github.event.pull_request.head.sha`, not GitHub's merge commit (whose subject breaks the
   series rules and whose tree is not what lands), and the path filter diffs the head. `fast-forward` (pull requests
   only; other events skip it, which the gate allows) fails when the head does not descend from the base branch's tip
@@ -381,7 +384,7 @@ post AppKit events and read the shell's counters through those hooks.
   A tag is the hash of the image's build context: its Containerfile, every file it copies (`deps/…`), its build target
   and `image.sh`, so a change to any of them makes a new tag. The `images` job (first in every run, not in the gate)
   resolves each tag to its digest, and the jobs pull that digest (`.github/actions/nh-image`). A missing tag is built
-  and pushed only for a push to `nidhogg-31` or a run by hand in this repository, never for a pull request: there the
+  and pushed only for a push to `main` or `next` or a run by hand in this repository, never for a pull request: there the
   output is empty and each job builds the image itself for that run, unpushed. The scripts take the image from
   `NIDHOGG_BUILD_IMAGE` (build.sh), `NIDHOGG_CRATES_IMAGE` (the crates' `check.sh`), `GLITNIR_GUI_IMAGE` (gui.sh) and
   `NIDHOGG_PKG_IMAGE` (pkg-test.sh), and each checks its packages (`rpm -q`) before it installs any, so a stale list
@@ -466,8 +469,8 @@ post AppKit events and read the shell's counters through those hooks.
     an `.eln` whose embedded ABI hash is not the binary's). Any mismatch exits 75, and `build.sh` removes the build tree
     and builds again with nothing restored (a `::warning::` says the key missed an input), and `tarball-test.sh` fails
     a stale `.eln` that got through anyway. The trade-off is the dev lanes' (below): a C function's result folded into
-    byte code at compile time stays the old body's until the Lisp side changes, so `nidhogg-31` (and a tag) never
-    restores it: its Lisp is compiled cold, that build is what `nidhogg-31` saves, and what ships was never restored.
+    byte code at compile time stays the old body's until the Lisp side changes, so `main` (and a tag) never
+    restores it: its Lisp is compiled cold, that build is what `main` saves, and what ships was never restored.
     The dev builds (`workers-asan`, `workers-chaos`) keep it as two entries: the byte-compiled part
     (`lisp-fedora-45-asan-elc-G-<lisp-key.sh --elc>-…`: the Lisp side, plus the names of the C side's functions,
     variables and features, which compile-time `fboundp`, `boundp` and `featurep` tests read, but not its bodies, as
@@ -492,7 +495,7 @@ post AppKit events and read the shell's counters through those hooks.
   - Glitnir's cargo target (the glue, the shell, Glitnir and their locked crates, built by `make`; the target directory
     also holds the registry's `index` and downloaded `.crate` files, linked into the build's cargo home by `build.sh`):
     `glitnir-target-D-I-<hash of the three Cargo.lock files>-<run>` (macOS: `glitnir-target-macos-<arch>-<rustc -V>-<hash
-    of glitnir/Cargo.lock>-<run>`), restored from the newest entry of the same lock and image; saved by `nidhogg-31`
+    of glitnir/Cargo.lock>-<run>`), restored from the newest entry of the same lock and image; saved by `main`
     only (some 0.2 GB per OS), without cargo's incremental data. `build.sh` (`NIDHOGG_BUILD_CARGO_TARGET`) links it in and
     has `make` run cargo every time, so cargo's own checks decide what is rebuilt.
   - ccache for the C objects: `ccache-D-gcc-G-<run id>-<attempt>`, restored from the newest entry with the same prefix
@@ -505,7 +508,7 @@ post AppKit events and read the shell's counters through those hooks.
   - macOS: the tarball (`tarball-macos-<arch>-...`), compiled Lisp in two entries as the workers lanes' (the
     byte-compiled part `lisp-macos-<arch>-<gcc and libgccjit versions>-<runner temp>-elc-<lisp-key.sh --elc>-...`,
     which a change in a C body or header still finds, and the `.eln` files `...-eln-<lisp-key.sh --abi>-...`, guarded
-    as above; `build.sh` takes either only with its own stamp; never restored for `nidhogg-31` or a tag), configure's checks and Glitnir's cargo target
+    as above; `build.sh` takes either only with its own stamp; never restored for `main` or a tag), configure's checks and Glitnir's cargo target
     (above), and ccache (`ccache-macos-<arch>-<runner image and version>-<hash of deps/macos.build>-...`, the compiler
     checked by `cc -v`, since `/usr/bin/cc` is a shim; `build.sh --host` uses ccache when `NIDHOGG_BUILD_CCACHE` is
     set). A new runner image restores the previous image's entry (`ccache-macos-<arch>-`): an unchanged clang still
@@ -520,24 +523,24 @@ post AppKit events and read the shell's counters through those hooks.
     packages (`pkg-pins-<hash of pkg-pins.txt and pkg-test.sh>`, exact, without build output or compiled files).
   - Compiled Lisp and tarballs are never restored for a release tag; a release is built fresh, with only self-checking
     caches (ccache, configure's checks, the cargo target).
-  - Who saves (the budget: `nidhogg-31` plus one pull request within the repository's 10 GB): `nidhogg-31` saves every
+  - Who saves (the budget: `main` plus one pull request within the repository's 10 GB): `main` saves every
     cache; pull requests from a branch of this repository the small ones (compiled Lisp, tarballs, configure's checks,
     the pinned packages, ccache; about 0.6–0.9 GB per run), not the native crates (1.2 GB) or Glitnir's cargo targets,
-    which they restore from `nidhogg-31` by prefix, and the `pr-caches` job (not in the gate) then deletes the entries
+    which they restore from `main` by prefix, and the `pr-caches` job (not in the gate) then deletes the entries
     of the pull request's earlier runs, so it holds one run's set. `ci/*` branches, a fork's pull request and a tag
     save nothing: they restore only. GitHub scopes a pull request's entries to its merge ref (`refs/pull/N/merge`):
-    its own later runs read them, `nidhogg-31` and other branches never do, so no pull request writes a cache another
+    its own later runs read them, `main` and other branches never do, so no pull request writes a cache another
     ref's run reads. A narrowed run (below) saves no tarball, since its checks were cut.
-  - Scoping: a run restores caches of its own branch or the default branch (`nidhogg-31`), and a pull request those of its
+  - Scoping: a run restores caches of its own branch or the default branch (`main`), and a pull request those of its
     base; never those of sibling branches or other tags. Keys are identical on every branch, so a run on a `ci/*` branch
-    or a pull request reuses what `nidhogg-31` saved, and a pull request's second run what its first saved.
+    or a pull request reuses what `main` saved, and a pull request's second run what its first saved.
     Unused caches are evicted after 7 days and the least recently used go first above 10 GB per repository
     ([GitHub: dependency caching](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching));
     the per-ref package and test-binary copies are the largest entries and go first.
 - Path filter: the `changes` job runs `nidhogg/ci/changes.sh nidhogg/ci/paths.txt`, which decides the jobs a change can
   affect from the table in `paths.txt` (glob rows, first match wins, a job's dependencies are added). It filters only a
-  pull request, and only against the tip of `nidhogg-31` when that tip is an ancestor whose `Nidhogg gate` check passed;
-  a push to `nidhogg-31`, a tag, a manual run without `jobs` or `checks` (a `ci/*` round included), any error working
+  pull request, and only against the tip of `main` when that tip is an ancestor whose `Nidhogg gate` check passed;
+  a push to `main`, a tag, a manual run without `jobs` or `checks` (a `ci/*` round included), any error working
   out the diff, more than 300 changed files and any path no row names run every job.
   Workflows, `nidhogg/ci/`, `build.sh`, `deps/`, the version, the check subset, licenses and the test scripts run every
   job; docs that no job reads run none. The `gate` job (`Nidhogg gate`) always runs, needs every job but `timing`,
@@ -566,7 +569,7 @@ post AppKit events and read the shell's counters through those hooks.
   out the release app job (no tarball). Such a run is partial, as every narrowed run; a full round runs every few
   focused ones and before a merge.
 - The macOS rounds go to one branch, `scratch/ng-mac-rounds`, pushed by fast-forward (a merge commit when the line moved
-  otherwise; never forced): it saves caches as `nidhogg-31` does (`CACHE_SAVE`, `CACHE_SAVE_ALL`), so each round
+  otherwise; never forced): it saves caches as `main` does (`CACHE_SAVE`, `CACHE_SAVE_ALL`), so each round
   restores the last one's ccache, configure checks and cargo targets (GitHub shares a cache only within its ref and with
   the default branch). Its runs share one concurrency group: a new round's push cancels a running one.
 - Live sessions: a push to `scratch/ng-mac-rounds` whose head commit's message ends with `[ng-live]` (an empty commit on the
@@ -583,11 +586,11 @@ post AppKit events and read the shell's counters through those hooks.
 - Native compilation in the macOS app job: a `scratch/*` dispatch builds with `build.sh --native-preloaded` (only the
   preloaded Lisp native-compiled, the rest byte code, JIT off in the image, so no compile starts under a timing row;
   the byte-compiled cache entry is taken from a full build's through `NIDHOGG_BUILD_LISP_CACHE_ELC=1`, the `.eln` entry
-  is not used) and logs `native compilation: preloaded Lisp only`. `nidhogg-31`, tags and pull requests keep full AOT.
+  is not used) and logs `native compilation: preloaded Lisp only`. `main`, tags and pull requests keep full AOT.
   `tarball-test.sh` reads the mode from BUILDINFO: AOT needs the full `.eln` set, the preloaded-only mode the preloaded
   ones and `native-comp-jit-compilation` nil.
 - The Naglfar job does not compile the Lisp again either: it restores the app job's byte-compiled entry (the same key,
-  saved by `nidhogg-31`'s release build; not for `nidhogg-31` or a tag), `build.sh` takes it for its different stamp
+  saved by `main`'s release build; not for `main` or a tag), `build.sh` takes it for its different stamp
   (`NIDHOGG_BUILD_LISP_CACHE_ELC=1`, same compiler, architecture and configure line apart from the native-compilation
   mode, the window system and `--enable-checking`) and make finds the `.elc` files current. Its configure checks are an
   entry of their own (`configure-macos-naglfar-…`).

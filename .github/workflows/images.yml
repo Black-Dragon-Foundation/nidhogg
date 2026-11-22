@@ -1,7 +1,7 @@
 # CI's prebuilt images (nidhogg/ci/image.sh, nidhogg/ci/images/), so the jobs pull their packages instead of
 # installing them.  build.yml calls this first in every run; by hand it publishes the images of the branch it runs on.
 # Each image's tag is the hash of what it is built from; a published tag is resolved to its digest and the jobs pull
-# that digest.  A missing tag is built and pushed only for a push to nidhogg-31 or a run started by hand in this
+# that digest.  A missing tag is built and pushed only for a push to main or next or a run started by hand in this
 # repository; a pull request never pushes: its jobs build the image themselves for that run (output empty).  No gate:
 # it makes a cache, not a verdict (a job without its image builds it), and a failure here leaves the outputs empty.
 # One job per Containerfile, each resolving that file's images (NAMES).  README.md, "CI and releases".
@@ -33,7 +33,7 @@ permissions:
   packages: write
 
 env:
-  PUBLISH: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/nidhogg-31') || github.event_name == 'workflow_dispatch' }}
+  PUBLISH: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next')) || github.event_name == 'workflow_dispatch' }}
 
 jobs:
   build-fedora:

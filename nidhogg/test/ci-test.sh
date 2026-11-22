@@ -35,19 +35,19 @@ job pin | grep -qF "TAG: \${{ startsWith(github.ref, 'refs/tags/') }}" || fail "
 job pin | grep -qF 'nidhogg/ci/drgnx-line'                        || fail "the pin job does not read drgnx's line"
 job pin | grep -qF 'git ls-remote https://github.com/Black-Dragon-Foundation/drgnx.git "refs/heads/$branch"' || fail "the pin job does not resolve drgnx's line head"
 job pin | grep -qF 'never the pin instead"; exit 1; }'            || fail "a missing drgnx line does not fail the pin job"
-# cache writes: every save step is CACHE_SAVE's (nidhogg-31, the macOS rounds' branch scratch/ng-mac-rounds and this
-# repository's pull requests) or CACHE_SAVE_ALL's (nidhogg-31 and that branch), and neither is ever true for a ci/* branch, a fork's pull request or a tag; a pull request's entries
+# cache writes: every save step is CACHE_SAVE's (main, the macOS rounds' branch scratch/ng-mac-rounds and this
+# repository's pull requests) or CACHE_SAVE_ALL's (main and that branch), and neither is ever true for a ci/* branch, a fork's pull request or a tag; a pull request's entries
 # are scoped to its merge ref, so no other ref's run reads them, it saves no large prefix-restored entry, and its
 # earlier runs' entries are deleted (pr-caches)
 for l in $(grep -n 'uses: actions/cache/save@' "$wf" | cut -d: -f1); do
   sed -n "$((l - 2)),$((l - 1))p" "$wf" | grep -qE "if: .*env\.CACHE_SAVE(_ALL)? == 'true'" || fail "the cache save at line $l is not under CACHE_SAVE or CACHE_SAVE_ALL"
 done
 own_pr="(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)"
-saving="(github.ref == 'refs/heads/nidhogg-31' || github.ref == 'refs/heads/scratch/ng-mac-rounds')"
-grep -qxF "  CACHE_SAVE: \${{ $own_pr || (github.event_name != 'pull_request' && $saving) }}" "$wf" || fail "CACHE_SAVE is not nidhogg-31's, the rounds branch's and this repository's pull requests'"
+saving="(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/scratch/ng-mac-rounds')"
+grep -qxF "  CACHE_SAVE: \${{ $own_pr || (github.event_name != 'pull_request' && $saving) }}" "$wf" || fail "CACHE_SAVE is not main's, the rounds branch's and this repository's pull requests'"
 job pr-caches | grep -qF "if: \${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}" || fail "pr-caches does not run for this repository's pull requests only"
 job pr-caches | grep -qF 'select(.created_at < \"$start\")' || fail "pr-caches does not delete only the entries of earlier runs"
-grep -qxF "  CACHE_SAVE_ALL: \${{ github.event_name != 'pull_request' && $saving }}" "$wf" || fail "CACHE_SAVE_ALL is not nidhogg-31's and the rounds branch's"
+grep -qxF "  CACHE_SAVE_ALL: \${{ github.event_name != 'pull_request' && $saving }}" "$wf" || fail "CACHE_SAVE_ALL is not main's and the rounds branch's"
 [ "$(job native-crates | grep -cF "env.CACHE_SAVE == 'true' && github.event_name != 'pull_request'")" = 2 ] || fail "a pull request saves the native crates' entry"
 # a release tag's tarball has no restored compiled Lisp: the jobs that make tarballs skip the restore for a tag
 for j in linux macos; do
@@ -251,10 +251,10 @@ grep -qF -- "-v {0}/grammars:/grammars:ro,z" <<<"$lj"                 || fail "t
 # the fedora-45 leg's check installs gnutls-utils and dbus-daemon, so the TLS rows (gnutls-serv) and the settings
 # tests' bus run instead of skipping
 grep -qF "NIDHOGG_CHECK_PACKAGES: \${{ matrix.distro == 'fedora-45' && 'gnutls-utils dbus-daemon' || '' }}" <<<"$lj" || fail "the linux check does not install gnutls-utils and dbus-daemon on fedora-45"
-# the prebuilt images (images.yml, nidhogg/ci/image.sh): published only for a push to nidhogg-31 or a run by hand, never
-# from a pull request; the Linux jobs run in them by digest, the package-download caches are gone with them
+# the prebuilt images (images.yml, nidhogg/ci/image.sh): published only for a push to main or next or a run by hand,
+# never from a pull request; the Linux jobs run in them by digest, the package-download caches are gone with them
 iw=.github/workflows/images.yml
-grep -qxF "  PUBLISH: \${{ (github.event_name == 'push' && github.ref == 'refs/heads/nidhogg-31') || github.event_name == 'workflow_dispatch' }}" "$iw" || fail "images.yml publishes for more than nidhogg-31's pushes and runs by hand"
+grep -qxF "  PUBLISH: \${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next')) || github.event_name == 'workflow_dispatch' }}" "$iw" || fail "images.yml publishes for more than main's and next's pushes and runs by hand"
 awk '/^on:/,/^permissions:/' "$iw" | grep -qE '^  (push|pull_request|pull_request_target|schedule):' && fail "images.yml has a trigger of its own besides a run by hand"
 grep -qF 'if [ -z "$ref" ] && [ "${PUBLISH:-}" = true ]; then ref=$(bash "$SELF" publish' nidhogg/ci/image.sh || fail "image.sh publishes without PUBLISH"
 [ "$(cat "$wf" "$iw" | grep -c 'image.sh publish\|podman push')" = 0 ] || fail "a workflow pushes an image itself (only image.sh outputs does, under PUBLISH)"
@@ -271,13 +271,13 @@ echo "# ci-test" >> "$d/nidhogg/deps/fedora-45.build"
 [ "$(bash "$d/nidhogg/ci/image.sh" tag build-fedora-45)" != "$t0" ] || fail "the build image's tag does not follow deps/fedora-45.build"
 rm -r "$d"
 # the release legs' and compile-noglitnir's compiled Lisp: keyed on Emacs's ABI inputs (lisp-key.sh --abi), never
-# restored for nidhogg-31 (or a tag), which saves its cold build's; build.sh's guard checks a restored set after make,
+# restored for main (or a tag), which saves its cold build's; build.sh's guard checks a restored set after make,
 # and the tarball test fails a stale .eln
 for j in linux macos compile-noglitnir; do
   job "$j" | grep -qF 'abi=$(bash nidhogg/ci/lisp-key.sh --abi)'    || fail "$j does not key its compiled Lisp on the ABI inputs"
-  job "$j" | grep -A1 'id: lc$' | grep -qF "github.ref != 'refs/heads/nidhogg-31'" || fail "$j restores compiled Lisp for nidhogg-31"
+  job "$j" | grep -A1 'id: lc$' | grep -qF "github.ref != 'refs/heads/main'" || fail "$j restores compiled Lisp for main"
   [ "$(job "$j" | grep -cF -- '-${{ steps.tree.outputs.abi }}-')" = 2 ] || fail "$j's compiled-Lisp restore and save keys differ"
-  job "$j" | grep -qF "steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/nidhogg-31'" || fail "nidhogg-31's $j does not save its cold Lisp"
+  job "$j" | grep -qF "steps.lc.outcome == 'skipped' && github.ref == 'refs/heads/main'" || fail "main's $j does not save its cold Lisp"
 done
 # the macOS job's byte-compiled Lisp is an entry of its own, keyed on the Lisp side alone (a C body or header change
 # still finds it), restored and saved under one key; its .eln files keep the ABI key above
@@ -365,7 +365,7 @@ job macos-naglfar | grep -qF "needs.changes.outputs.macos != 'false'" || fail "m
 job gate | grep -qF 'macos-naglfar macos-naglfar-rows " ;; esac'     || fail "the gate lets a filtered macOS run skip macos but not the Naglfar jobs"
 job gate | grep -qF 'macos-naglfar-rows " ;; esac' && job gate | grep -qE '^    needs: .*macos-naglfar-rows' || fail "the gate does not need macos-naglfar-rows"
 # a scratch/* run builds the app with only the preloaded Lisp native-compiled (no JIT in the image) and says so; every
-# other run (nidhogg-31, tags, pull requests) keeps full AOT, and the tarball test checks the mode it was built in
+# other run (main, tags, pull requests) keeps full AOT, and the tarball test checks the mode it was built in
 job macos | grep -qF "PRELOADED: \${{ startsWith(github.ref, 'refs/heads/scratch/') }}" || fail "macos does not pick the preloaded-only mode for scratch/* alone"
 [ "$(job macos | grep -cF 'NIDHOGG_BUILD_NATIVE_PRELOADED:')" = 2 ]  || fail "macos's build and pack steps do not both take the native-compilation mode"
 job macos | grep -qF 'NIDHOGG_BUILD_NATIVE_PRELOADED=${{ steps.mode.outputs.preloaded' || fail "macos's check stage does not take the native-compilation mode"
@@ -378,7 +378,7 @@ grep -qF 'native-comp-jit-compilation is on' nidhogg/test/tarball-test.sh && gre
 nk="lisp-macos-\${{ runner.arch }}-\${{ steps.tc.outputs.v }}-\${{ runner.temp }}-elc-\${{ steps.tree.outputs.elc }}-\${{ hashFiles('nidhogg/build.sh') }}"
 job macos-naglfar | grep -qF "key: $nk"                            || fail "macos-naglfar does not restore the app job's byte-compiled Lisp entry"
 job macos | grep -qF "key: $nk"                                    || fail "the byte-compiled Lisp key moved in macos"
-job macos-naglfar | grep -A1 'id: lc$' | grep -qF "github.ref != 'refs/heads/nidhogg-31'" || fail "macos-naglfar restores compiled Lisp for nidhogg-31"
+job macos-naglfar | grep -A1 'id: lc$' | grep -qF "github.ref != 'refs/heads/main'" || fail "macos-naglfar restores compiled Lisp for main"
 job macos-naglfar | grep -A1 'id: lc$' | grep -qF "!startsWith(github.ref, 'refs/tags/')" || fail "macos-naglfar restores compiled Lisp for a tag"
 job macos-naglfar | grep -qF "NIDHOGG_BUILD_LISP_CACHE_ELC: '1'"   || fail "macos-naglfar's build does not take the byte-compiled part of the app job's entry"
 job macos-naglfar | grep -qF 'NIDHOGG_BUILD_LISP_CACHE: ${{ runner.temp }}/lisp-cache' || fail "macos-naglfar's build has no compiled-Lisp cache directory"
@@ -403,7 +403,7 @@ job compile-noglitnir | grep -qF -- '--without-glitnir --dev' || fail "compile-n
 grep -qF 'nidhogg-eln-guard-check' nidhogg/build.sh                || fail "build.sh does not guard restored .eln files"
 grep -qF 'if [ "$rc" = 75 ]; then' nidhogg/build.sh                || fail "build.sh does not build cold after the guard's verdict"
 grep -qF 'stale .eln' nidhogg/test/tarball-test.sh                 || fail "the tarball test does not fail a stale .eln"
-# the large prefix-restored entries are nidhogg-31's alone (a pull request restores them), and no cache holds a whole
+# the large prefix-restored entries are main's alone (a pull request restores them), and no cache holds a whole
 # cargo home (unpacked sources, tools, credentials)
 [ "$(grep -A1 "name: Save Glitnir's cargo target" "$wf" | grep -cF "env.CACHE_SAVE_ALL == 'true'")" = 2 ] || fail "a pull request saves a Glitnir cargo target"
 ! grep -qE '^ +\$\{\{ runner\.temp \}\}/(nh-recorder-cargo|nhshell-cargo|nhglue-cargo)$' "$wf" || fail "a cache holds a whole cargo home"

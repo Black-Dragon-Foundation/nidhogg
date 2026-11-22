@@ -4,7 +4,7 @@
 # inputs).  Documentation, tests, the nidhogg/ scripts and CI files are left out on purpose: they do not change the output.
 # nidhogg/build.sh (the configure flags) and the compiler are keyed by the workflow.  Run in the checkout.
 #   lisp-key.sh --elc   the byte-compiled part only (the generated files under lisp/ and leim/, without the .eln files),
-#                       for the dev test lanes and the macOS job off nidhogg-31 and tags, never a release build: the C
+#                       for the dev test lanes and the macOS job off main and tags, never a release build: the C
 #                       side's bodies are left out, as make itself
 #                       treats byte code, but the names of its functions, variables and features are in (code that tests
 #                       `fboundp', `boundp' or `featurep' at compile time compiles differently when one comes or goes)
@@ -16,7 +16,7 @@
 #                       src/*.h, lib/).  The configuration, the compiler and libgccjit are the workflow's part of the key.
 #                       A C body change then reuses the cache; nidhogg/eln-guard.el checks the restored .eln files
 #                       against the new binary after the build, and a mismatch builds the Lisp cold (README.md, "CI and
-#                       releases").  Never restored for nidhogg-31 or a release tag.
+#                       releases").  Never restored for main or a release tag.
 set -euo pipefail
 parts="lisp leim src lib lib-src lwlib oldXMenu exec nextstep modules m4 admin build-aux etc configure.ac autogen.sh Makefile.in GNUmakefile"
 elc=0 abi=0

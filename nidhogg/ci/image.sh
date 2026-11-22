@@ -58,7 +58,7 @@ build() {   # build REF:TAG from a fresh context (capped as build.sh's package i
 cmd=$1; shift
 [ "$cmd" != names ] || { echo "$NAMES"; exit 0; }
 # outputs NAME...: the images workflow's step.  Logs in with TOKEN as ACTOR, resolves each NAME and, where PUBLISH is
-# true (a push to nidhogg-31 or a run by hand), publishes a missing one; prints KEY=REF@DIGEST lines (KEY: NAME with
+# true (a push to main or next or a run by hand), publishes a missing one; prints KEY=REF@DIGEST lines (KEY: NAME with
 # '_' for '-' and '.'), an empty REF for an image the jobs must build themselves (never published, or publishing
 # failed: no gate rests on it)
 if [ "$cmd" = outputs ]; then
